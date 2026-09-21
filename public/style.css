@@ -52,3 +52,12 @@
   .page:not(#home){padding-top:64px}
   #productDetail,#runDetail{padding-top:64px}
 }
+
+/* v8: mobile browser chrome clearance */
+@media(max-width:820px){
+  .main{padding-top:150px!important}
+  .page:not(#home),#productDetail,#runDetail{padding-top:0!important}
+}
+@media(max-width:820px) and (display-mode:standalone){
+  .main{padding-top:max(22px,calc(env(safe-area-inset-top,0px) + 14px))!important}
+}
