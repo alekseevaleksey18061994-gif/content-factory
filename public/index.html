@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#09100d" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Content Factory</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <button class="brand" data-go="home" aria-label="Главная">
+        <span class="brand-mark">F</span>
+        <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод</small></span>
+      </button>
+      <nav class="side-nav">
+        <button class="nav active" data-go="home"><span>⌂</span><b>Главная</b></button>
+        <button class="nav" data-go="products"><span>▣</span><b>Товары</b></button>
+        <button class="nav" data-go="generations"><span>▷</span><b>Генерации</b></button>
+        <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
+        <button class="nav" data-go="profile"><span>◎</span><b>Профиль</b></button>
+      </nav>
+      <div class="side-status"><span class="online"></span><div><b>Content Factory</b><small>Система запущена</small></div></div>
+    </aside>
+
+    <main class="main">
+      <section class="page active" id="home">
+        <div class="mobile-head"><div class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод</small></div><button class="avatar">А</button></div>
+        <header class="topbar">
+          <div><span class="kicker">CONTENT FACTORY</span><h1>AI-контент-завод</h1><p>Идея → сценарий → видео → публикация</p></div>
+          <button class="btn primary" data-create>＋ Создать контент</button>
+        </header>
+
+        <button class="create-banner" data-create>
+          <span class="spark">✦</span>
+          <span><b>Создать контент</b><small>Фото товара → сценарий → видео → публикация</small></span>
+          <span class="round-arrow">→</span>
+        </button>
+
+        <section class="panel quick">
+          <div class="panel-title"><div><span class="mini-icon">⚡</span><h2>Быстрый запуск</h2><p>Создай контент под нужную площадку</p></div><button class="text-btn" data-create>Все платформы ›</button></div>
+          <div class="quick-grid">
+            <button data-create data-platform="TikTok"><span class="platform-icon">♪</span><span><b>TikTok</b><small>9:16 · до 60 сек</small></span><i>›</i></button>
+            <button data-create data-platform="Reels"><span class="platform-icon instagram">◎</span><span><b>Reels</b><small>9:16 · до 90 сек</small></span><i>›</i></button>
+            <button data-create data-platform="Shorts"><span class="platform-icon shorts">▶</span><span><b>Shorts</b><small>9:16 · до 60 сек</small></span><i>›</i></button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">◆</span><h2>Товары</h2><p>Выбери товар для создания контента</p></div><button class="text-btn" data-go="products">Все товары ›</button></div>
+          <div class="products-strip" id="homeProducts"></div>
+        </section>
+
+        <div class="stats">
+          <div class="stat"><span>▤</span><div><small>В работе</small><b id="working">0</b></div></div>
+          <div class="stat"><span>◷</span><div><small>На проверке</small><b id="review">0</b></div></div>
+          <div class="stat"><span>✓</span><div><small>Готово</small><b id="done">0</b></div></div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">☷</span><h2>Последние генерации</h2></div><button class="text-btn" data-go="generations">Все генерации ›</button></div>
+          <div class="runs-list" id="latestRuns"></div>
+        </section>
+
+        <section class="panel cost-card"><div><span class="mini-icon">▥</span><span><b>Себестоимость</b><small>Средняя стоимость одного готового ролика</small></span></div><strong id="averageCost">—</strong></section>
+      </section>
+
+      <section class="page" id="products">
+        <header class="section-head"><div><span class="kicker">КАТАЛОГ</span><h1>Товары</h1><p>Твои мастер-карточки для производства контента</p></div><button class="btn primary" id="addProduct">＋ Добавить товар</button></header>
+        <div class="product-grid" id="productsGrid"></div>
+      </section>
+
+      <section class="page" id="productDetail">
+        <button class="back" data-go="products">← Товары</button>
+        <div id="productDetailBody"></div>
+      </section>
+
+      <section class="page" id="generations">
+        <header class="section-head"><div><span class="kicker">ПРОИЗВОДСТВО</span><h1>Генерации</h1><p>Все ролики и текущие этапы производства</p></div><button class="btn primary" data-create>＋ Создать ролик</button></header>
+        <div class="panel"><div class="runs-list" id="runsTable"></div></div>
+      </section>
+
+      <section class="page" id="reviewScreen">
+        <button class="back" data-go="generations">← Генерации</button>
+        <div id="reviewBody"></div>
+      </section>
+
+      <section class="page" id="publish">
+        <header class="section-head"><div><span class="kicker">ПУБЛИКАЦИЯ</span><h1>Готовые ролики</h1><p>Утверждённый контент для TikTok, Reels и Shorts</p></div></header>
+        <div id="readyGrid" class="ready-grid"></div>
+      </section>
+
+      <section class="page" id="profile">
+        <header class="section-head"><div><span class="kicker">НАСТРОЙКИ</span><h1>Профиль и подключения</h1><p>Сервисы, которые участвуют в Content Factory</p></div></header>
+        <section class="panel"><div id="connections" class="connections"></div></section>
+      </section>
+    </main>
+  </div>
+
+  <nav class="bottom-nav">
+    <button class="nav active" data-go="home"><span>⌂</span><b>Главная</b></button>
+    <button class="nav" data-go="products"><span>▣</span><b>Товары</b></button>
+    <button class="nav" data-go="generations"><span>▷</span><b>Генерации</b></button>
+    <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
+    <button class="nav" data-go="profile"><span>◎</span><b>Профиль</b></button>
+  </nav>
+
+  <div class="modal" id="createModal" aria-hidden="true">
+    <div class="modal-card">
+      <button class="close" id="closeModal">×</button>
+      <span class="kicker">НОВАЯ ГЕНЕРАЦИЯ</span><h2>Создать контент</h2><p class="muted">Настрой ролик — техническую часть Content Factory сделает сам.</p>
+      <label>Товар<select id="productSelect"></select></label>
+      <label>Что нужно показать<textarea id="brief" placeholder="Например: показать фактуру товара, применение, ключевые преимущества и результат"></textarea></label>
+      <div class="field-grid">
+        <label>Стиль<select id="style"><option>UGC</option><option>Вирусный</option><option>Премиум</option><option>Демонстрация</option></select></label>
+        <label>Длительность<select id="duration"><option>15 сек</option><option selected>30 сек</option><option>45 сек</option></select></label>
+        <label>Количество<select id="count"><option>1 вариант</option><option>3 варианта</option><option selected>5 вариантов</option></select></label>
+        <label>Формат<select id="format"><option selected>9:16</option></select></label>
+      </div>
+      <div class="platform-checks"><label><input type="checkbox" data-p="TikTok" checked> TikTok</label><label><input type="checkbox" data-p="Reels" checked> Reels</label><label><input type="checkbox" data-p="Shorts" checked> Shorts</label></div>
+      <button class="btn primary full" id="launch">▶ Запустить генерацию</button>
+      <div class="message" id="launchMsg"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="productModal" aria-hidden="true">
+    <div class="modal-card small"><button class="close" data-close-product>×</button><span class="kicker">НОВЫЙ ТОВАР</span><h2>Добавить товар</h2><label>Название<input id="newProductName" placeholder="Например: Корейская мочалка" /></label><label>Категория<input id="newProductCategory" placeholder="Красота и уход" /></label><button class="btn primary full" id="saveProduct">Сохранить товар</button></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
