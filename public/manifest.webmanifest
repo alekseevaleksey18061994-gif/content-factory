@@ -1,0 +1,11 @@
+{
+  "name": "Content Factory",
+  "short_name": "Factory",
+  "description": "AI-контент-завод для товарных видео",
+  "lang": "ru",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09100d",
+  "theme_color": "#09100d",
+  "icons": []
+}
