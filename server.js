@@ -34,7 +34,7 @@ const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
 
   if((url.pathname==='/health'||url.pathname==='/api/health') && req.method==='GET'){
-    return json(res,200,{ok:true,service:'Content Factory',version:'1.1.0',time:new Date().toISOString()});
+    return json(res,200,{ok:true,service:'Content Factory',version:'1.2.0',time:new Date().toISOString()});
   }
 
   if(url.pathname==='/api/status' && req.method==='GET'){
@@ -70,7 +70,8 @@ const server=http.createServer(async(req,res)=>{
     const st=fs.statSync(filePath);
     if(st.isDirectory()) filePath=path.join(filePath,'index.html');
     const ext=path.extname(filePath);
-    res.writeHead(200,{'content-type':mime[ext]||'application/octet-stream','cache-control':ext==='.html'?'no-cache':'public, max-age=3600'});
+    const noCache = ['.html','.js','.css','.webmanifest'].includes(ext) || url.pathname==='/sw.js';
+    res.writeHead(200,{'content-type':mime[ext]||'application/octet-stream','cache-control':noCache?'no-store, max-age=0':'public, max-age=3600'});
     fs.createReadStream(filePath).pipe(res);
   }catch{
     const index=path.join(publicDir,'index.html');
