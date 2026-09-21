@@ -61,3 +61,26 @@
 @media(max-width:820px) and (display-mode:standalone){
   .main{padding-top:max(22px,calc(env(safe-area-inset-top,0px) + 14px))!important}
 }
+
+/* v9: final iPhone top clearance — browser + standalone/PWA */
+@media(max-width:820px){
+  .main{
+    padding-top:max(138px,calc(env(safe-area-inset-top,0px) + 78px))!important;
+  }
+  .page,
+  .page:not(#home),
+  #productDetail,
+  #runDetail{
+    padding-top:0!important;
+  }
+}
+@media(max-width:820px) and (display-mode:standalone){
+  .main{
+    padding-top:max(118px,calc(env(safe-area-inset-top,0px) + 62px))!important;
+  }
+}
+@media(max-width:820px) and (display-mode:fullscreen){
+  .main{
+    padding-top:max(118px,calc(env(safe-area-inset-top,0px) + 62px))!important;
+  }
+}
