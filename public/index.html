@@ -13,64 +13,101 @@
 <body>
   <div class="shell">
     <aside class="side">
-      <button class="brand" data-go="home" aria-label="Главная">
+      <button class="brand" data-go="home">
         <span class="brand-mark">F</span>
         <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод</small></span>
       </button>
-      <nav class="side-nav">
-        <button class="nav active" data-go="home"><span>⌂</span><b>Главная</b></button>
-        <button class="nav" data-go="products"><span>▣</span><b>Товары</b></button>
-        <button class="nav" data-go="generations"><span>▷</span><b>Генерации</b></button>
-        <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
-        <button class="nav" data-go="profile"><span>◎</span><b>Профиль</b></button>
-      </nav>
+
+      <div class="sidebar-group">
+        <span class="sidebar-title">ОСНОВНОЕ</span>
+        <nav class="side-nav">
+          <button class="nav active" data-go="home"><span>⌂</span><b>Главная</b></button>
+          <button class="nav" data-go="production"><span>⌁</span><b>Производство</b></button>
+          <button class="nav" data-go="products"><span>▣</span><b>Товары</b></button>
+          <button class="nav" data-go="campaigns"><span>◫</span><b>Кампании</b></button>
+          <button class="nav" data-go="generations"><span>▷</span><b>Ролики</b></button>
+        </nav>
+      </div>
+
+      <div class="sidebar-group">
+        <span class="sidebar-title">КОНТЕНТ</span>
+        <nav class="side-nav">
+          <button class="nav" data-go="scripts"><span>✎</span><b>Сценарии</b></button>
+          <button class="nav" data-go="scenes"><span>▤</span><b>Сцены и медиа</b></button>
+          <button class="nav" data-go="characters"><span>◉</span><b>Персонажи и стили</b></button>
+          <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
+          <button class="nav" data-go="calendar"><span>▦</span><b>Календарь</b></button>
+        </nav>
+      </div>
+
+      <div class="sidebar-group">
+        <span class="sidebar-title">КОНТРОЛЬ</span>
+        <nav class="side-nav">
+          <button class="nav" data-go="analytics"><span>↗</span><b>Аналитика</b></button>
+          <button class="nav" data-go="costs"><span>₽</span><b>Расходы</b></button>
+          <button class="nav" data-go="journal"><span>☷</span><b>Журнал</b></button>
+          <button class="nav" data-go="profile"><span>⚙</span><b>Подключения</b></button>
+        </nav>
+      </div>
+
       <div class="side-status"><span class="online"></span><div><b>Content Factory</b><small>Система запущена</small></div></div>
     </aside>
 
     <main class="main">
+      <div class="desktop-toolbar">
+        <button class="global-search" id="openSearch"><span>⌕</span><span>Поиск по товарам, роликам, сценариям…</span><kbd>⌘K</kbd></button>
+        <div class="toolbar-actions"><button class="btn ghost" data-go="background">Фоновые задачи <span class="badge" id="bgBadge">0</span></button><button class="avatar">А</button></div>
+      </div>
+
       <section class="page active" id="home">
         <div class="mobile-head"><div class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод</small></div><button class="avatar">А</button></div>
         <header class="topbar">
-          <div><span class="kicker">CONTENT FACTORY</span><h1>AI-контент-завод</h1><p>Идея → сценарий → видео → публикация</p></div>
+          <div><span class="kicker">ДИСПЕТЧЕРСКАЯ</span><h1>Контент-завод</h1><p>Все процессы создания контента в одном месте</p></div>
           <button class="btn primary" data-create>＋ Создать контент</button>
         </header>
 
-        <button class="create-banner" data-create>
-          <span class="spark">✦</span>
-          <span><b>Создать контент</b><small>Фото товара → сценарий → видео → публикация</small></span>
-          <span class="round-arrow">→</span>
-        </button>
+        <section class="attention panel" id="attentionPanel"></section>
 
-        <section class="panel quick">
-          <div class="panel-title"><div><span class="mini-icon">⚡</span><h2>Быстрый запуск</h2><p>Создай контент под нужную площадку</p></div><button class="text-btn" data-create>Все платформы ›</button></div>
-          <div class="quick-grid">
-            <button data-create data-platform="TikTok"><span class="platform-icon">♪</span><span><b>TikTok</b><small>9:16 · до 60 сек</small></span><i>›</i></button>
-            <button data-create data-platform="Reels"><span class="platform-icon instagram">◎</span><span><b>Reels</b><small>9:16 · до 90 сек</small></span><i>›</i></button>
-            <button data-create data-platform="Shorts"><span class="platform-icon shorts">▶</span><span><b>Shorts</b><small>9:16 · до 60 сек</small></span><i>›</i></button>
-          </div>
+        <div class="stats wide-stats" id="dashboardStats"></div>
+
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">⌁</span><h2>Производственный конвейер</h2><p>Нажми на этап, чтобы увидеть задачи</p></div><button class="text-btn" data-go="production">Открыть производство ›</button></div>
+          <div class="pipeline-overview" id="pipelineOverview"></div>
         </section>
 
         <section class="panel">
-          <div class="panel-title"><div><span class="mini-icon">◆</span><h2>Товары</h2><p>Выбери товар для создания контента</p></div><button class="text-btn" data-go="products">Все товары ›</button></div>
+          <div class="panel-title"><div><span class="mini-icon">◷</span><h2>Фоновые задачи</h2><p>Что система делает прямо сейчас</p></div><button class="text-btn" data-go="background">Все задачи ›</button></div>
+          <div class="background-mini" id="backgroundMini"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">◆</span><h2>Товары</h2><p>Быстрый доступ к мастер-карточкам</p></div><button class="text-btn" data-go="products">Все товары ›</button></div>
           <div class="products-strip" id="homeProducts"></div>
         </section>
 
-        <div class="stats">
-          <div class="stat"><span>▤</span><div><small>В работе</small><b id="working">0</b></div></div>
-          <div class="stat"><span>◷</span><div><small>На проверке</small><b id="review">0</b></div></div>
-          <div class="stat"><span>✓</span><div><small>Готово</small><b id="done">0</b></div></div>
-        </div>
-
         <section class="panel">
-          <div class="panel-title"><div><span class="mini-icon">☷</span><h2>Последние генерации</h2></div><button class="text-btn" data-go="generations">Все генерации ›</button></div>
+          <div class="panel-title"><div><span class="mini-icon">☷</span><h2>Последние ролики</h2><p>Последние запуски и статусы</p></div><button class="text-btn" data-go="generations">Все ролики ›</button></div>
           <div class="runs-list" id="latestRuns"></div>
         </section>
 
-        <section class="panel cost-card"><div><span class="mini-icon">▥</span><span><b>Себестоимость</b><small>Средняя стоимость одного готового ролика</small></span></div><strong id="averageCost">—</strong></section>
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">▦</span><h2>Все разделы</h2><p>Полный контроль завода</p></div></div>
+          <div class="section-links" id="sectionLinks"></div>
+        </section>
+      </section>
+
+      <section class="page" id="production">
+        <header class="section-head"><div><span class="kicker">ПРОИЗВОДСТВО</span><h1>Конвейер</h1><p>Каждый ролик виден на своём этапе</p></div><button class="btn primary" data-create>＋ Новый ролик</button></header>
+        <div class="kanban" id="kanban"></div>
+      </section>
+
+      <section class="page" id="background">
+        <header class="section-head"><div><span class="kicker">ДИСПЕТЧЕР ЗАДАЧ</span><h1>Фоновые задачи</h1><p>Генерации, озвучка, монтаж и проверки</p></div><button class="btn ghost" id="retryFailed">↻ Повторить неудачные</button></header>
+        <div class="panel"><div class="task-list" id="backgroundTasks"></div></div>
       </section>
 
       <section class="page" id="products">
-        <header class="section-head"><div><span class="kicker">КАТАЛОГ</span><h1>Товары</h1><p>Твои мастер-карточки для производства контента</p></div><button class="btn primary" id="addProduct">＋ Добавить товар</button></header>
+        <header class="section-head"><div><span class="kicker">ПАСПОРТА ТОВАРОВ</span><h1>Товары</h1><p>Медиа, УТП, ограничения, мастер-стиль и история</p></div><button class="btn primary" id="addProduct">＋ Добавить товар</button></header>
         <div class="product-grid" id="productsGrid"></div>
       </section>
 
@@ -79,56 +116,132 @@
         <div id="productDetailBody"></div>
       </section>
 
+      <section class="page" id="campaigns">
+        <header class="section-head"><div><span class="kicker">ПЛАНЫ ПРОИЗВОДСТВА</span><h1>Кампании</h1><p>Серии роликов с бюджетом, целью и прогрессом</p></div><button class="btn primary" id="addCampaign">＋ Создать кампанию</button></header>
+        <div class="campaign-grid" id="campaignGrid"></div>
+      </section>
+
       <section class="page" id="generations">
-        <header class="section-head"><div><span class="kicker">ПРОИЗВОДСТВО</span><h1>Генерации</h1><p>Все ролики и текущие этапы производства</p></div><button class="btn primary" data-create>＋ Создать ролик</button></header>
+        <header class="section-head"><div><span class="kicker">РОЛИКИ</span><h1>Все ролики</h1><p>Статус, прогресс и стоимость каждой единицы контента</p></div><button class="btn primary" data-create>＋ Создать ролик</button></header>
         <div class="panel"><div class="runs-list" id="runsTable"></div></div>
       </section>
 
-      <section class="page" id="reviewScreen">
-        <button class="back" data-go="generations">← Генерации</button>
-        <div id="reviewBody"></div>
+      <section class="page" id="runDetail">
+        <button class="back" data-go="generations">← Все ролики</button>
+        <div id="runDetailBody"></div>
+      </section>
+
+      <section class="page" id="scripts">
+        <header class="section-head"><div><span class="kicker">СЦЕНАРНАЯ БАЗА</span><h1>Сценарии и промты</h1><p>Хуки, тексты, CTA и библиотека удачных шаблонов</p></div><button class="btn primary" id="addScript">＋ Новый сценарий</button></header>
+        <section class="panel"><div class="filter-chips"><button class="chip active">Все</button><button class="chip">UGC</button><button class="chip">Проблема → решение</button><button class="chip">Демонстрация</button><button class="chip">Отзыв</button><button class="chip">Вирусный</button></div><div id="scriptsList" class="library-list"></div></section>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">✦</span><h2>Библиотека промтов</h2><p>Сохраняй удачные структуры и повторно используй стиль</p></div></div><div id="promptLibrary" class="prompt-grid"></div></section>
+      </section>
+
+      <section class="page" id="scenes">
+        <header class="section-head"><div><span class="kicker">STORYBOARD</span><h1>Сцены и медиа</h1><p>Каждая сцена отдельно: референс → промт → модель → версия → результат</p></div></header>
+        <div id="scenesWorkspace"></div>
+      </section>
+
+      <section class="page" id="characters">
+        <header class="section-head"><div><span class="kicker">ПОСТОЯННЫЕ ГЕРОИ</span><h1>Персонажи и стили</h1><p>Фиксированная внешность, голос, характер и визуальная система</p></div><button class="btn primary" id="addCharacter">＋ Создать AI-персонажа</button></header>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">◉</span><h2>AI-персонажи</h2><p>Один и тот же герой во всех роликах</p></div></div><div class="character-grid" id="characterGrid"></div></section>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">✦</span><h2>Визуальные стили</h2><p>Сохраняются отдельно от лица и голоса</p></div></div><div class="style-grid" id="styleGrid"></div></section>
       </section>
 
       <section class="page" id="publish">
-        <header class="section-head"><div><span class="kicker">ПУБЛИКАЦИЯ</span><h1>Готовые ролики</h1><p>Утверждённый контент для TikTok, Reels и Shorts</p></div></header>
+        <header class="section-head"><div><span class="kicker">ПУБЛИКАЦИЯ</span><h1>Готовые ролики</h1><p>Проверка, площадки, описания и расписание</p></div></header>
         <div id="readyGrid" class="ready-grid"></div>
       </section>
 
+      <section class="page" id="calendar">
+        <header class="section-head"><div><span class="kicker">КОНТЕНТ-ПЛАН</span><h1>Календарь</h1><p>Планируй TikTok, Reels и Shorts</p></div><button class="btn ghost" id="autoSchedule">✦ Автораспределение</button></header>
+        <div class="calendar-shell" id="calendarGrid"></div>
+      </section>
+
+      <section class="page" id="analytics">
+        <header class="section-head"><div><span class="kicker">АНАЛИТИКА</span><h1>Результаты контента</h1><p>Просмотры, удержание, CTR, продажи, тренды и конкуренты</p></div></header>
+        <div class="stats wide-stats" id="analyticsStats"></div>
+        <div class="two-col">
+          <section class="panel"><div class="panel-title"><div><span class="mini-icon">↗</span><h2>Лучшие гипотезы</h2><p>Что работает лучше</p></div></div><div id="insights"></div></section>
+          <section class="panel"><div class="panel-title"><div><span class="mini-icon">◌</span><h2>Тренды и конкуренты</h2><p>Наблюдения для следующих роликов</p></div></div><div id="trendCards"></div></section>
+        </div>
+      </section>
+
+      <section class="page" id="costs">
+        <header class="section-head"><div><span class="kicker">ЭКОНОМИКА</span><h1>Расходы</h1><p>Стоимость роликов, моделей, повторных попыток и лимиты</p></div></header>
+        <div class="stats wide-stats" id="costStats"></div>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">₽</span><h2>Бюджетные ограничения</h2><p>Контроль затрат перед генерацией</p></div></div><div class="settings-grid"><label class="setting form-setting"><small>Лимит на кампанию</small><input id="budgetCampaign" type="number" value="5000"></label><label class="setting form-setting"><small>Макс. попыток на сцену</small><input id="budgetAttempts" type="number" value="3"></label><label class="setting form-setting"><small>Подтверждать дороже</small><input id="budgetApproval" type="number" value="100"></label><div class="setting"><small>Умный выбор модели</small><b>Авто · включён</b></div></div><button class="btn primary" id="saveBudget">Сохранить лимиты</button></section>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">▥</span><h2>Последние расходы</h2></div></div><div id="costRows" class="library-list"></div></section>
+      </section>
+
+      <section class="page" id="journal">
+        <header class="section-head"><div><span class="kicker">ИСТОРИЯ СИСТЕМЫ</span><h1>Журнал</h1><p>Что сделал Content Factory и где возникли ошибки</p></div></header>
+        <div class="panel"><div id="journalList" class="journal-list"></div></div>
+      </section>
+
       <section class="page" id="profile">
-        <header class="section-head"><div><span class="kicker">НАСТРОЙКИ</span><h1>Профиль и подключения</h1><p>Сервисы, которые участвуют в Content Factory</p></div></header>
+        <header class="section-head"><div><span class="kicker">СИСТЕМА</span><h1>Подключения</h1><p>Сервисы, участвующие в Content Factory</p></div></header>
         <section class="panel"><div id="connections" class="connections"></div></section>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">⚙</span><h2>Режим производства</h2><p>Как система должна проходить этапы</p></div></div><div class="mode-cards"><button class="mode-card active" data-mode="auto"><b>⚡ Автопилот</b><small>Система работает сама до этапа «Нужна проверка»</small></button><button class="mode-card" data-mode="manual"><b>🎛 Ручной контроль</b><small>Утверждение сценария, storyboard, генерации и монтажа</small></button></div></section>
       </section>
     </main>
   </div>
 
   <nav class="bottom-nav">
     <button class="nav active" data-go="home"><span>⌂</span><b>Главная</b></button>
+    <button class="nav" data-go="production"><span>⌁</span><b>Производство</b></button>
     <button class="nav" data-go="products"><span>▣</span><b>Товары</b></button>
-    <button class="nav" data-go="generations"><span>▷</span><b>Генерации</b></button>
     <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
-    <button class="nav" data-go="profile"><span>◎</span><b>Профиль</b></button>
+    <button class="nav" data-go="profile"><span>⚙</span><b>Система</b></button>
   </nav>
 
   <div class="modal" id="createModal" aria-hidden="true">
     <div class="modal-card">
-      <button class="close" id="closeModal">×</button>
-      <span class="kicker">НОВАЯ ГЕНЕРАЦИЯ</span><h2>Создать контент</h2><p class="muted">Настрой ролик — техническую часть Content Factory сделает сам.</p>
+      <button class="close" data-close="createModal">×</button>
+      <span class="kicker">НОВАЯ ГЕНЕРАЦИЯ</span><h2>Создать контент</h2><p class="muted">Выбери товар и режим — Content Factory разложит задачу по этапам.</p>
+      <div class="mode-cards compact"><button class="mode-card active" data-create-mode="auto"><b>⚡ Автопилот</b><small>До проверки без остановок</small></button><button class="mode-card" data-create-mode="manual"><b>🎛 Ручной</b><small>Утверждение ключевых этапов</small></button></div>
       <label>Товар<select id="productSelect"></select></label>
+      <label>Кампания<select id="campaignSelect"><option value="">Без кампании</option></select></label>
       <label>Что нужно показать<textarea id="brief" placeholder="Например: показать фактуру товара, применение, ключевые преимущества и результат"></textarea></label>
       <div class="field-grid">
-        <label>Стиль<select id="style"><option>UGC</option><option>Вирусный</option><option>Премиум</option><option>Демонстрация</option></select></label>
+        <label>Стиль<select id="style"><option>UGC</option><option>Вирусный</option><option>Премиум</option><option>Проблема → решение</option><option>Демонстрация</option><option>Отзыв</option></select></label>
         <label>Длительность<select id="duration"><option>15 сек</option><option selected>30 сек</option><option>45 сек</option></select></label>
-        <label>Количество<select id="count"><option>1 вариант</option><option>3 варианта</option><option selected>5 вариантов</option></select></label>
+        <label>Количество<select id="count"><option>1 вариант</option><option>3 варианта</option><option selected>5 вариантов</option><option>10 вариантов</option><option>20 вариантов</option></select></label>
         <label>Формат<select id="format"><option selected>9:16</option></select></label>
+        <label>AI-персонаж<select id="characterSelect"><option value="">Без персонажа</option></select></label>
+        <label>Модель<select id="modelMode"><option selected>Авто — умный выбор</option><option>Higgsfield</option><option>Runway</option><option>Veo</option><option>Kling</option></select></label>
+        <label>Лимит бюджета, ₽<input id="runBudget" type="number" value="500"></label>
+        <label>Макс. попыток на сцену<input id="runAttempts" type="number" value="3"></label>
       </div>
       <div class="platform-checks"><label><input type="checkbox" data-p="TikTok" checked> TikTok</label><label><input type="checkbox" data-p="Reels" checked> Reels</label><label><input type="checkbox" data-p="Shorts" checked> Shorts</label></div>
-      <button class="btn primary full" id="launch">▶ Запустить генерацию</button>
+      <button class="btn primary full" id="launch">▶ Запустить производство</button>
       <div class="message" id="launchMsg"></div>
     </div>
   </div>
 
   <div class="modal" id="productModal" aria-hidden="true">
-    <div class="modal-card small"><button class="close" data-close-product>×</button><span class="kicker">НОВЫЙ ТОВАР</span><h2>Добавить товар</h2><label>Название<input id="newProductName" placeholder="Например: Корейская мочалка" /></label><label>Категория<input id="newProductCategory" placeholder="Красота и уход" /></label><button class="btn primary full" id="saveProduct">Сохранить товар</button></div>
+    <div class="modal-card small"><button class="close" data-close="productModal">×</button><span class="kicker">НОВЫЙ ТОВАР</span><h2>Добавить товар</h2><label>Название<input id="newProductName" placeholder="Например: Корейская мочалка" /></label><label>Категория<input id="newProductCategory" placeholder="Красота и уход" /></label><label>Ключевые преимущества<textarea id="newProductUtp" placeholder="Что важно показать в роликах"></textarea></label><label>Что нельзя менять<textarea id="newProductRules" placeholder="Форма, цвет, логотип, способ использования…"></textarea></label><button class="btn primary full" id="saveProduct">Сохранить товар</button></div>
+  </div>
+
+  <div class="modal" id="campaignModal" aria-hidden="true">
+    <div class="modal-card small"><button class="close" data-close="campaignModal">×</button><span class="kicker">НОВАЯ КАМПАНИЯ</span><h2>Создать серию роликов</h2><label>Название<input id="campaignName" placeholder="Мочалка — октябрь"></label><label>Товар<select id="campaignProduct"></select></label><div class="field-grid"><label>Цель по роликам<input id="campaignTarget" type="number" value="30"></label><label>Бюджет, ₽<input id="campaignBudget" type="number" value="5000"></label></div><label>Распределение<textarea id="campaignMix">UGC — 8
+Проблема → решение — 7
+Демонстрация — 5
+Отзыв — 4
+Вирусный — 4
+Премиум — 2</textarea></label><button class="btn primary full" id="saveCampaign">Создать кампанию</button></div>
+  </div>
+
+  <div class="modal" id="characterModal" aria-hidden="true">
+    <div class="modal-card"><button class="close" data-close="characterModal">×</button><span class="kicker">AI-ПЕРСОНАЖ</span><h2>Создать постоянного ведущего</h2><p class="muted">Паспорт персонажа будет использоваться во всех роликах, чтобы сохранять лицо, голос и манеру подачи.</p><div class="field-grid"><label>Имя<input id="characterName" placeholder="Алина"></label><label>Возраст<input id="characterAge" placeholder="27"></label><label>Внешность<textarea id="characterLook" placeholder="Русые волосы, каре, естественный макияж…"></textarea></label><label>Манера речи<textarea id="characterVoice" placeholder="Спокойная, уверенная, разговорная…"></textarea></label><label>Темы страницы<textarea id="characterTopics" placeholder="Товары для дома, бытовые лайфхаки…"></textarea></label><label>Неизменяемые признаки<textarea id="characterLocks" placeholder="Лицо, возраст, цвет глаз, форма носа…"></textarea></label></div><button class="btn primary full" id="saveCharacter">Сохранить персонажа</button></div>
+  </div>
+
+  <div class="modal" id="scriptModal" aria-hidden="true">
+    <div class="modal-card"><button class="close" data-close="scriptModal">×</button><span class="kicker">СЦЕНАРИЙ</span><h2>Новый сценарий</h2><label>Название<input id="scriptTitle" placeholder="Почему обычная мочалка не работает"></label><label>Хук<textarea id="scriptHook" placeholder="Первые 1–3 секунды"></textarea></label><label>Основной текст<textarea id="scriptBody" placeholder="Структура ролика"></textarea></label><label>CTA<input id="scriptCta" placeholder="Попробуй сама / ссылка в профиле…"></label><button class="btn primary full" id="saveScript">Сохранить сценарий</button></div>
+  </div>
+
+  <div class="modal" id="searchModal" aria-hidden="true">
+    <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
   <script src="/app.js"></script>
