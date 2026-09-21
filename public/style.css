@@ -33,3 +33,11 @@
 @media(max-width:460px){.wide-stats{grid-template-columns:repeat(2,1fr)}.stat{padding:12px;gap:8px}.stat>span{width:34px;height:34px}.stat b{font-size:22px}.stat small{font-size:9px}.section-links{grid-template-columns:1fr 1fr}.panel-title p{display:none}.review-actions{grid-template-columns:1fr}.passport-grid{grid-template-columns:1fr}}
 
 @supports (padding: max(0px)){@media(max-width:820px){.main{padding-top:max(18px,calc(env(safe-area-inset-top) + 12px));padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}.modal{padding-top:max(16px,calc(env(safe-area-inset-top) + 10px));padding-bottom:max(16px,calc(env(safe-area-inset-bottom) + 10px))}.mobile-head{min-height:44px}.section-head{padding-top:2px}}}
+
+@media(max-width:820px){
+  .main{padding-top:72px!important}
+  .mobile-head{display:flex!important;position:relative;z-index:2;margin-top:0!important}
+  .section-head{padding-top:4px}
+  .version-chip{display:inline-flex}
+}
+.version-chip{align-items:center;gap:6px;padding:5px 8px;border:1px solid rgba(84,241,174,.28);background:rgba(84,241,174,.08);color:var(--green);border-radius:999px;font-size:9px;font-weight:800}
