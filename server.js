@@ -120,7 +120,7 @@ const server=http.createServer(async(req,res)=>{
         await readAppState();
         database=true;
       }catch(e){
-        return json(res,503,{ok:false,service:'Content Factory',version:'1.4.0',database:false,error:'Database connection failed',detail:String(e?.message||e),time:new Date().toISOString()});
+        return json(res,503,{ok:false,service:'Content Factory',version:'1.4.1',database:false,error:'Database connection failed',detail:String(e?.message||e),time:new Date().toISOString()});
       }
     }
     return json(res,200,{ok:true,service:'Content Factory',version:'1.4.0',database,time:new Date().toISOString()});
