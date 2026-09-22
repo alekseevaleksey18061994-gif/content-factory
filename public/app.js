@@ -10,7 +10,7 @@ const starter=[
 {id:"holder",name:"Держатель полотенец",category:"Дом и кухня",icon:"🧻",tag:"Новинка",utp:"Аккуратный вид, удобная установка, наглядная демонстрация.",rules:"Сохранять реальную конструкцию, комплект и пропорции.",masterStyle:"Премиальный интерьер"},
 {id:"curler",name:"Мини-плойка",category:"Красота и уход",icon:"〰️",tag:"Популярно",utp:"Компактность, быстрый визуальный результат, UGC-подача.",rules:"Не менять форму корпуса и органы управления.",masterStyle:"Beauty UGC"}
 ];
-let products=load("cf_products",starter),runs=load("cf_runs",[]),campaigns=load("cf_campaigns",[]),scripts=load("cf_scripts",[]),characters=load("cf_characters",[]),journal=load("cf_journal",[]),settings=load("cf_settings",{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
+let products=load("cf_products",[]),runs=load("cf_runs",[]),campaigns=load("cf_campaigns",[]),scripts=load("cf_scripts",[]),characters=load("cf_characters",[]),journal=load("cf_journal",[]),settings=load("cf_settings",{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
 let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto";
 const ST=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];
 const prod=id=>products.find(x=>x.id===id),camp=id=>campaigns.find(x=>x.id===id);
@@ -19,7 +19,54 @@ const norm=r=>r.status==="Готово"?"Готово":r.status==="На пров
 const sidx=r=>Math.max(0,ST.indexOf(norm(r)));
 const pct=r=>Number.isFinite(r.progress)?Math.max(0,Math.min(100,r.progress)):Math.round(sidx(r)/(ST.length-1)*100);
 const scl=s=>s==="Готово"||s==="Запланировано"||s==="Опубликовано"?"done":s==="На проверке"?"review":s==="Ошибка"?"error":s==="В работе"?"work":"wait";
-function persist(){save("cf_products",products);save("cf_runs",runs);save("cf_campaigns",campaigns);save("cf_scripts",scripts);save("cf_characters",characters);save("cf_journal",journal.slice(-500));save("cf_settings",settings);renderAll()}
+function saveLocalState(){
+  save("cf_products",products);
+  save("cf_runs",runs);
+  save("cf_campaigns",campaigns);
+  save("cf_scripts",scripts);
+  save("cf_characters",characters);
+  save("cf_journal",journal.slice(-500));
+  save("cf_settings",settings);
+}
+function stateSnapshot(){
+  return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),settings};
+}
+let syncTimer=null;
+async function pushState(){
+  try{
+    await fetch("/api/state",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({data:stateSnapshot()})});
+  }catch{}
+}
+async function syncFromServer(){
+  try{
+    const r=await fetch("/api/state",{cache:"no-store"});
+    if(!r.ok)return;
+    const payload=await r.json();
+    const data=payload?.data;
+    if(data&&typeof data==="object"){
+      products=Array.isArray(data.products)?data.products:[];
+      runs=Array.isArray(data.runs)?data.runs:[];
+      campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
+      scripts=Array.isArray(data.scripts)?data.scripts:[];
+      characters=Array.isArray(data.characters)?data.characters:[];
+      journal=Array.isArray(data.journal)?data.journal:[];
+      settings=data.settings&&typeof data.settings==="object"?data.settings:settings;
+      selectedProductId=products.find(x=>x.id===selectedProductId)?.id||products[0]?.id||null;
+      selectedRunId=runs.find(x=>x.id===selectedRunId)?.id||runs.at(-1)?.id||null;
+      createMode=settings.mode||"auto";
+      saveLocalState();
+      renderAll();
+    }else{
+      await pushState();
+    }
+  }catch{}
+}
+function persist(){
+  saveLocalState();
+  renderAll();
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(pushState,180);
+}
 function log(t,d="",type="ok"){journal.push({id:uid("j"),time:now(),title:t,detail:d,type});save("cf_journal",journal.slice(-500))}
 function go(id){$$(".page").forEach(x=>x.classList.toggle("active",x.id===id));$$(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));if(id==="profile")renderConnections();scrollTo({top:0,behavior:"smooth"})}
 window.go=go;$$("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));
@@ -98,11 +145,11 @@ function renderAnalytics(){const p=runs.filter(r=>r.status==="Опубликов
 function renderCosts(){const t=runs.reduce((s,r)=>s+(Number(r.cost)||0),0),c=runs.filter(r=>Number(r.cost)>0).length,a=c?Math.round(t/c):0,re=runs.reduce((s,r)=>s+Math.max(0,(r.attempt||1)-1),0);$("#costStats").innerHTML=stat("₽","Всего",t+" ₽")+stat("▥","Средний ролик",a+" ₽","blue")+stat("↻","Повторных попыток",re,"warn")+stat("◉","Лимит кампании",(settings.budgetCampaign||5000)+" ₽","purple");$("#budgetCampaign").value=settings.budgetCampaign||5000;$("#budgetAttempts").value=settings.budgetAttempts||3;$("#budgetApproval").value=settings.budgetApproval||100;$("#costRows").innerHTML=runs.filter(r=>r.cost).reverse().slice(0,20).map(r=>'<div class="library-item"><div><h3>'+esc(pname(r))+'</h3><p>'+esc(norm(r))+" · "+esc(r.modelMode||"Авто")+'</p></div><b>'+r.cost+' ₽</b></div>').join("")||'<div class="empty">Расходы появятся после реальных генераций.</div>'}
 $("#saveBudget").onclick=()=>{settings.budgetCampaign=Number($("#budgetCampaign").value)||5000;settings.budgetAttempts=Number($("#budgetAttempts").value)||3;settings.budgetApproval=Number($("#budgetApproval").value)||100;log("Обновлены бюджетные лимиты","Кампания: "+settings.budgetCampaign+" ₽");persist()};
 function renderJournal(){$("#journalList").innerHTML=journal.length?journal.slice().reverse().map(j=>'<div class="journal-row '+(j.type==="error"?"error":"")+'"><span class="journal-time">'+esc(j.time)+'</span><span class="journal-dot"></span><span><b>'+esc(j.title)+'</b><small>'+esc(j.detail||"")+'</small></span></div>').join(""):'<div class="empty">Журнал пока пуст.</div>'}
-async function renderConnections(){let s={services:{}};try{s=await (await fetch("/api/status")).json()}catch{}const R=[["n8n — сервер",s.services?.n8nServer,"Оркестрация"],["n8n — рабочий процесс",s.services?.n8nWorkflow,"Полный конвейер"],["Higgsfield",s.services?.higgsfield,"Сцены и персонажи"],["Runway",s.services?.runway,"Генерация и обработка"],["Descript",s.services?.descript,"Монтаж"],["Google Drive",s.services?.drive,"Хранение"]];$("#connections").innerHTML=R.map(x=>'<div class="conn"><div class="conn-left"><span class="dot '+(x[1]?"on":"")+'"></span><span><b>'+x[0]+'</b><small>'+x[2]+'</small></span></div><span class="status '+(x[1]?"done":"wait")+'">'+(x[1]?"Подключено":"Ожидает")+'</span></div>').join("");$$(".mode-card[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===settings.mode))}
+async function renderConnections(){let s={services:{}};try{s=await (await fetch("/api/status")).json()}catch{}const R=[["Серверная база",s.services?.database,"Постоянное хранение товаров и настроек"],["n8n — сервер",s.services?.n8nServer,"Оркестрация"],["n8n — рабочий процесс",s.services?.n8nWorkflow,"Полный конвейер"],["Higgsfield",s.services?.higgsfield,"Сцены и персонажи"],["Runway",s.services?.runway,"Генерация и обработка"],["Descript",s.services?.descript,"Монтаж"],["Google Drive",s.services?.drive,"Хранение"]];$("#connections").innerHTML=R.map(x=>'<div class="conn"><div class="conn-left"><span class="dot '+(x[1]?"on":"")+'"></span><span><b>'+x[0]+'</b><small>'+x[2]+'</small></span></div><span class="status '+(x[1]?"done":"wait")+'">'+(x[1]?"Подключено":"Ожидает")+'</span></div>').join("");$$(".mode-card[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===settings.mode))}
 $$(".mode-card[data-mode]").forEach(b=>b.onclick=()=>{settings.mode=b.dataset.mode;createMode=settings.mode;log("Изменён режим производства",settings.mode==="auto"?"Автопилот":"Ручной контроль");persist()});$$(".mode-card[data-create-mode]").forEach(b=>b.onclick=()=>{$$(".mode-card[data-create-mode]").forEach(x=>x.classList.remove("active"));b.classList.add("active");createMode=b.dataset.createMode});
 function renderSearch(q=""){const z=q.trim().toLowerCase(),I=[...products.map(x=>({t:"Товар",n:x.name,s:x.category,a:"openProduct('"+x.id+"')"})),...runs.map(x=>({t:"Ролик",n:pname(x),s:norm(x)+" · "+(x.style||""),a:"openRun('"+x.id+"')"})),...campaigns.map(x=>({t:"Кампания",n:x.name,s:prod(x.productId)?.name||"",a:"go('campaigns')"})),...scripts.map(x=>({t:"Сценарий",n:x.title,s:x.hook||"",a:"go('scripts')"})),...characters.map(x=>({t:"Персонаж",n:x.name,s:x.look||"",a:"go('characters')"}))].filter(x=>!z||(x.n+" "+x.s+" "+x.t).toLowerCase().includes(z)).slice(0,30);$("#searchResults").innerHTML=I.length?I.map(x=>'<button class="search-result" onclick="closeModal(\'searchModal\');'+x.a+'"><b>'+esc(x.n)+'</b><small>'+x.t+" · "+esc(x.s)+'</small></button>').join(""):'<div class="empty">Ничего не найдено.</div>'}
 $("#openSearch").onclick=()=>{openM("searchModal");setTimeout(()=>$("#searchInput").focus(),50);renderSearch("")};$("#searchInput").oninput=e=>renderSearch(e.target.value);document.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();openM("searchModal");$("#searchInput").focus()}});
 async function api(payload){try{const r=await fetch("/api/start",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});return{ok:r.ok,body:await r.json().catch(()=>({}))}}catch(e){return{ok:false,body:{error:String(e)}}}}
 $("#launch").onclick=async()=>{if(!products.length)return alert("Сначала добавь товар.");const platforms=$$("[data-p]:checked").map(x=>x.dataset.p),n=Math.max(1,parseInt($("#count").value)||1),base={batchId:uid("batch"),productId:$("#productSelect").value,productName:prod($("#productSelect").value)?.name||"Товар",campaignId:$("#campaignSelect").value||null,characterId:$("#characterSelect").value||null,brief:$("#brief").value.trim(),style:$("#style").value,duration:$("#duration").value,count:$("#count").value,format:$("#format").value,platforms,mode:createMode,modelMode:$("#modelMode").value,budget:Number($("#runBudget").value)||500,maxAttempts:Number($("#runAttempts").value)||3,created:now()};$("#launch").disabled=true;$("#launchMsg").textContent="Запускаю производство…";const res=await api({action:"create_batch",...base}),arr=[];for(let i=1;i<=n;i++)arr.push({id:uid("r"),...base,variant:n>1?i:null,status:"В работе",stage:"Сценарий",progress:8,attempt:1,sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[]});runs.push(...arr);selectedRunId=arr[0]?.id;log("Запущено производство",base.productName+" · "+n+" роликов · "+(base.mode==="manual"?"ручной режим":"автопилот"));persist();$("#launchMsg").textContent=res.ok?"Передано в n8n. Все этапы видны в «Производстве».":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";$("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)};
 function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderConnections()}
-if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});renderAll();
+if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});renderAll();syncFromServer();
