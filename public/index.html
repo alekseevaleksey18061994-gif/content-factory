@@ -7,8 +7,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
-  <link rel="manifest" href="/manifest.webmanifest?v=12" />
-  <link rel="stylesheet" href="/style.css?v=12" />
+  <link rel="manifest" href="/manifest.webmanifest?v=13" />
+  <link rel="stylesheet" href="/style.css?v=13" />
 </head>
 <body>
   <div class="shell">
@@ -220,7 +220,7 @@
   </div>
 
   <div class="modal" id="productModal" aria-hidden="true">
-    <div class="modal-card small"><button class="close" data-close="productModal">×</button><span class="kicker">НОВЫЙ ТОВАР</span><h2>Добавить товар</h2><label>Название<input id="newProductName" placeholder="Например: Корейская мочалка" /></label><label>Категория<input id="newProductCategory" placeholder="Красота и уход" /></label><label>Ключевые преимущества<textarea id="newProductUtp" placeholder="Что важно показать в роликах"></textarea></label><label>Что нельзя менять<textarea id="newProductRules" placeholder="Форма, цвет, логотип, способ использования…"></textarea></label><button class="btn primary full" id="saveProduct">Сохранить товар</button></div>
+    <div class="modal-card small"><button class="close" data-close="productModal">×</button><span class="kicker">НОВЫЙ ТОВАР</span><h2>Добавить товар</h2><label>Название<input id="newProductName" placeholder="Например: Корейская мочалка" /></label><label>Категория<input id="newProductCategory" placeholder="Красота и уход" /></label><label>Ключевые преимущества<textarea id="newProductUtp" placeholder="Что важно показать в роликах"></textarea></label><label>Что нельзя менять<textarea id="newProductRules" placeholder="Форма, цвет, логотип, способ использования…"></textarea></label><label>Фото товара<input id="newProductImages" type="file" accept="image/*" multiple /></label><div class="message" id="newProductImagesHint">Можно выбрать сразу несколько фото. Первое станет главным.</div><button class="btn primary full" id="saveProduct">Сохранить товар</button><div class="message" id="saveProductMsg"></div></div>
   </div>
 
   <div class="modal" id="campaignModal" aria-hidden="true">
@@ -244,6 +244,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=12"></script>
+  <script src="/app.js?v=13"></script>
 </body>
 </html>
