@@ -46,46 +46,45 @@ const supabaseConfigured = () =>
     process.env.CONTENT_FACTORY_DB_SECRET
   );
 
-function supabaseHeaders(){
+function supabaseHeaders(extra={}){
   return {
     apikey:process.env.SUPABASE_PUBLISHABLE_KEY,
-    'content-type':'application/json'
+    'x-app-api-key':process.env.CONTENT_FACTORY_DB_SECRET,
+    'content-type':'application/json',
+    ...extra
   };
-}
-
-async function callSupabaseRpc(name, payload){
-  const base=process.env.SUPABASE_URL.replace(/\/$/,'');
-  const r=await fetch(`${base}/rest/v1/rpc/${name}`,{
-    method:'POST',
-    headers:supabaseHeaders(),
-    body:JSON.stringify(payload)
-  });
-  if(!r.ok){
-    const detail=await r.text();
-    throw new Error(`Supabase RPC ${name} failed: ${r.status} ${detail}`);
-  }
-  const text=await r.text();
-  return text ? JSON.parse(text) : null;
 }
 
 async function readAppState(){
   if(!supabaseConfigured()) return {configured:false,data:null};
-  const result=await callSupabaseRpc('cf_get_state',{
-    p_secret:process.env.CONTENT_FACTORY_DB_SECRET
+  const base=process.env.SUPABASE_URL.replace(/\/$/,'');
+  const r=await fetch(`${base}/rest/v1/app_state?id=eq.main&select=data,updated_at&limit=1`,{
+    headers:supabaseHeaders()
   });
+  if(!r.ok){
+    const detail=await r.text();
+    throw new Error(`Supabase read failed: ${r.status} ${detail}`);
+  }
+  const rows=await r.json();
   return {
     configured:true,
-    data:result?.data ?? null,
-    updatedAt:result?.updated_at ?? null
+    data:rows?.[0]?.data ?? null,
+    updatedAt:rows?.[0]?.updated_at ?? null
   };
 }
 
 async function writeAppState(data){
   if(!supabaseConfigured()) return {configured:false};
-  await callSupabaseRpc('cf_set_state',{
-    p_secret:process.env.CONTENT_FACTORY_DB_SECRET,
-    p_data:data
+  const base=process.env.SUPABASE_URL.replace(/\/$/,'');
+  const r=await fetch(`${base}/rest/v1/app_state?on_conflict=id`,{
+    method:'POST',
+    headers:supabaseHeaders({'prefer':'resolution=merge-duplicates,return=minimal'}),
+    body:JSON.stringify([{id:'main',data,updated_at:new Date().toISOString()}])
   });
+  if(!r.ok){
+    const detail=await r.text();
+    throw new Error(`Supabase write failed: ${r.status} ${detail}`);
+  }
   return {configured:true};
 }
 
