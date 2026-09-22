@@ -88,6 +88,28 @@ async function writeAppState(data){
   return {configured:true};
 }
 
+async function callProductMedia(payload){
+  if(!process.env.SUPABASE_URL || !process.env.CONTENT_FACTORY_DB_SECRET){
+    throw new Error('Media storage is not configured');
+  }
+  const base=process.env.SUPABASE_URL.replace(/\/$/,'');
+  const r=await fetch(`${base}/functions/v1/product-media`,{
+    method:'POST',
+    headers:{
+      'content-type':'application/json',
+      'x-app-api-key':process.env.CONTENT_FACTORY_DB_SECRET
+    },
+    body:JSON.stringify(payload)
+  });
+  const text=await r.text();
+  let data;
+  try{ data=text?JSON.parse(text):{}; }catch{ data={detail:text}; }
+  if(!r.ok || data?.ok===false){
+    throw new Error(data?.detail || data?.error || `Media request failed: ${r.status}`);
+  }
+  return data;
+}
+
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
 
@@ -139,6 +161,32 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,configured:true,savedAt:new Date().toISOString()});
     }catch(e){
       return json(res,502,{ok:false,configured:true,error:'Не удалось сохранить серверное состояние.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/media/upload' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const data=await callProductMedia({
+        action:'upload',
+        productId:body.productId,
+        fileName:body.fileName,
+        mimeType:body.mimeType,
+        dataBase64:body.dataBase64
+      });
+      return json(res,200,data);
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось загрузить фото.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/media/delete' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const data=await callProductMedia({action:'delete',path:body.path});
+      return json(res,200,data);
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось удалить фото.',detail:String(e?.message||e)});
     }
   }
 
