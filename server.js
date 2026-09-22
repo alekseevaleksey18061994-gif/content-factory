@@ -47,8 +47,10 @@ const supabaseConfigured = () =>
   );
 
 function supabaseHeaders(extra={}){
+  const key=process.env.SUPABASE_PUBLISHABLE_KEY;
   return {
-    apikey:process.env.SUPABASE_PUBLISHABLE_KEY,
+    apikey:key,
+    authorization:`Bearer ${key}`,
     'x-app-api-key':process.env.CONTENT_FACTORY_DB_SECRET,
     'content-type':'application/json',
     ...extra
@@ -115,15 +117,16 @@ const server=http.createServer(async(req,res)=>{
 
   if((url.pathname==='/health'||url.pathname==='/api/health') && req.method==='GET'){
     let database=false;
+    let databaseError=null;
     if(supabaseConfigured()){
       try{
         await readAppState();
         database=true;
       }catch(e){
-        return json(res,503,{ok:false,service:'Content Factory',version:'1.4.1',database:false,error:'Database connection failed',detail:String(e?.message||e),time:new Date().toISOString()});
+        databaseError=String(e?.message||e);
       }
     }
-    return json(res,200,{ok:true,service:'Content Factory',version:'1.4.0',database,time:new Date().toISOString()});
+    return json(res,200,{ok:true,service:'Content Factory',version:'1.4.3',database,databaseError,time:new Date().toISOString()});
   }
 
   if(url.pathname==='/api/status' && req.method==='GET'){
