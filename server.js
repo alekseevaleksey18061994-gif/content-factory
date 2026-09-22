@@ -92,7 +92,16 @@ const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
 
   if((url.pathname==='/health'||url.pathname==='/api/health') && req.method==='GET'){
-    return json(res,200,{ok:true,service:'Content Factory',version:'1.4.0',time:new Date().toISOString()});
+    let database=false;
+    if(supabaseConfigured()){
+      try{
+        await readAppState();
+        database=true;
+      }catch(e){
+        return json(res,503,{ok:false,service:'Content Factory',version:'1.4.0',database:false,error:'Database connection failed',detail:String(e?.message||e),time:new Date().toISOString()});
+      }
+    }
+    return json(res,200,{ok:true,service:'Content Factory',version:'1.4.0',database,time:new Date().toISOString()});
   }
 
   if(url.pathname==='/api/status' && req.method==='GET'){
