@@ -1,0 +1,151 @@
+{
+  "name": "Content Factory — приём задания и Google Drive",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content-factory-run",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9f5e3ff2-49d9-4b26-89c2-8bcd3ec0fa01",
+      "name": "Запуск Content Factory",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -460,
+        0
+      ],
+      "webhookId": "content-factory-run"
+    },
+    {
+      "parameters": {
+        "jsCode": "const incoming = $json.body ?? $json;\nconst jobId = incoming.jobId || ('cf-' + Date.now());\nconst product = incoming.product || incoming.productName || {};\nconst productName = typeof product === 'string'\n  ? product\n  : (product.name || incoming.productName || 'Товар');\n\nconst job = {\n  jobId,\n  receivedAt: new Date().toISOString(),\n  action: incoming.action || 'create_content',\n  productId: incoming.productId || product.id || null,\n  productName,\n  platforms: incoming.platforms || ['TikTok','Reels','Shorts'],\n  variants: incoming.variants || incoming.count || 1,\n  media: incoming.media || product.media || [],\n  payload: incoming\n};\n\nreturn [{\n  json: {\n    ...job,\n    fileName: jobId + ' — ' + productName.replace(/[\\\\/:*?\"<>|]/g,'_') + '.json',\n    fileContent: JSON.stringify(job, null, 2)\n  }\n}];"
+      },
+      "id": "34d9a176-64ab-4a90-b5da-cc4808dd5b84",
+      "name": "Подготовить задачу",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "name": "={{ $json.fileName }}",
+        "content": "={{ $json.fileContent }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive",
+          "cachedResultName": "My Drive"
+        },
+        "options": {
+          "simplifyOutput": true
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1PqHJYLzmDE9-u5QQdRaEYGMI-hcgQ1CS"
+        },
+        "operation": "createFromText"
+      },
+      "id": "c3152b0e-15fc-45db-8e32-dfb87e10a3da",
+      "name": "Сохранить задание в 01 Исходники",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        40,
+        0
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "oQr00LvvcCOjCUx7",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, jobId: $('Подготовить задачу').item.json.jobId, status: 'accepted', driveFileId: $json.id || null, driveFileName: $json.name || $('Подготовить задачу').item.json.fileName } }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "3e931726-3a5e-4b9f-9ff4-9f224ad05873",
+      "name": "Ответить Content Factory",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Content Factory — этап 1\n\nWebhook принимает задание из сайта, нормализует его, сохраняет JSON-карточку задания в Google Drive → `Content Factory / 01 Исходники`, затем возвращает `202 Accepted`.\n\nСледующий этап: добавить сценарий → storyboard → генерацию → монтаж → публикацию.",
+        "height": 260,
+        "width": 900,
+        "color": 7
+      },
+      "id": "1f8ff4ae-952d-44dd-83cd-87552d0a9262",
+      "name": "Описание",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -300
+      ]
+    }
+  ],
+  "connections": {
+    "Запуск Content Factory": {
+      "main": [
+        [
+          {
+            "node": "Подготовить задачу",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Подготовить задачу": {
+      "main": [
+        [
+          {
+            "node": "Сохранить задание в 01 Исходники",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Сохранить задание в 01 Исходники": {
+      "main": [
+        [
+          {
+            "node": "Ответить Content Factory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "saveManualExecutions": true
+  },
+  "active": false,
+  "versionId": "9cf23aaa-e7d1-4bbb-9aae-1fa19ffbd48a",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
