@@ -133,11 +133,11 @@ const server=http.createServer(async(req,res)=>{
     return json(res,200,{ok:true,services:{
       database:supabaseConfigured(),
       n8nServer:await n8nAlive(),
-      n8nWorkflow:Boolean(process.env.N8N_CONTENT_WEBHOOK || process.env.N8N_WEBHOOK_BASE),
-      higgsfield:Boolean(process.env.HIGGSFIELD_API_KEY),
-      runway:Boolean(process.env.RUNWAY_API_KEY),
-      descript:Boolean(process.env.DESCRIPT_API_KEY),
-      drive:Boolean(process.env.GOOGLE_DRIVE_CONNECTED),
+      n8nWorkflow:process.env.N8N_CONTENT_WEBHOOK_ACTIVE === 'true',
+      higgsfield:Boolean(process.env.HF_CREDENTIALS || (process.env.HIGGSFIELD_API_KEY_ID && process.env.HIGGSFIELD_API_KEY_SECRET)),
+      runway:Boolean(process.env.RUNWAYML_API_SECRET),
+      descript:Boolean(process.env.DESCRIPT_API_TOKEN),
+      drive:process.env.GOOGLE_DRIVE_CONNECTED === 'true',
     }});
   }
 
