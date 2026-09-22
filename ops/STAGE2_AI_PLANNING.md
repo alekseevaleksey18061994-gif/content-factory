@@ -20,3 +20,6 @@ Status: draft, isolated from production.
 ## Safety
 The production workflow public/content-factory-workflow.json is intentionally unchanged.
 Do not replace N8N_CONTENT_WEBHOOK until the new workflow passes an end-to-end test.
+
+## Output reliability
+The OpenAI node now uses Responses API Structured Outputs with strict JSON Schema. This removes the fragile free-form JSON dependency before the normalization step.
