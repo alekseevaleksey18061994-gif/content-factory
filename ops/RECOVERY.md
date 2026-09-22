@@ -44,3 +44,33 @@ Updated: 2026-09-22
 
 ## Current verification
 On 2026-09-22 a full request through Content Factory -> n8n -> Google Drive returned HTTP 202 and created a task file in 01 Исходники.
+
+
+## 2026-09-22 persistent n8n preparation
+A dedicated PostgreSQL schema named `n8n` has been created in the existing Supabase project `qpmbjdtvhgynzwnrrfcu`.
+
+Database host:
+- `db.qpmbjdtvhgynzwnrrfcu.supabase.co`
+- database: `postgres`
+- schema: `n8n`
+- region: `eu-central-1`
+
+This is preparation only. The current production n8n has NOT been switched and remains the fallback.
+
+Safe migration target variables for a future second n8n instance:
+- `DB_TYPE=postgresdb`
+- `DB_POSTGRESDB_DATABASE=postgres`
+- `DB_POSTGRESDB_HOST=db.qpmbjdtvhgynzwnrrfcu.supabase.co`
+- `DB_POSTGRESDB_PORT=5432`
+- `DB_POSTGRESDB_USER=postgres`
+- `DB_POSTGRESDB_PASSWORD=<set securely in Railway, never commit>`
+- `DB_POSTGRESDB_SCHEMA=n8n`
+
+Before switching production:
+1. Start a second n8n instance against this schema.
+2. Restore/use the same N8N_ENCRYPTION_KEY where applicable.
+3. Import `public/content-factory-workflow.json`.
+4. Reconnect Google Drive credential securely.
+5. Publish and verify the new webhook.
+6. Test Content Factory -> new n8n -> Google Drive.
+7. Only after success, change `N8N_CONTENT_WEBHOOK` in Content Factory.
