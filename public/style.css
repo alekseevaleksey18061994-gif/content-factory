@@ -233,3 +233,34 @@ input:focus,select:focus,textarea:focus{
   border-color:#63c79a;
   box-shadow:0 0 0 3px rgba(83,240,174,.08);
 }
+
+/* v13: product media library */
+.product-thumb.has-image{padding:0;overflow:hidden;background:#0d1411}
+.product-thumb.has-image img{width:100%;height:100%;object-fit:cover;display:block}
+.catalog-card>.product-thumb.has-image{display:block;width:100%}
+.media-toolbar{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:12px}
+.media-toolbar>div{display:flex;flex-direction:column;gap:3px}
+.media-toolbar b{font-size:13px}
+.media-toolbar small{font-size:10px;color:var(--muted)}
+.media-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:13px}
+.media-card{border:1px solid var(--line);background:#101813;border-radius:14px;padding:8px;min-width:0}
+.media-card.primary-media{border-color:rgba(83,240,174,.55);box-shadow:0 0 0 1px rgba(83,240,174,.08)}
+.media-image{position:relative;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:#0a100d}
+.media-image img{width:100%;height:100%;object-fit:cover;display:block}
+.media-primary-badge{position:absolute;left:7px;top:7px;padding:4px 7px;border-radius:999px;background:rgba(8,20,14,.9);border:1px solid rgba(83,240,174,.45);color:var(--green);font-size:8px;font-weight:900}
+.media-file{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:8px 2px 6px}
+.media-actions{display:flex;gap:6px;align-items:center}
+.media-actions .tiny-btn{flex:1}
+.danger-mini{color:#ff9ca1!important;border-color:#4a272b!important}
+.tiny-ok{display:flex;align-items:center;justify-content:center;flex:1;font-size:9px;color:var(--green)}
+.media-empty{min-height:180px;border:1px dashed #3c5147;border-radius:15px;background:#0e1712;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:7px}
+.media-empty>span{font-size:28px;color:var(--green)}
+.media-empty b{font-size:13px}
+.media-empty small{color:var(--muted);font-size:10px;max-width:320px}
+.media-empty button{margin-top:5px}
+input[type="file"]{padding:9px}
+@media(max-width:820px){
+  .media-toolbar{align-items:flex-start;flex-direction:column}
+  .media-toolbar .btn{width:100%}
+  .media-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
