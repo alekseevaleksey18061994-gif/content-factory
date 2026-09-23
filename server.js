@@ -437,8 +437,248 @@ async function dispatchFactoryStart(payload){
       results.generation={ok:false,status:0,error:String(e?.message||e)};
     }
   }
-  const primaryOk=results.archive ? results.archive.ok : Boolean(results.generation?.ok);
+  const branches=[results.archive,results.generation].filter(Boolean);
+  const primaryOk=branches.length>0 && branches.every(x=>x.ok);
   return {ok:primaryOk,data:results};
+}
+
+function planSceneDefaults(i,count=5){
+  const n=i+1;
+  const titles=['Хук','Проблема','Демонстрация','Результат','CTA'];
+  return {scene:n,title:titles[i]||('Сцена '+n),duration:'5–6 сек',shot:'Крупный план товара',action:'Показать товар и действие',voiceover:'',onscreen:'',prompt:''};
+}
+function normalizeRunPlan(raw,payload={}){
+  const plan=raw&&typeof raw==='object'?raw:{};
+  const idea=plan.idea&&typeof plan.idea==='object'?plan.idea:{};
+  const script=plan.script&&typeof plan.script==='object'?plan.script:{};
+  let storyboard=Array.isArray(plan.storyboard)?plan.storyboard:[];
+  const targetCount=Math.max(3,Math.min(8,Number(plan.sceneCount)||Number(payload.sceneCount)||5));
+  storyboard=storyboard.slice(0,targetCount).map((x,i)=>({
+    ...planSceneDefaults(i,targetCount),
+    ...(x&&typeof x==='object'?x:{}),
+    scene:i+1
+  }));
+  while(storyboard.length<targetCount)storyboard.push(planSceneDefaults(storyboard.length,targetCount));
+  const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(Boolean).slice(0,6);
+  const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(Boolean).slice(0,6);
+  const references=plan.references&&typeof plan.references==='object'?plan.references:{};
+  return {
+    idea:{
+      title:String(idea.title||payload.productName||'Идея ролика').slice(0,240),
+      concept:String(idea.concept||idea.summary||payload.brief||'Демонстрация товара через проблему и решение').slice(0,5000),
+      hook:String(idea.hook||script.hook||'').slice(0,2000),
+      angle:String(idea.angle||'').slice(0,2000),
+      why:String(idea.why||idea.whyWorks||'').slice(0,4000)
+    },
+    script:{
+      hook:String(script.hook||idea.hook||'').slice(0,4000),
+      body:String(script.body||script.voiceover||'').slice(0,12000),
+      cta:String(script.cta||'').slice(0,3000),
+      voiceover:String(script.voiceover||script.body||'').slice(0,12000)
+    },
+    storyboard,
+    references:{
+      product:Array.isArray(references.product)?references.product.filter(Boolean).slice(0,8):productRefs,
+      avatar:Array.isArray(references.avatar)?references.avatar.filter(Boolean).slice(0,8):avatarRefs,
+      style:String(references.style||payload.style||'').slice(0,2000),
+      notes:String(references.notes||'Сохранять реальный товар и внешность выбранного AI-аватара.').slice(0,4000)
+    }
+  };
+}
+async function buildRunPlan(payload,accountId,variant=1,feedback=''){
+  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const duration=String(payload.duration||'30 сек');
+  const refs=[
+    ...(payload.media||payload.product?.media||[]).map(x=>x?.url),
+    ...(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url)
+  ].filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,4);
+  const prompt=[
+    'Ты продюсер коротких рекламных Reels/TikTok/Shorts. Создай производственный план ролика.',
+    'Нужен НОВЫЙ оригинальный ролик, не копирующий чужие тексты или брендинг.',
+    'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
+    'УТП: '+String(payload.productUtp||payload.product?.utp||''),
+    'Ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
+    'AI-аватар: '+String(payload.character?.name||'без аватара'),
+    'Внешность/locks: '+String(payload.character?.look||'')+' '+String(payload.character?.locks||''),
+    'Стиль: '+String(payload.style||'UGC'),
+    'Длительность: '+duration,
+    'Бриф пользователя: '+String(payload.brief||''),
+    'Вариант: '+variant,
+    feedback?('Комментарий к переделке: '+feedback):'',
+    'Верни ТОЛЬКО JSON без markdown. Структура:',
+    '{"idea":{"title":"","concept":"","hook":"","angle":"","why":""},"script":{"hook":"","body":"","cta":"","voiceover":""},"sceneCount":5,"storyboard":[{"scene":1,"title":"Хук","duration":"0–5 сек","shot":"","action":"","voiceover":"","onscreen":"","prompt":""}],"references":{"product":[],"avatar":[],"style":"","notes":""}}',
+    'Storyboard должен покрывать весь ролик, 5 сцен по смыслу: хук → проблема → демонстрация → результат → CTA.',
+    'Каждый prompt — готовый подробный промт для генерации вертикальной сцены 9:16. Товар всегда должен оставаться узнаваемым и соответствовать референсам.'
+  ].filter(Boolean).join('\n');
+  const input=[{role:'user',content:[
+    {type:'input_text',text:prompt},
+    ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
+  ]}];
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({model,input,reasoning:{effort:'low'},max_output_tokens:3500})
+  });
+  const txt=await r.text();
+  let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
+  if(!r.ok)throw new Error(data?.error?.message||('OpenAI planning error '+r.status));
+  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{
+    provider:'OpenAI',category:'planning',description:'Идея + сценарий + storyboard',
+    amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
+  }).catch(()=>{});
+  return normalizeRunPlan(safeAnalysisJson(openAIText(data)),payload);
+}
+function findRunById(data,runId){
+  return (Array.isArray(data?.runs)?data.runs:[]).find(r=>r?.id===runId)||null;
+}
+async function saveRunPatch(accountId,runId,patch={}){
+  const state=await readAppState(accountId);
+  const data=state?.data||blankFactoryState();
+  data.runs=Array.isArray(data.runs)?data.runs:[];
+  const run=findRunById(data,runId);
+  if(!run)throw new Error('Ролик не найден');
+  Object.assign(run,patch,{updatedAt:new Date().toISOString()});
+  await writeAppState(data,accountId);
+  return run;
+}
+async function dispatchExistingRun(accountId,run){
+  const payload={...run,action:'create_batch',accountId,batchId:run.batchId,runId:run.id,runIds:[run.id]};
+  const dispatched=await dispatchFactoryStart(payload);
+  const state=await readAppState(accountId);
+  const data=state?.data||blankFactoryState();
+  const current=findRunById(data,run.id);
+  if(current){
+    current.workflow={
+      sentAt:new Date().toISOString(),
+      archiveStatus:dispatched.data?.archive?.status||0,
+      generationStatus:dispatched.data?.generation?.status||0,
+      ok:!!dispatched.ok
+    };
+    if(!dispatched.ok){
+      current.status='Ошибка';
+      current.error='Не удалось передать задачу в workflow';
+    }
+    current.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+  }
+  return dispatched;
+}
+async function createBatchRuns(payload,accountId){
+  const state=await readAppState(accountId);
+  const data=state?.data||blankFactoryState();
+  data.runs=Array.isArray(data.runs)?data.runs:[];
+  data.scripts=Array.isArray(data.scripts)?data.scripts:[];
+  const product=findProductInState(data,payload.productId||payload.productName);
+  if(!product)throw new Error('Товар не найден');
+  const count=Math.max(1,Math.min(20,parseInt(payload.count)||1));
+  const batchId=String(payload.batchId||factoryId('batch'));
+  const created=[];
+  for(let i=1;i<=count;i++){
+    const run={
+      id:factoryId('r'),
+      ...payload,
+      accountId,batchId,productId:product.id,productName:product.name,
+      variant:count>1?i:null,status:'В работе',stage:'Идея',progress:3,attempt:1,
+      sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[],
+      idea:null,script:null,storyboard:[],references:null,generationResult:null,
+      created:payload.created||new Date().toISOString(),updatedAt:new Date().toISOString()
+    };
+    data.runs.push(run);created.push(run);
+  }
+  appendFactoryJournal(data,'Создан запуск',product.name+' · '+count+' ролик(а/ов)');
+  await writeAppState(data,accountId);
+
+  for(const run of created){
+    try{
+      const plan=await buildRunPlan(run,accountId,run.variant||1);
+      const fresh=await readAppState(accountId);
+      const fd=fresh?.data||blankFactoryState();
+      const rr=findRunById(fd,run.id);
+      if(!rr)continue;
+      rr.idea=plan.idea;rr.script=plan.script;rr.storyboard=plan.storyboard;rr.references=plan.references;
+      rr.sceneCount=plan.storyboard.length;rr.stage='Референсы';rr.progress=32;rr.updatedAt=new Date().toISOString();
+      fd.scripts=Array.isArray(fd.scripts)?fd.scripts:[];
+      fd.scripts.push({id:factoryId('s'),runId:rr.id,title:plan.idea.title,hook:plan.script.hook,body:plan.script.body,cta:plan.script.cta,used:1,created:new Date().toISOString()});
+      appendFactoryJournal(fd,'Подготовлен производственный план',product.name+' · идея, сценарий, storyboard и референсы');
+      await writeAppState(fd,accountId);
+      Object.assign(run,rr);
+    }catch(e){
+      await saveRunPatch(accountId,run.id,{status:'Ошибка',stage:'Идея',error:'Ошибка подготовки: '+String(e?.message||e)});
+      continue;
+    }
+    if(run.mode==='manual'){
+      await saveRunPatch(accountId,run.id,{status:'На проверке',stage:'Референсы',progress:32,awaitingApproval:true});
+    }else{
+      await saveRunPatch(accountId,run.id,{status:'В работе',stage:'Генерация',progress:38,awaitingApproval:false});
+      await dispatchExistingRun(accountId,run);
+    }
+  }
+  const final=await readAppState(accountId);
+  return {batchId,runs:(final?.data?.runs||[]).filter(r=>r.batchId===batchId)};
+}
+async function createIdeaDraft(body,accountId){
+  const state=await readAppState(accountId);
+  const data=state?.data||blankFactoryState();
+  const product=findProductInState(data,body.productId||body.product);
+  if(!product)throw new Error('Товар не найден');
+  const payload={
+    accountId,productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',
+    media:(product.media||[]),product:{id:product.id,name:product.name,utp:product.utp||'',rules:product.rules||'',media:(product.media||[])},
+    brief:String(body.brief||''),style:String(body.style||'UGC'),duration:String(body.duration||'30 сек'),
+    format:'9:16',mode:'manual',modelMode:'Авто — умный выбор',budget:Number(body.budget)||500,maxAttempts:3,
+    created:new Date().toISOString()
+  };
+  const plan=await buildRunPlan(payload,accountId,1);
+  const fresh=await readAppState(accountId);
+  const fd=fresh?.data||blankFactoryState();fd.runs=Array.isArray(fd.runs)?fd.runs:[];
+  const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),status:'Черновик',stage:'Идея',progress:8,attempt:0,
+    idea:plan.idea,script:plan.script,storyboard:plan.storyboard,references:plan.references,sceneCount:plan.storyboard.length,
+    sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[],generationResult:null,updatedAt:new Date().toISOString()};
+  fd.runs.push(run);appendFactoryJournal(fd,'Создана идея',product.name+' · '+plan.idea.title);await writeAppState(fd,accountId);
+  return run;
+}
+async function runControlAction(body,accountId){
+  const runId=String(body?.runId||'');
+  const action=String(body?.action||'');
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run)throw new Error('Ролик не найден');
+  if(action==='stop'){
+    run.status='Остановлено';run.paused=true;run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Производство остановлено',run.productName||run.id);await writeAppState(data,accountId);return run;
+  }
+  if(action==='start'||action==='resume'){
+    run.paused=false;run.status='В работе';
+    if(!run.idea||!run.script||!Array.isArray(run.storyboard)||!run.storyboard.length){
+      run.stage='Идея';run.progress=5;await writeAppState(data,accountId);
+      const plan=await buildRunPlan(run,accountId,run.variant||1,String(body?.note||''));
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.idea=plan.idea;run.script=plan.script;run.storyboard=plan.storyboard;run.references=plan.references;run.sceneCount=plan.storyboard.length;
+    }
+    run.stage='Генерация';run.progress=Math.max(Number(run.progress)||0,38);run.status='В работе';run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    await dispatchExistingRun(accountId,run);
+    return (await readAppState(accountId)).data.runs.find(r=>r.id===runId);
+  }
+  if(action==='regenerate'){
+    const stage=String(body?.stage||'Идея');
+    if(stage==='Генерация'){
+      run.status='В работе';run.stage='Генерация';run.progress=Math.max(38,Number(run.progress)||0);run.attempt=(Number(run.attempt)||0)+1;
+      await writeAppState(data,accountId);await dispatchExistingRun(accountId,run);
+      return (await readAppState(accountId)).data.runs.find(r=>r.id===runId);
+    }
+    const plan=await buildRunPlan(run,accountId,run.variant||1,(stage+'; '+String(body?.note||'')).trim());
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(stage==='Идея')run.idea=plan.idea;
+    else if(stage==='Сценарий')run.script=plan.script;
+    else if(stage==='Storyboard')run.storyboard=plan.storyboard;
+    else if(stage==='Референсы')run.references=plan.references;
+    else {run.idea=plan.idea;run.script=plan.script;run.storyboard=plan.storyboard;run.references=plan.references}
+    run.status='На проверке';run.stage=stage;run.progress=Math.max(8,Math.min(Number(run.progress)||8,35));run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Этап переделан',(run.productName||run.id)+' · '+stage);await writeAppState(data,accountId);return run;
+  }
+  throw new Error('Неизвестное действие');
 }
 
 const factoryTools=[
@@ -1532,7 +1772,9 @@ async function applyGenerationCallback(body){
       run.updatedAt=new Date().toISOString();
     }
   }
+  if(!matched) throw new Error('Callback не нашёл запуск batchId='+batchId);
   data.runs=runs;
+  appendFactoryJournal(data,body?.ok===false?'Ошибка генерации':'Получен результат генерации','batch '+batchId);
   await writeAppState(data,accountId);
   return {matched,accountId};
 }
@@ -2086,16 +2328,48 @@ const server=http.createServer(async(req,res)=>{
     }
   }
 
+  if(url.pathname==='/api/ideas/generate' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      const run=await createIdeaDraft(body,accountId);
+      return json(res,201,{ok:true,run});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось создать идею',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/runs/action' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!internalRequestAllowed(req) && !(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      const run=await runControlAction(body,accountId);
+      return json(res,200,{ok:true,run});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось выполнить действие',detail:String(e?.message||e)});
+    }
+  }
+
   if(url.pathname==='/api/start' && req.method==='POST'){
     try{
       const payload=await readBody(req);
       const accountId=sanitizeAccountId(payload?.accountId||DEFAULT_ACCOUNT_ID);
       if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       payload.accountId=accountId;
+      if(payload?.action==='create_batch'){
+        const result=await createBatchRuns(payload,accountId);
+        return json(res,201,{ok:true,...result});
+      }
+      if(payload?.action==='regenerate_scene'||payload?.action==='revise'){
+        const run=await runControlAction({runId:payload.runId,action:'regenerate',stage:payload?.scene?'Генерация':(payload.part||'Сценарий'),note:payload.note||''},accountId);
+        return json(res,200,{ok:true,run});
+      }
       const result=await dispatchFactoryStart(payload);
       return json(res,result.ok?202:502,result);
     }catch(e){
-      return json(res,502,{ok:false,error:'Не удалось связаться с рабочими процессами n8n.',detail:String(e?.message||e)});
+      return json(res,502,{ok:false,error:'Не удалось запустить производство.',detail:String(e?.message||e)});
     }
   }
 
