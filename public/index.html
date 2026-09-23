@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=31" />
+  <link rel="stylesheet" href="/style.css?v=32" />
 </head>
 <body>
   <div class="auth-gate" id="authGate">
@@ -50,6 +50,7 @@
           <button class="nav" data-go="scripts"><span>✎</span><b>Сценарии</b></button>
           <button class="nav" data-go="scenes"><span>▤</span><b>Сцены и медиа</b></button>
           <button class="nav" data-go="characters"><span>◉</span><b>AI-аватары и стили</b></button>
+          <button class="nav" data-go="videoLab"><span>◫</span><b>Разбор видео</b></button>
           <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
           <button class="nav" data-go="calendar"><span>▦</span><b>Календарь</b></button>
         </nav>
@@ -183,6 +184,29 @@
         <header class="section-head"><div><span class="kicker">ПОСТОЯННЫЕ ГЕРОИ</span><h1>AI-аватары и стили</h1><p>Загружай реальные фото и сохраняй постоянную внешность, голос, характер и визуальную систему</p></div><button class="btn primary" id="addCharacter">＋ Создать AI-аватара</button></header>
         <section class="panel"><div class="panel-title"><div><span class="mini-icon">◉</span><h2>AI-аватары</h2><p>Референсные фото закрепляются за героем и передаются в генерацию</p></div></div><div class="character-grid" id="characterGrid"></div></section>
         <section class="panel"><div class="panel-title"><div><span class="mini-icon">✦</span><h2>Визуальные стили</h2><p>Сохраняются отдельно от лица и голоса</p></div></div><div class="style-grid" id="styleGrid"></div></section>
+      </section>
+
+      <section class="page" id="videoLab">
+        <header class="section-head"><div><span class="kicker">КОНТЕНТ-РАЗВЕДКА</span><h1>Разбор видео</h1><p>Конкуренты и YouTube → сцены, хук, механики → новая адаптация под твой товар и AI-аватара</p></div></header>
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">◎</span><h2>Кому адаптировать</h2><p>Выбери товар и AI-аватара для нового сценария</p></div></div>
+          <div class="field-grid"><label>Товар<select id="analysisProduct"></select></label><label>AI-аватар<select id="analysisAvatar"><option value="">Без аватара</option></select></label></div>
+        </section>
+        <div class="video-lab-grid">
+          <section class="panel video-source-card">
+            <div class="panel-title"><div><span class="mini-icon">▶</span><h2>Видео конкурента</h2><p>Полный покадровый разбор загруженного файла</p></div></div>
+            <label class="video-drop">Загрузить видео<input id="competitorVideoFile" type="file" accept="video/*"></label>
+            <button class="btn primary full" id="analyzeVideoFile">Разобрать видео</button>
+            <div class="message" id="videoFileStatus"></div>
+          </section>
+          <section class="panel video-source-card">
+            <div class="panel-title"><div><span class="mini-icon">YT</span><h2>YouTube для идей</h2><p>Ссылка → публичные субтитры + обложка → идеи и сценарий</p></div></div>
+            <label>Ссылка YouTube<input id="youtubeAnalysisUrl" placeholder="https://youtube.com/watch?v=..."></label>
+            <button class="btn primary full" id="analyzeYoutube">Разобрать ссылку</button>
+            <div class="message" id="youtubeStatus"></div>
+          </section>
+        </div>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>Последние разборы</h2><p>Сохраняются отдельно в активном аккаунте</p></div></div><div id="videoAnalysisList" class="video-analysis-list"></div></section>
       </section>
 
       <section class="page" id="publish">
@@ -381,6 +405,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=31"></script>
+  <script src="/app.js?v=32"></script>
 </body>
 </html>
