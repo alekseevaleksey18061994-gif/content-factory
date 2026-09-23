@@ -845,6 +845,20 @@ async function runControlAction(body,accountId){
     run.status='Остановлено';run.paused=true;run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Производство остановлено',run.productName||run.id);await writeAppState(data,accountId);return run;
   }
+  if(action==='regenerate_scene'){
+    const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
+    run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
+    delete run.sceneResults[scene];
+    run.sceneVersions=run.sceneVersions&&typeof run.sceneVersions==='object'?run.sceneVersions:{};
+    run.sceneVersions[scene]=(Number(run.sceneVersions[scene])||1)+1;
+    run.acceptedScenes=(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).filter(x=>Number(x)!==scene);
+    run.status='В работе';run.stage='Генерация';run.paused=false;run.backendGenerationRunning=false;run.generationResult=null;run.error='';run.generationError='';
+    run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Перегенерация сцены',(run.productName||run.id)+' · сцена '+scene+' · V'+run.sceneVersions[scene]);
+    await writeAppState(data,accountId);
+    processRunGeneration(accountId,run.id).catch(e=>console.error('[regenerate-scene] '+run.id+' '+String(e?.message||e)));
+    return run;
+  }
   if(action==='accept_scene'){
     const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
     run.acceptedScenes=[...new Set([...(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]),scene])];
