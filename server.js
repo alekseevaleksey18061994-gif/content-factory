@@ -1694,7 +1694,7 @@ async function createBatchRuns(payload,accountId){
       accountId,batchId,productId:product.id,productName:product.name,
       variant:count>1?i:null,status:'В работе',stage:'Идея',progress:3,attempt:1,
       sceneCount:0,sceneVersions:{},acceptedScenes:[],
-      idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,generationResult:null,
+      pipelineVersion:'previs-v1',idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,generationResult:null,
       created:payload.created||new Date().toISOString(),updatedAt:new Date().toISOString()
     };
     data.runs.push(run);created.push(run);
@@ -1737,8 +1737,8 @@ async function createIdeaDraft(body,accountId){
   const idea=await generateIdeaStage(payload,accountId,1);
   const fresh=await readAppState(accountId);
   const fd=fresh?.data||blankFactoryState();fd.runs=Array.isArray(fd.runs)?fd.runs:[];
-  const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),status:'Черновик',stage:'Идея',progress:8,attempt:0,
-    idea,script:null,storyboard:[],references:null,sceneCount:0,
+  const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),pipelineVersion:'previs-v1',status:'Черновик',stage:'Идея',progress:8,attempt:0,
+    idea,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,sceneCount:0,
     sceneVersions:{},acceptedScenes:[],generationResult:null,updatedAt:new Date().toISOString()};
   fd.runs.push(run);appendFactoryJournal(fd,'Создана идея',product.name+' · '+idea.title);await writeAppState(fd,accountId);
   return run;
@@ -3095,13 +3095,13 @@ async function recoverPendingPrevisAndAutopilot(){
       for(const run of (data.runs||[])){
         if(!run||run.paused||run.status==='Остановлено')continue;
         const stage=String(run.stage||'');
-        if(run.mode!=='manual'&&['Идея','Сценарий','Storyboard','Превиз-кадры','Референсы'].includes(stage)&&!run.generationResult?.completed){
+        if(run.pipelineVersion==='previs-v1'&&run.mode!=='manual'&&['Идея','Сценарий','Storyboard','Превиз-кадры'].includes(stage)&&!run.generationResult?.completed){
           run.previsRunning=false;run.status='В работе';run.error='';run.updatedAt=new Date().toISOString();
           await writeAppState(data,accountId);
           enqueueAutoPipeline(accountId,run.id);
           continue;
         }
-        if(run.mode==='manual'&&['Превиз-кадры','Референсы'].includes(stage)&&!run.previsResult?.completed&&['В работе','Ошибка'].includes(run.status)){
+        if(run.pipelineVersion==='previs-v1'&&run.mode==='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&run.previsRunning===true){
           run.previsRunning=false;run.status='В работе';run.stage='Превиз-кадры';run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
           await writeAppState(data,accountId);
           enqueueRunPrevis(accountId,run.id,'previs-recovery');
