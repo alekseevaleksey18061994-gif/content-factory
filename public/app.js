@@ -83,13 +83,14 @@ function setMobileDrawer(open){
   document.body.classList.toggle("mobile-drawer-open",!!open);
   toggle?.setAttribute("aria-expanded",open?"true":"false");
 }
-function go(id){
-  $$(".page").forEach(x=>x.classList.toggle("active",x.id===id));
-  $$(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
+function go(id,options={}){
+  $(".page").forEach(x=>x.classList.toggle("active",x.id===id));
+  $(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
   setMobileDrawer(false);
   if(id==="profile")renderConnections();
   if(id==="account")renderAccounts();
-  if(id==="assistant"){refreshChatStatus();syncChatHistoryFromCloud();}
+  if(id==="costs"){renderCosts();ensureUsdRubRate();}
+  if(id==="assistant"){refreshChatStatus();if(!options.skipChatSync)syncChatHistoryFromCloud();}
   scrollTo({top:0,behavior:"smooth"});
 }
 window.go=go;
@@ -391,6 +392,25 @@ window.scheduleRun=id=>{const r=runs.find(x=>x.id===id);if(!r)return;const d=pro
 function renderCalendar(){const st=new Date();st.setHours(0,0,0,0);const D=Array.from({length:7},(_,i)=>{const d=new Date(st);d.setDate(st.getDate()+i);return d}),E=runs.filter(r=>r.scheduledAt||r.status==="Опубликовано");$("#calendarGrid").innerHTML='<div class="calendar-grid">'+D.map(d=>{const k=d.toLocaleDateString("ru-RU"),e=E.filter(r=>String(r.scheduledAt||"").startsWith(k)||r.publishedDate===k);return '<div class="day"><div class="day-head"><b>'+d.toLocaleDateString("ru-RU",{weekday:"short"})+'</b><small>'+k.slice(0,5)+'</small></div>'+(e.map(r=>'<div class="calendar-event" onclick="openRun(\''+r.id+'\')"><b>'+esc(pname(r))+'</b><small>'+esc(r.scheduledAt||"Опубликовано")+'</small></div>').join("")||'<div class="muted" style="font-size:10px">Нет публикаций</div>')+'</div>'}).join("")+'</div>'}
 $("#autoSchedule").onclick=()=>{const a=runs.filter(r=>r.status==="Готово");if(!a.length)return alert("Нет готовых роликов.");const b=new Date();a.forEach((r,i)=>{const d=new Date(b);d.setDate(b.getDate()+Math.floor(i/2)+1);d.setHours(i%2?18:12,0,0,0);r.scheduledAt=d.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"});r.status="Запланировано";r.stage="Запланировано";r.progress=96});log("Автораспределение публикаций","Запланировано: "+a.length);persist()};
 function renderAnalytics(){const p=runs.filter(r=>r.status==="Опубликовано"),views=p.reduce((s,r)=>s+(Number(r.metrics?.views)||0),0),clicks=p.reduce((s,r)=>s+(Number(r.metrics?.clicks)||0),0),sales=p.reduce((s,r)=>s+(Number(r.metrics?.sales)||0),0);$("#analyticsStats").innerHTML=stat("▶","Просмотры",views)+stat("◷","Удержание","0%","blue")+stat("↗","Переходы",clicks,"purple")+stat("₽","Продажи",sales);$("#insights").innerHTML='<div class="insight-card"><b>Система копит данные</b><p>После публикаций здесь появятся сравнения по хукам, стилям, персонажам и товарам.</p></div>';$("#trendCards").innerHTML='<div class="trend-card"><b>Тренды</b><p>Темы и форматы для следующих тестов.</p></div><div class="trend-card"><b>Конкуренты</b><p>Структуры роликов, частота публикаций и рекламные гипотезы.</p></div>'}
+let usdRubAutoLoading=false;
+async function ensureUsdRubRate(){
+  settings.costRates=settings.costRates||{};
+  if(Number(settings.costRates.usdRub)>0||usdRubAutoLoading)return;
+  usdRubAutoLoading=true;
+  try{
+    const r=await fetch("/api/fx/usd-rub",{cache:"no-store"});
+    const data=await r.json().catch(()=>({}));
+    if(r.ok&&Number(data.rate)>0){
+      settings.costRates.usdRub=Number(data.rate);
+      settings.costRates.usdRubSource=data.source||"Банк России";
+      settings.costRates.usdRubUpdatedAt=data.date||new Date().toISOString();
+      saveLocalState();
+      renderCosts();
+      clearTimeout(syncTimer);
+      syncTimer=setTimeout(pushState,100);
+    }
+  }catch{}finally{usdRubAutoLoading=false}
+}
 function expenseRubValue(e){
   const rate=Number(settings.costRates?.usdRub)||0;
   return (Number(e.amountRub)||0)+((Number(e.amountUsd)||0)*rate);
@@ -417,6 +437,7 @@ function renderCosts(){
   }).join("");
 
   $("#usdRubRate").value=settings.costRates.usdRub||"";
+  $("#usdRubRate").title=settings.costRates.usdRubSource?("Авто: "+settings.costRates.usdRubSource+(settings.costRates.usdRubUpdatedAt?" · "+settings.costRates.usdRubUpdatedAt:"")):"";
   $("#higgsfieldRate").value=settings.costRates.higgsfieldRubPerGeneration||0;
   $("#runwayRate").value=settings.costRates.runwayRubPerSecond||0;
   $("#descriptRate").value=settings.costRates.descriptRubPerAction||0;
@@ -472,6 +493,7 @@ window.deleteExpense=async id=>{
 let chatHistory=load(chatLocalKey(),[]);
 let chatDraftAttachments=[];
 let chatCloudSyncing=false;
+let chatRevision=0;
 
 async function saveCloudChatHistory(){
   try{
@@ -486,10 +508,13 @@ async function saveCloudChatHistory(){
 async function syncChatHistoryFromCloud(){
   if(chatCloudSyncing)return;
   chatCloudSyncing=true;
+  const startedRevision=chatRevision;
+  const accountAtStart=activeAccountId;
   try{
-    const r=await fetch("/api/chat/history?account="+encodeURIComponent(activeAccountId),{cache:"no-store",headers:{"x-content-account":activeAccountId}});
+    const r=await fetch("/api/chat/history?account="+encodeURIComponent(accountAtStart),{cache:"no-store",headers:{"x-content-account":accountAtStart}});
     if(!r.ok)return;
     const data=await r.json();
+    if(accountAtStart!==activeAccountId||startedRevision!==chatRevision)return;
     const local=Array.isArray(chatHistory)?chatHistory:[];
     if(data.hasCloudHistory){
       chatHistory=Array.isArray(data.history)?data.history:[];
@@ -582,9 +607,13 @@ function renderChat(){
     const attachments=(m.attachments||[]).map(a=>
       '<span class="chat-history-file">'+attachmentIcon(a)+' '+esc(a.name||"Файл")+'</span>'
     ).join("");
+    const images=(m.images||[]).filter(x=>x?.url).map(img=>
+      '<a class="chat-generated-image" href="'+esc(img.url)+'" target="_blank" rel="noopener"><img src="'+esc(img.url)+'" alt="'+esc(img.name||"AI image")+'"></a>'
+    ).join("");
     return '<div class="chat-bubble '+(m.role==="user"?"user":"assistant")+'"><b>'+(m.role==="user"?"Ты":"ChatGPT")+'</b>'+
       (m.content?'<p>'+esc(m.content)+'</p>':'')+
       (attachments?'<div class="chat-history-files">'+attachments+'</div>':'')+
+      (images?'<div class="chat-generated-images">'+images+'</div>':'')+
     '</div>';
   }).join("");
   box.scrollTop=box.scrollHeight;
@@ -609,20 +638,27 @@ async function sendChatMessage(raw,input=null){
   renderChatAttachmentDraft();
 
   chatHistory.push({role:"user",content:message,attachments:sentAttachments});
+  chatRevision++;
   save(chatLocalKey(),chatHistory.slice(-200));
   if(input)input.value="";
-  go("assistant");
+  go("assistant",{skipChatSync:true});
   renderChat();
+  await saveCloudChatHistory();
   const status=$("#chatStatus"); if(status)status.textContent="Думаю…";
   try{
     const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       message,history:previous,attachments:sentAttachments,accountId:activeAccountId
     })});
     const data=await r.json().catch(()=>({}));
-    chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});
+    chatHistory.push({
+      role:"assistant",
+      content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения"),
+      images:r.ok&&Array.isArray(data.images)?data.images:[]
+    });
   }catch(err){
     chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});
   }
+  chatRevision++;
   save(chatLocalKey(),chatHistory.slice(-200));
   await saveCloudChatHistory();
   await syncFromServer();
@@ -642,6 +678,7 @@ if($("#mobileChatDock"))$("#mobileChatDock").onsubmit=e=>{
 $("#mobileChatDockOpen")?.addEventListener("click",()=>go("assistant"));
 if($("#clearChat"))$("#clearChat").onclick=async()=>{
   chatHistory=[];
+  chatRevision++;
   save(chatLocalKey(),chatHistory);
   renderChat();
   try{await fetch("/api/chat/history?account="+encodeURIComponent(activeAccountId),{method:"DELETE"})}catch{}
@@ -727,6 +764,7 @@ function loadLocalAccountState(){
   videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]);
   settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
   chatHistory=load(chatLocalKey(),[]);
+  chatRevision++;
   chatDraftAttachments.forEach(a=>{if(a.previewUrl)URL.revokeObjectURL(a.previewUrl)});
   chatDraftAttachments=[];
   renderChatAttachmentDraft();
