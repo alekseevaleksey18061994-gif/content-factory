@@ -255,7 +255,7 @@ function scenes(r){
   return board.map((sc,i)=>{
     const n=i+1,a=(r.acceptedScenes||[]).includes(n),v=(r.sceneVersions?.[n]||1),url=sceneResultUrl(r,i);
     const preview=url?'<video controls playsinline preload="metadata" src="'+esc(url)+'"></video>':'<div class="scene-preview-copy"><b>Сцена '+n+'</b><span>'+esc(sc.title||"")+'</span></div>';
-    return '<article class="scene-card"><div class="scene-preview">'+preview+'</div><h3>'+n+'. '+esc(sc.title||"Сцена")+'</h3><small>'+esc(sc.duration||"")+' · '+esc(r.modelMode||"Авто")+'</small><div class="scene-copy">'+(sc.shot?'<p><b>Кадр:</b> '+esc(sc.shot)+'</p>':'')+(sc.action?'<p><b>Действие:</b> '+esc(sc.action)+'</p>':'')+(sc.voiceover?'<p><b>Озвучка:</b> '+esc(sc.voiceover)+'</p>':'')+(sc.onscreen?'<p><b>Текст:</b> '+esc(sc.onscreen)+'</p>':'')+(sc.prompt?'<details><summary>Промт</summary><p>'+esc(sc.prompt)+'</p></details>':'')+'</div><div class="version-row">'+Array.from({length:v},(_,q)=>'<span class="version '+(q===v-1&&a?"ok":"")+'">V'+(q+1)+(q===v-1&&a?" ✓":"")+'</span>').join("")+'</div><div class="scene-actions"><button class="tiny-btn" onclick="acceptScene(\''+r.id+'\','+n+')">✓ Принять</button><button class="tiny-btn" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button><button class="tiny-btn" onclick="promptScene(\''+r.id+'\','+n+')">✎ Промт</button><button class="tiny-btn" onclick="modelScene(\''+r.id+'\','+n+')">◉ Модель</button></div></article>';
+    return '<article class="scene-card"><div class="scene-preview">'+preview+'</div><h3>'+n+'. '+esc(sc.title||"Сцена")+'</h3><small>'+esc(sc.duration||"")+' · '+esc(r.modelMode||"Авто")+'</small><div class="scene-copy">'+(sc.shot?'<p><b>Кадр:</b> '+esc(sc.shot)+'</p>':'')+(sc.action?'<p><b>Действие:</b> '+esc(sc.action)+'</p>':'')+(sc.voiceover?'<p><b>Озвучка:</b> '+esc(sc.voiceover)+'</p>':'')+(sc.onscreen?'<p><b>Текст:</b> '+esc(sc.onscreen)+'</p>':'')+(sc.prompt?'<details><summary>Промт</summary><p>'+esc(sc.prompt)+'</p></details>':'')+'</div><div class="version-row">'+Array.from({length:v},(_,q)=>'<span class="version '+(q===v-1&&a?"ok":"")+'">V'+(q+1)+(q===v-1&&a?" ✓":"")+'</span>').join("")+'</div><div class="scene-actions">'+(a?'<button class="tiny-btn scene-accepted-btn" disabled>✓ Принята</button>':'<button class="tiny-btn" data-accept-scene="'+n+'" onclick="acceptScene(\''+r.id+'\','+n+',this)">✓ Принять</button>')+'<button class="tiny-btn" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button><button class="tiny-btn" onclick="promptScene(\''+r.id+'\','+n+')">✎ Промт</button><button class="tiny-btn" onclick="modelScene(\''+r.id+'\','+n+')">◉ Модель</button></div></article>';
   }).join("");
 }
 let runStageOpen="";
@@ -302,7 +302,7 @@ function renderRunDetail(){
   const totalScenes=Number(r.generationResult?.totalScenes||r.sceneCount||0);
   const acceptedScenes=Array.isArray(r.acceptedScenes)?r.acceptedScenes:[];
   const pendingScenes=Array.from({length:totalScenes},(_,i)=>i+1).filter(n=>!acceptedScenes.includes(n));
-  const reviewPanel=(r.status==="На проверке"&&totalScenes)?'<section class="panel stage-report" id="sceneReviewPanel"><div class="panel-title"><div><span class="mini-icon">✓</span><h2>Проверка сцен</h2><p>Просмотри каждую сцену и прими или переделай</p></div><span class="status work">Принято '+acceptedScenes.length+'/'+totalScenes+'</span></div><div class="review-scene-list">'+Array.from({length:totalScenes},(_,i)=>{const n=i+1,url=sceneResultUrl(r,i),ok=acceptedScenes.includes(n);return '<article class="review-scene '+(ok?'accepted':'')+'"><div class="review-scene-head"><b>Сцена '+n+'</b><span class="status '+(ok?'done':'wait')+'">'+(ok?'Принята':'Нужно решение')+'</span></div>'+(url?'<video controls playsinline preload="metadata" src="'+esc(url)+'"></video>':'<div class="empty compact-empty">Видео ещё нет</div>')+'<div class="review-scene-actions">'+(ok?'<button class="secondary" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button>':'<button class="btn primary" onclick="acceptScene(\''+r.id+'\','+n+')">✓ Принять сцену</button><button class="secondary" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button>')+'</div></article>'}).join("")+'</div>'+(pendingScenes.length?'<div class="message">Осталось подтвердить сцены: '+pendingScenes.join(", ")+'</div>':'<div class="message">Все сцены подтверждены.</div>')+'</section>':'';
+  const reviewPanel=(r.status==="На проверке"&&totalScenes)?'<section class="panel stage-report" id="sceneReviewPanel"><div class="panel-title"><div><span class="mini-icon">✓</span><h2>Проверка сцен</h2><p>Просмотри каждую сцену и прими или переделай</p></div><span class="status work">Принято '+acceptedScenes.length+'/'+totalScenes+'</span></div><div class="review-scene-list">'+Array.from({length:totalScenes},(_,i)=>{const n=i+1,url=sceneResultUrl(r,i),ok=acceptedScenes.includes(n);return '<article class="review-scene '+(ok?'accepted':'')+'"><div class="review-scene-head"><b>Сцена '+n+'</b><span class="status '+(ok?'done':'wait')+'">'+(ok?'Принята':'Нужно решение')+'</span></div>'+(url?'<video controls playsinline preload="metadata" src="'+esc(url)+'"></video>':'<div class="empty compact-empty">Видео ещё нет</div>')+'<div class="review-scene-actions">'+(ok?'<button class="secondary" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button>':'<button class="btn primary" onclick="acceptScene(\''+r.id+'\','+n+',this)">✓ Принять сцену</button><button class="secondary" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button>')+'</div></article>'}).join("")+'</div>'+(pendingScenes.length?'<div class="message">Осталось подтвердить сцены: '+pendingScenes.join(", ")+'</div>':'<div class="message">Все сцены подтверждены.</div>')+'</section>':'';
   const generatedUrl=r.generationResult?.urls?.[0]||null;
   const generatedVideo=generatedUrl?'<section class="panel generated-video-panel"><div class="panel-title"><div><span class="mini-icon">▶</span><h2>Полученное видео</h2><p>Результат генерации</p></div><span class="status done">Получено</span></div><video controls playsinline preload="metadata" src="'+esc(generatedUrl)+'"></video></section>':'';
   const stageReport=runStageOpen?stageReportHtml(r,runStageOpen):'';
@@ -325,7 +325,24 @@ async function runServerAction(payload){
   renderRunDetail();
   return data.run;
 }
-window.acceptScene=async(id,n)=>{try{await runServerAction({runId:id,action:"accept_scene",scene:n})}catch(e){alert(String(e?.message||e))}};
+window.acceptScene=async(id,n,btn)=>{
+  const r=runs.find(x=>x.id===id);
+  if((r?.acceptedScenes||[]).includes(n)){
+    if(btn){btn.textContent="✓ Принята";btn.disabled=true;btn.classList.add("scene-accepted-btn")}
+    return;
+  }
+  const oldText=btn?.textContent||"";
+  if(btn){btn.disabled=true;btn.textContent="Сохраняю…"}
+  try{
+    await runServerAction({runId:id,action:"accept_scene",scene:n});
+    const fresh=runs.find(x=>x.id===id);
+    if(!(fresh?.acceptedScenes||[]).includes(n))throw new Error("Сервер не сохранил подтверждение сцены "+n);
+    if(btn){btn.textContent="✓ Принята";btn.classList.add("scene-accepted-btn")}
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent=oldText||"✓ Принять"}
+    alert(String(e?.message||e));
+  }
+};
 window.regenScene=async(id,n)=>{if(!confirm("Переделать только сцену "+n+"?"))return;try{await runServerAction({runId:id,action:"regenerate_scene",scene:n})}catch(e){alert(String(e?.message||e))}};
 window.promptScene=async(id,n)=>{const t=prompt("Новый промт для сцены "+n+":");if(!t)return;try{await runServerAction({runId:id,action:"update_scene_prompt",scene:n,prompt:t})}catch(e){alert(String(e?.message||e))}};
 window.modelScene=async(id,n)=>{const t=prompt("Модель для сцены "+n+":","Авто");if(!t)return;try{await runServerAction({runId:id,action:"set_scene_model",scene:n,model:t})}catch(e){alert(String(e?.message||e))}};
