@@ -1145,7 +1145,7 @@ function previsRefsForFrame(run,frame,done=[]){
   if(frame.avatarInFrame&&identity.avatar)urls.push(identity.avatar);
   return [...new Set(urls.filter(Boolean))].slice(0,4);
 }
-async function generatePrevisImage(accountId,run,frame,referenceUrls=[]){
+async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
   const phase=String(frame.frameType||'').toLowerCase();
   const phaseRule=phase==='start'
@@ -1207,6 +1207,112 @@ function enqueueRunPrevis(accountId,runId,label='previs'){
   next=previous.catch(()=>{}).then(()=>processRunPrevis(key,runId)).catch(e=>{console.error('['+label+'] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}}).finally(()=>{if(previsQueues.get(key)===next)previsQueues.delete(key)});
   previsQueues.set(key,next);return next;
 }
+async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[]){
+  if(!higgsfieldConfigured())throw new Error('Higgsfield API is not configured');
+  const phase=String(frame.frameType||'').toLowerCase();
+  const phaseRule=phase==='start'
+    ? 'START: show the initial state before the main action is completed.'
+    : phase==='middle'
+      ? 'MIDDLE: show the action clearly in progress, visually different from START and END.'
+      : 'END: show the completed result and prepare the next scene; do not repeat the START pose.';
+  const prompt=[
+    'Create one photorealistic cinematic vertical 9:16 PREVIZ frame for an ecommerce video ad.',
+    'Scene '+frame.scene+', frame '+frame.frame+' ('+String(frame.frameType||'')+').',
+    phaseRule,
+    'Product: '+String(run.productName||''),
+    'STRICT PRODUCT IDENTITY: preserve exact geometry, proportions, mounting parts, ends, material, color and texture from source product references.',
+    'Product rules: '+String(run.productRules||run.product?.rules||''),
+    run.character?.name?('STRICT AVATAR IDENTITY: '+String(run.character.name)+'; '+String(run.character.look||'')+'; '+String(run.character.locks||'')):'',
+    'Composition: '+String(frame.composition||''),
+    'Framing: '+String(frame.framing||''),
+    'Camera: '+[frame.cameraAngle,frame.cameraPosition,frame.lensFeel].filter(Boolean).join('; '),
+    'Environment: '+String(frame.environment||frame.location||''),
+    'Lighting: '+String(frame.lighting||''),
+    'Action: '+String(frame.action||''),
+    'Avatar: '+String(frame.avatarDescription||''),
+    'Product placement: '+String(frame.productPlacement||frame.productRole||''),
+    'Continuity: '+String(frame.continuityNotes||''),
+    String(frame.imagePromptEn||frame.imagePromptRu||''),
+    'REFERENCE HIERARCHY: generated prior frames control composition/continuity; source product and avatar references remain absolute identity locks.',
+    'Make the environment lived-in, believable and commercially polished, not an empty sterile showroom.',
+    'No text, no logos, no extra fingers, no product redesign, no geometry drift, no face drift.',
+    frame.negativePrompt?('Negative: '+frame.negativePrompt):''
+  ].filter(Boolean).join('\n').slice(0,15000);
+
+  const credentials=higgsfieldCredentialParts();
+  const client=createHiggsfieldClient({
+    apiKey:credentials.apiKey,
+    apiSecret:credentials.apiSecret,
+    timeout:120000,
+    maxRetries:2,
+    pollInterval:2000,
+    maxPollTime:300000
+  });
+  const configured=String(process.env.HIGGSFIELD_PREVIS_MODEL||'').trim();
+  const models=[...new Set([configured,'nano-banana-pro','nano_banana_pro','nano_banana_2'].filter(Boolean))];
+  let result=null,usedModel='',lastError=null;
+  for(const model of models){
+    try{
+      result=await client.subscribe(model,{
+        input:{
+          prompt,
+          aspect_ratio:'9:16',
+          resolution:String(process.env.HIGGSFIELD_PREVIS_RESOLUTION||'2k'),
+          ...(referenceUrls.length?{image_urls:referenceUrls.slice(0,14)}:{})
+        },
+        withPolling:true
+      });
+      const imgs=Array.isArray(result?.images)?result.images.map(x=>x?.url).filter(Boolean):[];
+      if(imgs.length){usedModel=model;break}
+      const status=String(result?.status||'');
+      throw new Error('Higgsfield image returned no image'+(status?' · '+status:''));
+    }catch(e){
+      lastError=e;result=null;
+      console.warn('[higgsfield-previs-model] '+model+' · '+String(e?.message||e));
+    }
+  }
+  if(!result||!usedModel)throw new Error('Nano Banana Pro: '+String(lastError?.message||'не удалось получить изображение'));
+  const imageUrl=(result.images||[]).map(x=>x?.url).find(Boolean);
+  if(!imageUrl)throw new Error('Nano Banana Pro не вернул изображение');
+
+  const rr=await fetch(imageUrl);
+  if(!rr.ok)throw new Error('Не удалось скачать кадр Nano Banana Pro: HTTP '+rr.status);
+  const buf=Buffer.from(await rr.arrayBuffer());
+  const mimeType=rr.headers.get('content-type')||'image/png';
+  const ext=mimeType.includes('jpeg')?'jpg':mimeType.includes('webp')?'webp':'png';
+  const scoped=(sanitizeAccountId(accountId)+'__previs_'+String(run.id||'run')).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  const uploaded=await callProductMedia({
+    action:'upload',
+    productId:scoped,
+    fileName:'previs-s'+frame.scene+'-f'+frame.frame+'-'+Date.now()+'.'+ext,
+    mimeType,
+    dataBase64:'data:'+mimeType+';base64,'+buf.toString('base64')
+  });
+  if(!uploaded?.media?.url)throw new Error('Не удалось сохранить кадр Nano Banana Pro');
+  const rates=await costRates(accountId).catch(()=>({}));
+  const rub=Number(rates.higgsfieldRubPerGeneration)||0;
+  await recordExpense(accountId,{
+    provider:'Higgsfield',category:'previs-image',
+    description:'Nano Banana Pro · превиз сцены '+frame.scene+' · '+frame.frame,
+    amountRub:rub,model:'Nano Banana Pro',
+    usage:{resolution:String(process.env.HIGGSFIELD_PREVIS_RESOLUTION||'2k'),aspectRatio:'9:16',references:referenceUrls.length},
+    source:'auto'
+  }).catch(()=>{});
+  return {
+    url:uploaded.media.url,path:uploaded.media.path||'',
+    provider:'Higgsfield',model:'Nano Banana Pro',modelId:usedModel,
+    references:referenceUrls,fallbackFrom:''
+  };
+}
+
+async function generatePrevisImage(accountId,run,frame,referenceUrls=[],provider='higgsfield'){
+  if(provider==='openai'){
+    const img=await generateOpenAIPrevisImage(accountId,run,frame,referenceUrls);
+    return {...img,provider:'OpenAI',fallbackFrom:'Nano Banana Pro'};
+  }
+  return generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls);
+}
+
 async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   if(!openaiConfigured())return {passed:null,score:null,summary:'OpenAI QC недоступен',issues:[]};
   const identity=primaryIdentityUrls(run);
@@ -1324,16 +1430,28 @@ async function processRunPrevis(accountId,runId){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     run.previsPlan=plan;run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
     await writeAppState(data,accountId);
+
     for(const spec of plan.frames){
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
       run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
       if(run.previsFrames.some(x=>x?.id===spec.id&&x?.url))continue;
-      let img=null,qc=null,lastQcError='';
+
+      let img=null,qc=null,lastQcError='',lastGenerationError='';
       const previous=run.previsFrames.filter(x=>Number(x?.scene)===Number(spec.scene)&&x?.url).sort((a,b)=>Number(a.frame)-Number(b.frame)).slice(-1)[0];
-      for(let attempt=1;attempt<=2;attempt++){
+      const attempts=['higgsfield','higgsfield','openai'];
+
+      for(let attempt=0;attempt<attempts.length;attempt++){
+        const provider=attempts[attempt];
         const refs=previsRefsForFrame(run,spec,run.previsFrames);
-        img=await generatePrevisImage(accountId,run,spec,refs);
+        try{
+          img=await generatePrevisImage(accountId,run,spec,refs,provider);
+        }catch(e){
+          lastGenerationError=String(e?.message||e);
+          img=null;
+          console.warn('[previs-generator] '+provider+' · scene '+spec.scene+' frame '+spec.frame+' · '+lastGenerationError);
+          continue;
+        }
         try{
           qc=await runPrevisFrameQc(run,spec,img.url,accountId,previous?.url||'');
         }catch(e){
@@ -1344,23 +1462,48 @@ async function processRunPrevis(accountId,runId){
         if(img?.path){try{await callProductMedia({action:'delete',path:img.path})}catch{}}
         img=null;
       }
-      if(!img)throw new Error('Сцена '+spec.scene+', кадр '+spec.frame+' не прошёл QC: '+lastQcError);
+
+      if(!img)throw new Error(
+        'Сцена '+spec.scene+', кадр '+spec.frame+' не получен. '+
+        (lastQcError?('QC: '+lastQcError):('Генерация: '+lastGenerationError))
+      );
+
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
       run.previsFrames.push({...spec,...img,qc,generatedAt:new Date().toISOString()});
       run.progress=Math.min(36,28+Math.round((run.previsFrames.filter(x=>x?.url).length/Math.max(1,plan.frames.length))*8));
       run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Превиз-кадр готов',(run.productName||run.id)+' · сцена '+spec.scene+' · кадр '+spec.frame+(qc?.score?' · QC '+qc.score+'/10':''));
+      appendFactoryJournal(
+        data,'Превиз-кадр готов',
+        (run.productName||run.id)+' · сцена '+spec.scene+' · кадр '+spec.frame+
+        ' · '+String(img.provider||img.model||'generator')+
+        (img.fallbackFrom?' · fallback':'')+
+        (qc?.score?' · QC '+qc.score+'/10':'')
+      );
       await writeAppState(data,accountId);
     }
+
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     const expected=Number(plan.totalFrames)||plan.frames.length;
     const ready=(run.previsFrames||[]).filter(x=>x?.url).length;
     run.previsRunning=false;
-    run.previsResult={completed:Boolean(expected&&ready>=expected),totalFrames:ready,totalScenes:plan.totalScenes,completedAt:ready>=expected?new Date().toISOString():null};
-    run.references={...(run.references||{}),style:String(run.style||''),notes:'Generated previz controls composition; source product/avatar remain strict identity locks.' ,product:(run.media||run.product?.media||[]).map(x=>x?.url).filter(Boolean),avatar:(run.avatarReferences||run.character?.media||[]).map(x=>x?.url).filter(Boolean)};
+    run.previsResult={
+      completed:Boolean(expected&&ready>=expected),
+      totalFrames:ready,totalScenes:plan.totalScenes,
+      generator:'Nano Banana Pro',
+      fallback:'GPT Image',
+      completedAt:ready>=expected?new Date().toISOString():null
+    };
+    run.references={
+      ...(run.references||{}),
+      style:String(run.style||''),
+      notes:'Generated previz controls composition; source product/avatar remain strict identity locks.',
+      product:(run.media||run.product?.media||[]).map(x=>x?.url).filter(Boolean),
+      avatar:(run.avatarReferences||run.character?.media||[]).map(x=>x?.url).filter(Boolean)
+    };
     run.updatedAt=new Date().toISOString();
-    appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+ready+'/'+expected+' кадров');
+    appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+ready+'/'+expected+' кадров · Nano Banana Pro → GPT Image fallback');
+
     if(run.mode==='manual'){
       run.status='На проверке';run.stage='Превиз-кадры';run.progress=36;run.awaitingApproval=true;
       await writeAppState(data,accountId);
@@ -1373,7 +1516,11 @@ async function processRunPrevis(accountId,runId){
     return {ok:true,totalFrames:ready};
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-    if(run){run.previsRunning=false;run.status='Ошибка';run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.error='Превиз: '+run.previsError;run.updatedAt=new Date().toISOString();appendFactoryJournal(data,'Ошибка превиза',(run.productName||run.id)+' · '+run.previsError);await writeAppState(data,accountId)}
+    if(run){
+      run.previsRunning=false;run.status='Ошибка';run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.error='Превиз: '+run.previsError;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Ошибка превиза',(run.productName||run.id)+' · '+run.previsError);
+      await writeAppState(data,accountId);
+    }
     return {ok:false,error:String(e?.message||e)};
   }
 }
@@ -1849,6 +1996,13 @@ async function processRunPostProduction(accountId,runId){
   }
 }
 
+function videoProviderMode(run){
+  const mode=String(run?.modelMode||'').toLowerCase();
+  if(mode.includes('только runway'))return 'runway-only';
+  if(mode.includes('только higgsfield'))return 'higgsfield-only';
+  return 'higgsfield-runway';
+}
+
 async function processRunGeneration(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
@@ -1897,28 +2051,31 @@ async function processRunGeneration(accountId,runId){
         'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
       ].filter(Boolean).join('\n').slice(0,1000);
       let result=null,lastError=null,sceneQc=null;
+      const providerMode=videoProviderMode(run);
       const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
       for(let attempt=1;attempt<=maxAttempts;attempt++){
         let candidate=null;
-        try{
-          candidate=await generateHiggsfieldScene({
-            accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
-            aspectRatio:'9:16',resolution:'720p',generateAudio:true
-          });
-          if(!(candidate?.ok&&candidate?.urls?.length)){
-            lastError=new Error('Higgsfield не вернул готовое видео'+(candidate?.status?' · статус '+candidate.status:''));
-            candidate=null;
+        if(providerMode!=='runway-only'){
+          try{
+            candidate=await generateHiggsfieldScene({
+              accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
+              aspectRatio:'9:16',resolution:'720p',generateAudio:true
+            });
+            if(!(candidate?.ok&&candidate?.urls?.length)){
+              lastError=new Error('Higgsfield не вернул готовое видео'+(candidate?.status?' · статус '+candidate.status:''));
+              candidate=null;
+            }
+          }catch(e){
+            lastError=e;
+            console.error('[higgsfield-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
           }
-        }catch(e){
-          lastError=e;
-          console.error('[higgsfield-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
         }
-        if(!candidate&&process.env.RUNWAYML_API_SECRET){
+        if(!candidate&&providerMode!=='higgsfield-only'&&process.env.RUNWAYML_API_SECRET){
           try{
             candidate=await generateRunwayScene({
               accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
             });
-            if(candidate?.ok&&candidate?.urls?.length)candidate.fallbackFrom='higgsfield';
+            if(candidate?.ok&&candidate?.urls?.length)candidate.fallbackFrom=providerMode==='runway-only'?'':'higgsfield';
             else candidate=null;
           }catch(re){
             lastError=new Error((lastError?String(lastError.message)+'; ':'')+'Runway: '+String(re?.message||re));
@@ -3691,7 +3848,7 @@ const server=http.createServer(async(req,res)=>{
         databaseError=String(e?.message||e);
       }
     }
-    return json(res,200,{ok:true,service:'Content Factory',version:'1.4.3',database,databaseError,time:new Date().toISOString()});
+    return json(res,200,{ok:true,service:'Content Factory',version:'1.5.2',database,databaseError,time:new Date().toISOString()});
   }
 
   if(url.pathname==='/api/status' && req.method==='GET'){
@@ -3705,7 +3862,7 @@ const server=http.createServer(async(req,res)=>{
     const drive=process.env.GOOGLE_DRIVE_CONNECTED === 'true';
     const driveMigrated=process.env.GOOGLE_DRIVE_PERSISTENT_MIGRATED === 'true';
     const higgsfield=higgsfieldConfigured();
-    const higgsfieldCallbackVerified=process.env.HIGGSFIELD_FINAL_CALLBACK_VERIFIED === 'true';
+    const higgsfieldCallbackVerified=process.env.HIGGSFIELD_FINAL_CALLBACK_VERIFIED === 'true'; // legacy flag; current pipeline uses polling
     const openai=openaiConfigured();
     const chatgptControl=openai && process.env.CHATGPT_CONTROL_ENABLED === 'true';
     const ffmpeg=await commandAvailable('ffmpeg',['-version']);
@@ -3748,10 +3905,10 @@ const server=http.createServer(async(req,res)=>{
         next:drive&&!driveMigrated?'Перенести OAuth credential в n8n-v2-persistent':drive?'':'Подключить Google Drive'
       },
       higgsfield:{
-        state:higgsfield?(higgsfieldCallbackVerified?'connected':'partial'):'missing',
-        description:'AI-видео, сцены и референсные персонажи',
-        detail:higgsfield?(higgsfieldCallbackVerified?'API и возврат готового видео проверены':'API и generation webhook подключены; финальный callback видео ещё проверяем'):'Higgsfield API не подключён',
-        next:higgsfield&&!higgsfieldCallbackVerified?'Подтвердить возврат готового видео в карточку ролика':higgsfield?'':'Добавить API Key ID + Secret'
+        state:higgsfield?'connected':'missing',
+        description:'Превиз Nano Banana Pro + основная генерация AI-видео',
+        detail:higgsfield?'API подключён · превиз: Nano Banana Pro (2K) · видео: Higgsfield · получение результата: server polling':'Higgsfield API не подключён',
+        next:higgsfield?'':'Добавить API Key ID + Secret'
       },
       openai:{
         state:openai?'connected':'missing',
