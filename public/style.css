@@ -1415,3 +1415,29 @@ html,body,button,input,select,textarea{
 #authForm input{min-height:48px}.auth-note{margin:14px 0 0;color:#7a8a9e;font-size:10px;line-height:1.45}
 .account-head-actions{display:flex;gap:8px;flex-wrap:wrap}
 @media(max-width:820px){.auth-card{padding:22px;border-radius:22px}.account-head-actions{width:100%}.account-head-actions .btn{flex:1}}
+
+
+/* v32: competitor + YouTube video analysis */
+.video-lab-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.video-source-card{display:grid;align-content:start;gap:12px}
+.video-drop{display:grid;place-items:center;min-height:130px;border:1.5px dashed #a9cfdd;border-radius:18px;background:#f7fbfd;color:#47647f;font-weight:700;cursor:pointer;text-align:center;padding:16px}
+.video-drop input{margin-top:10px;max-width:100%}
+.video-analysis-list{display:grid;gap:12px}
+.video-analysis-card{padding:16px;border:1px solid #cfe0e9;border-radius:18px;background:#fff;box-shadow:0 8px 22px rgba(55,90,116,.07)}
+.video-analysis-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.video-analysis-head h3{margin:8px 0 4px;font-size:17px}
+.video-analysis-head p{margin:0;color:#62778e;font-size:11px}
+.analysis-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+.analysis-columns>div{padding:12px;border-radius:14px;background:#f6fafc;border:1px solid #e0ebf1}
+.analysis-columns small{color:#0b8897;font-weight:800}
+.analysis-columns b{font-size:11px}
+.analysis-columns p{color:#455d76;font-size:11px;line-height:1.45}
+.analysis-scenes{display:grid;gap:7px;margin-top:12px}
+.analysis-scenes>div{display:grid;grid-template-columns:28px 1fr;gap:8px;align-items:start;padding:9px;border-radius:11px;background:#fbfdff;border:1px solid #e1ebf1}
+.analysis-scenes span{width:28px;height:28px;display:grid;place-items:center;border-radius:9px;background:#e4f8f5;color:#087f91;font-weight:800}
+.analysis-scenes p{margin:0;font-size:10px;line-height:1.4;color:#50677f}
+@media(max-width:820px){
+  .video-lab-grid,.analysis-columns{grid-template-columns:1fr}
+  .video-analysis-head{flex-direction:column}
+  .video-analysis-head .secondary{width:100%}
+}

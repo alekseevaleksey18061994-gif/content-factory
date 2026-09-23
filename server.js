@@ -7,6 +7,8 @@ import RunwayML, { TaskFailedError as RunwayTaskFailedError } from '@runwayml/sd
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes, scryptSync, timingSafeEqual, createHmac } from 'node:crypto';
+import { once } from 'node:events';
+import { fetchTranscript } from 'youtube-transcript';
 
 const execFile=promisify(execFileCb);
 
@@ -215,6 +217,7 @@ function blankFactoryState(){
     journal:[],
     expenses:[],
     chatHistory:[],
+    videoAnalyses:[],
     settings:{mode:'auto',budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}}
   };
 }
@@ -924,6 +927,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
       mediaCount:(c.media||[]).length,voiceLinked:!!c.voiceLinked,
       referenceImages:(c.media||[]).map(m=>m.url).filter(Boolean).slice(0,6)
     })),
+    videoAnalyses:(snapshot.videoAnalyses||[]).slice(-10).map(v=>({id:v.id,sourceType:v.sourceType,sourceName:v.sourceName,productName:v.productName,avatarName:v.avatarName,summary:v.analysis?.summary,hook:v.analysis?.hook,adaptation:v.analysis?.adaptation})),
     campaigns:(snapshot.campaigns||[]).slice(-20),
     runs:(snapshot.runs||[]).slice(-25).map(r=>({id:r.id,batchId:r.batchId,productName:r.productName,status:r.status,stage:r.stage,progress:r.progress,style:r.style,duration:r.duration})),
     settings:snapshot.settings||{}
@@ -1220,6 +1224,179 @@ async function descriptAgent(body){
   const rates=await costRates(accountId).catch(()=>({}));
   await recordExpense(accountId,{provider:'Descript',category:'editing',description:'AI-монтаж / agent',amountRub:Number(rates.descriptRubPerAction)||0,usage:{actions:1},source:'auto'}).catch(()=>{});
   return result;
+}
+
+
+function hhmmss(seconds){
+  const s=Math.max(0,Math.round(Number(seconds)||0));
+  const m=Math.floor(s/60),sec=s%60;
+  return String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
+}
+function safeAnalysisJson(text){
+  const raw=String(text||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+  try{return JSON.parse(raw)}catch{}
+  const start=raw.indexOf('{'),end=raw.lastIndexOf('}');
+  if(start>=0&&end>start){try{return JSON.parse(raw.slice(start,end+1))}catch{}}
+  return {summary:raw,hook:'',scenes:[],whyWorks:[],adaptation:{concept:'',hook:'',scenes:[],cta:''}};
+}
+async function probeDuration(filePath){
+  try{
+    const result=await execFile('ffprobe',['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',filePath],{timeout:15000});
+    return Math.max(1,Number(String(result.stdout).trim())||1);
+  }catch{return 1}
+}
+async function extractVideoEvidence(filePath){
+  const duration=await probeDuration(filePath);
+  const dir=fs.mkdtempSync('/tmp/cf-video-');
+  const fps=Math.max(.02,Math.min(2,10/duration));
+  const framePattern=path.join(dir,'frame-%02d.jpg');
+  await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vf','fps='+fps+',scale=768:-2:force_original_aspect_ratio=decrease','-q:v','3','-frames:v','10','-y',framePattern],{timeout:120000});
+  const frames=fs.readdirSync(dir).filter(x=>x.endsWith('.jpg')).sort().slice(0,10).map(name=>{
+    const b=fs.readFileSync(path.join(dir,name));
+    return {type:'input_image',image_url:'data:image/jpeg;base64,'+b.toString('base64'),detail:'low'};
+  });
+  const audioPath=path.join(dir,'audio.mp3');
+  let hasAudio=false;
+  try{
+    await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vn','-ac','1','-ar','16000','-b:a','64k','-y',audioPath],{timeout:120000});
+    hasAudio=fs.existsSync(audioPath)&&fs.statSync(audioPath).size>0;
+  }catch{}
+  return {duration,dir,frames,audioPath:hasAudio?audioPath:null};
+}
+async function transcribeAudio(audioPath){
+  if(!audioPath||!fs.existsSync(audioPath))return '';
+  const stat=fs.statSync(audioPath);
+  if(stat.size>25*1024*1024)return '';
+  const form=new FormData();
+  form.append('model','gpt-transcribe');
+  form.append('file',new Blob([fs.readFileSync(audioPath)],{type:'audio/mpeg'}),'audio.mp3');
+  const r=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY},body:form});
+  const text=await r.text();
+  let data;try{data=text?JSON.parse(text):{}}catch{data={}}
+  if(!r.ok)throw new Error(data?.error?.message||('Transcription error '+r.status));
+  return String(data?.text||'').trim();
+}
+async function analyzeReferenceMaterial(opts){
+  const accountId=opts.accountId;
+  const state=await readAppState(accountId);
+  const data=state?.data||blankFactoryState();
+  data.videoAnalyses=Array.isArray(data.videoAnalyses)?data.videoAnalyses:[];
+  const product=findProductInState(data,opts.productId)||null;
+  const avatar=findCharacterInState(data,opts.avatarId)||null;
+  const prompt=[
+    'Ты аналитик коротких рекламных видео. Разбери исходный материал и создай НОВУЮ адаптацию под товар и AI-аватара Content Factory.',
+    'Не копируй дословные реплики, уникальные формулировки, музыку, брендинг или точную постановку чужого ролика. Сохраняй только общие маркетинговые механики, темп, типы кадров и структуру.',
+    'Верни только JSON с полями summary, hook, scenes, editing, whyWorks, weaknesses, adaptation.',
+    'adaptation должна содержать concept, hook, scenes и cta. Каждая адаптированная сцена: duration, shot, avatarAction, productAction, voiceover, onscreen.',
+    'Источник: '+String(opts.sourceType||'video')+'. Название: '+String(opts.sourceName||'без названия')+'.',
+    'Метаданные: '+JSON.stringify(opts.metadata||{}),
+    'Транскрипт: '+String(opts.transcript||'').slice(0,45000),
+    'Наш товар: '+(product?JSON.stringify({name:product.name,category:product.category,utp:product.utp,rules:product.rules,mediaCount:(product.media||[]).length}):'не выбран')+'.',
+    'Наш AI-аватар: '+(avatar?JSON.stringify({name:avatar.name,age:avatar.age,look:avatar.look,voice:avatar.voice,topics:avatar.topics,locks:avatar.locks}):'не выбран')+'.'
+  ].join('\n');
+  const extraImages=[];
+  const pm=(product?.media||[]).find(m=>m.isPrimary)||(product?.media||[])[0];
+  if(pm?.url)extraImages.push({type:'input_image',image_url:pm.url,detail:'low'});
+  const am=(avatar?.media||[]).find(m=>m.isPrimary)||(avatar?.media||[])[0];
+  if(am?.url)extraImages.push({type:'input_image',image_url:am.url,detail:'low'});
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({model,input:[{role:'user',content:[{type:'input_text',text:prompt},...(opts.imageParts||[]),...extraImages]}],max_output_tokens:6000})
+  });
+  const raw=await r.text();
+  let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
+  if(!r.ok)throw new Error(response?.error?.message||('OpenAI analysis error '+r.status));
+  const analysis=safeAnalysisJson(openAIText(response));
+  const priced=openAIUsageCost(model,response?.usage||{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'analysis',description:'Разбор видео',amountUsd:priced.amountUsd,model,usage:priced.details,source:'auto'}).catch(()=>{});
+  const item={
+    id:factoryId('va'),
+    sourceType:String(opts.sourceType||'video'),
+    sourceName:String(opts.sourceName||'Видео').slice(0,240),
+    sourceUrl:String(opts.sourceUrl||'').slice(0,2000),
+    productId:product?.id||'',productName:product?.name||'',
+    avatarId:avatar?.id||'',avatarName:avatar?.name||'',
+    transcript:String(opts.transcript||'').slice(0,50000),
+    analysis,
+    createdAt:new Date().toISOString()
+  };
+  data.videoAnalyses.push(item);
+  data.videoAnalyses=data.videoAnalyses.slice(-100);
+  appendFactoryJournal(data,'Разобрано видео',item.sourceName);
+  await writeAppState(data,accountId);
+  return item;
+}
+async function streamRequestToFile(req,filePath,maxBytes=150*1024*1024){
+  const out=fs.createWriteStream(filePath,{flags:'wx'});
+  let total=0;
+  try{
+    for await(const chunk of req){
+      total+=chunk.length;
+      if(total>maxBytes)throw new Error('Видео больше 150 МБ');
+      if(!out.write(chunk))await once(out,'drain');
+    }
+    out.end();
+    await once(out,'finish');
+    return total;
+  }catch(e){
+    out.destroy();
+    try{fs.unlinkSync(filePath)}catch{}
+    throw e;
+  }
+}
+async function analyzeUploadedVideo(req,url){
+  const accountId=sanitizeAccountId(url.searchParams.get('account')||DEFAULT_ACCOUNT_ID);
+  if(!(await userOwnsAccount(req.cfUser?.id,accountId)))throw new Error('Нет доступа к этому аккаунту');
+  const fileName=String(url.searchParams.get('fileName')||'competitor.mp4').replace(/[^\wа-яА-ЯёЁ ._-]+/g,'_').slice(0,180);
+  const ext=path.extname(fileName)||'.mp4';
+  const filePath='/tmp/cf-upload-'+randomBytes(8).toString('hex')+ext;
+  let evidence=null;
+  try{
+    await streamRequestToFile(req,filePath);
+    evidence=await extractVideoEvidence(filePath);
+    const transcript=await transcribeAudio(evidence.audioPath).catch(()=> '');
+    return await analyzeReferenceMaterial({
+      accountId,
+      sourceType:'upload',
+      sourceName:fileName,
+      transcript,
+      imageParts:evidence.frames,
+      productId:url.searchParams.get('productId')||'',
+      avatarId:url.searchParams.get('avatarId')||'',
+      metadata:{durationSeconds:Math.round(evidence.duration),frames:evidence.frames.length}
+    });
+  }finally{
+    try{fs.unlinkSync(filePath)}catch{}
+    if(evidence?.dir)try{fs.rmSync(evidence.dir,{recursive:true,force:true})}catch{}
+  }
+}
+async function analyzeYoutubeUrl(body,req){
+  const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+  if(!(await userOwnsAccount(req.cfUser?.id,accountId)))throw new Error('Нет доступа к этому аккаунту');
+  const videoUrl=String(body?.url||'').trim();
+  if(!/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(videoUrl))throw new Error('Нужна ссылка YouTube');
+  let meta={title:videoUrl,author_name:'',thumbnail_url:''};
+  try{
+    const r=await fetch('https://www.youtube.com/oembed?format=json&url='+encodeURIComponent(videoUrl));
+    if(r.ok)meta=await r.json();
+  }catch{}
+  let transcriptRows=[];
+  try{transcriptRows=await fetchTranscript(videoUrl)}catch{}
+  const transcript=(transcriptRows||[]).slice(0,1500).map(x=>'['+hhmmss((Number(x.offset)||0)/1000)+'] '+String(x.text||'')).join('\n');
+  const imageParts=meta.thumbnail_url?[{type:'input_image',image_url:meta.thumbnail_url,detail:'low'}]:[];
+  return analyzeReferenceMaterial({
+    accountId,
+    sourceType:'youtube',
+    sourceName:meta.title||videoUrl,
+    sourceUrl:videoUrl,
+    transcript,
+    imageParts,
+    productId:body?.productId||'',
+    avatarId:body?.avatarId||'',
+    metadata:{author:meta.author_name||'',transcriptAvailable:!!transcript,analysisDepth:transcript?'transcript+thumbnail':'thumbnail+metadata'}
+  });
 }
 
 async function applyGenerationCallback(body){
@@ -1586,6 +1763,25 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,configured:true,accountId,savedAt:new Date().toISOString()});
     }catch(e){
       return json(res,502,{ok:false,configured:true,error:'Не удалось сохранить серверное состояние.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/video-analysis/upload' && req.method==='POST'){
+    try{
+      const item=await analyzeUploadedVideo(req,url);
+      return json(res,200,{ok:true,item});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось разобрать видео',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/video-analysis/youtube' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const item=await analyzeYoutubeUrl(body,req);
+      return json(res,200,{ok:true,item});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось разобрать YouTube-видео',detail:String(e?.message||e)});
     }
   }
 
