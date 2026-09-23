@@ -239,16 +239,106 @@ const server=http.createServer(async(req,res)=>{
   }
 
   if(url.pathname==='/api/status' && req.method==='GET'){
+    const railway=Boolean(process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_ENVIRONMENT_ID);
+    const github=process.env.GITHUB_CONNECTED === 'true' || Boolean(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_REPO_NAME);
+    const database=supabaseConfigured();
+    const n8nServer=await n8nAlive();
+    const n8nWorkflow=process.env.N8N_CONTENT_WEBHOOK_ACTIVE === 'true';
+    const n8nGeneration=Boolean(process.env.N8N_GENERATION_WEBHOOK);
+    const n8nPostgres=process.env.N8N_POSTGRES_CONNECTED === 'true';
+    const drive=process.env.GOOGLE_DRIVE_CONNECTED === 'true';
+    const driveMigrated=process.env.GOOGLE_DRIVE_PERSISTENT_MIGRATED === 'true';
+    const higgsfield=higgsfieldConfigured();
+    const higgsfieldCallbackVerified=process.env.HIGGSFIELD_FINAL_CALLBACK_VERIFIED === 'true';
+    const openai=Boolean(process.env.OPENAI_API_KEY);
+    const chatgptControl=process.env.CHATGPT_CONTROL_ENABLED === 'true';
+    const ffmpeg=process.env.FFMPEG_ENABLED === 'true';
+    const remotion=process.env.REMOTION_ENABLED === 'true';
+    const runway=Boolean(process.env.RUNWAYML_API_SECRET);
+    const descript=Boolean(process.env.DESCRIPT_API_TOKEN);
+    const tiktok=Boolean(process.env.TIKTOK_ACCESS_TOKEN);
+    const instagram=Boolean(process.env.INSTAGRAM_ACCESS_TOKEN);
+    const youtube=Boolean(process.env.YOUTUBE_ACCESS_TOKEN || process.env.YOUTUBE_REFRESH_TOKEN);
+
+    const details={
+      railway:{
+        state:railway?'connected':'missing',
+        description:'Хостинг сайта, backend, n8n и PostgreSQL',
+        detail:railway?'Production-среда Railway активна':'Railway environment не определён',
+        next:railway?'':'Подключить production hosting'
+      },
+      github:{
+        state:github?'connected':'missing',
+        description:'Исходный код Content Factory и автодеплой',
+        detail:github?'Репозиторий и main используются для production':'Связь с GitHub не подтверждена',
+        next:github?'':'Подключить репозиторий к Railway'
+      },
+      supabase:{
+        state:database?'connected':'missing',
+        description:'Товары, настройки, статусы и медиа',
+        detail:database?'Серверная база и storage подключены':'Supabase backend не настроен',
+        next:database?'':'Добавить Supabase URL, key и server secret'
+      },
+      n8n:{
+        state:(n8nServer&&n8nWorkflow&&n8nGeneration&&n8nPostgres)?'connected':(n8nServer&&(n8nWorkflow||n8nGeneration))?'partial':'missing',
+        description:'Оркестрация автоматизаций + постоянная PostgreSQL',
+        detail:'Сервер: '+(n8nServer?'онлайн':'нет')+' · архив: '+(n8nWorkflow?'подключён':'нет')+' · генерация: '+(n8nGeneration?'подключена':'нет')+' · PostgreSQL: '+(n8nPostgres?'подключён':'не подтверждён'),
+        next:(n8nServer&&n8nWorkflow&&n8nGeneration&&n8nPostgres)?'':'Довести все workflow до постоянного n8n'
+      },
+      drive:{
+        state:drive?(driveMigrated?'connected':'partial'):'missing',
+        description:'Исходники, генерации, готовые ролики и архив',
+        detail:drive?(driveMigrated?'OAuth работает в постоянном n8n':'Архив работает, но Google Drive credential ещё остаётся в старом n8n'):'Google Drive не подключён',
+        next:drive&&!driveMigrated?'Перенести OAuth credential в n8n-v2-persistent':drive?'':'Подключить Google Drive'
+      },
+      higgsfield:{
+        state:higgsfield?(higgsfieldCallbackVerified?'connected':'partial'):'missing',
+        description:'AI-видео, сцены и референсные персонажи',
+        detail:higgsfield?(higgsfieldCallbackVerified?'API и возврат готового видео проверены':'API и generation webhook подключены; финальный callback видео ещё проверяем'):'Higgsfield API не подключён',
+        next:higgsfield&&!higgsfieldCallbackVerified?'Подтвердить возврат готового видео в карточку ролика':higgsfield?'':'Добавить API Key ID + Secret'
+      },
+      openai:{
+        state:openai?'connected':'missing',
+        description:'Сценарии, хуки, storyboard, промты и AI-проверка',
+        detail:openai?'OpenAI API ключ подключён':'Production OpenAI API пока не подключён',
+        next:openai?'':'Подключить OPENAI_API_KEY'
+      },
+      chatgpt:{
+        state:chatgptControl?'connected':'missing',
+        description:'Чат-пульт внутри Content Factory для управления заводом',
+        detail:chatgptControl?'Управление задачами через встроенный ChatGPT активно':'Встроенный управляющий чат ещё не создан',
+        next:chatgptControl?'':'После OpenAI API добавить чат + tool calling'
+      },
+      assembly:{
+        state:(ffmpeg&&remotion)?'connected':(ffmpeg||remotion)?'partial':'missing',
+        description:'Сборка сцен, музыка, титры и финальный MP4',
+        detail:'FFmpeg: '+(ffmpeg?'подключён':'нет')+' · Remotion: '+(remotion?'подключён':'нет'),
+        next:(ffmpeg&&remotion)?'':'Добавить deterministic final assembly'
+      },
+      runway:{
+        state:runway?'connected':'missing',
+        description:'Дополнительная генерация и AI-редактирование видео',
+        detail:runway?'Backend Runway API подключён':'Runway backend API не подключён',
+        next:runway?'':'Опционально подключить API и кредиты'
+      },
+      descript:{
+        state:descript?'connected':'missing',
+        description:'Голос, субтитры и дополнительная обработка',
+        detail:descript?'Descript backend token подключён':'Descript backend token не подключён',
+        next:descript?'':'Опционально подключить API token'
+      },
+      socials:{
+        state:(tiktok&&instagram&&youtube)?'connected':(tiktok||instagram||youtube)?'partial':'missing',
+        description:'Автопубликация готовых роликов',
+        detail:'TikTok: '+(tiktok?'да':'нет')+' · Instagram: '+(instagram?'да':'нет')+' · YouTube: '+(youtube?'да':'нет'),
+        next:(tiktok&&instagram&&youtube)?'':'Подключить публикацию после готового монтажного конвейера'
+      }
+    };
+
     return json(res,200,{ok:true,services:{
-      database:supabaseConfigured(),
-      n8nServer:await n8nAlive(),
-      n8nWorkflow:process.env.N8N_CONTENT_WEBHOOK_ACTIVE === 'true',
-      higgsfield:higgsfieldConfigured(),
-      n8nGeneration:Boolean(process.env.N8N_GENERATION_WEBHOOK),
-      runway:Boolean(process.env.RUNWAYML_API_SECRET),
-      descript:Boolean(process.env.DESCRIPT_API_TOKEN),
-      drive:process.env.GOOGLE_DRIVE_CONNECTED === 'true',
-    }});
+      database,n8nServer,n8nWorkflow,higgsfield,n8nGeneration,runway,descript,drive,
+      railway,github,n8nPostgres,openai,chatgptControl,ffmpeg,remotion,tiktok,instagram,youtube
+    },details});
   }
 
   if(url.pathname==='/api/state' && req.method==='GET'){

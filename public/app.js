@@ -247,19 +247,30 @@ function renderCosts(){const t=runs.reduce((s,r)=>s+(Number(r.cost)||0),0),c=run
 $("#saveBudget").onclick=()=>{settings.budgetCampaign=Number($("#budgetCampaign").value)||5000;settings.budgetAttempts=Number($("#budgetAttempts").value)||3;settings.budgetApproval=Number($("#budgetApproval").value)||100;log("Обновлены бюджетные лимиты","Кампания: "+settings.budgetCampaign+" ₽");persist()};
 function renderJournal(){$("#journalList").innerHTML=journal.length?journal.slice().reverse().map(j=>'<div class="journal-row '+(j.type==="error"?"error":"")+'"><span class="journal-time">'+esc(j.time)+'</span><span class="journal-dot"></span><span><b>'+esc(j.title)+'</b><small>'+esc(j.detail||"")+'</small></span></div>').join(""):'<div class="empty">Журнал пока пуст.</div>'}
 async function renderConnections(){
-  let s={services:{}};
+  let s={services:{},details:{}};
   try{s=await (await fetch("/api/status",{cache:"no-store"})).json()}catch{}
+  const D=s.details||{};
   const R=[
-    ["Серверная база",s.services?.database,"Supabase · товары, настройки и история",""],
-    ["n8n — сервер",s.services?.n8nServer,"Оркестрация автоматизаций",""],
-    ["n8n — архив",s.services?.n8nWorkflow,"Приём задания и Google Drive",s.services?.n8nWorkflow?"":"Архивный workflow ещё не опубликован"],
-    ["n8n — генерация",s.services?.n8nGeneration,"Higgsfield generation pipeline",s.services?.n8nGeneration?"":"Генерационный workflow ещё не подключён"],
-    ["Higgsfield",s.services?.higgsfield,"Сцены, видео и AI-персонажи",s.services?.higgsfield?"API завода подключён":"Нужен API-доступ завода"],
-    ["Runway",s.services?.runway,"Генерация и обработка",s.services?.runway?"":"Аккаунт ChatGPT подключён · нужен API-ключ и кредиты"],
-    ["Descript",s.services?.descript,"Монтаж и финальная сборка",s.services?.descript?"":"Аккаунт ChatGPT подключён · нужен API token"],
-    ["Google Drive",s.services?.drive,"Архив исходников и результатов",s.services?.drive?"":"Аккаунт ChatGPT подключён · нужен OAuth в n8n"]
+    ["Railway","railway"],
+    ["GitHub","github"],
+    ["Supabase","supabase"],
+    ["n8n + PostgreSQL","n8n"],
+    ["Google Drive","drive"],
+    ["Higgsfield API","higgsfield"],
+    ["OpenAI API","openai"],
+    ["ChatGPT внутри Content Factory","chatgpt"],
+    ["FFmpeg / Remotion","assembly"],
+    ["Runway","runway"],
+    ["Descript","descript"],
+    ["TikTok / Instagram / YouTube","socials"]
   ];
-  $("#connections").innerHTML=R.map(x=>'<div class="conn"><div class="conn-left"><span class="dot '+(x[1]?"on":"")+'"></span><span><b>'+x[0]+'</b><small>'+x[2]+'</small>'+(x[3]?'<small class="conn-note">'+x[3]+'</small>':'')+'</span></div><span class="status '+(x[1]?"done":"wait")+'">'+(x[1]?"Подключено":"Нужно подключить")+'</span></div>').join("");
+  const fallback={state:"missing",description:"Статус недоступен",detail:"Не удалось получить данные",next:"Проверить backend"};
+  const statusMeta=state=>state==="connected"?["done","Подключено","on"]:state==="partial"?["work","Частично","partial"]:["wait","Не подключено",""];
+  $("#connections").innerHTML=R.map(([name,key])=>{
+    const x=D[key]||fallback;
+    const [statusClass,label,dotClass]=statusMeta(x.state);
+    return '<div class="conn conn-detailed"><div class="conn-left"><span class="dot '+dotClass+'"></span><span><b>'+esc(name)+'</b><small>'+esc(x.description||"")+'</small>'+(x.detail?'<small class="conn-note">'+esc(x.detail)+'</small>':'')+(x.next?'<small class="conn-next">Следующий шаг: '+esc(x.next)+'</small>':'')+'</span></div><span class="status '+statusClass+'">'+label+'</span></div>'
+  }).join("");
   $(".mode-card[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===settings.mode))
 }
 $$(".mode-card[data-mode]").forEach(b=>b.onclick=()=>{settings.mode=b.dataset.mode;createMode=settings.mode;log("Изменён режим производства",settings.mode==="auto"?"Автопилот":"Ручной контроль");persist()});$$(".mode-card[data-create-mode]").forEach(b=>b.onclick=()=>{$$(".mode-card[data-create-mode]").forEach(x=>x.classList.remove("active"));b.classList.add("active");createMode=b.dataset.createMode});
