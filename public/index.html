@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=17" />
+  <link rel="stylesheet" href="/style.css?v=18" />
 </head>
 <body>
   <div class="shell">
@@ -46,6 +46,7 @@
           <button class="nav" data-go="analytics"><span>↗</span><b>Аналитика</b></button>
           <button class="nav" data-go="costs"><span>₽</span><b>Расходы</b></button>
           <button class="nav" data-go="journal"><span>☷</span><b>Журнал</b></button>
+          <button class="nav" data-go="assistant"><span>✦</span><b>ChatGPT-пульт</b></button>
           <button class="nav" data-go="profile"><span>⚙</span><b>Подключения</b></button>
         </nav>
       </div>
@@ -187,6 +188,20 @@
         <div class="panel"><div id="journalList" class="journal-list"></div></div>
       </section>
 
+      <section class="page" id="assistant">
+        <header class="section-head"><div><span class="kicker">AI-ПУЛЬТ</span><h1>ChatGPT</h1><p>Команды и управление Content Factory обычным языком</p></div></header>
+        <section class="panel chat-panel">
+          <div class="chat-toolbar"><div><b>Content Factory Assistant</b><small id="chatStatus">Проверяю подключение…</small></div><button class="secondary" id="clearChat">Очистить</button></div>
+          <div id="chatMessages" class="chat-messages">
+            <div class="chat-bubble assistant"><b>ChatGPT</b><p>После подключения OpenAI API здесь можно будет управлять заводом обычными командами.</p></div>
+          </div>
+          <form id="chatForm" class="chat-form">
+            <textarea id="chatInput" rows="3" placeholder="Например: какие ролики сейчас в работе?"></textarea>
+            <button class="btn primary" type="submit">Отправить</button>
+          </form>
+        </section>
+      </section>
+
       <section class="page" id="profile">
         <header class="section-head"><div><span class="kicker">СИСТЕМА</span><h1>Подключения</h1><p>Сервисы, участвующие в Content Factory</p></div></header>
         <section class="panel"><div id="connections" class="connections"></div></section>
@@ -252,6 +267,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=17"></script>
+  <script src="/app.js?v=18"></script>
 </body>
 </html>

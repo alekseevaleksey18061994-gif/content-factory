@@ -1,12 +1,17 @@
 {
   "name": "content-factory",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "@higgsfield/client": "0.2.6"
+    "@higgsfield/client": "0.2.6",
+    "ffmpeg-static": "5.2.0",
+    "remotion": "4.0.376",
+    "@remotion/renderer": "4.0.376",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
   }
 }
