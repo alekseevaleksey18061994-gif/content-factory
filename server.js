@@ -652,6 +652,195 @@ function enqueueRunGeneration(accountId,runId,label='backend-generation'){
   generationQueues.set(key,next);
   return next;
 }
+const postProductionQueues=new Map();
+function enqueuePostProduction(accountId,runId,label='post-production'){
+  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const previous=postProductionQueues.get(key)||Promise.resolve();
+  let next;
+  next=previous.catch(()=>{}).then(()=>processRunPostProduction(key,runId)).catch(e=>{
+    console.error('['+label+'] '+runId+' '+String(e?.message||e));
+    return {ok:false,error:String(e?.message||e)};
+  }).finally(()=>{
+    if(postProductionQueues.get(key)===next)postProductionQueues.delete(key);
+  });
+  postProductionQueues.set(key,next);
+  return next;
+}
+async function downloadUrlFile(url,filePath){
+  const r=await fetch(String(url||''));
+  if(!r.ok)throw new Error('Не удалось скачать сцену: HTTP '+r.status);
+  const buf=Buffer.from(await r.arrayBuffer());
+  fs.writeFileSync(filePath,buf);
+  return buf.length;
+}
+function runVoiceLines(run){
+  const board=Array.isArray(run?.storyboard)?run.storyboard:[];
+  return board.map((scene,i)=>({scene:i+1,duration:sceneDurationSeconds(scene),text:String(scene?.voiceover||'').trim()}));
+}
+async function generateOpenAITts(text,instructions=''){
+  if(!openaiConfigured())throw new Error('OpenAI TTS не настроен');
+  const body={model:'gpt-4o-mini-tts',voice:'coral',input:String(text||'').slice(0,4000),response_format:'mp3'};
+  if(String(instructions||'').trim())body.instructions=String(instructions).slice(0,1200);
+  const r=await fetch('https://api.openai.com/v1/audio/speech',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  if(!r.ok){
+    const raw=await r.text();
+    let data;try{data=JSON.parse(raw)}catch{data={}}
+    throw new Error(data?.error?.message||('OpenAI TTS error '+r.status));
+  }
+  return Buffer.from(await r.arrayBuffer());
+}
+async function createRunVoiceover(run,dir){
+  const lines=runVoiceLines(run);
+  const instructions=String(run?.character?.voice||'Спокойный, естественный, доброжелательный женский голос. Чёткая дикция, без навязчивой рекламной подачи.');
+  const wavs=[],spoken=[];
+  for(const line of lines){
+    const wav=path.join(dir,'voice-'+line.scene+'.wav');
+    if(line.text){
+      const mp3=path.join(dir,'voice-'+line.scene+'.mp3');
+      fs.writeFileSync(mp3,await generateOpenAITts(line.text,instructions));
+      await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',mp3,'-af','apad','-t',String(line.duration),'-ar','48000','-ac','2','-c:a','pcm_s16le','-y',wav],{timeout:120000});
+      spoken.push({scene:line.scene,text:line.text,duration:line.duration});
+    }else{
+      await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t',String(line.duration),'-c:a','pcm_s16le','-y',wav],{timeout:30000});
+    }
+    wavs.push(wav);
+  }
+  const list=path.join(dir,'voice-list.txt');
+  fs.writeFileSync(list,wavs.map(x=>"file '"+x.replace(/'/g,"'\\''")+"'").join('\n'));
+  const out=path.join(dir,'voiceover.wav');
+  await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','concat','-safe','0','-i',list,'-c:a','pcm_s16le','-y',out],{timeout:120000});
+  return {path:out,spoken,provider:'openai',model:'gpt-4o-mini-tts',voice:'coral'};
+}
+async function assembleRunVideo(run,dir,voicePath){
+  const urls=(run?.generationResult?.urls||[]).filter(Boolean);
+  if(!urls.length)throw new Error('Нет сгенерированных сцен для монтажа');
+  const normalized=[];
+  for(let i=0;i<urls.length;i++){
+    const src=path.join(dir,'scene-'+(i+1)+'.mp4');
+    const norm=path.join(dir,'scene-'+(i+1)+'-norm.mp4');
+    await downloadUrlFile(urls[i],src);
+    await execFile('ffmpeg',[
+      '-hide_banner','-loglevel','error','-i',src,
+      '-vf','scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,fps=30',
+      '-an','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-movflags','+faststart','-y',norm
+    ],{timeout:240000});
+    normalized.push(norm);
+  }
+  const list=path.join(dir,'video-list.txt');
+  fs.writeFileSync(list,normalized.map(x=>"file '"+x.replace(/'/g,"'\\''")+"'").join('\n'));
+  const silent=path.join(dir,'combined-silent.mp4');
+  await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart','-y',silent],{timeout:120000});
+  const finalPath=path.join(dir,'final.mp4');
+  if(voicePath&&fs.existsSync(voicePath)){
+    await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',silent,'-i',voicePath,'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','160k','-shortest','-movflags','+faststart','-y',finalPath],{timeout:120000});
+  }else{
+    fs.copyFileSync(silent,finalPath);
+  }
+  return finalPath;
+}
+async function uploadRunMedia(accountId,runId,filePath,fileName,mimeType){
+  const stat=fs.statSync(filePath);
+  if(stat.size>145*1024*1024)throw new Error('Финальный файл слишком большой для хранилища');
+  const scoped=(accountId+'__run_'+runId).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  const data=await callProductMedia({action:'upload',productId:scoped,fileName,mimeType,dataBase64:fs.readFileSync(filePath).toString('base64')});
+  return data?.media||null;
+}
+async function runFinalQc(run,finalPath,accountId){
+  if(!openaiConfigured())return {passed:null,summary:'OpenAI недоступен — визуальная AI-проверка не выполнена.',issues:[]};
+  let evidence=null;
+  try{
+    evidence=await extractVideoEvidence(finalPath);
+    const refs=runReferenceUrls(run).slice(0,2).map(url=>({type:'input_image',image_url:url,detail:'low'}));
+    const prompt=[
+      'Ты контролёр качества рекламного вертикального ролика.',
+      'Проверь только то, что реально видно на кадрах. Не выдумывай.',
+      'Товар: '+String(run.productName||''),
+      'Правила товара: '+String(run.productRules||run.product?.rules||''),
+      'Оцени: узнаваемость товара, явные визуальные артефакты, грубые скачки между сценами, пригодность для 9:16.',
+      'Верни ТОЛЬКО JSON: {"passed":true,"summary":"","checks":{"productConsistency":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail"},"issues":[""]}'
+    ].join('\n');
+    const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+    const r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',
+      headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({model,input:[{role:'user',content:[{type:'input_text',text:prompt},...evidence.frames,...refs]}],reasoning:{effort:'low'},max_output_tokens:1800})
+    });
+    const raw=await r.text();
+    let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
+    if(!r.ok)throw new Error(response?.error?.message||('OpenAI QC error '+r.status));
+    const parsed=safeAnalysisJson(openAIText(response));
+    const priced=openAIUsageCost(response?.model||model,response?.usage||{});
+    if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'qc',description:'AI-проверка финального ролика',amountUsd:priced.amountUsd,model:response?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+    return {
+      passed:parsed?.passed!==false,
+      summary:String(parsed?.summary||'AI-проверка завершена.').slice(0,3000),
+      checks:parsed?.checks&&typeof parsed.checks==='object'?parsed.checks:{},
+      issues:Array.isArray(parsed?.issues)?parsed.issues.map(x=>String(x)).slice(0,20):[],
+      durationSeconds:Math.round(evidence.duration||0),
+      model:response?.model||model
+    };
+  }finally{
+    if(evidence?.dir)try{fs.rmSync(evidence.dir,{recursive:true,force:true})}catch{}
+  }
+}
+async function processRunPostProduction(accountId,runId){
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+  if(run.postProductionRunning)return {ok:true,alreadyRunning:true};
+  const total=Number(run.generationResult?.totalScenes||run.sceneCount||0);
+  const accepted=new Set((Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).map(Number));
+  if(!total||accepted.size<total)return {ok:false,error:'Не все сцены подтверждены'};
+  const dir=fs.mkdtempSync('/tmp/cf-post-');
+  try{
+    run.postProductionRunning=true;run.awaitingApproval=false;run.status='В работе';run.stage=run.voiceoverResult?'Монтаж':'Озвучка';run.progress=Math.max(Number(run.progress)||0,74);run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Запущена постобработка',(run.productName||run.id)+' · сцены подтверждены '+accepted.size+'/'+total);
+    await writeAppState(data,accountId);
+
+    let voicePath=null;
+    if(!run.voiceoverResult){
+      const voice=await createRunVoiceover(run,dir);
+      voicePath=voice.path;
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.voiceoverResult={ok:true,provider:voice.provider,model:voice.model,voice:voice.voice,spokenScenes:voice.spoken,completedAt:new Date().toISOString()};
+      run.stage='Монтаж';run.progress=80;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Озвучка готова',(run.productName||run.id)+' · '+voice.spoken.length+' сцен с речью');
+      await writeAppState(data,accountId);
+    }else{
+      voicePath=(await createRunVoiceover(run,dir)).path;
+    }
+
+    const finalPath=await assembleRunVideo(run,dir,voicePath);
+    const media=await uploadRunMedia(accountId,runId,finalPath,'final-'+runId+'.mp4','video/mp4');
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    run.montageResult={ok:true,url:media?.url||'',path:media?.path||'',fileName:media?.fileName||('final-'+runId+'.mp4'),durationSeconds:Math.round(await probeDuration(finalPath)),completedAt:new Date().toISOString()};
+    run.stage='AI-проверка';run.progress=88;run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Монтаж готов',run.productName||run.id);
+    await writeAppState(data,accountId);
+
+    const qc=await runFinalQc(run,finalPath,accountId);
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    run.qcResult={...qc,completedAt:new Date().toISOString()};
+    run.postProductionRunning=false;run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;run.error='';run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Финальный ролик готов к проверке',(run.productName||run.id)+' · '+String(qc?.summary||''));
+    await writeAppState(data,accountId);
+    return {ok:true,run};
+  }catch(e){
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run){
+      run.postProductionRunning=false;run.status='Ошибка';run.error='Постобработка: '+String(e?.message||e);run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Ошибка постобработки',(run.productName||run.id)+' · '+String(e?.message||e));
+      await writeAppState(data,accountId);
+    }
+    return {ok:false,error:String(e?.message||e)};
+  }finally{
+    try{fs.rmSync(dir,{recursive:true,force:true})}catch{}
+  }
+}
+
 async function processRunGeneration(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
