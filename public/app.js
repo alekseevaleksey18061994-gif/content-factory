@@ -10,7 +10,10 @@ const starter=[
 {id:"holder",name:"Держатель полотенец",category:"Дом и кухня",icon:"🧻",tag:"Новинка",utp:"Аккуратный вид, удобная установка, наглядная демонстрация.",rules:"Сохранять реальную конструкцию, комплект и пропорции.",masterStyle:"Премиальный интерьер"},
 {id:"curler",name:"Мини-плойка",category:"Красота и уход",icon:"〰️",tag:"Популярно",utp:"Компактность, быстрый визуальный результат, UGC-подача.",rules:"Не менять форму корпуса и органы управления.",masterStyle:"Beauty UGC"}
 ];
-let products=load("cf_products",[]),runs=load("cf_runs",[]),campaigns=load("cf_campaigns",[]),scripts=load("cf_scripts",[]),characters=load("cf_characters",[]),journal=load("cf_journal",[]),settings=load("cf_settings",{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
+let activeAccountId=load("cf_active_account","main"),accounts=[];
+const accountLocalKey=key=>activeAccountId==="main"?key:key+"__"+activeAccountId;
+const chatLocalKey=()=>activeAccountId==="main"?"cf_chat_history":"cf_chat_history__"+activeAccountId;
+let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
 let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto";
 const ST=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];
 const prod=id=>products.find(x=>x.id===id),camp=id=>campaigns.find(x=>x.id===id);
@@ -20,13 +23,13 @@ const sidx=r=>Math.max(0,ST.indexOf(norm(r)));
 const pct=r=>Number.isFinite(r.progress)?Math.max(0,Math.min(100,r.progress)):Math.round(sidx(r)/(ST.length-1)*100);
 const scl=s=>s==="Готово"||s==="Запланировано"||s==="Опубликовано"?"done":s==="На проверке"?"review":s==="Ошибка"?"error":s==="В работе"?"work":"wait";
 function saveLocalState(){
-  save("cf_products",products);
-  save("cf_runs",runs);
-  save("cf_campaigns",campaigns);
-  save("cf_scripts",scripts);
-  save("cf_characters",characters);
-  save("cf_journal",journal.slice(-500));
-  save("cf_settings",settings);
+  save(accountLocalKey("cf_products"),products);
+  save(accountLocalKey("cf_runs"),runs);
+  save(accountLocalKey("cf_campaigns"),campaigns);
+  save(accountLocalKey("cf_scripts"),scripts);
+  save(accountLocalKey("cf_characters"),characters);
+  save(accountLocalKey("cf_journal"),journal.slice(-500));
+  save(accountLocalKey("cf_settings"),settings);
 }
 function stateSnapshot(){
   return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),settings};
@@ -34,12 +37,12 @@ function stateSnapshot(){
 let syncTimer=null;
 async function pushState(){
   try{
-    await fetch("/api/state",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({data:stateSnapshot()})});
+    await fetch("/api/state?account="+encodeURIComponent(activeAccountId),{method:"PUT",headers:{"content-type":"application/json","x-content-account":activeAccountId},body:JSON.stringify({accountId:activeAccountId,data:stateSnapshot()})});
   }catch{}
 }
 async function syncFromServer(){
   try{
-    const r=await fetch("/api/state",{cache:"no-store"});
+    const r=await fetch("/api/state?account="+encodeURIComponent(activeAccountId),{cache:"no-store",headers:{"x-content-account":activeAccountId}});
     if(!r.ok)return;
     const payload=await r.json();
     const data=payload?.data;
@@ -81,6 +84,7 @@ function go(id){
   $$(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
   setMobileDrawer(false);
   if(id==="profile")renderConnections();
+  if(id==="account")renderAccounts();
   if(id==="assistant")refreshChatStatus();
   scrollTo({top:0,behavior:"smooth"});
 }
@@ -271,7 +275,7 @@ function renderAnalytics(){const p=runs.filter(r=>r.status==="Опубликов
 function renderCosts(){const t=runs.reduce((s,r)=>s+(Number(r.cost)||0),0),c=runs.filter(r=>Number(r.cost)>0).length,a=c?Math.round(t/c):0,re=runs.reduce((s,r)=>s+Math.max(0,(r.attempt||1)-1),0);$("#costStats").innerHTML=stat("₽","Всего",t+" ₽")+stat("▥","Средний ролик",a+" ₽","blue")+stat("↻","Повторных попыток",re,"warn")+stat("◉","Лимит кампании",(settings.budgetCampaign||5000)+" ₽","purple");$("#budgetCampaign").value=settings.budgetCampaign||5000;$("#budgetAttempts").value=settings.budgetAttempts||3;$("#budgetApproval").value=settings.budgetApproval||100;$("#costRows").innerHTML=runs.filter(r=>r.cost).reverse().slice(0,20).map(r=>'<div class="library-item"><div><h3>'+esc(pname(r))+'</h3><p>'+esc(norm(r))+" · "+esc(r.modelMode||"Авто")+'</p></div><b>'+r.cost+' ₽</b></div>').join("")||'<div class="empty">Расходы появятся после реальных генераций.</div>'}
 $("#saveBudget").onclick=()=>{settings.budgetCampaign=Number($("#budgetCampaign").value)||5000;settings.budgetAttempts=Number($("#budgetAttempts").value)||3;settings.budgetApproval=Number($("#budgetApproval").value)||100;log("Обновлены бюджетные лимиты","Кампания: "+settings.budgetCampaign+" ₽");persist()};
 
-let chatHistory=load("cf_chat_history",[]);
+let chatHistory=load(chatLocalKey(),[]);
 function renderChat(){
   const box=$("#chatMessages");
   if(!box)return;
@@ -296,19 +300,19 @@ async function sendChatMessage(raw,input=null){
   if(!message)return;
   const previous=chatHistory.slice(-12);
   chatHistory.push({role:"user",content:message});
-  save("cf_chat_history",chatHistory.slice(-30));
+  save(chatLocalKey(),chatHistory.slice(-30));
   if(input)input.value="";
   go("assistant");
   renderChat();
   const status=$("#chatStatus"); if(status)status.textContent="Думаю…";
   try{
-    const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message,history:previous})});
+    const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message,history:previous,accountId:activeAccountId})});
     const data=await r.json().catch(()=>({}));
     chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});
   }catch(err){
     chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});
   }
-  save("cf_chat_history",chatHistory.slice(-30));
+  save(chatLocalKey(),chatHistory.slice(-30));
   await syncFromServer();
   renderChat();
   refreshChatStatus();
@@ -324,7 +328,126 @@ if($("#mobileChatDock"))$("#mobileChatDock").onsubmit=e=>{
   sendChatMessage(input?.value,input);
 };
 $("#mobileChatDockOpen")?.addEventListener("click",()=>go("assistant"));
-if($("#clearChat"))$("#clearChat").onclick=()=>{chatHistory=[];save("cf_chat_history",chatHistory);renderChat()};
+if($("#clearChat"))$("#clearChat").onclick=()=>{chatHistory=[];save(chatLocalKey(),chatHistory);renderChat()};
+function activeAccount(){
+  return accounts.find(x=>x.id===activeAccountId)||accounts[0]||null;
+}
+function accountInitial(a){
+  return String(a?.name||a?.owner||'A').trim().charAt(0).toUpperCase()||'A';
+}
+async function loadAccounts(){
+  try{
+    const r=await fetch("/api/accounts",{cache:"no-store"});
+    const data=await r.json();
+    if(!r.ok||!Array.isArray(data.accounts))return;
+    accounts=data.accounts;
+    if(!accounts.some(x=>x.id===activeAccountId)){
+      activeAccountId=accounts[0]?.id||"main";
+      save("cf_active_account",activeAccountId);
+    }
+    renderAccounts();
+    renderAccountChrome();
+  }catch{}
+}
+function renderAccountChrome(){
+  const a=activeAccount();
+  $(".account-avatar").forEach(el=>el.textContent=accountInitial(a));
+  const side=$("#accountSideName");
+  if(side)side.textContent=a?.name||"Основной аккаунт";
+}
+function renderAccounts(){
+  const list=$("#accountList"); if(!list)return;
+  list.innerHTML=accounts.map(a=>'<button class="account-card '+(a.id===activeAccountId?'active':'')+'" onclick="switchAccount(\''+a.id+'\')"><span class="account-card-avatar">'+esc(accountInitial(a))+'</span><span><b>'+esc(a.name||'Аккаунт')+'</b><small>'+esc(a.company||a.owner||'Отдельное рабочее пространство')+'</small></span><em>'+(a.id===activeAccountId?'Активен':'Переключить')+'</em></button>').join("");
+  const a=activeAccount();
+  if(!a)return;
+  if($("#accountName"))$("#accountName").value=a.name||"";
+  if($("#accountOwner"))$("#accountOwner").value=a.owner||"";
+  if($("#accountCompany"))$("#accountCompany").value=a.company||"";
+  if($("#accountEmail"))$("#accountEmail").value=a.email||"";
+  if($("#accountPhone"))$("#accountPhone").value=a.phone||"";
+  if($("#accountNotes"))$("#accountNotes").value=a.notes||"";
+  if($("#deleteAccount"))$("#deleteAccount").style.display=a.id==="main"?"none":"inline-flex";
+  renderAccountChrome();
+}
+function loadLocalAccountState(){
+  products=load(accountLocalKey("cf_products"),[]);
+  runs=load(accountLocalKey("cf_runs"),[]);
+  campaigns=load(accountLocalKey("cf_campaigns"),[]);
+  scripts=load(accountLocalKey("cf_scripts"),[]);
+  characters=load(accountLocalKey("cf_characters"),[]);
+  journal=load(accountLocalKey("cf_journal"),[]);
+  settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
+  chatHistory=load(chatLocalKey(),[]);
+  selectedProductId=products[0]?.id||null;
+  selectedRunId=runs.at(-1)?.id||null;
+  createMode=settings.mode||"auto";
+}
+window.switchAccount=async id=>{
+  if(id===activeAccountId){go("account");return}
+  await pushState();
+  activeAccountId=id;
+  save("cf_active_account",activeAccountId);
+  loadLocalAccountState();
+  renderAll();
+  await syncFromServer();
+  renderAccountChrome();
+  go("home");
+};
+$("#addAccount")?.addEventListener("click",()=>{
+  if($("#newAccountName"))$("#newAccountName").value="";
+  if($("#newAccountOwner"))$("#newAccountOwner").value=activeAccount()?.owner||"Алексей";
+  if($("#newAccountCompany"))$("#newAccountCompany").value="";
+  if($("#createAccountMessage"))$("#createAccountMessage").textContent="";
+  openM("accountModal");
+});
+$("#createAccountBtn")?.addEventListener("click",async()=>{
+  const btn=$("#createAccountBtn"),msg=$("#createAccountMessage");
+  const name=$("#newAccountName")?.value.trim();
+  if(!name){if(msg)msg.textContent="Укажи название аккаунта.";return}
+  btn.disabled=true;if(msg)msg.textContent="Создаю…";
+  try{
+    const r=await fetch("/api/accounts",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      name,
+      owner:$("#newAccountOwner")?.value.trim()||"",
+      company:$("#newAccountCompany")?.value.trim()||""
+    })});
+    const data=await r.json();
+    if(!r.ok)throw new Error(data.error||data.detail||"Ошибка создания");
+    await loadAccounts();
+    closeM("accountModal");
+    await switchAccount(data.account.id);
+  }catch(e){if(msg)msg.textContent=String(e?.message||e)}
+  finally{btn.disabled=false}
+});
+$("#accountProfileForm")?.addEventListener("submit",async e=>{
+  e.preventDefault();
+  const msg=$("#accountMessage");if(msg)msg.textContent="Сохраняю…";
+  try{
+    const r=await fetch("/api/accounts",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({
+      id:activeAccountId,
+      name:$("#accountName")?.value.trim()||"",
+      owner:$("#accountOwner")?.value.trim()||"",
+      company:$("#accountCompany")?.value.trim()||"",
+      email:$("#accountEmail")?.value.trim()||"",
+      phone:$("#accountPhone")?.value.trim()||"",
+      notes:$("#accountNotes")?.value.trim()||""
+    })});
+    const data=await r.json();
+    if(!r.ok)throw new Error(data.error||data.detail||"Ошибка сохранения");
+    await loadAccounts();
+    if(msg)msg.textContent="Сохранено.";
+  }catch(e){if(msg)msg.textContent=String(e?.message||e)}
+});
+$("#deleteAccount")?.addEventListener("click",async()=>{
+  const a=activeAccount();if(!a||a.id==="main")return;
+  if(!confirm('Удалить аккаунт «'+a.name+'» и его рабочие данные?'))return;
+  const r=await fetch("/api/accounts?id="+encodeURIComponent(a.id),{method:"DELETE"});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){if($("#accountMessage"))$("#accountMessage").textContent=data.error||"Не удалось удалить.";return}
+  activeAccountId="main";save("cf_active_account",activeAccountId);
+  await loadAccounts();loadLocalAccountState();await syncFromServer();go("account");
+});
+
 function renderJournal(){$("#journalList").innerHTML=journal.length?journal.slice().reverse().map(j=>'<div class="journal-row '+(j.type==="error"?"error":"")+'"><span class="journal-time">'+esc(j.time)+'</span><span class="journal-dot"></span><span><b>'+esc(j.title)+'</b><small>'+esc(j.detail||"")+'</small></span></div>').join(""):'<div class="empty">Журнал пока пуст.</div>'}
 async function renderConnections(){
   let s={services:{},details:{}};
@@ -373,7 +496,7 @@ $("#launch").onclick=async()=>{
     locks:chosenCharacter.locks||"",
     media:(chosenCharacter.media||[]).map(m=>({id:m.id,url:m.url,path:m.path,isPrimary:!!m.isPrimary}))
   }:null;
-  const base={batchId:uid("batch"),productId:$("#productSelect").value,productName:chosenProduct?.name||"Товар",productUtp:chosenProduct?.utp||"",productRules:chosenProduct?.rules||"",media:productMedia,product:{id:chosenProduct?.id||null,name:chosenProduct?.name||"Товар",utp:chosenProduct?.utp||"",rules:chosenProduct?.rules||"",media:productMedia},campaignId:$("#campaignSelect").value||null,characterId:chosenCharacter?.id||null,character:characterPayload,avatarReferences:characterPayload?.media||[],brief:$("#brief").value.trim(),style:$("#style").value,duration:$("#duration").value,count:$("#count").value,format:$("#format").value,platforms,mode:createMode,modelMode:$("#modelMode").value,budget:Number($("#runBudget").value)||500,maxAttempts:Number($("#runAttempts").value)||3,created:now()};
+  const base={accountId:activeAccountId,batchId:uid("batch"),productId:$("#productSelect").value,productName:chosenProduct?.name||"Товар",productUtp:chosenProduct?.utp||"",productRules:chosenProduct?.rules||"",media:productMedia,product:{id:chosenProduct?.id||null,name:chosenProduct?.name||"Товар",utp:chosenProduct?.utp||"",rules:chosenProduct?.rules||"",media:productMedia},campaignId:$("#campaignSelect").value||null,characterId:chosenCharacter?.id||null,character:characterPayload,avatarReferences:characterPayload?.media||[],brief:$("#brief").value.trim(),style:$("#style").value,duration:$("#duration").value,count:$("#count").value,format:$("#format").value,platforms,mode:createMode,modelMode:$("#modelMode").value,budget:Number($("#runBudget").value)||500,maxAttempts:Number($("#runAttempts").value)||3,created:now()};
   $("#launch").disabled=true;$("#launchMsg").textContent="Запускаю производство…";
   const res=await api({action:"create_batch",...base}),arr=[];
   for(let i=1;i<=n;i++)arr.push({id:uid("r"),...base,variant:n>1?i:null,status:"В работе",stage:"Сценарий",progress:8,attempt:1,sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[]});
@@ -382,10 +505,10 @@ $("#launch").onclick=async()=>{
   $("#launchMsg").textContent=res.ok?"Передано в n8n. Фото товара и AI-аватара переданы как референсы.":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";
   $("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)
 };
-function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();refreshChatStatus();renderConnections()}
+function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();renderAccounts();refreshChatStatus();renderConnections()}
 if("serviceWorker" in navigator){
   navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{});
 }
 if("caches" in window)caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))).catch(()=>{});
 window.addEventListener("pageshow",()=>{window.scrollTo({top:0,left:0,behavior:"instant"})},{once:true});
-renderAll();syncFromServer();
+renderAll();loadAccounts().then(()=>syncFromServer());
