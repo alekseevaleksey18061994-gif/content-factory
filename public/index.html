@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=22" />
+  <link rel="stylesheet" href="/style.css?v=23" />
 </head>
 <body>
   <div class="shell">
@@ -226,6 +226,14 @@
           <section class="panel">
             <div class="panel-title"><div><span class="mini-icon">✎</span><h2>Данные аккаунта</h2><p>Эти данные относятся только к выбранному профилю</p></div></div>
             <form id="accountProfileForm" class="account-profile-form">
+              <div class="account-photo-editor">
+                <div class="account-photo-preview" id="accountPhotoPreview"><span id="accountPhotoFallback">А</span><img id="accountPhotoImage" alt="Фото аккаунта" hidden></div>
+                <div class="account-photo-controls">
+                  <label class="btn secondary account-photo-upload">📷 Загрузить фото<input id="accountPhotoInput" type="file" accept="image/*" hidden></label>
+                  <button class="secondary" id="removeAccountPhoto" type="button">Удалить фото</button>
+                  <small>Фото относится только к выбранному аккаунту и показывается в верхней панели.</small>
+                </div>
+              </div>
               <div class="field-grid">
                 <label>Название аккаунта<input id="accountName" placeholder="Основной аккаунт"></label>
                 <label>Владелец<input id="accountOwner" placeholder="Алексей"></label>
@@ -233,7 +241,8 @@
                 <label>Email<input id="accountEmail" type="email" placeholder="email@example.com"></label>
                 <label>Телефон<input id="accountPhone" placeholder="+7 …"></label>
               </div>
-              <label>Заметки<textarea id="accountNotes" rows="4" placeholder="Что важно помнить об этом аккаунте"></textarea></label>
+              <label>Заметки<textarea id="accountNotes" rows="4" placeholder="Общие заметки по аккаунту"></textarea></label>
+              <label>Память GPT<textarea id="accountMemory" rows="5" placeholder="Например: всегда 9:16; стиль — реалистичный UGC; внешний вид товара не менять"></textarea><small class="field-hint">Эта память останется даже после «Очистить чат». Её можно менять и фразой «запомни…».</small></label>
               <div class="account-actions">
                 <button class="btn primary" type="submit">Сохранить данные</button>
                 <button class="danger-btn" id="deleteAccount" type="button">Удалить аккаунт</button>
@@ -323,6 +332,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=22"></script>
+  <script src="/app.js?v=23"></script>
 </body>
 </html>
