@@ -84,8 +84,8 @@ function setMobileDrawer(open){
   toggle?.setAttribute("aria-expanded",open?"true":"false");
 }
 function go(id,options={}){
-  $(".page").forEach(x=>x.classList.toggle("active",x.id===id));
-  $(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
+  document.querySelectorAll(".page").forEach(x=>x.classList.toggle("active",x.id===id));
+  document.querySelectorAll(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
   setMobileDrawer(false);
   if(id==="profile")renderConnections();
   if(id==="account")renderAccounts();
