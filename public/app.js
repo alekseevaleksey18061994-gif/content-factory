@@ -351,7 +351,7 @@ async function loadAccounts(){
 }
 function renderAccountChrome(){
   const a=activeAccount();
-  $(".account-avatar").forEach(el=>el.textContent=accountInitial(a));
+  document.querySelectorAll(".account-avatar").forEach(el=>el.textContent=accountInitial(a));
   const side=$("#accountSideName");
   if(side)side.textContent=a?.name||"Основной аккаунт";
 }
