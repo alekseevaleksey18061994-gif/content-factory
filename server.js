@@ -623,6 +623,20 @@ function sceneDurationSeconds(scene){
   }
   return 5;
 }
+const generationQueues=new Map();
+function enqueueRunGeneration(accountId,runId,label='backend-generation'){
+  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const previous=generationQueues.get(key)||Promise.resolve();
+  let next;
+  next=previous.catch(()=>{}).then(()=>processRunGeneration(key,runId)).catch(e=>{
+    console.error('['+label+'] '+runId+' '+String(e?.message||e));
+    return {ok:false,error:String(e?.message||e)};
+  }).finally(()=>{
+    if(generationQueues.get(key)===next)generationQueues.delete(key);
+  });
+  generationQueues.set(key,next);
+  return next;
+}
 async function processRunGeneration(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
@@ -759,7 +773,7 @@ async function dispatchExistingRun(accountId,run){
     current.updatedAt=new Date().toISOString();
     await writeAppState(data,accountId);
   }
-  processRunGeneration(accountId,run.id).catch(e=>console.error('[backend-generation] '+run.id+' '+String(e?.message||e)));
+  enqueueRunGeneration(accountId,run.id,'backend-generation');
   return {ok:true,data:{archive,generation:{ok:true,status:'backend-direct'}}};
 }
 async function createBatchRuns(payload,accountId){
@@ -856,7 +870,7 @@ async function runControlAction(body,accountId){
     run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Перегенерация сцены',(run.productName||run.id)+' · сцена '+scene+' · V'+run.sceneVersions[scene]);
     await writeAppState(data,accountId);
-    processRunGeneration(accountId,run.id).catch(e=>console.error('[regenerate-scene] '+run.id+' '+String(e?.message||e)));
+    enqueueRunGeneration(accountId,run.id,'regenerate-scene');
     return run;
   }
   if(action==='accept_scene'){
@@ -2077,7 +2091,7 @@ async function recoverPendingBackendGenerations(){
           run.generationError='';
           run.updatedAt=new Date().toISOString();
           await writeAppState(data,accountId);
-          processRunGeneration(accountId,run.id).catch(e=>console.error('[backend-generation-recovery] '+run.id+' '+String(e?.message||e)));
+          enqueueRunGeneration(accountId,run.id,'backend-generation-recovery');
         }
       }
     }
@@ -2744,8 +2758,18 @@ const server=http.createServer(async(req,res)=>{
 
 server.listen(port,'0.0.0.0',async()=>{
   console.log(`Content Factory запущен на порту ${port}`);
-  setTimeout(()=>recoverLegacyPlaceholderRuns(),1200);
-  setTimeout(()=>recoverPendingBackendGenerations(),3500);
+  setTimeout(async()=>{
+    try{
+      await recoverLegacyPlaceholderRuns();
+    }catch(e){
+      console.error('[startup-recovery] legacy '+String(e?.message||e));
+    }
+    try{
+      await recoverPendingBackendGenerations();
+    }catch(e){
+      console.error('[startup-recovery] generation '+String(e?.message||e));
+    }
+  },1200);
   if(process.env.CF_CHAT_SELFTEST==='1'){
     try{
       const turn1=await callOpenAIChat('Ответь только: OK1',[],DEFAULT_ACCOUNT_ID);
