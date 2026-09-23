@@ -1624,12 +1624,30 @@ async function generateHiggsfieldScene(body){
 
   const result=await client.subscribe(model,{input,withPolling:true});
   const jobs=Array.isArray(result?.jobs)?result.jobs:[];
+  const deepUrls=[];
+  const scanMediaUrls=(value,key='',depth=0)=>{
+    if(depth>6||value==null)return;
+    if(typeof value==='string'){
+      if((key==='url'||/^(output|video|image|result|raw|min)$/i.test(key))&&/^https?:\/\//i.test(value))deepUrls.push(value);
+      return;
+    }
+    if(Array.isArray(value)){for(const x of value)scanMediaUrls(x,key,depth+1);return}
+    if(typeof value==='object'){
+      for(const [k,v] of Object.entries(value)){
+        if(k==='status_url'||k==='cancel_url')continue;
+        scanMediaUrls(v,k,depth+1);
+      }
+    }
+  };
+  scanMediaUrls(result);
   const urls=[...new Set([
     ...jobs.map(job=>job?.results?.raw?.url || job?.results?.url || job?.result?.url),
     result?.video?.url,
-    ...(Array.isArray(result?.images)?result.images.map(x=>x?.url):[])
-  ].filter(Boolean))];
+    ...(Array.isArray(result?.images)?result.images.map(x=>x?.url):[]),
+    ...deepUrls
+  ].filter(x=>typeof x==='string'&&/^https?:\/\//i.test(x)))];
   const hfStatus=String(result?.status||'').toLowerCase();
+  if(!urls.length)console.warn('[higgsfield-shape] status='+hfStatus+' keys='+Object.keys(result||{}).join(','));
   const hfCompleted=Boolean(result?.isCompleted || hfStatus==='completed' || urls.length);
   if(!hfCompleted && ['failed','nsfw','canceled','cancelled'].includes(hfStatus)){
     throw new Error('Higgsfield '+hfStatus+(result?.error?': '+String(result.error):''));
