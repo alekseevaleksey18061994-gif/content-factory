@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=20" />
+  <link rel="stylesheet" href="/style.css?v=21" />
 </head>
 <body>
   <div class="shell">
@@ -48,17 +48,18 @@
           <button class="nav" data-go="costs"><span>₽</span><b>Расходы</b></button>
           <button class="nav" data-go="journal"><span>☷</span><b>Журнал</b></button>
           <button class="nav" data-go="assistant"><span>✦</span><b>ChatGPT-пульт</b></button>
+          <button class="nav" data-go="account"><span>◎</span><b>Аккаунт</b></button>
           <button class="nav" data-go="profile"><span>⚙</span><b>Подключения</b></button>
         </nav>
       </div>
 
-      <div class="side-status"><span class="online"></span><div><b>Content Factory</b><small>Система запущена</small></div></div>
+      <div class="side-status"><span class="online"></span><div><b id="accountSideName">Основной аккаунт</b><small>Система запущена</small></div></div>
     </aside>
 
     <main class="main">
       <div class="desktop-toolbar">
         <button class="global-search" id="openSearch"><span>⌕</span><span>Поиск по товарам, роликам, сценариям…</span><kbd>⌘K</kbd></button>
-        <div class="toolbar-actions"><button class="btn ghost" data-go="background">Фоновые задачи <span class="badge" id="bgBadge">0</span></button><button class="avatar">А</button></div>
+        <div class="toolbar-actions"><button class="btn ghost" data-go="background">Фоновые задачи <span class="badge" id="bgBadge">0</span></button><button class="avatar account-avatar" data-go="account" aria-label="Аккаунт">А</button></div>
       </div>
 
       <div class="mobile-global-head">
@@ -212,6 +213,34 @@
         </section>
       </section>
 
+      <section class="page" id="account">
+        <header class="section-head"><div><span class="kicker">РАБОЧЕЕ ПРОСТРАНСТВО</span><h1>Аккаунт</h1><p>Отдельные товары, ролики, настройки и GPT-контекст для каждого профиля</p></div><button class="btn primary" id="addAccount">＋ Новый аккаунт</button></header>
+        <div class="account-layout">
+          <section class="panel">
+            <div class="panel-title"><div><span class="mini-icon">◎</span><h2>Мои аккаунты</h2><p>Нажми, чтобы переключить рабочее пространство</p></div></div>
+            <div id="accountList" class="account-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-title"><div><span class="mini-icon">✎</span><h2>Данные аккаунта</h2><p>Эти данные относятся только к выбранному профилю</p></div></div>
+            <form id="accountProfileForm" class="account-profile-form">
+              <div class="field-grid">
+                <label>Название аккаунта<input id="accountName" placeholder="Основной аккаунт"></label>
+                <label>Владелец<input id="accountOwner" placeholder="Алексей"></label>
+                <label>Компания / магазин<input id="accountCompany" placeholder="Домашние Решения"></label>
+                <label>Email<input id="accountEmail" type="email" placeholder="email@example.com"></label>
+                <label>Телефон<input id="accountPhone" placeholder="+7 …"></label>
+              </div>
+              <label>Заметки<textarea id="accountNotes" rows="4" placeholder="Что важно помнить об этом аккаунте"></textarea></label>
+              <div class="account-actions">
+                <button class="btn primary" type="submit">Сохранить данные</button>
+                <button class="danger-btn" id="deleteAccount" type="button">Удалить аккаунт</button>
+              </div>
+              <div class="message" id="accountMessage"></div>
+            </form>
+          </section>
+        </div>
+      </section>
+
       <section class="page" id="profile">
         <header class="section-head"><div><span class="kicker">СИСТЕМА</span><h1>Подключения</h1><p>Сервисы, участвующие в Content Factory</p></div></header>
         <section class="panel"><div id="connections" class="connections"></div></section>
@@ -227,6 +256,20 @@
   </form>
 
   <button class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" type="button" aria-label="Закрыть меню"></button>
+
+  <div class="modal" id="accountModal" aria-hidden="true">
+    <div class="modal-card small">
+      <button class="close" data-close="accountModal">×</button>
+      <span class="kicker">НОВОЕ ПРОСТРАНСТВО</span>
+      <h2>Создать аккаунт</h2>
+      <p class="muted">У него будут свои товары, ролики, кампании, настройки и история GPT.</p>
+      <label>Название<input id="newAccountName" placeholder="Например: Домашние Решения"></label>
+      <label>Владелец<input id="newAccountOwner" placeholder="Алексей"></label>
+      <label>Компания / магазин<input id="newAccountCompany" placeholder="Название магазина"></label>
+      <button class="btn primary full" id="createAccountBtn">Создать и переключиться</button>
+      <div class="message" id="createAccountMessage"></div>
+    </div>
+  </div>
 
   <div class="modal" id="createModal" aria-hidden="true">
     <div class="modal-card">
@@ -277,6 +320,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=20"></script>
+  <script src="/app.js?v=21"></script>
 </body>
 </html>
