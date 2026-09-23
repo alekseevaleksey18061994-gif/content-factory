@@ -815,14 +815,17 @@ async function buildRunPlan(payload,accountId,variant=1,feedback=''){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
   const duration=String(payload.duration||'30 сек');
   const lockedIdea=payload.idea?normalizeIdeaStage(payload.idea,payload):await generateIdeaStage(payload,accountId,variant,feedback);
+  const scriptPayload={...payload,idea:lockedIdea};
+  const lockedScript=payload.script?normalizeScriptStage(payload.script,scriptPayload):await generateScriptStage(scriptPayload,accountId,feedback);
   const refs=[
     ...(payload.media||payload.product?.media||[]).map(x=>x?.url),
     ...(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url)
   ].filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,4);
   const prompt=[
-    'Ты режиссёр и продюсер коротких рекламных Reels/TikTok/Shorts. ИДЕЯ УЖЕ УТВЕРЖДЕНА — не меняй её, а преврати её в производственный план.',
+    'Ты режиссёр-постановщик коротких рекламных Reels/TikTok/Shorts. ИДЕЯ И СЦЕНАРИЙ УЖЕ УТВЕРЖДЕНЫ.',
     'Утверждённая идея: '+JSON.stringify(lockedIdea),
-    'Сценарий и storyboard должны точно реализовывать эту идею, а не придумывать другой ролик.',
+    'Утверждённый сценарий: '+JSON.stringify(lockedScript),
+    'НЕ переписывай сценарий и не меняй драматургию. Создай storyboard и производственные референсы строго по нему.',
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
@@ -835,9 +838,8 @@ async function buildRunPlan(payload,accountId,variant=1,feedback=''){
     feedback?('Комментарий к переделке: '+feedback):'',
     'Верни ТОЛЬКО JSON без markdown. Структура:',
     '{"idea":{"title":"","concept":"","hook":"","angle":"","why":""},"script":{"hook":"","body":"","cta":"","voiceover":"","scenes":[{"scene":1,"time":"0–5 сек","visual":"","dialogue":"","sound":""}]},"sceneCount":5,"storyboard":[{"scene":1,"title":"Хук","duration":"0–5 сек","shot":"","action":"","voiceover":"","onscreen":"","sound":"","prompt":""}],"references":{"product":[],"avatar":[],"style":"","notes":""}}',
-    'Сценарий — отдельный этап ДО storyboard. Сделай его полноценным и режиссёрским: для каждой сцены обязательно time, visual (что в кадре), dialogue (реплики/текст/озвучка) и sound (музыка/SFX/тишина).',
-    'Структура сценария должна быть такой же подробной по логике, как профессиональное ТЗ: тайминг → что в кадре → текст/реплики → звук. Не копируй чужие сюжеты, шутки или формулировки.',
-    'Storyboard должен быть визуальным продолжением уже готового сценария и покрывать весь ролик по сценам.',
+    'Storyboard должен быть визуальным продолжением уже утверждённого сценария и идти сцена-в-сцену по его таймингам, действиям, репликам и continuity.',
+    'Не добавляй новые сюжетные линии, новые свойства товара или новые реплики, которых нет в утверждённом сценарии.',
     'Каждый prompt — готовый подробный промт для генерации вертикальной сцены 9:16. Товар всегда должен оставаться узнаваемым и соответствовать референсам.'
   ].filter(Boolean).join('\n');
   const input=[{role:'user',content:[
@@ -855,11 +857,12 @@ async function buildRunPlan(payload,accountId,variant=1,feedback=''){
   if(!r.ok)throw new Error(data?.error?.message||('OpenAI planning error '+r.status));
   const priced=openAIUsageCost(data?.model||model,data?.usage||{});
   if(priced.amountUsd>0)await recordExpense(accountId,{
-    provider:'OpenAI',category:'planning',description:'Идея + сценарий + storyboard',
+    provider:'OpenAI',category:'planning',description:'Storyboard + референсы по утверждённому сценарию',
     amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
   }).catch(()=>{});
   const planned=normalizeRunPlan(safeAnalysisJson(openAIText(data)),payload);
   planned.idea=lockedIdea;
+  planned.script=lockedScript;
   return planned;
 }
 function findRunById(data,runId){
