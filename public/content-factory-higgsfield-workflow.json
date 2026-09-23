@@ -1,0 +1,213 @@
+{
+  "name": "Content Factory — Higgsfield generation pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content-factory-generate-v1",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "hf-webhook-0001",
+      "name": "Принять задачу генерации",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -700,
+        40
+      ],
+      "webhookId": "content-factory-generate-v1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const incoming=$json.body??$json;\nconst batchId=incoming.batchId||incoming.jobId||('gen-'+Date.now());\nconst productName=incoming.productName||incoming.product?.name||'Товар';\nconst brief=String(incoming.brief||incoming.generationPrompt||'').trim();\n\nconst all=[\n  ...(Array.isArray(incoming.avatarReferences)?incoming.avatarReferences:[]),\n  ...(Array.isArray(incoming.media)?incoming.media:[]),\n  ...(Array.isArray(incoming.product?.media)?incoming.product.media:[])\n];\n\nconst refs=[];\nconst seen=new Set();\nfor(const item of all){\n  const url=typeof item==='string'?item:(item?.url||item?.publicUrl||'');\n  if(typeof url!=='string'||!url.startsWith('https://')||seen.has(url)) continue;\n  seen.add(url); refs.push(url);\n  if(refs.length>=9) break;\n}\n\nconst prompt=brief || [\n  'Vertical 9:16 realistic product video.',\n  'Show the real product clearly and preserve its actual shape, color and construction.',\n  'Product: '+productName+'.',\n  'Natural commercial lighting, believable motion, clean mobile-first composition.',\n  'Do not invent specifications or features.'\n].join(' ');\n\nreturn [{json:{\n  batchId,\n  jobId:incoming.jobId||batchId,\n  productName,\n  prompt,\n  referenceMedia:refs,\n  duration:5,\n  aspectRatio:'9:16',\n  resolution:'720p',\n  generateAudio:true,\n  receivedAt:new Date().toISOString()\n}}];"
+      },
+      "id": "hf-normalize-0002",
+      "name": "Подготовить тестовую сцену",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -450,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, status: 'accepted', stage: 'higgsfield_generation', batchId: $('Подготовить тестовую сцену').item.json.batchId } }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "hf-respond-0003",
+      "name": "Ответить Content Factory",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -190,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CONTENT_FACTORY_WORKER_URL + '/api/higgsfield/generate-scene' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-content-factory-key",
+              "value": "={{ $env.CONTENT_FACTORY_INTERNAL_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ prompt: $json.prompt, duration: $json.duration, aspectRatio: $json.aspectRatio, resolution: $json.resolution, generateAudio: $json.generateAudio, referenceMedia: $json.referenceMedia }) }}",
+        "options": {
+          "timeout": 420000
+        }
+      },
+      "id": "hf-generate-0004",
+      "name": "Higgsfield — сгенерировать сцену",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -180,
+        120
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const base=$('Подготовить тестовую сцену').item.json;\nconst result=$json||{};\nconst failed=Boolean(result.error)&&!result.urls;\nreturn [{json:{\n  batchId:base.batchId,\n  jobId:base.jobId,\n  ok:!failed && result.ok!==false,\n  result,\n  error:failed?String(result.error||result.message||'Generation failed'):null,\n  completedAt:new Date().toISOString()\n}}];"
+      },
+      "id": "hf-callback-0005",
+      "name": "Подготовить callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CONTENT_FACTORY_WORKER_URL + '/api/generation/callback' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-content-factory-key",
+              "value": "={{ $env.CONTENT_FACTORY_INTERNAL_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "hf-report-0006",
+      "name": "Вернуть результат в Content Factory",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        340,
+        120
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "content": "## Content Factory — Higgsfield pipeline\\n\\nБезопасный этап генерации. Webhook отвечает 202 сразу, а генерация продолжается в фоне.\\n\\nПервый тестовый режим: 1 сцена × 5 секунд × 720p × 9:16.\\n\\nЕсли есть avatar/product reference URLs — worker использует Higgsfield Reference-to-Video. Если нет — Text-to-Video.\\n\\nКлючи Higgsfield хранятся только в Railway у Content Factory worker и не находятся в workflow.",
+        "height": 300,
+        "width": 1120,
+        "color": 7
+      },
+      "id": "hf-note-0007",
+      "name": "Описание Higgsfield pipeline",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -730,
+        -340
+      ]
+    }
+  ],
+  "connections": {
+    "Принять задачу генерации": {
+      "main": [
+        [
+          {
+            "node": "Подготовить тестовую сцену",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Подготовить тестовую сцену": {
+      "main": [
+        [
+          {
+            "node": "Ответить Content Factory",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Higgsfield — сгенерировать сцену",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Higgsfield — сгенерировать сцену": {
+      "main": [
+        [
+          {
+            "node": "Подготовить callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Подготовить callback": {
+      "main": [
+        [
+          {
+            "node": "Вернуть результат в Content Factory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "saveManualExecutions": true
+  },
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
