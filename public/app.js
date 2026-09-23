@@ -79,6 +79,43 @@ function stat(i,l,v,t=""){return '<div class="stat '+t+'"><span>'+i+'</span><div
 function primaryMedia(p){const list=Array.isArray(p?.media)?p.media:[];return list.find(m=>m.isPrimary)||list[0]||null}
 function productThumb(p,cls="product-thumb"){const m=primaryMedia(p);return '<span class="'+cls+(m?' has-image':'')+'">'+(m?'<img src="'+esc(m.url)+'" alt="'+esc(p.name||"Товар")+'">':(p.icon||"◆"))+'</span>'}
 function pcard(p){return '<button class="product-card" onclick="openProduct(\''+p.id+'\')">'+productThumb(p)+'<span><b>'+esc(p.name)+'</b><small>'+esc(p.category||"Товар")+'</small><span class="pill">'+esc(p.tag||"Товар")+'</span></span><span class="chev">›</span></button>'}
+function primaryCharacterMedia(c){const list=Array.isArray(c?.media)?c.media:[];return list.find(m=>m.isPrimary)||list[0]||null}
+function renderCharacterDraftPreview(){
+  const box=$("#characterPhotoPreview"),input=$("#characterImages");if(!box||!input)return;
+  const files=[...(input.files||[])].slice(0,10);
+  if(!files.length){box.innerHTML='<div class="avatar-preview-empty">Фото пока не выбраны</div>';return}
+  box.innerHTML=files.map((file,i)=>'<div class="avatar-preview-item"><img src="'+URL.createObjectURL(file)+'" alt="Фото '+(i+1)+'"><small>'+esc(file.name)+'</small></div>').join("");
+}
+async function uploadCharacterPhotos(character,fileList,statusEl=null){
+  const files=[...fileList].filter(Boolean).slice(0,10);
+  character.media=Array.isArray(character.media)?character.media:[];
+  let ok=0,failed=0;
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
+    if(!String(file.type||"").startsWith("image/")){failed++;continue}
+    if(file.size>10*1024*1024){failed++;if(statusEl)statusEl.textContent='Фото «'+file.name+'» больше 10 МБ — пропущено.';continue}
+    try{
+      if(statusEl)statusEl.textContent='Загружаю фото аватара '+(i+1)+' из '+files.length+'…';
+      const dataBase64=await fileDataUrl(file);
+      const resp=await fetch("/api/media/upload",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({productId:"avatar-"+character.id,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64})});
+      const body=await resp.json().catch(()=>({}));
+      if(!resp.ok||!body.media)throw new Error(body.detail||body.error||"Ошибка загрузки");
+      if(!character.media.length)body.media.isPrimary=true;
+      character.media.push(body.media);ok++;saveLocalState();renderCharacters();opts();
+    }catch(e){
+      failed++;
+      if(statusEl)statusEl.textContent='Не удалось загрузить «'+file.name+'»: '+String(e?.message||e);
+    }
+  }
+  persist();
+  if(statusEl)statusEl.textContent=failed?'Загружено: '+ok+'. Не удалось: '+failed+'.':'Готово. Фото аватара: '+character.media.length+'.';
+  return {ok,failed};
+}
+window.uploadExistingCharacterPhotos=async(e,characterId)=>{
+  const c=characters.find(x=>x.id===characterId);if(!c)return;
+  const files=[...e.target.files];const status=$("#avatarStatus-"+characterId);
+  await uploadCharacterPhotos(c,files,status);e.target.value="";renderCharacters();
+}
 function fileDataUrl(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result||""));r.onerror=()=>reject(r.error||new Error("Не удалось прочитать файл"));r.readAsDataURL(file)})}
 async function uploadPhotos(productId,fileList,statusEl=null){
   const p=prod(productId);if(!p)return {ok:0,failed:0};
@@ -168,8 +205,36 @@ function renderScripts(){$("#scriptsList").innerHTML=scripts.length?scripts.slic
 $("#addScript").onclick=()=>openM("scriptModal");$("#saveScript").onclick=()=>{const n=$("#scriptTitle").value.trim();if(!n)return;scripts.push({id:uid("s"),title:n,hook:$("#scriptHook").value.trim(),body:$("#scriptBody").value.trim(),cta:$("#scriptCta").value.trim(),used:0,created:now()});log("Сохранён сценарий",n);closeM("scriptModal");persist()};
 window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.used||0)+1;$("#brief").value=[s.hook,s.body,s.cta].filter(Boolean).join("\n");openCreate();persist()};
 function renderScenes(){const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);$("#scenesWorkspace").innerHTML=r?'<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(pname(r))+'</h2><p>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</p></div><button class="text-btn" onclick="openRun(\''+r.id+'\')">Открыть ролик ›</button></div><div class="storyboard">'+scenes(r)+'</div></section>':'<div class="panel empty">Создай ролик — здесь появится storyboard.</div>'}
-function renderCharacters(){$("#characterGrid").innerHTML=characters.length?characters.map(c=>'<article class="character-card"><div class="avatar-art">◉</div><h3>'+esc(c.name)+'</h3><p>'+esc((c.age?c.age+" лет · ":"")+(c.look||""))+'</p><div class="character-tags"><span class="chip">Лицо зафиксировано</span><span class="chip">Голос: '+(c.voiceLinked?"подключён":"ожидает")+'</span><span class="chip">Reusable character</span></div><div class="catalog-actions"><button class="btn primary" onclick="createWithCharacter(\''+c.id+'\')">Создать ролик</button></div></article>').join(""):'<div class="empty">Постоянных AI-персонажей пока нет.</div>';const S=[["UGC","Живая подача и естественный свет"],["Premium","Контролируемый свет и hero-shot"],["Viral","Быстрый хук и активный монтаж"]];$("#styleGrid").innerHTML=S.map(s=>'<article class="style-card"><div class="style-swatch"></div><h3>'+s[0]+'</h3><p>'+s[1]+'</p></article>').join("")}
-$("#addCharacter").onclick=()=>openM("characterModal");$("#saveCharacter").onclick=()=>{const n=$("#characterName").value.trim();if(!n)return;characters.push({id:uid("ch"),name:n,age:$("#characterAge").value.trim(),look:$("#characterLook").value.trim(),voice:$("#characterVoice").value.trim(),topics:$("#characterTopics").value.trim(),locks:$("#characterLocks").value.trim(),voiceLinked:false,created:now()});log("Создан паспорт AI-персонажа",n);closeM("characterModal");persist()};
+function renderCharacters(){
+  $("#characterGrid").innerHTML=characters.length?characters.map(c=>{
+    const m=primaryCharacterMedia(c),count=(c.media||[]).length;
+    return '<article class="character-card"><div class="avatar-art '+(m?"has-photo":"")+'">'+(m?'<img src="'+esc(m.url)+'" alt="'+esc(c.name)+'">':'◉')+'</div><h3>'+esc(c.name)+'</h3><p>'+esc((c.age?c.age+" лет · ":"")+(c.look||""))+'</p><div class="character-tags"><span class="chip">Фото: '+count+'</span><span class="chip">'+(count?"Лицо закреплено":"Нужны фото")+'</span><span class="chip">Голос: '+(c.voiceLinked?"подключён":"ожидает")+'</span></div><div id="avatarStatus-'+c.id+'" class="message"></div><input id="avatarUpload-'+c.id+'" type="file" accept="image/*" multiple hidden onchange="uploadExistingCharacterPhotos(event,\''+c.id+'\')"><div class="catalog-actions"><button class="btn primary" onclick="createWithCharacter(\''+c.id+'\')">Создать ролик</button><button class="secondary" onclick="document.getElementById(\'avatarUpload-'+c.id+'\').click()">＋ Фото</button></div></article>'
+  }).join(""):'<div class="empty">AI-аватаров пока нет. Создай первого и загрузи его реальные фото.</div>';
+  const S=[["UGC","Живая подача и естественный свет"],["Premium","Контролируемый свет и hero-shot"],["Viral","Быстрый хук и активный монтаж"]];
+  $("#styleGrid").innerHTML=S.map(s=>'<article class="style-card"><div class="style-swatch"></div><h3>'+s[0]+'</h3><p>'+s[1]+'</p></article>').join("")
+}
+$("#addCharacter").onclick=()=>{
+  ["characterName","characterAge","characterLook","characterVoice","characterTopics","characterLocks"].forEach(id=>{if($("#"+id))$("#"+id).value=""});
+  if($("#characterImages"))$("#characterImages").value="";
+  if($("#saveCharacterMsg"))$("#saveCharacterMsg").textContent="";
+  renderCharacterDraftPreview();openM("characterModal")
+};
+if($("#characterImages"))$("#characterImages").onchange=renderCharacterDraftPreview;
+$("#saveCharacter").onclick=async()=>{
+  const n=$("#characterName").value.trim(),files=[...($("#characterImages")?.files||[])].slice(0,10),msg=$("#saveCharacterMsg"),btn=$("#saveCharacter");
+  if(!n){msg.textContent="Укажи имя аватара.";return}
+  if(!files.length){msg.textContent="Добавь хотя бы одно фото лица.";return}
+  btn.disabled=true;msg.textContent="Сохраняю AI-аватара…";
+  const c={id:uid("ch"),name:n,age:$("#characterAge").value.trim(),look:$("#characterLook").value.trim(),voice:$("#characterVoice").value.trim(),topics:$("#characterTopics").value.trim(),locks:$("#characterLocks").value.trim(),voiceLinked:false,media:[],created:now()};
+  characters.push(c);saveLocalState();renderCharacters();
+  const result=await uploadCharacterPhotos(c,files,msg);
+  if(!result.ok){
+    characters=characters.filter(x=>x.id!==c.id);saveLocalState();renderAll();btn.disabled=false;msg.textContent="Аватар не сохранён: не удалось загрузить фото.";return
+  }
+  log("Создан AI-аватар",n+" · фото: "+c.media.length);persist();
+  if($("#characterImages"))$("#characterImages").value="";renderCharacterDraftPreview();btn.disabled=false;msg.textContent="AI-аватар сохранён.";
+  setTimeout(()=>closeM("characterModal"),500)
+};
 window.createWithCharacter=id=>{openCreate();setTimeout(()=>$("#characterSelect").value=id,0)};
 function renderPublish(){const a=runs.filter(r=>["Готово","Запланировано","Опубликовано"].includes(r.status)).reverse();$("#readyGrid").innerHTML=a.length?a.map(r=>'<article class="ready-card"><div class="video-preview" onclick="openRun(\''+r.id+'\')"><div class="video-copy">'+esc(pname(r))+'</div></div><h3>'+esc(pname(r))+'</h3><p>'+esc(r.style||"")+" · "+esc(r.duration||"")+' · 9:16</p><div class="publish-list">'+(r.platforms||["TikTok","Reels","Shorts"]).map(n=>'<div class="publish-row"><span><b>'+n+'</b><small style="display:block;color:var(--muted);margin-top:3px">'+(r.status==="Опубликовано"?"Опубликовано":r.status==="Запланировано"?"Запланировано":"Готово к публикации")+'</small></span><span class="toggle"></span></div>').join("")+'</div><div class="catalog-actions"><button class="secondary" onclick="openRun(\''+r.id+'\')">Проверить</button><button class="btn primary" onclick="scheduleRun(\''+r.id+'\')">Запланировать</button></div></article>').join(""):'<div class="panel empty">После утверждения ролики появятся здесь.</div>'}
 window.scheduleRun=id=>{const r=runs.find(x=>x.id===id);if(!r)return;const d=prompt("Дата и время публикации:",r.scheduledAt||"");if(!d)return;r.scheduledAt=d;r.status="Запланировано";r.stage="Запланировано";r.progress=96;log("Ролик запланирован",pname(r)+" · "+d);persist()};
@@ -198,7 +263,29 @@ $$(".mode-card[data-mode]").forEach(b=>b.onclick=()=>{settings.mode=b.dataset.mo
 function renderSearch(q=""){const z=q.trim().toLowerCase(),I=[...products.map(x=>({t:"Товар",n:x.name,s:x.category,a:"openProduct('"+x.id+"')"})),...runs.map(x=>({t:"Ролик",n:pname(x),s:norm(x)+" · "+(x.style||""),a:"openRun('"+x.id+"')"})),...campaigns.map(x=>({t:"Кампания",n:x.name,s:prod(x.productId)?.name||"",a:"go('campaigns')"})),...scripts.map(x=>({t:"Сценарий",n:x.title,s:x.hook||"",a:"go('scripts')"})),...characters.map(x=>({t:"Персонаж",n:x.name,s:x.look||"",a:"go('characters')"}))].filter(x=>!z||(x.n+" "+x.s+" "+x.t).toLowerCase().includes(z)).slice(0,30);$("#searchResults").innerHTML=I.length?I.map(x=>'<button class="search-result" onclick="closeModal(\'searchModal\');'+x.a+'"><b>'+esc(x.n)+'</b><small>'+x.t+" · "+esc(x.s)+'</small></button>').join(""):'<div class="empty">Ничего не найдено.</div>'}
 $("#openSearch").onclick=()=>{openM("searchModal");setTimeout(()=>$("#searchInput").focus(),50);renderSearch("")};$("#searchInput").oninput=e=>renderSearch(e.target.value);document.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();openM("searchModal");$("#searchInput").focus()}});
 async function api(payload){try{const r=await fetch("/api/start",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});return{ok:r.ok,body:await r.json().catch(()=>({}))}}catch(e){return{ok:false,body:{error:String(e)}}}}
-$("#launch").onclick=async()=>{if(!products.length)return alert("Сначала добавь товар.");const platforms=$$("[data-p]:checked").map(x=>x.dataset.p),n=Math.max(1,parseInt($("#count").value)||1),base={batchId:uid("batch"),productId:$("#productSelect").value,productName:prod($("#productSelect").value)?.name||"Товар",campaignId:$("#campaignSelect").value||null,characterId:$("#characterSelect").value||null,brief:$("#brief").value.trim(),style:$("#style").value,duration:$("#duration").value,count:$("#count").value,format:$("#format").value,platforms,mode:createMode,modelMode:$("#modelMode").value,budget:Number($("#runBudget").value)||500,maxAttempts:Number($("#runAttempts").value)||3,created:now()};$("#launch").disabled=true;$("#launchMsg").textContent="Запускаю производство…";const res=await api({action:"create_batch",...base}),arr=[];for(let i=1;i<=n;i++)arr.push({id:uid("r"),...base,variant:n>1?i:null,status:"В работе",stage:"Сценарий",progress:8,attempt:1,sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[]});runs.push(...arr);selectedRunId=arr[0]?.id;log("Запущено производство",base.productName+" · "+n+" роликов · "+(base.mode==="manual"?"ручной режим":"автопилот"));persist();$("#launchMsg").textContent=res.ok?"Передано в n8n. Все этапы видны в «Производстве».":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";$("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)};
+$("#launch").onclick=async()=>{
+  if(!products.length)return alert("Сначала добавь товар.");
+  const platforms=$$("[data-p]:checked").map(x=>x.dataset.p),n=Math.max(1,parseInt($("#count").value)||1);
+  const chosenCharacter=characters.find(c=>c.id===$("#characterSelect").value)||null;
+  const characterPayload=chosenCharacter?{
+    id:chosenCharacter.id,
+    name:chosenCharacter.name,
+    age:chosenCharacter.age||"",
+    look:chosenCharacter.look||"",
+    voice:chosenCharacter.voice||"",
+    topics:chosenCharacter.topics||"",
+    locks:chosenCharacter.locks||"",
+    media:(chosenCharacter.media||[]).map(m=>({id:m.id,url:m.url,path:m.path,isPrimary:!!m.isPrimary}))
+  }:null;
+  const base={batchId:uid("batch"),productId:$("#productSelect").value,productName:prod($("#productSelect").value)?.name||"Товар",campaignId:$("#campaignSelect").value||null,characterId:chosenCharacter?.id||null,character:characterPayload,avatarReferences:characterPayload?.media||[],brief:$("#brief").value.trim(),style:$("#style").value,duration:$("#duration").value,count:$("#count").value,format:$("#format").value,platforms,mode:createMode,modelMode:$("#modelMode").value,budget:Number($("#runBudget").value)||500,maxAttempts:Number($("#runAttempts").value)||3,created:now()};
+  $("#launch").disabled=true;$("#launchMsg").textContent="Запускаю производство…";
+  const res=await api({action:"create_batch",...base}),arr=[];
+  for(let i=1;i<=n;i++)arr.push({id:uid("r"),...base,variant:n>1?i:null,status:"В работе",stage:"Сценарий",progress:8,attempt:1,sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[]});
+  runs.push(...arr);selectedRunId=arr[0]?.id;
+  log("Запущено производство",base.productName+" · "+n+" роликов · "+(chosenCharacter?"аватар "+chosenCharacter.name+" · ":"")+(base.mode==="manual"?"ручной режим":"автопилот"));persist();
+  $("#launchMsg").textContent=res.ok?"Передано в n8n. Аватар и его фото переданы как референсы.":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";
+  $("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)
+};
 function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderConnections()}
 if("serviceWorker" in navigator){
   navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{});
