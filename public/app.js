@@ -99,7 +99,10 @@ document.addEventListener("click",e=>{
   e.preventDefault();
   go(b.dataset.go);
 });
-function openM(id){$("#"+id)?.classList.add("open")} function closeM(id){$("#"+id)?.classList.remove("open")} window.closeModal=closeM;
+function syncModalUi(){document.body.classList.toggle("modal-open",!!document.querySelector(".modal.open"))}
+function openM(id){$("#"+id)?.classList.add("open");syncModalUi()}
+function closeM(id){$("#"+id)?.classList.remove("open");syncModalUi()}
+window.closeModal=closeM;
 $$("[data-close]").forEach(b=>b.onclick=()=>closeM(b.dataset.close));$$(".modal").forEach(m=>m.onclick=e=>{if(e.target===m)closeM(m.id)});
 function opts(){const po=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");["productSelect","campaignProduct"].forEach(id=>{if($("#"+id))$("#"+id).innerHTML=po});if($("#campaignSelect"))$("#campaignSelect").innerHTML='<option value="">Без кампании</option>'+campaigns.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("");if($("#characterSelect"))$("#characterSelect").innerHTML='<option value="">Без персонажа</option>'+characters.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("")}
 function openCreate(id,platform){selectedProductId=id||selectedProductId||products[0]?.id;opts();if(selectedProductId&&$("#productSelect"))$("#productSelect").value=selectedProductId;if(platform)$$("[data-p]").forEach(x=>x.checked=x.dataset.p===platform);$("#launchMsg").textContent="";openM("createModal")}
@@ -349,19 +352,44 @@ async function loadAccounts(){
     renderAccountChrome();
   }catch{}
 }
+function accountAvatarHtml(a){return a?.avatarUrl?'<img src="'+esc(a.avatarUrl)+'" alt="">':esc(accountInitial(a))}
+async function saveAccountPatch(patch){
+  const r=await fetch("/api/accounts",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({id:activeAccountId,...patch})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(data.error||data.detail||"Ошибка сохранения");
+  await loadAccounts();
+  return data.account;
+}
+async function uploadAccountPhoto(file){
+  if(!file||!String(file.type||"").startsWith("image/"))throw new Error("Выбери изображение.");
+  if(file.size>10*1024*1024)throw new Error("Фото больше 10 МБ.");
+  const dataBase64=await fileDataUrl(file);
+  const resp=await fetch("/api/media/upload",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+    productId:"account-"+activeAccountId,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64
+  })});
+  const body=await resp.json().catch(()=>({}));
+  if(!resp.ok||!body.media)throw new Error(body.detail||body.error||"Ошибка загрузки фото");
+  const prev=activeAccount();
+  if(prev?.avatarPath&&prev.avatarPath!==body.media.path){
+    fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:prev.avatarPath})}).catch(()=>{});
+  }
+  await saveAccountPatch({avatarUrl:body.media.url||"",avatarPath:body.media.path||""});
+}
 function renderAccountChrome(){
   const a=activeAccount();
-  document.querySelectorAll(".account-avatar").forEach(el=>el.textContent=accountInitial(a));
-  const side=$("#accountSideName");
-  if(side)side.textContent=a?.name||"Основной аккаунт";
-  const mobileName=$("#mobileAccountName");
-  if(mobileName)mobileName.textContent=a?.name||"Основной";
-  const desktopName=$("#desktopAccountName");
-  if(desktopName)desktopName.textContent=a?.name||"Основной аккаунт";
+  document.querySelectorAll(".account-avatar").forEach(el=>{el.innerHTML=accountAvatarHtml(a)});
+  const side=$("#accountSideName");if(side)side.textContent=a?.name||"Основной аккаунт";
+  const mobileName=$("#mobileAccountName");if(mobileName)mobileName.textContent=a?.name||"Основной";
+  const desktopName=$("#desktopAccountName");if(desktopName)desktopName.textContent=a?.name||"Основной аккаунт";
+  const photo=$("#accountPhotoImage"),fallback=$("#accountPhotoFallback");
+  if(photo&&fallback){
+    if(a?.avatarUrl){photo.src=a.avatarUrl;photo.hidden=false;fallback.hidden=true}
+    else{photo.removeAttribute("src");photo.hidden=true;fallback.hidden=false;fallback.textContent=accountInitial(a)}
+  }
 }
 function renderAccounts(){
   const list=$("#accountList"); if(!list)return;
-  list.innerHTML=accounts.map(a=>'<button class="account-card '+(a.id===activeAccountId?'active':'')+'" onclick="switchAccount(\''+a.id+'\')"><span class="account-card-avatar">'+esc(accountInitial(a))+'</span><span><b>'+esc(a.name||'Аккаунт')+'</b><small>'+esc(a.company||a.owner||'Отдельное рабочее пространство')+'</small></span><em>'+(a.id===activeAccountId?'Активен':'Переключить')+'</em></button>').join("");
+  list.innerHTML=accounts.map(a=>'<button class="account-card '+(a.id===activeAccountId?'active':'')+'" onclick="switchAccount(\''+a.id+'\')"><span class="account-card-avatar">'+accountAvatarHtml(a)+'</span><span><b>'+esc(a.name||'Аккаунт')+'</b><small>'+esc(a.company||a.owner||'Отдельное рабочее пространство')+'</small></span><em>'+(a.id===activeAccountId?'Активен':'Переключить')+'</em></button>').join("");
   const a=activeAccount();
   if(!a)return;
   if($("#accountName"))$("#accountName").value=a.name||"";
@@ -370,6 +398,7 @@ function renderAccounts(){
   if($("#accountEmail"))$("#accountEmail").value=a.email||"";
   if($("#accountPhone"))$("#accountPhone").value=a.phone||"";
   if($("#accountNotes"))$("#accountNotes").value=a.notes||"";
+  if($("#accountMemory"))$("#accountMemory").value=a.memory||"";
   if($("#deleteAccount"))$("#deleteAccount").style.display=a.id==="main"?"none":"inline-flex";
   renderAccountChrome();
 }
@@ -423,6 +452,21 @@ $("#createAccountBtn")?.addEventListener("click",async()=>{
   }catch(e){if(msg)msg.textContent=String(e?.message||e)}
   finally{btn.disabled=false}
 });
+$("#accountPhotoInput")?.addEventListener("change",async e=>{
+  const file=e.target.files?.[0],msg=$("#accountMessage");if(!file)return;
+  if(msg)msg.textContent="Загружаю фото…";
+  try{await uploadAccountPhoto(file);if(msg)msg.textContent="Фото аккаунта сохранено."}
+  catch(err){if(msg)msg.textContent=String(err?.message||err)}
+  e.target.value="";
+});
+$("#removeAccountPhoto")?.addEventListener("click",async()=>{
+  const a=activeAccount(),msg=$("#accountMessage");
+  try{
+    if(a?.avatarPath)await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:a.avatarPath})}).catch(()=>{});
+    await saveAccountPatch({avatarUrl:"",avatarPath:""});
+    if(msg)msg.textContent="Фото удалено.";
+  }catch(err){if(msg)msg.textContent=String(err?.message||err)}
+});
 $("#accountProfileForm")?.addEventListener("submit",async e=>{
   e.preventDefault();
   const msg=$("#accountMessage");if(msg)msg.textContent="Сохраняю…";
@@ -434,7 +478,8 @@ $("#accountProfileForm")?.addEventListener("submit",async e=>{
       company:$("#accountCompany")?.value.trim()||"",
       email:$("#accountEmail")?.value.trim()||"",
       phone:$("#accountPhone")?.value.trim()||"",
-      notes:$("#accountNotes")?.value.trim()||""
+      notes:$("#accountNotes")?.value.trim()||"",
+      memory:$("#accountMemory")?.value.trim()||""
     })});
     const data=await r.json();
     if(!r.ok)throw new Error(data.error||data.detail||"Ошибка сохранения");

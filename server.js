@@ -155,6 +155,9 @@ async function ensureAccountsRegistry(){
       email:'',
       phone:'',
       notes:'',
+      memory:'',
+      avatarUrl:'',
+      avatarPath:'',
       createdAt:new Date().toISOString()
     }]
   };
@@ -378,6 +381,12 @@ const factoryTools=[
   },
   {
     type:'function',
+    name:'set_account_memory',
+    description:'Сохранить долговременную память активного аккаунта. Использовать только когда пользователь явно просит запомнить, сохранить на будущее, изменить или забыть информацию. Передавай полный новый текст памяти.',
+    parameters:{type:'object',properties:{memory:{type:'string',description:'Полный текст долговременной памяти аккаунта после изменения'}},required:['memory'],additionalProperties:false}
+  },
+  {
+    type:'function',
     name:'create_video_batch',
     description:'Запустить производство роликов для существующего товара через n8n. Это может расходовать платные AI-кредиты. Если count больше 3, confirmed должен быть true только после отдельного подтверждения пользователя.',
     parameters:{
@@ -462,6 +471,16 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
       runs:data.runs.slice(-30).map(r=>({id:r.id,batchId:r.batchId,productName:r.productName,status:r.status,stage:r.stage,progress:r.progress,style:r.style,duration:r.duration})),
       settings:data.settings
     };
+  }
+
+  if(name==='set_account_memory'){
+    const registry=await ensureAccountsRegistry();
+    const account=registry.accounts.find(x=>x.id===accountId);
+    if(!account) return {ok:false,error:'Аккаунт не найден'};
+    account.memory=String(args.memory||'').trim().slice(0,12000);
+    account.updatedAt=new Date().toISOString();
+    await writeAccountsRegistry(registry);
+    return {ok:true,memory:account.memory};
   }
 
   if(name==='update_settings'){
@@ -647,7 +666,10 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
   accountId=sanitizeAccountId(accountId);
   const state=await readAppState(accountId).catch(()=>({data:null}));
   const snapshot=state?.data||{};
+  const registry=await ensureAccountsRegistry().catch(()=>({accounts:[]}));
+  const profile=(registry.accounts||[]).find(x=>x.id===accountId)||null;
   const context={
+    account:profile?{id:profile.id,name:profile.name,owner:profile.owner,company:profile.company,email:profile.email,phone:profile.phone,notes:profile.notes,memory:profile.memory||''}:null,
     products:(snapshot.products||[]).map(p=>({id:p.id,name:p.name,category:p.category,utp:p.utp,rules:p.rules,mediaCount:(p.media||[]).length})),
     campaigns:(snapshot.campaigns||[]).slice(-20),
     runs:(snapshot.runs||[]).slice(-25).map(r=>({id:r.id,batchId:r.batchId,productName:r.productName,status:r.status,stage:r.stage,progress:r.progress,style:r.style,duration:r.duration})),
@@ -661,6 +683,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
       'Для запуска более 3 роликов, удаления и публикации требуется отдельное подтверждение: сначала вызови инструмент без confirmed=true, получи requires_confirmation и попроси пользователя подтвердить. '+
       'Ставь confirmed=true только если пользователь после такого запроса явно ответил, что подтверждает/да/запускай/удаляй. '+
       'Если соцсети не подключены, честно сообщи, что публикация заблокирована. '+
+      'У активного аккаунта есть долговременная память отдельно от видимой истории чата. Если пользователь явно говорит «запомни», «сохрани на будущее», «забудь» или просит изменить память — используй set_account_memory. Не сохраняй чувствительные данные без явной просьбы. '+
       'Если можно выполнить задачу инструментом, предпочитай выполнить её, а не объяснять пользователю ручные шаги. Контекст: '+JSON.stringify(context)
     }]} ,
     ...safeHistory.map(x=>({role:x.role,content:[{type:'input_text',text:x.content}]})),
@@ -1054,6 +1077,9 @@ const server=http.createServer(async(req,res)=>{
         email:String(body?.email||'').trim().slice(0,240),
         phone:String(body?.phone||'').trim().slice(0,80),
         notes:String(body?.notes||'').trim().slice(0,5000),
+        memory:String(body?.memory||'').trim().slice(0,12000),
+        avatarUrl:String(body?.avatarUrl||'').trim().slice(0,2000),
+        avatarPath:String(body?.avatarPath||'').trim().slice(0,2000),
         createdAt:new Date().toISOString()
       };
       registry.accounts.push(account);
@@ -1072,8 +1098,11 @@ const server=http.createServer(async(req,res)=>{
       const registry=await ensureAccountsRegistry();
       const account=registry.accounts.find(x=>x.id===id);
       if(!account) return json(res,404,{ok:false,error:'Аккаунт не найден'});
-      for(const key of ['name','owner','company','email','phone','notes']){
-        if(body?.[key]!==undefined) account[key]=String(body[key]||'').trim().slice(0,key==='notes'?5000:240);
+      for(const key of ['name','owner','company','email','phone','notes','memory','avatarUrl','avatarPath']){
+        if(body?.[key]!==undefined){
+          const limit=key==='memory'?12000:key==='notes'?5000:(key==='avatarUrl'||key==='avatarPath'?2000:240);
+          account[key]=String(body[key]||'').trim().slice(0,limit);
+        }
       }
       if(!account.name) account.name='Аккаунт';
       account.updatedAt=new Date().toISOString();
