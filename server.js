@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHiggsfieldClient } from '@higgsfield/client/v2';
+import RunwayML, { TaskFailedError as RunwayTaskFailedError } from '@runwayml/sdk';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -277,6 +278,90 @@ async function generateHiggsfieldScene(body){
   };
 }
 
+
+async function generateRunwayScene(body){
+  if(!process.env.RUNWAYML_API_SECRET) throw new Error('Runway API is not configured');
+  const prompt=String(body?.prompt||'').trim();
+  if(!prompt) throw new Error('Scene prompt is required');
+
+  const refs=normalizeReferenceUrls(body?.referenceMedia || body?.references || body?.imageUrls || []);
+  const requested=Number(body?.duration)||5;
+  const duration=requested>=8?10:5;
+  const ratio=String(body?.ratio||'720:1280');
+  const client=new RunwayML({apiKey:process.env.RUNWAYML_API_SECRET});
+
+  try{
+    const pending=client.imageToVideo.create({
+      model:String(body?.model||process.env.RUNWAY_MODEL||'gen4.5'),
+      ...(refs[0]?{promptImage:refs[0]}:{}),
+      promptText:prompt,
+      ratio,
+      duration
+    });
+    const created=await pending;
+    const completed=await pending.waitForTaskOutput();
+    const output=Array.isArray(completed?.output)?completed.output:[];
+    return {
+      ok:true,
+      provider:'runway',
+      taskId:created?.id||completed?.id||null,
+      model:String(body?.model||process.env.RUNWAY_MODEL||'gen4.5'),
+      duration,
+      ratio,
+      urls:output.filter(x=>typeof x==='string'),
+      raw:completed
+    };
+  }catch(e){
+    if(e instanceof RunwayTaskFailedError){
+      throw new Error('Runway task failed: '+JSON.stringify(e.taskDetails||{}));
+    }
+    throw e;
+  }
+}
+
+async function descriptRequest(pathname,{method='GET',body}={}){
+  if(!process.env.DESCRIPT_API_TOKEN) throw new Error('Descript API is not configured');
+  const r=await fetch('https://descriptapi.com/v1'+pathname,{
+    method,
+    headers:{
+      authorization:`Bearer ${process.env.DESCRIPT_API_TOKEN}`,
+      ...(body?{'content-type':'application/json'}:{})
+    },
+    ...(body?{body:JSON.stringify(body)}:{})
+  });
+  const text=await r.text();
+  let data;
+  try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
+  if(!r.ok) throw new Error(data?.message||data?.error||`Descript error ${r.status}`);
+  return data;
+}
+
+async function descriptImport(body){
+  return descriptRequest('/jobs/import/project_media',{
+    method:'POST',
+    body:{
+      project_name:String(body?.projectName||'Content Factory project'),
+      add_media:body?.addMedia||{},
+      ...(Array.isArray(body?.compositions)?{add_compositions:body.compositions}:{}),
+      ...(body?.callbackUrl?{callback_url:String(body.callbackUrl)}:{})
+    }
+  });
+}
+
+async function descriptAgent(body){
+  const projectId=String(body?.projectId||'').trim();
+  const prompt=String(body?.prompt||'').trim();
+  if(!projectId||!prompt) throw new Error('projectId and prompt are required');
+  return descriptRequest('/jobs/agent',{
+    method:'POST',
+    body:{
+      project_id:projectId,
+      prompt,
+      ...(body?.callbackUrl?{callback_url:String(body.callbackUrl)}:{})
+    }
+  });
+}
+
 async function applyGenerationCallback(body){
   if(!supabaseConfigured()) throw new Error('Server database is not configured');
   const state=await readAppState();
@@ -471,6 +556,37 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,data);
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось удалить фото.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/runway/generate-scene' && req.method==='POST'){
+    if(!internalRequestAllowed(req)) return json(res,401,{ok:false,error:'Unauthorized internal request'});
+    try{
+      const body=await readBody(req);
+      const result=await generateRunwayScene(body);
+      return json(res,200,result);
+    }catch(e){
+      return json(res,502,{ok:false,error:'Runway generation failed',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/descript/import' && req.method==='POST'){
+    if(!internalRequestAllowed(req)) return json(res,401,{ok:false,error:'Unauthorized internal request'});
+    try{
+      const body=await readBody(req);
+      return json(res,202,{ok:true,data:await descriptImport(body)});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Descript import failed',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/descript/agent' && req.method==='POST'){
+    if(!internalRequestAllowed(req)) return json(res,401,{ok:false,error:'Unauthorized internal request'});
+    try{
+      const body=await readBody(req);
+      return json(res,202,{ok:true,data:await descriptAgent(body)});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Descript agent failed',detail:String(e?.message||e)});
     }
   }
 
