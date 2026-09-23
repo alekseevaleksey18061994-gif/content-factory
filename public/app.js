@@ -833,4 +833,53 @@ if("serviceWorker" in navigator){
 }
 if("caches" in window)caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))).catch(()=>{});
 window.addEventListener("pageshow",()=>{window.scrollTo({top:0,left:0,behavior:"instant"})},{once:true});
-renderAll();loadAccounts().then(async()=>{await syncFromServer();await syncChatHistoryFromCloud();});
+
+let authMode='login';
+let currentAuthUser=null;
+function setAuthMode(mode){
+  authMode=mode==='register'?'register':'login';
+  $("[data-auth-mode]").forEach(b=>b.classList.toggle("active",b.dataset.authMode===authMode));
+  if($("#authNameField"))$("#authNameField").hidden=authMode!=="register";
+  if($("#authSubmit"))$("#authSubmit").textContent=authMode==="register"?"Создать аккаунт":"Войти";
+  if($("#authPassword"))$("#authPassword").autocomplete=authMode==="register"?"new-password":"current-password";
+  if($("#authMessage"))$("#authMessage").textContent="";
+}
+$("[data-auth-mode]").forEach(b=>b.addEventListener("click",()=>setAuthMode(b.dataset.authMode)));
+$("#authForm")?.addEventListener("submit",async e=>{
+  e.preventDefault();
+  const btn=$("#authSubmit"),msg=$("#authMessage");
+  btn.disabled=true;msg.textContent=authMode==="register"?"Создаю кабинет…":"Вхожу…";
+  try{
+    const r=await fetch("/api/auth/"+authMode,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      login:$("#authLogin").value.trim(),
+      password:$("#authPassword").value,
+      displayName:$("#authDisplayName")?.value.trim()||""
+    })});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.error||data.detail||"Ошибка авторизации");
+    location.reload();
+  }catch(err){msg.textContent=String(err?.message||err)}
+  finally{btn.disabled=false}
+});
+$("#logoutBtn")?.addEventListener("click",async()=>{
+  try{await fetch("/api/auth/logout",{method:"POST"})}catch{}
+  location.reload();
+});
+async function bootAuthenticatedApp(){
+  try{
+    const r=await fetch("/api/auth/me",{cache:"no-store"});
+    if(!r.ok){$("#authGate")?.classList.add("show");return}
+    const data=await r.json();
+    currentAuthUser=data.user||null;
+    $("#authGate")?.classList.remove("show");
+    renderAll();
+    await loadAccounts();
+    await syncFromServer();
+    await syncChatHistoryFromCloud();
+  }catch{
+    $("#authGate")?.classList.add("show");
+  }
+}
+setAuthMode("login");
+bootAuthenticatedApp();
+

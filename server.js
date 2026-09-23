@@ -6,6 +6,7 @@ import { createHiggsfieldClient } from '@higgsfield/client/v2';
 import RunwayML, { TaskFailedError as RunwayTaskFailedError } from '@runwayml/sdk';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomBytes, scryptSync, timingSafeEqual, createHmac } from 'node:crypto';
 
 const execFile=promisify(execFileCb);
 
@@ -65,6 +66,80 @@ function supabaseHeaders(extra={}){
 
 const DEFAULT_ACCOUNT_ID='main';
 const ACCOUNTS_REGISTRY_ID='accounts_registry';
+const USERS_REGISTRY_ID='auth_users_registry';
+const SESSION_COOKIE='cf_session';
+
+
+function normalizeLogin(value){
+  return String(value||'').trim().toLowerCase().replace(/\s+/g,'').slice(0,80);
+}
+function hashPassword(password,salt){
+  return scryptSync(String(password||''),salt,64).toString('hex');
+}
+function parseCookies(req){
+  const raw=String(req.headers.cookie||'');
+  const out={};
+  for(const part of raw.split(';')){
+    const i=part.indexOf('=');
+    if(i>0) out[part.slice(0,i).trim()]=decodeURIComponent(part.slice(i+1).trim());
+  }
+  return out;
+}
+function sessionSecret(){
+  return process.env.AUTH_SESSION_SECRET || process.env.CONTENT_FACTORY_DB_SECRET || '';
+}
+function makeSessionToken(userId){
+  const payload=Buffer.from(JSON.stringify({uid:userId,exp:Date.now()+30*24*60*60*1000})).toString('base64url');
+  const sig=createHmac('sha256',sessionSecret()).update(payload).digest('base64url');
+  return payload+'.'+sig;
+}
+function readSessionToken(token){
+  try{
+    const [payload,sig]=String(token||'').split('.');
+    if(!payload||!sig||!sessionSecret()) return null;
+    const expected=createHmac('sha256',sessionSecret()).update(payload).digest('base64url');
+    const a=Buffer.from(sig),b=Buffer.from(expected);
+    if(a.length!==b.length||!timingSafeEqual(a,b)) return null;
+    const data=JSON.parse(Buffer.from(payload,'base64url').toString('utf8'));
+    if(!data?.uid||Number(data.exp)<Date.now()) return null;
+    return data;
+  }catch{return null}
+}
+function setSessionCookie(res,token){
+  res.setHeader('set-cookie',SESSION_COOKIE+'='+encodeURIComponent(token)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000; Secure');
+}
+function clearSessionCookie(res){
+  res.setHeader('set-cookie',SESSION_COOKIE+'=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure');
+}
+async function ensureUsersRegistry(){
+  const row=await readStateRow(USERS_REGISTRY_ID);
+  if(row.data?.users) return row.data;
+  const registry={version:1,users:[]};
+  await writeStateRow(USERS_REGISTRY_ID,registry);
+  return registry;
+}
+async function writeUsersRegistry(registry){
+  registry.version=1;
+  registry.users=Array.isArray(registry.users)?registry.users:[];
+  await writeStateRow(USERS_REGISTRY_ID,registry);
+  return registry;
+}
+async function sessionUser(req){
+  const session=readSessionToken(parseCookies(req)[SESSION_COOKIE]);
+  if(!session) return null;
+  const registry=await ensureUsersRegistry();
+  const user=registry.users.find(u=>u.id===session.uid);
+  return user?{id:user.id,login:user.login,displayName:user.displayName||user.login,createdAt:user.createdAt}:null;
+}
+async function userOwnsAccount(userId,accountId){
+  if(!userId)return false;
+  const registry=await ensureAccountsRegistry();
+  return registry.accounts.some(a=>a.id===sanitizeAccountId(accountId)&&a.ownerUserId===userId);
+}
+async function firstUserAccount(userId){
+  const registry=await ensureAccountsRegistry();
+  return registry.accounts.find(a=>a.ownerUserId===userId)||null;
+}
 
 function sanitizeAccountId(value){
   const raw=String(value||DEFAULT_ACCOUNT_ID).trim();
@@ -160,6 +235,7 @@ async function ensureAccountsRegistry(){
       memory:'',
       avatarUrl:'',
       avatarPath:'',
+      ownerUserId:null,
       createdAt:new Date().toISOString()
     }]
   };
@@ -1292,10 +1368,86 @@ const server=http.createServer(async(req,res)=>{
     },details});
   }
 
+
+  if(url.pathname==='/api/auth/register' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const login=normalizeLogin(body?.login);
+      const password=String(body?.password||'');
+      const displayName=String(body?.displayName||login).trim().slice(0,120)||login;
+      if(login.length<3) return json(res,400,{ok:false,error:'Логин должен быть не короче 3 символов.'});
+      if(password.length<8) return json(res,400,{ok:false,error:'Пароль должен быть не короче 8 символов.'});
+      const users=await ensureUsersRegistry();
+      if(users.users.some(u=>u.login===login)) return json(res,409,{ok:false,error:'Такой логин уже зарегистрирован.'});
+      const salt=randomBytes(16).toString('hex');
+      const user={id:'usr_'+randomBytes(10).toString('hex'),login,displayName,salt,passwordHash:hashPassword(password,salt),createdAt:new Date().toISOString()};
+      const isFirst=users.users.length===0;
+      users.users.push(user);
+      await writeUsersRegistry(users);
+
+      const accounts=await ensureAccountsRegistry();
+      if(isFirst){
+        let claimed=false;
+        for(const account of accounts.accounts){
+          if(!account.ownerUserId){account.ownerUserId=user.id;claimed=true}
+        }
+        if(!claimed){
+          const id='acc_'+user.id+'_main';
+          accounts.accounts.push({id,name:'Основной аккаунт',owner:displayName,company:'',email:'',phone:'',notes:'',memory:'',avatarUrl:'',avatarPath:'',ownerUserId:user.id,createdAt:new Date().toISOString()});
+          await writeAppState(blankFactoryState(),id);
+        }
+      }else{
+        const id='acc_'+user.id+'_main';
+        accounts.accounts.push({id,name:'Основной аккаунт',owner:displayName,company:'',email:'',phone:'',notes:'',memory:'',avatarUrl:'',avatarPath:'',ownerUserId:user.id,createdAt:new Date().toISOString()});
+        await writeAppState(blankFactoryState(),id);
+      }
+      await writeAccountsRegistry(accounts);
+      setSessionCookie(res,makeSessionToken(user.id));
+      return json(res,201,{ok:true,user:{id:user.id,login:user.login,displayName:user.displayName}});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось зарегистрироваться.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/auth/login' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const login=normalizeLogin(body?.login);
+      const password=String(body?.password||'');
+      const users=await ensureUsersRegistry();
+      const user=users.users.find(u=>u.login===login);
+      if(!user) return json(res,401,{ok:false,error:'Неверный логин или пароль.'});
+      const actual=Buffer.from(hashPassword(password,user.salt),'hex');
+      const expected=Buffer.from(user.passwordHash,'hex');
+      if(actual.length!==expected.length||!timingSafeEqual(actual,expected)) return json(res,401,{ok:false,error:'Неверный логин или пароль.'});
+      setSessionCookie(res,makeSessionToken(user.id));
+      return json(res,200,{ok:true,user:{id:user.id,login:user.login,displayName:user.displayName||user.login}});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось войти.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/auth/me' && req.method==='GET'){
+    const user=await sessionUser(req).catch(()=>null);
+    if(!user) return json(res,401,{ok:false});
+    return json(res,200,{ok:true,user});
+  }
+
+  if(url.pathname==='/api/auth/logout' && req.method==='POST'){
+    clearSessionCookie(res);
+    return json(res,200,{ok:true});
+  }
+
+  if(url.pathname.startsWith('/api/') && !['/api/status','/api/health'].includes(url.pathname) && !internalRequestAllowed(req)){
+    const user=await sessionUser(req).catch(()=>null);
+    if(!user) return json(res,401,{ok:false,error:'Нужно войти в Content Factory.'});
+    req.cfUser=user;
+  }
+
   if(url.pathname==='/api/accounts' && req.method==='GET'){
     try{
       const registry=await ensureAccountsRegistry();
-      return json(res,200,{ok:true,accounts:registry.accounts||[]});
+      return json(res,200,{ok:true,accounts:(registry.accounts||[]).filter(a=>a.ownerUserId===req.cfUser?.id)});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось загрузить аккаунты.',detail:String(e?.message||e)});
     }
@@ -1317,6 +1469,7 @@ const server=http.createServer(async(req,res)=>{
         memory:String(body?.memory||'').trim().slice(0,12000),
         avatarUrl:String(body?.avatarUrl||'').trim().slice(0,2000),
         avatarPath:String(body?.avatarPath||'').trim().slice(0,2000),
+        ownerUserId:req.cfUser.id,
         createdAt:new Date().toISOString()
       };
       registry.accounts.push(account);
@@ -1333,7 +1486,7 @@ const server=http.createServer(async(req,res)=>{
       const body=await readBody(req);
       const id=sanitizeAccountId(body?.id||url.searchParams.get('id')||'');
       const registry=await ensureAccountsRegistry();
-      const account=registry.accounts.find(x=>x.id===id);
+      const account=registry.accounts.find(x=>x.id===id&&x.ownerUserId===req.cfUser?.id);
       if(!account) return json(res,404,{ok:false,error:'Аккаунт не найден'});
       for(const key of ['name','owner','company','email','phone','notes','memory','avatarUrl','avatarPath']){
         if(body?.[key]!==undefined){
@@ -1355,8 +1508,8 @@ const server=http.createServer(async(req,res)=>{
       const id=sanitizeAccountId(url.searchParams.get('id')||'');
       if(id===DEFAULT_ACCOUNT_ID) return json(res,400,{ok:false,error:'Основной аккаунт нельзя удалить.'});
       const registry=await ensureAccountsRegistry();
-      if(!registry.accounts.some(x=>x.id===id)) return json(res,404,{ok:false,error:'Аккаунт не найден'});
-      registry.accounts=registry.accounts.filter(x=>x.id!==id);
+      if(!registry.accounts.some(x=>x.id===id&&x.ownerUserId===req.cfUser?.id)) return json(res,404,{ok:false,error:'Аккаунт не найден'});
+      registry.accounts=registry.accounts.filter(x=>!(x.id===id&&x.ownerUserId===req.cfUser?.id));
       await writeAccountsRegistry(registry);
       await deleteStateRow(accountStateRowId(id));
       return json(res,200,{ok:true,deletedId:id});
@@ -1369,6 +1522,7 @@ const server=http.createServer(async(req,res)=>{
     try{
       const body=await readBody(req);
       const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const expense=await recordExpense(accountId,{
         provider:body?.provider||'Другое',
         category:body?.category||'manual',
@@ -1388,6 +1542,7 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/expenses' && req.method==='DELETE'){
     try{
       const accountId=sanitizeAccountId(url.searchParams.get('account')||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const id=String(url.searchParams.get('id')||'');
       const state=await readAppState(accountId);
       const data=state?.data||blankFactoryState();
@@ -1405,6 +1560,7 @@ const server=http.createServer(async(req,res)=>{
     }
     try{
       const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const state=await readAppState(accountId);
       return json(res,200,{ok:true,accountId,...state});
     }catch(e){
@@ -1419,6 +1575,7 @@ const server=http.createServer(async(req,res)=>{
     try{
       const body=await readBody(req);
       const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||body?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const incoming=body?.data ?? body;
       const data=incoming&&typeof incoming==='object'?incoming:{};
       const existing=await readAppState(accountId);
@@ -1518,6 +1675,7 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/chat/history' && req.method==='GET'){
     try{
       const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const state=await readAppState(accountId);
       const data=state?.data||{};
       const hasCloudHistory=Object.prototype.hasOwnProperty.call(data,'chatHistory');
@@ -1531,6 +1689,7 @@ const server=http.createServer(async(req,res)=>{
     try{
       const body=await readBody(req);
       const accountId=sanitizeAccountId(body?.accountId||url.searchParams.get('account')||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const state=await readAppState(accountId);
       const data=state?.data&&typeof state.data==='object'?state.data:blankFactoryState();
       data.chatHistory=normalizeStoredChatHistory(body?.history||[]);
@@ -1544,6 +1703,7 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/chat/history' && req.method==='DELETE'){
     try{
       const accountId=sanitizeAccountId(url.searchParams.get('account')||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const state=await readAppState(accountId);
       const data=state?.data&&typeof state.data==='object'?state.data:blankFactoryState();
       data.chatHistory=[];
@@ -1577,6 +1737,7 @@ const server=http.createServer(async(req,res)=>{
       const attachments=normalizeChatAttachments(body?.attachments);
       if(!message && !attachments.length) return json(res,400,{ok:false,error:'Пустое сообщение'});
       const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const result=await callOpenAIChat(message,body?.history||[],accountId,attachments);
       return json(res,200,{ok:true,...result});
     }catch(e){
@@ -1587,6 +1748,9 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/start' && req.method==='POST'){
     try{
       const payload=await readBody(req);
+      const accountId=sanitizeAccountId(payload?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      payload.accountId=accountId;
       const result=await dispatchFactoryStart(payload);
       return json(res,result.ok?202:502,result);
     }catch(e){
