@@ -262,6 +262,16 @@ function findRunInState(data,query){
     || null;
 }
 
+function findCharacterInState(data,query){
+  const items=Array.isArray(data?.characters)?data.characters:[];
+  const q=compactName(query);
+  if(!q) return null;
+  return items.find(x=>String(x?.id||'')===String(query))
+    || items.find(x=>compactName(x?.name)===q)
+    || items.find(x=>compactName(x?.name).includes(q)||q.includes(compactName(x?.name)))
+    || null;
+}
+
 function appendFactoryJournal(data,title,detail='',type='ok'){
   data.journal=Array.isArray(data.journal)?data.journal:[];
   data.journal.push({
@@ -426,6 +436,25 @@ const factoryTools=[
   },
   {
     type:'function',
+    name:'update_avatar',
+    description:'Изменить данные существующего AI-аватара активного аккаунта. Используй, когда пользователь просит заполнить или отредактировать данные аватара. Не меняй поля, которые пользователь не просил менять и которые нельзя надёжно определить.',
+    parameters:{
+      type:'object',
+      properties:{
+        avatar:{type:'string',description:'Имя или id AI-аватара'},
+        name:{type:'string'},
+        age:{type:'string'},
+        look:{type:'string'},
+        voice:{type:'string'},
+        topics:{type:'string'},
+        locks:{type:'string'}
+      },
+      required:['avatar'],
+      additionalProperties:false
+    }
+  },
+  {
+    type:'function',
     name:'set_account_memory',
     description:'Сохранить долговременную память активного аккаунта. Использовать только когда пользователь явно просит запомнить, сохранить на будущее, изменить или забыть информацию. Передавай полный новый текст памяти.',
     parameters:{type:'object',properties:{memory:{type:'string',description:'Полный текст долговременной памяти аккаунта после изменения'}},required:['memory'],additionalProperties:false}
@@ -506,6 +535,7 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
   data.runs=Array.isArray(data.runs)?data.runs:[];
   data.campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
   data.scripts=Array.isArray(data.scripts)?data.scripts:[];
+  data.characters=Array.isArray(data.characters)?data.characters:[];
   data.settings=data.settings&&typeof data.settings==='object'?data.settings:{};
 
   if(name==='get_factory_state'){
@@ -513,9 +543,25 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
       ok:true,
       products:data.products.map(p=>({id:p.id,name:p.name,category:p.category,mediaCount:(p.media||[]).length})),
       campaigns:data.campaigns.slice(-20),
+      avatars:data.characters.map(c=>({id:c.id,name:c.name,age:c.age,look:c.look,voice:c.voice,topics:c.topics,locks:c.locks,mediaCount:(c.media||[]).length,voiceLinked:!!c.voiceLinked})),
       runs:data.runs.slice(-30).map(r=>({id:r.id,batchId:r.batchId,productName:r.productName,status:r.status,stage:r.stage,progress:r.progress,style:r.style,duration:r.duration})),
       settings:data.settings
     };
+  }
+
+  if(name==='update_avatar'){
+    const avatar=findCharacterInState(data,args.avatar);
+    if(!avatar) return {ok:false,error:'AI-аватар не найден',availableAvatars:data.characters.map(c=>c.name)};
+    const fields=['name','age','look','voice','topics','locks'];
+    for(const key of fields){
+      if(args[key]!==undefined && String(args[key]).trim()){
+        avatar[key]=String(args[key]).trim().slice(0,key==='look'||key==='voice'||key==='topics'||key==='locks'?6000:300);
+      }
+    }
+    avatar.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'ChatGPT изменил AI-аватара',avatar.name);
+    await writeAppState(data,accountId);
+    return {ok:true,avatar:{id:avatar.id,name:avatar.name,age:avatar.age,look:avatar.look,voice:avatar.voice,topics:avatar.topics,locks:avatar.locks,mediaCount:(avatar.media||[]).length}};
   }
 
   if(name==='set_account_memory'){
@@ -770,11 +816,29 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
   accountId=sanitizeAccountId(accountId);
   const state=await readAppState(accountId).catch(()=>({data:null}));
   const snapshot=state?.data||{};
+  const normalizedMessage=compactName(message);
+  const mentionedAvatars=(snapshot.characters||[]).filter(c=>{
+    const n=compactName(c?.name);
+    return n && normalizedMessage.includes(n);
+  });
+  const avatarImageParts=[];
+  for(const c of mentionedAvatars.slice(0,2)){
+    for(const media of (Array.isArray(c?.media)?c.media:[]).slice(0,4)){
+      if(/^https:\/\//i.test(String(media?.url||''))){
+        avatarImageParts.push({type:'input_image',image_url:String(media.url),detail:'auto'});
+      }
+    }
+  }
   const registry=await ensureAccountsRegistry().catch(()=>({accounts:[]}));
   const profile=(registry.accounts||[]).find(x=>x.id===accountId)||null;
   const context={
     account:profile?{id:profile.id,name:profile.name,owner:profile.owner,company:profile.company,email:profile.email,phone:profile.phone,notes:profile.notes,memory:profile.memory||''}:null,
     products:(snapshot.products||[]).map(p=>({id:p.id,name:p.name,category:p.category,utp:p.utp,rules:p.rules,mediaCount:(p.media||[]).length})),
+    avatars:(snapshot.characters||[]).map(c=>({
+      id:c.id,name:c.name,age:c.age||'',look:c.look||'',voice:c.voice||'',topics:c.topics||'',locks:c.locks||'',
+      mediaCount:(c.media||[]).length,voiceLinked:!!c.voiceLinked,
+      referenceImages:(c.media||[]).map(m=>m.url).filter(Boolean).slice(0,6)
+    })),
     campaigns:(snapshot.campaigns||[]).slice(-20),
     runs:(snapshot.runs||[]).slice(-25).map(r=>({id:r.id,batchId:r.batchId,productName:r.productName,status:r.status,stage:r.stage,progress:r.progress,style:r.style,duration:r.duration})),
     settings:snapshot.settings||{}
@@ -788,6 +852,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
       'Ставь confirmed=true только если пользователь после такого запроса явно ответил, что подтверждает/да/запускай/удаляй. '+
       'Если соцсети не подключены, честно сообщи, что публикация заблокирована. '+
       'У активного аккаунта есть долговременная память отдельно от видимой истории чата. Если пользователь явно говорит «запомни», «сохрани на будущее», «забудь» или просит изменить память — используй set_account_memory. Не сохраняй чувствительные данные без явной просьбы. '+
+      'AI-аватары активного аккаунта перечислены в context. Если пользователь называет существующий аватар, не говори, что его нет. Для упомянутого аватара backend автоматически добавляет его сохранённые референсные фото в текущий запрос. Если пользователь просит заполнить или изменить данные аватара, проанализируй доступные фото и используй update_avatar для реального сохранения изменений. Не выдумывай сведения, которые нельзя определить по фото или контексту. '+
       'Если можно выполнить задачу инструментом, предпочитай выполнить её, а не объяснять пользователю ручные шаги. Контекст: '+JSON.stringify(context)
     }]} ,
     ...safeHistory.map(x=>({
@@ -801,7 +866,8 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     })),
     {role:'user',content:[
       {type:'input_text',text:String(message||'').slice(0,12000)||'Посмотри вложение.'},
-      ...chatAttachmentParts(currentAttachments)
+      ...chatAttachmentParts(currentAttachments),
+      ...avatarImageParts
     ]}
   ];
 

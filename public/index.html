@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=27" />
+  <link rel="stylesheet" href="/style.css?v=28" />
 </head>
 <body>
   <div class="shell">
@@ -356,7 +356,7 @@
   </div>
 
   <div class="modal" id="characterModal" aria-hidden="true">
-    <div class="modal-card"><button class="close" data-close="characterModal">×</button><span class="kicker">AI-АВАТАР</span><h2>Создать постоянного AI-аватара</h2><p class="muted">Загрузи 1–10 реальных фото лица. Они станут референсами, чтобы сохранять внешность героя между роликами.</p><label class="character-photo-field">Фото для аватара<input id="characterImages" type="file" accept="image/*" multiple></label><div id="characterPhotoPreview" class="avatar-upload-preview"><div class="avatar-preview-empty">Фото пока не выбраны</div></div><div class="message" id="characterImagesHint">Лучше использовать 3–10 чётких фото: анфас, полубоком и с разным выражением лица.</div><div class="field-grid"><label>Имя<input id="characterName" placeholder="Алина"></label><label>Возраст<input id="characterAge" placeholder="27"></label><label>Внешность<textarea id="characterLook" placeholder="Русые волосы, каре, естественный макияж…"></textarea></label><label>Манера речи<textarea id="characterVoice" placeholder="Спокойная, уверенная, разговорная…"></textarea></label><label>Темы страницы<textarea id="characterTopics" placeholder="Товары для дома, бытовые лайфхаки…"></textarea></label><label>Неизменяемые признаки<textarea id="characterLocks" placeholder="Лицо, возраст, цвет глаз, форма носа…"></textarea></label></div><button class="btn primary full" id="saveCharacter">Сохранить AI-аватара</button><div class="message" id="saveCharacterMsg"></div></div>
+    <div class="modal-card"><button class="close" data-close="characterModal">×</button><span class="kicker">AI-АВАТАР</span><h2 id="characterModalTitle">Создать постоянного AI-аватара</h2><p class="muted" id="characterModalHelp">Загрузи 1–10 реальных фото лица. Они станут референсами, чтобы сохранять внешность героя между роликами.</p><div id="characterExistingMedia" class="avatar-existing-media"></div><label class="character-photo-field"><span id="characterPhotoLabel">Фото для аватара</span><input id="characterImages" type="file" accept="image/*" multiple></label><div id="characterPhotoPreview" class="avatar-upload-preview"><div class="avatar-preview-empty">Фото пока не выбраны</div></div><div class="message" id="characterImagesHint">Лучше использовать 3–10 чётких фото: анфас, полубоком и с разным выражением лица.</div><div class="field-grid"><label>Имя<input id="characterName" placeholder="Алина"></label><label>Возраст<input id="characterAge" placeholder="27"></label><label>Внешность<textarea id="characterLook" placeholder="Русые волосы, каре, естественный макияж…"></textarea></label><label>Манера речи<textarea id="characterVoice" placeholder="Спокойная, уверенная, разговорная…"></textarea></label><label>Темы страницы<textarea id="characterTopics" placeholder="Товары для дома, бытовые лайфхаки…"></textarea></label><label>Неизменяемые признаки<textarea id="characterLocks" placeholder="Лицо, возраст, цвет глаз, форма носа…"></textarea></label></div><button class="btn primary full" id="saveCharacter">Сохранить AI-аватара</button><div class="message" id="saveCharacterMsg"></div></div>
   </div>
 
   <div class="modal" id="scriptModal" aria-hidden="true">
@@ -367,6 +367,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=27"></script>
+  <script src="/app.js?v=28"></script>
 </body>
 </html>
