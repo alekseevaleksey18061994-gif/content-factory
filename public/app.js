@@ -87,7 +87,7 @@ function go(id){
   setMobileDrawer(false);
   if(id==="profile")renderConnections();
   if(id==="account")renderAccounts();
-  if(id==="assistant")refreshChatStatus();
+  if(id==="assistant"){refreshChatStatus();syncChatHistoryFromCloud();}
   scrollTo({top:0,behavior:"smooth"});
 }
 window.go=go;
@@ -425,6 +425,40 @@ window.deleteExpense=async id=>{
 
 let chatHistory=load(chatLocalKey(),[]);
 let chatDraftAttachments=[];
+let chatCloudSyncing=false;
+
+async function saveCloudChatHistory(){
+  try{
+    const r=await fetch("/api/chat/history",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({
+      accountId:activeAccountId,
+      history:chatHistory.slice(-200)
+    })});
+    return r.ok;
+  }catch{return false}
+}
+
+async function syncChatHistoryFromCloud(){
+  if(chatCloudSyncing)return;
+  chatCloudSyncing=true;
+  try{
+    const r=await fetch("/api/chat/history?account="+encodeURIComponent(activeAccountId),{cache:"no-store",headers:{"x-content-account":activeAccountId}});
+    if(!r.ok)return;
+    const data=await r.json();
+    const local=Array.isArray(chatHistory)?chatHistory:[];
+    if(data.hasCloudHistory){
+      chatHistory=Array.isArray(data.history)?data.history:[];
+      save(chatLocalKey(),chatHistory);
+      renderChat();
+    }else if(local.length){
+      chatHistory=local.slice(-200);
+      await saveCloudChatHistory();
+      save(chatLocalKey(),chatHistory);
+      renderChat();
+    }
+  }catch{}finally{
+    chatCloudSyncing=false;
+  }
+}
 let chatUploadBusy=false;
 
 function attachmentIcon(a){
@@ -529,7 +563,7 @@ async function sendChatMessage(raw,input=null){
   renderChatAttachmentDraft();
 
   chatHistory.push({role:"user",content:message,attachments:sentAttachments});
-  save(chatLocalKey(),chatHistory.slice(-30));
+  save(chatLocalKey(),chatHistory.slice(-200));
   if(input)input.value="";
   go("assistant");
   renderChat();
@@ -543,7 +577,8 @@ async function sendChatMessage(raw,input=null){
   }catch(err){
     chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});
   }
-  save(chatLocalKey(),chatHistory.slice(-30));
+  save(chatLocalKey(),chatHistory.slice(-200));
+  await saveCloudChatHistory();
   await syncFromServer();
   renderChat();
   refreshChatStatus();
@@ -559,10 +594,11 @@ if($("#mobileChatDock"))$("#mobileChatDock").onsubmit=e=>{
   sendChatMessage(input?.value,input);
 };
 $("#mobileChatDockOpen")?.addEventListener("click",()=>go("assistant"));
-if($("#clearChat"))$("#clearChat").onclick=()=>{
+if($("#clearChat"))$("#clearChat").onclick=async()=>{
   chatHistory=[];
   save(chatLocalKey(),chatHistory);
   renderChat();
+  try{await fetch("/api/chat/history?account="+encodeURIComponent(activeAccountId),{method:"DELETE"})}catch{}
 };
 function activeAccount(){
   return accounts.find(x=>x.id===activeAccountId)||accounts[0]||null;
@@ -659,6 +695,7 @@ window.switchAccount=async id=>{
   loadLocalAccountState();
   renderAll();
   await syncFromServer();
+  await syncChatHistoryFromCloud();
   renderAccountChrome();
   go("home");
 };
@@ -796,4 +833,4 @@ if("serviceWorker" in navigator){
 }
 if("caches" in window)caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))).catch(()=>{});
 window.addEventListener("pageshow",()=>{window.scrollTo({top:0,left:0,behavior:"instant"})},{once:true});
-renderAll();loadAccounts().then(()=>syncFromServer());
+renderAll();loadAccounts().then(async()=>{await syncFromServer();await syncChatHistoryFromCloud();});
