@@ -109,7 +109,7 @@ function openM(id){$("#"+id)?.classList.add("open");syncModalUi()}
 function closeM(id){$("#"+id)?.classList.remove("open");syncModalUi()}
 window.closeModal=closeM;
 $$("[data-close]").forEach(b=>b.onclick=()=>closeM(b.dataset.close));$$(".modal").forEach(m=>m.onclick=e=>{if(e.target===m)closeM(m.id)});
-function opts(){const po=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");["productSelect","campaignProduct"].forEach(id=>{if($("#"+id))$("#"+id).innerHTML=po});if($("#campaignSelect"))$("#campaignSelect").innerHTML='<option value="">Без кампании</option>'+campaigns.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("");if($("#characterSelect"))$("#characterSelect").innerHTML='<option value="">Без персонажа</option>'+characters.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("")}
+function opts(){const po=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");["productSelect","campaignProduct","ideaProduct"].forEach(id=>{if($("#"+id))$("#"+id).innerHTML=po});if($("#campaignSelect"))$("#campaignSelect").innerHTML='<option value="">Без кампании</option>'+campaigns.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("");if($("#characterSelect"))$("#characterSelect").innerHTML='<option value="">Без персонажа</option>'+characters.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("")}
 function openCreate(id,platform){selectedProductId=id||selectedProductId||products[0]?.id;opts();if(selectedProductId&&$("#productSelect"))$("#productSelect").value=selectedProductId;if(platform)$$("[data-p]").forEach(x=>x.checked=x.dataset.p===platform);$("#launchMsg").textContent="";openM("createModal")}
 window.openCreate=openCreate;$$("[data-create]").forEach(b=>b.onclick=()=>openCreate(null,b.dataset.platform));
 function stat(i,l,v,t=""){return '<div class="stat '+t+'"><span>'+i+'</span><div><small>'+l+'</small><b>'+v+'</b></div></div>'}
@@ -193,9 +193,27 @@ const a=runs.filter(r=>r.status==="Ошибка"||r.status==="На провер�
 const cnt={};ST.forEach(x=>cnt[x]=0);runs.forEach(r=>cnt[norm(r)]=(cnt[norm(r)]||0)+1);$("#pipelineOverview").innerHTML=ST.slice(0,10).map((x,i)=>'<button class="pipeline-node" onclick="go(\'production\')"><small>'+x+'</small><b>'+(cnt[x]||0)+'</b><em>'+(i<9?"Следующий этап →":"Финиш")+'</em></button>').join("");
 const at=runs.filter(r=>!["Готово","Запланировано","Опубликовано"].includes(r.status)).map(task).slice(-4).reverse();$("#backgroundMini").innerHTML=at.length?at.map(taskHtml).join(""):'<div class="empty">Фоновых задач пока нет.</div>';$("#bgBadge").textContent=at.length;
 $("#homeProducts").innerHTML=products.slice(0,3).map(pcard).join("")||'<div class="empty">Добавь первый товар</div>';$("#latestRuns").innerHTML=runs.length?runs.slice(-5).reverse().map(rrow).join(""):'<div class="empty">Пока нет роликов.</div>';
-const L=[["production","⌁","Производство","Конвейер"],["background","◷","Фоновые задачи","Все процессы"],["campaigns","◫","Кампании","Серии роликов"],["scripts","✎","Сценарии","Хуки и промты"],["scenes","▤","Сцены","Storyboard и версии"],["characters","◉","Персонажи","AI-блогеры"],["calendar","▦","Календарь","План публикаций"],["analytics","↗","Аналитика","Результаты"],["costs","₽","Расходы","Лимиты"],["journal","☷","Журнал","История"]];$("#sectionLinks").innerHTML=L.map(x=>'<button class="section-link" onclick="go(\''+x[0]+'\')"><b>'+x[1]+" "+x[2]+'</b><small>'+x[3]+'</small></button>').join("")
+const L=[["production","⌁","Производство","Конвейер"],["ideas","✦","Идеи","Создать и запустить"],["background","◷","Фоновые задачи","Все процессы"],["campaigns","◫","Кампании","Серии роликов"],["scripts","✎","Сценарии","Хуки и промты"],["scenes","▤","Сцены","Storyboard и версии"],["characters","◉","Персонажи","AI-блогеры"],["calendar","▦","Календарь","План публикаций"],["analytics","↗","Аналитика","Результаты"],["costs","₽","Расходы","Лимиты"],["journal","☷","Журнал","История"]];$("#sectionLinks").innerHTML=L.map(x=>'<button class="section-link" onclick="go(\''+x[0]+'\')"><b>'+x[1]+" "+x[2]+'</b><small>'+x[3]+'</small></button>').join("")
 }
-function renderProduction(){const K=["Идея","Сценарий","Storyboard","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];$("#kanban").innerHTML=K.map(k=>{const a=runs.filter(r=>norm(r)===k);return '<div class="kanban-col"><div class="kanban-head"><b>'+k+'</b><span class="count-bubble">'+a.length+'</span></div>'+(a.length?a.map(r=>'<div class="kanban-card" onclick="openRun(\''+r.id+'\')"><b>'+esc(pname(r))+'</b><small>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</small><div class="progress mini-progress"><i style="width:'+pct(r)+'%"></i></div></div>').join(""):'<div class="empty" style="padding:28px 5px">0</div>')+'</div>'}).join("")}
+function renderIdeas(){
+  const list=$("#ideaList");if(!list)return;
+  const items=runs.filter(r=>r.idea).slice().reverse();
+  list.innerHTML=items.length?items.map(r=>{
+    const idea=r.idea||{};
+    return '<article class="idea-card"><div><span class="kicker">'+esc(r.status==="Черновик"?"ЧЕРНОВИК":"РОЛИК")+'</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Хук</b><span>'+esc(idea.hook||"—")+'</span></div></div><div class="idea-actions"><button class="secondary" onclick="openRun(\''+r.id+'\')">Открыть</button><button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\'Идея\')">↻ Переделать</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'start\')">'+(r.status==="Черновик"?"▶ Запустить":"▶ Продолжить")+'</button></div></article>';
+  }).join(""):'<div class="empty">Идей пока нет. Выбери товар и нажми «Сгенерировать идею».</div>';
+}
+$("#generateIdeaBtn")?.addEventListener("click",async()=>{
+  const btn=$("#generateIdeaBtn"),status=$("#ideaStatus");btn.disabled=true;status.textContent="Генерирую идею, сценарий и storyboard…";
+  try{
+    const r=await fetch("/api/ideas/generate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      accountId:activeAccountId,productId:$("#ideaProduct")?.value||"",style:$("#ideaStyle")?.value||"UGC",brief:$("#ideaBrief")?.value.trim()||""
+    })});
+    const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.detail||data.error||"Ошибка");
+    await syncFromServer();selectedRunId=data.run?.id||selectedRunId;status.textContent="Идея готова.";
+  }catch(e){status.textContent=String(e?.message||e)}finally{btn.disabled=false}
+});
+function renderProduction(){const K=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];$("#kanban").innerHTML=K.map(k=>{const a=runs.filter(r=>norm(r)===k);return '<div class="kanban-col"><div class="kanban-head"><b>'+k+'</b><span class="count-bubble">'+a.length+'</span></div>'+(a.length?a.map(r=>'<div class="kanban-card" onclick="openRun(\''+r.id+'\')"><b>'+esc(pname(r))+'</b><small>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</small><div class="progress mini-progress"><i style="width:'+pct(r)+'%"></i></div></div>').join(""):'<div class="empty" style="padding:28px 5px">0</div>')+'</div>'}).join("")}
 function renderBackground(){const a=runs.map(task).reverse();$("#backgroundTasks").innerHTML=a.length?a.map(taskHtml).join(""):'<div class="empty">Задач пока нет.</div>'}
 $("#retryFailed").onclick=()=>{let n=0;runs.forEach(r=>{if(r.status==="Ошибка"){r.status="В работе";r.attempt=(r.attempt||1)+1;n++}});if(n)log("Повтор неудачных задач","Перезапущено: "+n);persist()};
 function renderProducts(){$("#productsGrid").innerHTML=products.length?products.map(p=>'<article class="catalog-card">'+productThumb(p)+'<h3>'+esc(p.name)+'</h3><p>'+esc(p.category||"Товар")+'</p><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+p.id+'\')">Создать ролик</button><button class="secondary" onclick="openProduct(\''+p.id+'\')">Паспорт</button><button class="danger-btn" onclick="deleteProduct(\''+p.id+'\')">Удалить</button></div></article>').join(""):'<div class="empty">Товаров пока нет.</div>'}
@@ -209,25 +227,83 @@ function renderCampaigns(){$("#campaignGrid").innerHTML=campaigns.length?campaig
 $("#addCampaign").onclick=()=>{opts();openM("campaignModal")};$("#saveCampaign").onclick=()=>{const n=$("#campaignName").value.trim();if(!n)return;campaigns.push({id:uid("c"),name:n,productId:$("#campaignProduct").value,target:Number($("#campaignTarget").value)||30,budget:Number($("#campaignBudget").value)||5000,mix:$("#campaignMix").value.trim(),created:now()});log("Создана кампания",n);closeM("campaignModal");persist()};
 function renderRuns(){$("#runsTable").innerHTML=runs.length?runs.slice().reverse().map(rrow).join(""):'<div class="empty"><h3>Пока нет роликов</h3><p>Запусти первый ролик.</p></div>'}
 window.openRun=id=>{selectedRunId=id;renderRunDetail();go("runDetail")};
-function readiness(r){const i=sidx(r);return [["Сценарий",i>=1?1:0,1],["Референсы",i>=3?3:0,3],["AI-изображения",i>=4?4:0,4],["AI-видео",i>=5?5:Math.max(0,i-3),5],["Озвучка",i>=6?1:0,1],["Музыка / SFX",i>=6?1:0,1],["Субтитры",i>=7?1:0,1],["Монтаж",i>=7?1:0,1]]}
-function scenes(r){const n=r.sceneCount||5;return Array.from({length:n},(_,i)=>{const x=i+1,a=(r.acceptedScenes||[]).includes(x),v=(r.sceneVersions?.[x]||1),title=x===1?"Хук":x===n?"CTA":x===2?"Проблема":x===3?"Демонстрация":"Результат";return '<article class="scene-card"><div class="scene-preview">Сцена '+x+'<br>'+title+'</div><h3>'+x+". "+title+'</h3><small>'+((x-1)*5)+"–"+Math.min(x*5,30)+' сек · '+esc(r.modelMode||"Авто")+'</small><div class="version-row">'+Array.from({length:v},(_,q)=>'<span class="version '+(q===v-1&&a?"ok":"")+'">V'+(q+1)+(q===v-1&&a?" ✓":"")+'</span>').join("")+'</div><div class="scene-actions"><button class="tiny-btn" onclick="acceptScene(\''+r.id+"',"+x+')">✓ Принять</button><button class="tiny-btn" onclick="regenScene(\''+r.id+"',"+x+')">↻ Переделать</button><button class="tiny-btn" onclick="promptScene(\''+r.id+"',"+x+')">✎ Промт</button><button class="tiny-btn" onclick="modelScene(\''+r.id+"',"+x+')">◉ Модель</button></div></article>'}).join("")}
+function stageDone(r,stage){
+  if(stage==="Идея")return !!r.idea;
+  if(stage==="Сценарий")return !!r.script;
+  if(stage==="Storyboard")return Array.isArray(r.storyboard)&&r.storyboard.length>0;
+  if(stage==="Референсы")return !!r.references;
+  if(stage==="Генерация")return !!(r.generationResult?.urls?.length||r.generationResult?.jobs?.length);
+  if(stage==="Озвучка")return !!r.voiceoverResult;
+  if(stage==="Монтаж")return !!r.montageResult;
+  if(stage==="AI-проверка")return !!r.qcResult;
+  if(stage==="На проверке")return r.status==="На проверке"||["Готово","Запланировано","Опубликовано"].includes(r.status);
+  if(stage==="Готово")return ["Готово","Запланировано","Опубликовано"].includes(r.status);
+  if(stage==="Запланировано")return ["Запланировано","Опубликовано"].includes(r.status);
+  if(stage==="Опубликовано")return r.status==="Опубликовано";
+  return false;
+}
+function readiness(r){
+  return [["Сценарий",r.script?1:0,1],["Референсы",r.references?1:0,1],["Storyboard",Array.isArray(r.storyboard)&&r.storyboard.length?1:0,1],["AI-видео",r.generationResult?1:0,1],["Озвучка",r.voiceoverResult?1:0,1],["Монтаж",r.montageResult?1:0,1]];
+}
+function sceneResultUrl(r,index){
+  const urls=r.generationResult?.urls||[];
+  return urls[index]||r.sceneResults?.[index+1]?.url||null;
+}
+function scenes(r){
+  const board=Array.isArray(r.storyboard)&&r.storyboard.length?r.storyboard:Array.from({length:r.sceneCount||5},(_,i)=>({scene:i+1,title:i===0?"Хук":i===1?"Проблема":i===2?"Демонстрация":i===4?"CTA":"Результат",duration:(i*5)+"–"+((i+1)*5)+" сек",shot:"",action:"",voiceover:"",onscreen:"",prompt:""}));
+  return board.map((sc,i)=>{
+    const n=i+1,a=(r.acceptedScenes||[]).includes(n),v=(r.sceneVersions?.[n]||1),url=sceneResultUrl(r,i);
+    const preview=url?'<video controls playsinline preload="metadata" src="'+esc(url)+'"></video>':'<div class="scene-preview-copy"><b>Сцена '+n+'</b><span>'+esc(sc.title||"")+'</span></div>';
+    return '<article class="scene-card"><div class="scene-preview">'+preview+'</div><h3>'+n+'. '+esc(sc.title||"Сцена")+'</h3><small>'+esc(sc.duration||"")+' · '+esc(r.modelMode||"Авто")+'</small><div class="scene-copy">'+(sc.shot?'<p><b>Кадр:</b> '+esc(sc.shot)+'</p>':'')+(sc.action?'<p><b>Действие:</b> '+esc(sc.action)+'</p>':'')+(sc.voiceover?'<p><b>Озвучка:</b> '+esc(sc.voiceover)+'</p>':'')+(sc.onscreen?'<p><b>Текст:</b> '+esc(sc.onscreen)+'</p>':'')+(sc.prompt?'<details><summary>Промт</summary><p>'+esc(sc.prompt)+'</p></details>':'')+'</div><div class="version-row">'+Array.from({length:v},(_,q)=>'<span class="version '+(q===v-1&&a?"ok":"")+'">V'+(q+1)+(q===v-1&&a?" ✓":"")+'</span>').join("")+'</div><div class="scene-actions"><button class="tiny-btn" onclick="acceptScene(\''+r.id+'\','+n+')">✓ Принять</button><button class="tiny-btn" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button><button class="tiny-btn" onclick="promptScene(\''+r.id+'\','+n+')">✎ Промт</button><button class="tiny-btn" onclick="modelScene(\''+r.id+'\','+n+')">◉ Модель</button></div></article>';
+  }).join("");
+}
+let runStageOpen="";
+function stageReportHtml(r,stage){
+  const idea=r.idea||{},script=r.script||{},refs=r.references||{},board=Array.isArray(r.storyboard)?r.storyboard:[];
+  let body='';
+  if(stage==="Идея")body='<div class="artifact-grid"><div><small>Концепция</small><h3>'+esc(idea.title||"Идея ещё не создана")+'</h3><p>'+esc(idea.concept||"")+'</p></div><div><small>Хук</small><p>'+esc(idea.hook||"—")+'</p><small>Угол подачи</small><p>'+esc(idea.angle||"—")+'</p><small>Почему должно сработать</small><p>'+esc(idea.why||"—")+'</p></div></div>';
+  else if(stage==="Сценарий")body='<div class="artifact-script"><h3>Хук</h3><p>'+esc(script.hook||"—")+'</p><h3>Текст / озвучка</h3><p>'+esc(script.body||script.voiceover||"—")+'</p><h3>CTA</h3><p>'+esc(script.cta||"—")+'</p></div>';
+  else if(stage==="Storyboard")body=board.length?'<div class="stage-storyboard-list">'+board.map((x,i)=>'<div><b>'+(i+1)+'. '+esc(x.title||"Сцена")+'</b><span>'+esc(x.duration||"")+'</span><p>'+esc(x.shot||"")+' '+esc(x.action||"")+'</p></div>').join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>';
+  else if(stage==="Референсы"){
+    const imgs=[...(refs.product||[]).map(url=>({url,label:"Товар"})),...(refs.avatar||[]).map(url=>({url,label:"Аватар"}))];
+    body=(imgs.length?'<div class="reference-grid">'+imgs.map(x=>'<figure><img src="'+esc(x.url)+'" alt=""><figcaption>'+x.label+'</figcaption></figure>').join("")+'</div>':'<div class="empty compact-empty">Референсы ещё не собраны.</div>')+'<p class="artifact-note">'+esc(refs.notes||"")+'</p>';
+  } else if(stage==="Генерация"){
+    const urls=r.generationResult?.urls||[];
+    body=urls.length?'<div class="generated-grid">'+urls.map(u=>'<video controls playsinline preload="metadata" src="'+esc(u)+'"></video>').join("")+'</div>':'<div class="empty compact-empty">'+esc(r.generationError||r.error||"Видео ещё не получено. Можно повторить этап.")+'</div>';
+  } else body='<div class="empty compact-empty">Этот этап ещё не выполнен.</div>';
+  const canRegen=["Идея","Сценарий","Storyboard","Референсы","Генерация"].includes(stage);
+  return '<section class="panel stage-report" id="stageReport"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(stage)+'</h2><p>Реальный результат этого этапа</p></div><span class="status '+(stageDone(r,stage)?"done":"wait")+'">'+(stageDone(r,stage)?"Готово":"Не готово")+'</span></div>'+body+'<div class="stage-report-actions">'+(canRegen?'<button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\''+stage+'\')">↻ Переделать этап</button>':'')+(r.status==="Остановлено"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">▶ Продолжить</button>':'<button class="danger-btn" onclick="runAction(\''+r.id+'\',\'stop\')">■ Остановить</button>')+'</div></section>';
+}
+window.openStageDetail=(id,stage)=>{selectedRunId=id;runStageOpen=stage;renderRunDetail();setTimeout(()=>document.getElementById("stageReport")?.scrollIntoView({behavior:"smooth",block:"start"}),40)};
+window.runAction=async(id,action,stage="")=>{
+  let note="";
+  if(action==="regenerate"){const v=prompt("Что изменить в этапе «"+stage+"»?","");if(v===null)return;note=v}
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId:id,action,stage,note})});
+  const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Ошибка");return}
+  await syncFromServer();selectedRunId=id;renderRunDetail();if(action==="start"||action==="resume")go("runDetail");
+};
 function renderRunDetail(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
   if(!r){$("#runDetailBody").innerHTML='<div class="empty">Нет ролика.</div>';return}
-  const idx=sidx(r),rd=readiness(r),rs=rd.reduce((sum,x)=>sum+x[1],0),rt=rd.reduce((sum,x)=>sum+x[2],0);
+  const rd=readiness(r),rs=rd.reduce((sum,x)=>sum+x[1],0),rt=rd.reduce((sum,x)=>sum+x[2],0);
   const qc=["Товар соответствует эталону","Нет визуальных артефактов","Текст без ошибок","Safe-зоны соблюдены","Звук присутствует","Субтитры синхронны","CTA присутствует"];
-  const stageHtml=ST.map((st,i)=>'<div class="stage '+(i<idx?"":i===idx?"progress":"pending")+'"><span class="stage-num">'+(i+1)+'</span><span><b>'+st+'</b><small>'+(i<idx?"Этап завершён":i===idx?"Текущий этап":"Ожидает")+'</small></span><span class="status '+(i<idx?"done":i===idx?"work":"wait")+'">'+(i<idx?"Готово":i===idx?"В процессе":"Ожидает")+'</span></div>').join("");
-  const readyHtml=rd.map(x=>'<div class="ready-line"><span><b>'+x[0]+'</b><small>'+(x[1]===x[2]?"Готово":"В процессе")+'</small></span><span class="ready-count">'+x[1]+' из '+x[2]+'</span></div>').join("");
-  const qcHtml=qc.map(t=>'<div class="qc-row"><span>'+t+'</span><b class="'+(idx>=7?"qc-ok":"qc-wait")+'">'+(idx>=7?"✓ Пройдено":"Ожидает")+'</b></div>').join("");
+  const currentIndex=Math.max(0,ST.indexOf(r.stage));
+  const stageHtml=ST.map((st,i)=>{
+    const done=stageDone(r,st),current=st===r.stage&&!done,status=done?"Готово":current?"В процессе":"Ожидает",cls=done?"done":current?"work":"wait";
+    return '<button class="stage stage-click '+(current?"progress":done?"done-stage":"pending")+'" onclick="openStageDetail(\''+r.id+'\',\''+st+'\')"><span class="stage-num">'+(i+1)+'</span><span><b>'+st+'</b><small>'+(done?"Есть результат":current?"Сейчас выполняется":"Ожидает")+'</small></span><span class="status '+cls+'">'+status+'</span></button>';
+  }).join("");
+  const readyHtml=rd.map(x=>'<div class="ready-line"><span><b>'+x[0]+'</b><small>'+(x[1]===x[2]?"Готово":"Нет результата")+'</small></span><span class="ready-count">'+x[1]+' из '+x[2]+'</span></div>').join("");
+  const qcHtml=qc.map(t=>'<div class="qc-row"><span>'+t+'</span><b class="'+(r.qcResult?"qc-ok":"qc-wait")+'">'+(r.qcResult?"✓ Пройдено":"Ожидает")+'</b></div>').join("");
   const editParts=["Хук","Сцена 2","Сцена 3","Голос","Музыка","Субтитры","CTA","Цветокоррекция"];
   const edits=editParts.map(x=>'<button class="edit-option" data-edit-part="'+x+'">'+x+'</button>').join("");
-  const generatedUrl=r.generationResult?.urls?.[0]||r.generationResult?.jobs?.find?.(j=>j?.results?.raw?.url)?.results?.raw?.url||null;
-  const generatedVideo=generatedUrl?'<section class="panel generated-video-panel"><div class="panel-title"><div><span class="mini-icon">▶</span><h2>Видео Higgsfield</h2><p>Результат автоматической генерации</p></div><span class="status done">Готово</span></div><video controls playsinline preload="metadata" style="width:100%;max-height:620px;border-radius:16px;background:#000" src="'+esc(generatedUrl)+'"></video><div class="catalog-actions"><a class="secondary" href="'+esc(generatedUrl)+'" target="_blank" rel="noopener">Открыть оригинал ↗</a></div></section>':'';
+  const generatedUrl=r.generationResult?.urls?.[0]||null;
+  const generatedVideo=generatedUrl?'<section class="panel generated-video-panel"><div class="panel-title"><div><span class="mini-icon">▶</span><h2>Полученное видео</h2><p>Результат генерации</p></div><span class="status done">Получено</span></div><video controls playsinline preload="metadata" src="'+esc(generatedUrl)+'"></video></section>':'';
+  const stageReport=runStageOpen?stageReportHtml(r,runStageOpen):'';
   $("#runDetailBody").innerHTML=
-    '<section class="panel"><div class="section-head" style="margin:0"><div><span class="kicker">РОЛИК</span><h1>'+esc(pname(r))+(r.variant?' · вариант '+r.variant:'')+'</h1><p>'+esc(r.style||'')+' · '+esc(r.duration||'')+' · 9:16 · '+esc((r.platforms||[]).join(' / '))+'</p></div><span class="status '+scl(r.status)+'">'+esc(r.status||'В работе')+'</span></div><div class="progress" style="height:10px;margin-top:18px"><i style="width:'+pct(r)+'%"></i></div><div class="campaign-budget"><span>Прогресс: '+pct(r)+'%</span><span>Режим: '+(r.mode==="manual"?"Ручной":"Автопилот")+'</span></div></section>'+generatedVideo+
-    '<div class="run-layout"><section class="panel"><div class="panel-title"><div><span class="mini-icon">⌁</span><h2>Производственный путь</h2><p>Все этапы отдельно</p></div></div><div class="stage-list">'+stageHtml+'</div></section><aside><section class="panel"><div class="panel-title"><div><span class="mini-icon">✓</span><h2>Контроль готовности</h2><p>'+rs+' из '+rt+'</p></div></div><div class="readiness">'+readyHtml+'</div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">₽</span><h2>Ограничения</h2></div></div><div class="readiness"><div class="ready-line"><span>Бюджет</span><b>'+(r.budget||500)+' ₽</b></div><div class="ready-line"><span>Попыток на сцену</span><b>'+(r.maxAttempts||3)+'</b></div><div class="ready-line"><span>Модель</span><b>'+esc(r.modelMode||"Авто")+'</b></div></div></section></aside></div>'+
-    '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>Storyboard и сцены</h2><p>Меняется только нужная сцена</p></div></div><div class="storyboard">'+scenes(r)+'</div></section>'+
-    '<div class="two-col"><section class="panel"><div class="panel-title"><div><span class="mini-icon">✓</span><h2>AI-проверка</h2></div></div><div class="qc-list">'+qcHtml+'</div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">✎</span><h2>Точечная доработка</h2><p>Не перезапускаем весь ролик</p></div></div><div class="edit-grid">'+edits+'</div><div class="catalog-actions"><button class="secondary" id="sendRevision">↩ На доработку</button><button class="btn primary" id="approveMontageBtn">✓ Утвердить монтаж</button><button class="btn primary" id="approveRunBtn">✓ Утвердить ролик</button></div></section></div>';
+    '<section class="panel"><div class="section-head" style="margin:0"><div><span class="kicker">РОЛИК</span><h1>'+esc(pname(r))+(r.variant?' · вариант '+r.variant:'')+'</h1><p>'+esc(r.style||'')+' · '+esc(r.duration||'')+' · 9:16 · '+esc((r.platforms||[]).join(' / '))+'</p></div><span class="status '+scl(r.status)+'">'+esc(r.status||'В работе')+'</span></div><div class="progress" style="height:10px;margin-top:18px"><i style="width:'+pct(r)+'%"></i></div><div class="campaign-budget"><span>Прогресс: '+pct(r)+'%</span><span>Режим: '+(r.mode==="manual"?"Ручной":"Автопилот")+'</span></div><div class="run-top-actions">'+(r.status==="Остановлено"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">▶ Продолжить</button>':'<button class="danger-btn" onclick="runAction(\''+r.id+'\',\'stop\')">■ Остановить</button>')+(r.status==="Черновик"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'start\')">▶ Запустить производство</button>':'')+'</div></section>'+generatedVideo+
+    '<div class="run-layout"><section class="panel"><div class="panel-title"><div><span class="mini-icon">⌁</span><h2>Производственный путь</h2><p>Нажми на любой этап — увидишь реальный результат</p></div></div><div class="stage-list">'+stageHtml+'</div></section><aside><section class="panel"><div class="panel-title"><div><span class="mini-icon">✓</span><h2>Контроль готовности</h2><p>'+rs+' из '+rt+'</p></div></div><div class="readiness">'+readyHtml+'</div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">₽</span><h2>Ограничения</h2></div></div><div class="readiness"><div class="ready-line"><span>Бюджет</span><b>'+(r.budget||500)+' ₽</b></div><div class="ready-line"><span>Попыток</span><b>'+(r.maxAttempts||3)+'</b></div><div class="ready-line"><span>Модель</span><b>'+esc(r.modelMode||"Авто")+'</b></div></div></section></aside></div>'+stageReport+
+    '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>Storyboard и сцены</h2><p>Кадр, действие, озвучка, промт и версии</p></div></div><div class="storyboard">'+scenes(r)+'</div></section>'+
+    '<div class="two-col"><section class="panel"><div class="panel-title"><div><span class="mini-icon">✓</span><h2>AI-проверка</h2></div></div><div class="qc-list">'+qcHtml+'</div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">✎</span><h2>Точечная доработка</h2><p>Переделываем только нужную часть</p></div></div><div class="edit-grid">'+edits+'</div><div class="catalog-actions"><button class="secondary" id="sendRevision">↩ На доработку</button><button class="btn primary" id="approveMontageBtn">✓ Утвердить монтаж</button><button class="btn primary" id="approveRunBtn">✓ Утвердить ролик</button></div></section></div>';
   $$("[data-edit-part]").forEach(btn=>btn.onclick=()=>requestEdit(r.id,btn.dataset.editPart));
   $("#sendRevision").onclick=()=>requestEdit(r.id,"Комментарий");
   $("#approveMontageBtn").onclick=()=>approveMontage(r.id);
@@ -893,26 +969,22 @@ $("#launch").onclick=async()=>{
   const chosenProduct=prod($("#productSelect").value)||null;
   const productMedia=(chosenProduct?.media||[]).map(m=>({id:m.id,url:m.url,path:m.path,isPrimary:!!m.isPrimary}));
   const chosenCharacter=characters.find(c=>c.id===$("#characterSelect").value)||null;
-  const characterPayload=chosenCharacter?{
-    id:chosenCharacter.id,
-    name:chosenCharacter.name,
-    age:chosenCharacter.age||"",
-    look:chosenCharacter.look||"",
-    voice:chosenCharacter.voice||"",
-    topics:chosenCharacter.topics||"",
-    locks:chosenCharacter.locks||"",
-    media:(chosenCharacter.media||[]).map(m=>({id:m.id,url:m.url,path:m.path,isPrimary:!!m.isPrimary}))
-  }:null;
-  const base={accountId:activeAccountId,batchId:uid("batch"),productId:$("#productSelect").value,productName:chosenProduct?.name||"Товар",productUtp:chosenProduct?.utp||"",productRules:chosenProduct?.rules||"",media:productMedia,product:{id:chosenProduct?.id||null,name:chosenProduct?.name||"Товар",utp:chosenProduct?.utp||"",rules:chosenProduct?.rules||"",media:productMedia},campaignId:$("#campaignSelect").value||null,characterId:chosenCharacter?.id||null,character:characterPayload,avatarReferences:characterPayload?.media||[],brief:$("#brief").value.trim(),style:$("#style").value,duration:$("#duration").value,count:$("#count").value,format:$("#format").value,platforms,mode:createMode,modelMode:$("#modelMode").value,budget:Number($("#runBudget").value)||500,maxAttempts:Number($("#runAttempts").value)||3,created:now()};
-  $("#launch").disabled=true;$("#launchMsg").textContent="Запускаю производство…";
-  const res=await api({action:"create_batch",...base}),arr=[];
-  for(let i=1;i<=n;i++)arr.push({id:uid("r"),...base,variant:n>1?i:null,status:"В работе",stage:"Сценарий",progress:8,attempt:1,sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[]});
-  runs.push(...arr);selectedRunId=arr[0]?.id;
-  log("Запущено производство",base.productName+" · "+n+" роликов · "+(chosenCharacter?"аватар "+chosenCharacter.name+" · ":"")+(base.mode==="manual"?"ручной режим":"автопилот"));persist();
-  $("#launchMsg").textContent=res.ok?"Передано в n8n. Фото товара и AI-аватара переданы как референсы.":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";
-  $("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)
+  const characterPayload=chosenCharacter?{id:chosenCharacter.id,name:chosenCharacter.name,age:chosenCharacter.age||"",look:chosenCharacter.look||"",voice:chosenCharacter.voice||"",topics:chosenCharacter.topics||"",locks:chosenCharacter.locks||"",media:(chosenCharacter.media||[]).map(m=>({id:m.id,url:m.url,path:m.path,isPrimary:!!m.isPrimary}))}:null;
+  const base={accountId:activeAccountId,batchId:uid("batch"),productId:$("#productSelect").value,productName:chosenProduct?.name||"Товар",productUtp:chosenProduct?.utp||"",productRules:chosenProduct?.rules||"",media:productMedia,product:{id:chosenProduct?.id||null,name:chosenProduct?.name||"Товар",utp:chosenProduct?.utp||"",rules:chosenProduct?.rules||"",media:productMedia},campaignId:$("#campaignSelect").value||null,characterId:chosenCharacter?.id||null,character:characterPayload,avatarReferences:characterPayload?.media||[],brief:$("#brief").value.trim(),style:$("#style").value,duration:$("#duration").value,count:String(n),format:$("#format").value,platforms,mode:createMode,modelMode:$("#modelMode").value,budget:Number($("#runBudget").value)||500,maxAttempts:Number($("#runAttempts").value)||3,created:now()};
+  $("#launch").disabled=true;$("#launchMsg").textContent="Создаю идею, сценарий и storyboard…";
+  try{
+    const r=await fetch("/api/start",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"create_batch",...base})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.detail||data.error||"Не удалось запустить");
+    await syncFromServer();
+    selectedRunId=data.runs?.[0]?.id||runs.at(-1)?.id||null;
+    $("#launchMsg").textContent="Запуск создан. Открываю отчёт по этапам…";
+    setTimeout(()=>{closeM("createModal");runStageOpen="Идея";if(selectedRunId)openRun(selectedRunId);else go("production")},450);
+  }catch(e){
+    $("#launchMsg").textContent=String(e?.message||e);
+  }finally{$("#launch").disabled=false}
 };
-function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderVideoLab();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();renderAccounts();refreshChatStatus();renderConnections()}
+function renderAll(){opts();renderDashboard();renderProduction();renderIdeas();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderVideoLab();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();renderAccounts();refreshChatStatus();renderConnections()}
 if("serviceWorker" in navigator){
   navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{});
 }
