@@ -370,7 +370,7 @@ window.runAction=async(id,action,stage="")=>{
   if(action==="regenerate"){const v=prompt("Что изменить в этапе «"+stage+"»?","");if(v===null)return;note=v}
   const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId:id,action,stage,note})});
   const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Ошибка");return}
-  await syncFromServer();selectedRunId=id;renderRunDetail();if(action==="start"||action==="resume")go("runDetail");
+  await syncFromServer();selectedRunId=id;if(action==="advance_stage")runStageOpen="Сценарий";renderRunDetail();if(action==="start"||action==="resume"||action==="advance_stage")go("runDetail");
 };
 function renderRunDetail(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
