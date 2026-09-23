@@ -3086,6 +3086,31 @@ async function recoverAcceptedRunsForPostProduction(){
   }catch(e){console.error('[post-production-recovery] '+String(e?.message||e))}
 }
 
+async function recoverPendingPrevisAndAutopilot(){
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+      for(const run of (data.runs||[])){
+        if(!run||run.paused||run.status==='Остановлено')continue;
+        const stage=String(run.stage||'');
+        if(run.mode!=='manual'&&['Идея','Сценарий','Storyboard','Превиз-кадры','Референсы'].includes(stage)&&!run.generationResult?.completed){
+          run.previsRunning=false;run.status='В работе';run.error='';run.updatedAt=new Date().toISOString();
+          await writeAppState(data,accountId);
+          enqueueAutoPipeline(accountId,run.id);
+          continue;
+        }
+        if(run.mode==='manual'&&['Превиз-кадры','Референсы'].includes(stage)&&!run.previsResult?.completed&&['В работе','Ошибка'].includes(run.status)){
+          run.previsRunning=false;run.status='В работе';run.stage='Превиз-кадры';run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
+          await writeAppState(data,accountId);
+          enqueueRunPrevis(accountId,run.id,'previs-recovery');
+        }
+      }
+    }
+  }catch(e){console.error('[previs-recovery] '+String(e?.message||e))}
+}
+
 async function recoverPendingBackendGenerations(){
   try{
     const registry=await ensureAccountsRegistry();
@@ -3774,6 +3799,11 @@ server.listen(port,'0.0.0.0',async()=>{
       await recoverLegacyPlaceholderRuns();
     }catch(e){
       console.error('[startup-recovery] legacy '+String(e?.message||e));
+    }
+    try{
+      await recoverPendingPrevisAndAutopilot();
+    }catch(e){
+      console.error('[startup-recovery] previs '+String(e?.message||e));
     }
     try{
       await recoverPendingBackendGenerations();
