@@ -947,6 +947,290 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
   return normalizeStoryboardStage(safeAnalysisJson(openAIText(data)),payload);
 }
 
+function normalizePrevisPlan(raw,payload={}){
+  const board=Array.isArray(payload.storyboard)?payload.storyboard:[];
+  const src=raw&&typeof raw==='object'?(raw.previsPlan||raw):{};
+  const incoming=Array.isArray(src.frames)?src.frames:(Array.isArray(raw?.frames)?raw.frames:[]);
+  const frames=[];
+  for(let i=0;i<board.length;i++){
+    const sceneNo=i+1,scene=board[i]||{};
+    const sceneFrames=incoming.filter(x=>Number(x?.scene)===sceneNo).slice(0,3);
+    const fallbackTypes=['start','middle','end'];
+    for(let j=0;j<3;j++){
+      const x=sceneFrames[j]||{};
+      frames.push({
+        id:String(x.id||('s'+sceneNo+'f'+(j+1))),
+        scene:sceneNo,
+        frame:j+1,
+        frameType:String(x.frameType||fallbackTypes[j]).slice(0,40),
+        timecode:String(x.timecode||scene.duration||'').slice(0,120),
+        durationHint:String(x.durationHint||'0.8s').slice(0,60),
+        goal:String(x.goal||scene.purpose||'').slice(0,2200),
+        storyFunction:String(x.storyFunction||'').slice(0,900),
+        continuityRole:String(x.continuityRole||'').slice(0,1800),
+        composition:String(x.composition||scene.shot||'').slice(0,3500),
+        framing:String(x.framing||scene.framing||'').slice(0,1000),
+        cameraAngle:String(x.cameraAngle||scene.angle||'').slice(0,1000),
+        cameraPosition:String(x.cameraPosition||'').slice(0,1200),
+        lensFeel:String(x.lensFeel||scene.lens||'').slice(0,700),
+        cameraMotion:String(x.cameraMotion||scene.camera||'').slice(0,1200),
+        depth:String(x.depth||'').slice(0,900),
+        focus:String(x.focus||'').slice(0,1200),
+        location:String(x.location||scene.environment||'').slice(0,1800),
+        environment:String(x.environment||scene.environment||'').slice(0,2400),
+        lighting:String(x.lighting||scene.lighting||'').slice(0,1600),
+        mood:String(x.mood||'').slice(0,1000),
+        colorMood:String(x.colorMood||'').slice(0,1000),
+        avatarInFrame:Boolean(x.avatarInFrame ?? !!scene.characters),
+        avatarDescription:String(x.avatarDescription||scene.characters||'').slice(0,3000),
+        expression:String(x.expression||'').slice(0,900),
+        pose:String(x.pose||'').slice(0,1200),
+        action:String(x.action||scene.action||'').slice(0,3500),
+        productInFrame:Boolean(x.productInFrame ?? !!scene.product),
+        productRole:String(x.productRole||scene.product||'').slice(0,2200),
+        productPlacement:String(x.productPlacement||'').slice(0,1200),
+        productVisibility:String(x.productVisibility||'').slice(0,1000),
+        productConsistency:String(x.productConsistency||payload.productRules||payload.product?.rules||'').slice(0,2800),
+        dialogue:String(x.dialogue||scene.dialogue||'').slice(0,2500),
+        voiceover:String(x.voiceover||scene.voiceover||'').slice(0,2500),
+        onscreenText:String(x.onscreenText||scene.onscreen||'').slice(0,1400),
+        soundCue:String(x.soundCue||scene.sound||'').slice(0,1200),
+        previousAnchor:String(x.previousAnchor||'').slice(0,500),
+        nextIntent:String(x.nextIntent||'').slice(0,1600),
+        continuityNotes:String(x.continuityNotes||scene.continuity||'').slice(0,2800),
+        referenceMode:String(x.referenceMode||((i===0&&j===0)?'identity-led':'anchor-led')).slice(0,60),
+        identityRefs:Array.isArray(x.identityRefs)?x.identityRefs.slice(0,4).map(String):[],
+        anchorFrames:Array.isArray(x.anchorFrames)?x.anchorFrames.slice(0,4).map(String):[],
+        continuityFrames:Array.isArray(x.continuityFrames)?x.continuityFrames.slice(0,4).map(String):[],
+        imagePromptRu:String(x.imagePromptRu||'').slice(0,8000),
+        imagePromptEn:String(x.imagePromptEn||'').slice(0,8000),
+        negativePrompt:String(x.negativePrompt||scene.negative||'').slice(0,3500),
+        qualityNotes:String(x.qualityNotes||'').slice(0,2200)
+      });
+    }
+  }
+  return {
+    totalScenes:board.length,
+    totalFrames:frames.length,
+    logic:String(src.logic||'3 превиз-кадра на сцену; исходные фото используются только для bootstrap identity, затем приоритет у уже сгенерированных anchor-кадров.').slice(0,3000),
+    frames
+  };
+}
+async function generatePrevisPlan(payload,accountId,feedback=''){
+  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const board=Array.isArray(payload.storyboard)?payload.storyboard:[];
+  if(!board.length)throw new Error('Сначала нужен утверждённый Storyboard');
+  const master=[
+    'ROLE: Ты film director, storyboard supervisor, cinematographer и AI previsualization planner.',
+    'ИДЕЯ, СЦЕНАРИЙ И STORYBOARD УЖЕ УТВЕРЖДЕНЫ. Не менять сюжет и реплики.',
+    'Нужно построить кинематографический превиз будущего вертикального ролика 9:16 ДО видеогенерации.',
+    'Для КАЖДОЙ storyboard-сцены сделай ровно 3 ключевых кадра: start, middle, end.',
+    'При '+board.length+' сценах итог должен быть '+(board.length*3)+' кадров.',
+    '',
+    'КРИТИЧЕСКОЕ ПРАВИЛО РЕФЕРЕНСОВ:',
+    '- исходные фото товара/аватара нужны только для понимания identity: формы, цвета, фактуры, лица, одежды, locks;',
+    '- НЕ делай исходное фото товара главным anchor каждого нового кадра;',
+    '- после первого сгенерированного кадра основой следующих кадров становятся уже СГЕНЕРИРОВАННЫЕ кадры;',
+    '- приоритет: generated anchorFrames > continuityFrames > source identityRefs;',
+    '- новый кадр должен развивать действие и композицию, а не повторять предыдущий;',
+    '- первый кадр первой сцены может быть identity-led; далее преимущественно anchor-led;',
+    '- если персонаж впервые появляется позднее, разрешено один раз подключить его source identity reference для фиксации лица.',
+    '',
+    'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
+    'Правила товара: '+String(payload.productRules||payload.product?.rules||''),
+    'AI-аватар: '+String(payload.character?.name||'не задан'),
+    'Avatar locks: '+String(payload.character?.look||'')+' '+String(payload.character?.locks||''),
+    'Идея: '+JSON.stringify(payload.idea||{}),
+    'Сценарий: '+JSON.stringify(payload.script||{}),
+    'Storyboard: '+JSON.stringify(board),
+    feedback?('Комментарий пользователя: '+feedback):'',
+    '',
+    'ДЛЯ КАЖДОГО КАДРА ВЕРНИ:',
+    'scene, frame, frameType, timecode, durationHint, goal, storyFunction, continuityRole, composition, framing, cameraAngle, cameraPosition, lensFeel, cameraMotion, depth, focus, location, environment, lighting, mood, colorMood, avatarInFrame, avatarDescription, expression, pose, action, productInFrame, productRole, productPlacement, productVisibility, productConsistency, dialogue, voiceover, onscreenText, soundCue, previousAnchor, nextIntent, continuityNotes, referenceMode, identityRefs, anchorFrames, continuityFrames, imagePromptRu, imagePromptEn, negativePrompt, qualityNotes.',
+    '',
+    'imagePromptEn должен быть подробным cinematic prompt для ОДНОГО статичного 9:16 keyframe: realistic commercial film still, exact composition, lighting, camera, action phase, character/product continuity. No baked-in text, no random logo, no product deformation.',
+    'Кадры A/B/C одной сцены обязаны показывать разные фазы действия: начало → развитие → финал.',
+    'END кадр сцены должен визуально готовить START следующей сцены.',
+    'Не показывай внутренние рассуждения.',
+    '',
+    'Верни ТОЛЬКО JSON:',
+    '{"previsPlan":{"totalScenes":'+board.length+',"totalFrames":'+(board.length*3)+',"logic":"","frames":[{"id":"s1f1","scene":1,"frame":1,"frameType":"start","timecode":"","durationHint":"0.8s","goal":"","storyFunction":"","continuityRole":"","composition":"","framing":"","cameraAngle":"","cameraPosition":"","lensFeel":"","cameraMotion":"","depth":"","focus":"","location":"","environment":"","lighting":"","mood":"","colorMood":"","avatarInFrame":false,"avatarDescription":"","expression":"","pose":"","action":"","productInFrame":true,"productRole":"","productPlacement":"","productVisibility":"","productConsistency":"","dialogue":"","voiceover":"","onscreenText":"","soundCue":"","previousAnchor":"","nextIntent":"","continuityNotes":"","referenceMode":"identity-led","identityRefs":[],"anchorFrames":[],"continuityFrames":[],"imagePromptRu":"","imagePromptEn":"","negativePrompt":"","qualityNotes":""}]}}'
+  ].filter(Boolean).join('\n');
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({model,input:master,reasoning:{effort:'medium'},max_output_tokens:12000})
+  });
+  const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+  if(!r.ok)throw new Error(data?.error?.message||('OpenAI previs plan error '+r.status));
+  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-plan',description:'План 15–20 превиз-кадров',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+  return normalizePrevisPlan(safeAnalysisJson(openAIText(data)),payload);
+}
+function primaryIdentityUrls(run){
+  const productMedia=Array.isArray(run.media)?run.media:(Array.isArray(run.product?.media)?run.product.media:[]);
+  const avatarMedia=Array.isArray(run.avatarReferences)?run.avatarReferences:(Array.isArray(run.character?.media)?run.character.media:[]);
+  const product=productMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||'')))||productMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
+  const avatar=avatarMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||'')))||avatarMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
+  return {product:product?.url||'',avatar:avatar?.url||''};
+}
+function previsRefsForFrame(run,frame,done=[]){
+  const urls=[];
+  const byId=new Map(done.filter(x=>x?.url).map(x=>[String(x.id),x.url]));
+  for(const id of [...(frame.anchorFrames||[]),...(frame.continuityFrames||[])]){
+    if(byId.get(String(id)))urls.push(byId.get(String(id)));
+  }
+  if(!urls.length&&done.length)urls.push(done[done.length-1]?.url);
+  if(frame.frame===1&&frame.scene>1){
+    const prevScene=done.filter(x=>Number(x.scene)===Number(frame.scene)-1&&x.url).slice(-1)[0];
+    if(prevScene?.url)urls.unshift(prevScene.url);
+  }
+  const identity=primaryIdentityUrls(run);
+  const hasProductAnchor=done.some(x=>x?.productInFrame&&x?.url);
+  const hasAvatarAnchor=done.some(x=>x?.avatarInFrame&&x?.url);
+  if(frame.productInFrame&&!hasProductAnchor&&identity.product)urls.push(identity.product);
+  if(frame.avatarInFrame&&!hasAvatarAnchor&&identity.avatar)urls.push(identity.avatar);
+  if(!done.length&&identity.product)urls.push(identity.product);
+  return [...new Set(urls.filter(Boolean))].slice(0,3);
+}
+async function generatePrevisImage(accountId,run,frame,referenceUrls=[]){
+  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const prompt=[
+    'Generate exactly one cinematic vertical 9:16 previsualization keyframe for a future commercial video.',
+    'This is frame '+frame.frame+' ('+frame.frameType+') of scene '+frame.scene+'.',
+    'Product: '+String(run.productName||''),
+    'Product identity locks: '+String(run.productRules||run.product?.rules||''),
+    run.character?.name?('Avatar identity locks: '+String(run.character.name)+'; '+String(run.character.look||'')+'; '+String(run.character.locks||'')):'',
+    'Composition: '+String(frame.composition||''),
+    'Framing: '+String(frame.framing||''),
+    'Camera angle/position/lens: '+[frame.cameraAngle,frame.cameraPosition,frame.lensFeel].filter(Boolean).join('; '),
+    'Environment: '+String(frame.environment||frame.location||''),
+    'Lighting: '+String(frame.lighting||''),
+    'Action phase: '+String(frame.action||''),
+    'Avatar: '+String(frame.avatarDescription||''),
+    'Product placement: '+String(frame.productPlacement||frame.productRole||''),
+    'Continuity: '+String(frame.continuityNotes||''),
+    'Next visual intent: '+String(frame.nextIntent||''),
+    String(frame.imagePromptEn||frame.imagePromptRu||''),
+    'REFERENCE POLICY: source product/avatar photos are identity guides only. Generated reference frames are the primary visual anchors. Preserve identity while changing action phase/composition naturally. Do not copy a reference frame pixel-for-pixel.',
+    'No baked-in text, no random logos, no extra fingers, no product deformation, no face change, no wardrobe change unless the approved scenario explicitly requires it.',
+    frame.negativePrompt?('Negative: '+frame.negativePrompt):''
+  ].filter(Boolean).join('\n').slice(0,15000);
+  const input=[{role:'user',content:[
+    {type:'input_text',text:prompt},
+    ...referenceUrls.map(url=>({type:'input_image',image_url:url,detail:'low'}))
+  ]}];
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const body={
+    model,input,
+    tools:[{type:'image_generation',model:'gpt-image-2',action:'auto',size:'1024x1536',quality:'low',output_format:'png'}],
+    tool_choice:'required'
+  };
+  const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},body:JSON.stringify(body)});
+  const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+  if(!r.ok)throw new Error(data?.error?.message||('OpenAI previs image error '+r.status));
+  const call=(Array.isArray(data?.output)?data.output:[]).find(x=>x?.type==='image_generation_call'&&x?.result);
+  const b64=String(call?.result||'');
+  if(!b64)throw new Error('OpenAI не вернул превиз-кадр');
+  const scoped=(sanitizeAccountId(accountId)+'__previs_'+String(run.id||'run')).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  const uploaded=await callProductMedia({action:'upload',productId:scoped,fileName:'previs-s'+frame.scene+'-f'+frame.frame+'-'+Date.now()+'.png',mimeType:'image/png',dataBase64:'data:image/png;base64,'+b64});
+  if(!uploaded?.media?.url)throw new Error('Не удалось сохранить превиз-кадр');
+  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+  const amountUsd=priced.amountUsd>0?priced.amountUsd:imageGenerationFallbackUsd('low','1024x1536');
+  await recordExpense(accountId,{provider:'OpenAI',category:'previs-image',description:'Превиз-кадр сцены '+frame.scene+' · '+frame.frame,amountUsd,model:'gpt-image-2',usage:{size:'1024x1536',quality:'low',references:referenceUrls.length},source:'auto'}).catch(()=>{});
+  return {url:uploaded.media.url,path:uploaded.media.path||'',model:'gpt-image-2',references:referenceUrls};
+}
+const previsQueues=new Map();
+function enqueueRunPrevis(accountId,runId,label='previs'){
+  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const previous=previsQueues.get(key)||Promise.resolve();let next;
+  next=previous.catch(()=>{}).then(()=>processRunPrevis(key,runId)).catch(e=>{console.error('['+label+'] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}}).finally(()=>{if(previsQueues.get(key)===next)previsQueues.delete(key)});
+  previsQueues.set(key,next);return next;
+}
+async function processRunPrevis(accountId,runId){
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+  if(run.previsRunning)return {ok:true,alreadyRunning:true};
+  run.previsRunning=true;run.stage='Превиз-кадры';run.status='В работе';run.awaitingApproval=false;run.progress=Math.max(28,Number(run.progress)||0);run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
+  await writeAppState(data,accountId);
+  try{
+    let plan=run.previsPlan&&Array.isArray(run.previsPlan.frames)?run.previsPlan:await generatePrevisPlan(run,accountId);
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    run.previsPlan=plan;run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
+    await writeAppState(data,accountId);
+    for(const spec of plan.frames){
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+      run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
+      if(run.previsFrames.some(x=>x?.id===spec.id&&x?.url))continue;
+      const refs=previsRefsForFrame(run,spec,run.previsFrames);
+      const img=await generatePrevisImage(accountId,run,spec,refs);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
+      run.previsFrames.push({...spec,...img,generatedAt:new Date().toISOString()});
+      run.progress=Math.min(36,28+Math.round((run.previsFrames.length/Math.max(1,plan.frames.length))*8));
+      run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Превиз-кадр готов',(run.productName||run.id)+' · сцена '+spec.scene+' · кадр '+spec.frame);
+      await writeAppState(data,accountId);
+    }
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    run.previsRunning=false;
+    run.previsResult={completed:true,totalFrames:run.previsFrames?.length||0,totalScenes:plan.totalScenes,completedAt:new Date().toISOString()};
+    run.references={...(run.references||{}),style:String(run.style||''),notes:'Исходные фото — только identity. Видео строится по сгенерированным превиз-кадрам.',product:(run.media||run.product?.media||[]).map(x=>x?.url).filter(Boolean),avatar:(run.avatarReferences||run.character?.media||[]).map(x=>x?.url).filter(Boolean)};
+    run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+run.previsFrames.length+' кадров');
+    if(run.mode==='manual'){
+      run.status='На проверке';run.stage='Превиз-кадры';run.progress=36;run.awaitingApproval=true;
+      await writeAppState(data,accountId);
+    }else{
+      run.status='В работе';run.stage='Генерация';run.progress=38;run.awaitingApproval=false;
+      await writeAppState(data,accountId);
+      await dispatchExistingRun(accountId,run);
+    }
+    return {ok:true,totalFrames:run.previsFrames.length};
+  }catch(e){
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run){run.previsRunning=false;run.status='Ошибка';run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.error='Превиз: '+run.previsError;run.updatedAt=new Date().toISOString();appendFactoryJournal(data,'Ошибка превиза',(run.productName||run.id)+' · '+run.previsError);await writeAppState(data,accountId)}
+    return {ok:false,error:String(e?.message||e)};
+  }
+}
+function previsSceneReferenceUrls(run,sceneNo){
+  const frames=(Array.isArray(run?.previsFrames)?run.previsFrames:[]).filter(x=>Number(x?.scene)===Number(sceneNo)&&/^https:\/\//i.test(String(x?.url||'')));
+  if(frames.length)return frames.slice(0,3).map(x=>x.url);
+  return runReferenceUrls(run);
+}
+async function processAutoPipeline(accountId,runId){
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+  try{
+    if(!run.idea){
+      const idea=await generateIdeaStage(run,accountId,run.variant||1);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.idea=idea;run.stage='Сценарий';run.progress=10;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+    }
+    if(!run.script){
+      const script=await generateScriptStage(run,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.script=script;run.stage='Storyboard';run.progress=18;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+    }
+    if(!Array.isArray(run.storyboard)||!run.storyboard.length){
+      const storyboard=await generateStoryboardStage(run,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.storyboard=storyboard;run.sceneCount=storyboard.length;run.sceneVersions=Object.fromEntries(storyboard.map((_,i)=>[i+1,1]));run.stage='Превиз-кадры';run.progress=26;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+    }
+    return await processRunPrevis(accountId,runId);
+  }catch(e){
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run){run.status='Ошибка';run.error='Автопилот: '+String(e?.message||e);run.updatedAt=new Date().toISOString();await writeAppState(data,accountId)}
+    return {ok:false,error:String(e?.message||e)};
+  }
+}
+const autoPipelineQueues=new Map();
+function enqueueAutoPipeline(accountId,runId){
+  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const previous=autoPipelineQueues.get(key)||Promise.resolve();let next;
+  next=previous.catch(()=>{}).then(()=>processAutoPipeline(key,runId)).finally(()=>{if(autoPipelineQueues.get(key)===next)autoPipelineQueues.delete(key)});
+  autoPipelineQueues.set(key,next);return next;
+}
+
 async function buildRunPlan(payload,accountId,variant=1,feedback=''){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
   const lockedIdea=payload.idea?normalizeIdeaStage(payload.idea,payload):await generateIdeaStage(payload,accountId,variant,feedback);
@@ -1225,8 +1509,14 @@ async function processRunPostProduction(accountId,runId){
     const qc=await runFinalQc(run,finalPath,accountId);
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     run.qcResult={...qc,completedAt:new Date().toISOString()};
-    run.postProductionRunning=false;run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;run.error='';run.updatedAt=new Date().toISOString();
-    appendFactoryJournal(data,'Финальный ролик готов к проверке',(run.productName||run.id)+' · '+String(qc?.summary||''));
+    run.postProductionRunning=false;run.error='';run.updatedAt=new Date().toISOString();
+    if(run.mode==='manual'){
+      run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;
+      appendFactoryJournal(data,'Финальный ролик готов к проверке',(run.productName||run.id)+' · '+String(qc?.summary||''));
+    }else{
+      run.stage='Готово';run.status='Готово';run.awaitingApproval=false;run.progress=100;
+      appendFactoryJournal(data,'Автопилот завершил ролик',(run.productName||run.id)+' · '+String(qc?.summary||''));
+    }
     await writeAppState(data,accountId);
     return {ok:true,run};
   }catch(e){
@@ -1254,7 +1544,6 @@ async function processRunGeneration(accountId,runId){
   await writeAppState(data,accountId);
 
   const board=Array.isArray(run.storyboard)&&run.storyboard.length?run.storyboard:[planSceneDefaults(0,1)];
-  const refs=runReferenceUrls(run);
   const total=board.length;
   try{
     for(let i=0;i<board.length;i++){
@@ -1265,6 +1554,7 @@ async function processRunGeneration(accountId,runId){
       }
       const scene=board[i]||{};
       const sceneNo=i+1;
+      const refs=previsSceneReferenceUrls(run,sceneNo);
       if(run.sceneResults?.[sceneNo]?.ok&&run.sceneResults?.[sceneNo]?.urls?.length)continue;
       const prompt=[
         'Вертикальный рекламный ролик 9:16.',
@@ -1347,9 +1637,17 @@ async function processRunGeneration(accountId,runId){
     if(run){
       const urls=Object.keys(run.sceneResults||{}).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
       run.generationResult={provider:'higgsfield',urls,completedScenes:board.length,totalScenes:board.length,completed:true};
-      run.backendGenerationRunning=false;run.stage='На проверке';run.status='На проверке';run.progress=70;run.awaitingApproval=true;run.error='';run.generationError='';run.updatedAt=new Date().toISOString();
+      run.backendGenerationRunning=false;run.error='';run.generationError='';run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Генерация сцен завершена',(run.productName||run.id)+' · '+board.length+' сцен');
-      await writeAppState(data,accountId);
+      if(run.mode==='manual'){
+        run.stage='На проверке';run.status='На проверке';run.progress=70;run.awaitingApproval=true;
+        await writeAppState(data,accountId);
+      }else{
+        run.acceptedScenes=Array.from({length:board.length},(_,i)=>i+1);
+        run.stage='Озвучка';run.status='В работе';run.progress=74;run.awaitingApproval=false;run.postProductionRunning=false;
+        await writeAppState(data,accountId);
+        enqueuePostProduction(accountId,run.id,'autopilot-post-production');
+      }
     }
     return {ok:true,completedScenes:board.length};
   }catch(e){
