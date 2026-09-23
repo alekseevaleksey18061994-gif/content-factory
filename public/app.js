@@ -245,6 +245,43 @@ $("#autoSchedule").onclick=()=>{const a=runs.filter(r=>r.status==="Готово"
 function renderAnalytics(){const p=runs.filter(r=>r.status==="Опубликовано"),views=p.reduce((s,r)=>s+(Number(r.metrics?.views)||0),0),clicks=p.reduce((s,r)=>s+(Number(r.metrics?.clicks)||0),0),sales=p.reduce((s,r)=>s+(Number(r.metrics?.sales)||0),0);$("#analyticsStats").innerHTML=stat("▶","Просмотры",views)+stat("◷","Удержание","0%","blue")+stat("↗","Переходы",clicks,"purple")+stat("₽","Продажи",sales);$("#insights").innerHTML='<div class="insight-card"><b>Система копит данные</b><p>После публикаций здесь появятся сравнения по хукам, стилям, персонажам и товарам.</p></div>';$("#trendCards").innerHTML='<div class="trend-card"><b>Тренды</b><p>Темы и форматы для следующих тестов.</p></div><div class="trend-card"><b>Конкуренты</b><p>Структуры роликов, частота публикаций и рекламные гипотезы.</p></div>'}
 function renderCosts(){const t=runs.reduce((s,r)=>s+(Number(r.cost)||0),0),c=runs.filter(r=>Number(r.cost)>0).length,a=c?Math.round(t/c):0,re=runs.reduce((s,r)=>s+Math.max(0,(r.attempt||1)-1),0);$("#costStats").innerHTML=stat("₽","Всего",t+" ₽")+stat("▥","Средний ролик",a+" ₽","blue")+stat("↻","Повторных попыток",re,"warn")+stat("◉","Лимит кампании",(settings.budgetCampaign||5000)+" ₽","purple");$("#budgetCampaign").value=settings.budgetCampaign||5000;$("#budgetAttempts").value=settings.budgetAttempts||3;$("#budgetApproval").value=settings.budgetApproval||100;$("#costRows").innerHTML=runs.filter(r=>r.cost).reverse().slice(0,20).map(r=>'<div class="library-item"><div><h3>'+esc(pname(r))+'</h3><p>'+esc(norm(r))+" · "+esc(r.modelMode||"Авто")+'</p></div><b>'+r.cost+' ₽</b></div>').join("")||'<div class="empty">Расходы появятся после реальных генераций.</div>'}
 $("#saveBudget").onclick=()=>{settings.budgetCampaign=Number($("#budgetCampaign").value)||5000;settings.budgetAttempts=Number($("#budgetAttempts").value)||3;settings.budgetApproval=Number($("#budgetApproval").value)||100;log("Обновлены бюджетные лимиты","Кампания: "+settings.budgetCampaign+" ₽");persist()};
+
+let chatHistory=[];
+function renderChat(){
+  const box=$("#chatMessages");
+  if(!box)return;
+  if(!chatHistory.length){
+    box.innerHTML='<div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов принимать команды после подключения OpenAI API.</p></div>';
+    return;
+  }
+  box.innerHTML=chatHistory.map(m=>'<div class="chat-bubble '+(m.role==="user"?"user":"assistant")+'"><b>'+(m.role==="user"?"Ты":"ChatGPT")+'</b><p>'+esc(m.content)+'</p></div>').join("");
+  box.scrollTop=box.scrollHeight;
+}
+async function refreshChatStatus(){
+  const el=$("#chatStatus"); if(!el)return;
+  try{
+    const s=await (await fetch("/api/status",{cache:"no-store"})).json();
+    const ok=s.services?.openai&&s.services?.chatgptControl;
+    el.textContent=ok?"Подключён к OpenAI API":"Ожидает OpenAI API";
+    el.className=ok?"chat-online":"chat-offline";
+  }catch{el.textContent="Статус недоступен"}
+}
+if($("#chatForm"))$("#chatForm").onsubmit=async e=>{
+  e.preventDefault();
+  const input=$("#chatInput"),message=input.value.trim();
+  if(!message)return;
+  chatHistory.push({role:"user",content:message});input.value="";renderChat();
+  const status=$("#chatStatus"); if(status)status.textContent="Думаю…";
+  try{
+    const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message,history:chatHistory.slice(0,-1)})});
+    const data=await r.json().catch(()=>({}));
+    chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});
+  }catch(err){
+    chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});
+  }
+  renderChat();refreshChatStatus();
+};
+if($("#clearChat"))$("#clearChat").onclick=()=>{chatHistory=[];renderChat()};
 function renderJournal(){$("#journalList").innerHTML=journal.length?journal.slice().reverse().map(j=>'<div class="journal-row '+(j.type==="error"?"error":"")+'"><span class="journal-time">'+esc(j.time)+'</span><span class="journal-dot"></span><span><b>'+esc(j.title)+'</b><small>'+esc(j.detail||"")+'</small></span></div>').join(""):'<div class="empty">Журнал пока пуст.</div>'}
 async function renderConnections(){
   let s={services:{},details:{}};
@@ -302,7 +339,7 @@ $("#launch").onclick=async()=>{
   $("#launchMsg").textContent=res.ok?"Передано в n8n. Фото товара и AI-аватара переданы как референсы.":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";
   $("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)
 };
-function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderConnections()}
+function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();refreshChatStatus();renderConnections()}
 if("serviceWorker" in navigator){
   navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{});
 }
