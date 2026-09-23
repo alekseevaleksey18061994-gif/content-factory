@@ -385,7 +385,7 @@
         <label>Длительность<select id="duration"><option>15 сек</option><option selected>30 сек</option><option>45 сек</option></select></label>
         <label>Количество<select id="count"><option>1 вариант</option><option>3 варианта</option><option selected>5 вариантов</option><option>10 вариантов</option><option>20 вариантов</option></select></label>
         <label>Формат<select id="format"><option selected>9:16</option></select></label>
-        <label>AI-персонаж<select id="characterSelect"><option value="">Без персонажа</option></select></label>
+        <label>AI-персонаж<select id="characterSelect"><option value="">Без персонажа</option></select><small id="characterSelectHint">Если к товару привязан аватар, он выберется автоматически.</small></label>
         <label>Модель<select id="modelMode"><option selected>Авто — умный выбор</option><option>Higgsfield</option><option>Runway</option><option>Veo</option><option>Kling</option></select></label>
         <label>Лимит бюджета, ₽<input id="runBudget" type="number" value="500"></label>
         <label>Макс. попыток на сцену<input id="runAttempts" type="number" value="3"></label>
@@ -397,7 +397,7 @@
   </div>
 
   <div class="modal" id="productModal" aria-hidden="true">
-    <div class="modal-card small"><button class="close" data-close="productModal">×</button><span class="kicker">НОВЫЙ ТОВАР</span><h2>Добавить товар</h2><label>Название<input id="newProductName" placeholder="Например: Корейская мочалка" /></label><label>Категория<input id="newProductCategory" placeholder="Красота и уход" /></label><label>Ключевые преимущества<textarea id="newProductUtp" placeholder="Что важно показать в роликах"></textarea></label><label>Что нельзя менять<textarea id="newProductRules" placeholder="Форма, цвет, логотип, способ использования…"></textarea></label><label>Фото товара<input id="newProductImages" type="file" accept="image/*" multiple /></label><div class="message" id="newProductImagesHint">Можно выбрать сразу несколько фото. Первое станет главным.</div><button class="btn primary full" id="saveProduct">Сохранить товар</button><div class="message" id="saveProductMsg"></div></div>
+    <div class="modal-card small"><button class="close" data-close="productModal">×</button><span class="kicker">НОВЫЙ ТОВАР</span><h2>Добавить товар</h2><label>Название<input id="newProductName" placeholder="Например: Корейская мочалка" /></label><label>Категория<input id="newProductCategory" placeholder="Красота и уход" /></label><label>Ключевые преимущества<textarea id="newProductUtp" placeholder="Что важно показать в роликах"></textarea></label><label>Что нельзя менять<textarea id="newProductRules" placeholder="Форма, цвет, логотип, способ использования…"></textarea></label><label>AI-аватар по умолчанию<select id="newProductCharacter"><option value="">Без привязки</option></select></label><div class="message">Этот аватар будет автоматически учитываться уже при создании идеи и сценария. В конкретном запуске его можно переопределить.</div><label>Фото товара<input id="newProductImages" type="file" accept="image/*" multiple /></label><div class="message" id="newProductImagesHint">Можно выбрать сразу несколько фото. Первое станет главным.</div><button class="btn primary full" id="saveProduct">Сохранить товар</button><div class="message" id="saveProductMsg"></div></div>
   </div>
 
   <div class="modal" id="campaignModal" aria-hidden="true">
@@ -443,6 +443,6 @@
       },true);
     })();
   </script>
-  <script src="/app.js?v=49"></script>
+  <script src="/app.js?v=50"></script>
 </body>
 </html>
