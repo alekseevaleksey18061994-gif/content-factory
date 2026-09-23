@@ -3180,6 +3180,75 @@ async function recoverLegacyPlaceholderRuns(){
   }
 }
 
+async function deleteFactoryEntity(accountId,type,id){
+  accountId=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  type=String(type||'').trim();
+  id=String(id||'').trim();
+  if(!type||!id)throw new Error('Не указан объект для удаления');
+  const state=await readAppState(accountId);
+  const data=state?.data||blankFactoryState();
+  let deleted=null;
+
+  if(type==='run'){
+    data.runs=Array.isArray(data.runs)?data.runs:[];
+    deleted=data.runs.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('Процесс не найден');
+    data.runs=data.runs.filter(x=>String(x?.id||'')!==id);
+    data.scripts=(Array.isArray(data.scripts)?data.scripts:[]).filter(x=>String(x?.runId||'')!==id);
+    const mediaPaths=[
+      ...(Array.isArray(deleted.previsFrames)?deleted.previsFrames.map(x=>x?.path):[]),
+      deleted.montageResult?.path,
+      deleted.finalMedia?.path
+    ].filter(Boolean);
+    for(const p of [...new Set(mediaPaths)]){
+      try{await callProductMedia({action:'delete',path:String(p)})}catch{}
+    }
+    appendFactoryJournal(data,'Удалён процесс',(deleted.productName||deleted.id)+' · '+(deleted.status||deleted.stage||''));
+  }else if(type==='script'){
+    data.scripts=Array.isArray(data.scripts)?data.scripts:[];
+    deleted=data.scripts.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('Сценарий не найден');
+    data.scripts=data.scripts.filter(x=>String(x?.id||'')!==id);
+    appendFactoryJournal(data,'Удалён сценарий',deleted.title||id);
+  }else if(type==='campaign'){
+    data.campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
+    deleted=data.campaigns.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('Кампания не найдена');
+    data.campaigns=data.campaigns.filter(x=>String(x?.id||'')!==id);
+    for(const run of (Array.isArray(data.runs)?data.runs:[]))if(String(run?.campaignId||'')===id)run.campaignId=null;
+    appendFactoryJournal(data,'Удалена кампания',deleted.name||id);
+  }else if(type==='character'){
+    data.characters=Array.isArray(data.characters)?data.characters:[];
+    deleted=data.characters.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('AI-аватар не найден');
+    for(const m of (Array.isArray(deleted.media)?deleted.media:[])){
+      if(m?.path)try{await callProductMedia({action:'delete',path:String(m.path)})}catch{}
+    }
+    data.characters=data.characters.filter(x=>String(x?.id||'')!==id);
+    appendFactoryJournal(data,'Удалён AI-аватар',deleted.name||id);
+  }else if(type==='videoAnalysis'){
+    data.videoAnalyses=Array.isArray(data.videoAnalyses)?data.videoAnalyses:[];
+    deleted=data.videoAnalyses.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('Разбор видео не найден');
+    data.videoAnalyses=data.videoAnalyses.filter(x=>String(x?.id||'')!==id);
+    appendFactoryJournal(data,'Удалён разбор видео',deleted.sourceName||id);
+  }else if(type==='journal'){
+    data.journal=Array.isArray(data.journal)?data.journal:[];
+    deleted=data.journal.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('Запись журнала не найдена');
+    data.journal=data.journal.filter(x=>String(x?.id||'')!==id);
+  }else if(type==='expense'){
+    data.expenses=Array.isArray(data.expenses)?data.expenses:[];
+    deleted=data.expenses.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('Расход не найден');
+    data.expenses=data.expenses.filter(x=>String(x?.id||'')!==id);
+  }else{
+    throw new Error('Этот тип объекта нельзя удалить');
+  }
+  await writeAppState(data,accountId);
+  return {type,id,label:String(deleted?.name||deleted?.title||deleted?.sourceName||deleted?.productName||id)};
+}
+
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
 
@@ -3456,6 +3525,19 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,rate:fx.rate,date:fx.date,source:'Банк России'});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось получить курс USD/RUB',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/entities/delete' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      if(body?.confirmed!==true) return json(res,400,{ok:false,error:'Нужно подтверждение удаления.'});
+      const deleted=await deleteFactoryEntity(accountId,body?.type,body?.id);
+      return json(res,200,{ok:true,deleted});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось удалить объект',detail:String(e?.message||e)});
     }
   }
 
