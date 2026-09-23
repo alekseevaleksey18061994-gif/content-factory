@@ -1788,9 +1788,12 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/media/upload' && req.method==='POST'){
     try{
       const body=await readBody(req);
+      const accountId=sanitizeAccountId(body?.accountId||req.headers['x-content-account']||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      const scopedProductId=(accountId+'__'+String(body?.productId||'media')).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
       const data=await callProductMedia({
         action:'upload',
-        productId:body.productId,
+        productId:scopedProductId,
         fileName:body.fileName,
         mimeType:body.mimeType,
         dataBase64:body.dataBase64
@@ -1804,8 +1807,29 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/media/delete' && req.method==='POST'){
     try{
       const body=await readBody(req);
-      const data=await callProductMedia({action:'delete',path:body.path});
-      return json(res,200,data);
+      const accountId=sanitizeAccountId(body?.accountId||req.headers['x-content-account']||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      const objectPath=String(body?.path||'');
+      const scopedPrefix=(accountId+'__').replace(/[^a-zA-Z0-9_-]/g,'');
+      let allowed=Boolean(objectPath&&objectPath.startsWith(scopedPrefix));
+      if(!allowed&&objectPath){
+        const state=await readAppState(accountId);
+        const data=state?.data||{};
+        const knownPaths=new Set();
+        for(const product of (Array.isArray(data.products)?data.products:[])){
+          for(const media of (Array.isArray(product?.media)?product.media:[])) if(media?.path) knownPaths.add(String(media.path));
+        }
+        for(const character of (Array.isArray(data.characters)?data.characters:[])){
+          for(const media of (Array.isArray(character?.media)?character.media:[])) if(media?.path) knownPaths.add(String(media.path));
+        }
+        const registry=await ensureAccountsRegistry();
+        const account=registry.accounts.find(x=>x.id===accountId&&x.ownerUserId===req.cfUser?.id);
+        if(account?.avatarPath)knownPaths.add(String(account.avatarPath));
+        allowed=knownPaths.has(objectPath);
+      }
+      if(!allowed) return json(res,403,{ok:false,error:'Нет доступа к этому медиафайлу.'});
+      const result=await callProductMedia({action:'delete',path:objectPath});
+      return json(res,200,result);
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось удалить фото.',detail:String(e?.message||e)});
     }
