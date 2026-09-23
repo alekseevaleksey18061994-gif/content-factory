@@ -252,8 +252,9 @@ async function renderConnections(){
   const R=[
     ["Серверная база",s.services?.database,"Supabase · товары, настройки и история",""],
     ["n8n — сервер",s.services?.n8nServer,"Оркестрация автоматизаций",""],
-    ["n8n — рабочий процесс",s.services?.n8nWorkflow,"Webhook полного конвейера",s.services?.n8nWorkflow?"":"Workflow ещё не опубликован"],
-    ["Higgsfield",s.services?.higgsfield,"Сцены, видео и AI-персонажи",s.services?.higgsfield?"":"Аккаунт ChatGPT подключён · нужен API-доступ завода"],
+    ["n8n — архив",s.services?.n8nWorkflow,"Приём задания и Google Drive",s.services?.n8nWorkflow?"":"Архивный workflow ещё не опубликован"],
+    ["n8n — генерация",s.services?.n8nGeneration,"Higgsfield generation pipeline",s.services?.n8nGeneration?"":"Генерационный workflow ещё не подключён"],
+    ["Higgsfield",s.services?.higgsfield,"Сцены, видео и AI-персонажи",s.services?.higgsfield?"API завода подключён":"Нужен API-доступ завода"],
     ["Runway",s.services?.runway,"Генерация и обработка",s.services?.runway?"":"Аккаунт ChatGPT подключён · нужен API-ключ и кредиты"],
     ["Descript",s.services?.descript,"Монтаж и финальная сборка",s.services?.descript?"":"Аккаунт ChatGPT подключён · нужен API token"],
     ["Google Drive",s.services?.drive,"Архив исходников и результатов",s.services?.drive?"":"Аккаунт ChatGPT подключён · нужен OAuth в n8n"]
@@ -287,7 +288,7 @@ $("#launch").onclick=async()=>{
   for(let i=1;i<=n;i++)arr.push({id:uid("r"),...base,variant:n>1?i:null,status:"В работе",stage:"Сценарий",progress:8,attempt:1,sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[]});
   runs.push(...arr);selectedRunId=arr[0]?.id;
   log("Запущено производство",base.productName+" · "+n+" роликов · "+(chosenCharacter?"аватар "+chosenCharacter.name+" · ":"")+(base.mode==="manual"?"ручной режим":"автопилот"));persist();
-  $("#launchMsg").textContent=res.ok?"Передано в n8n. Аватар и его фото переданы как референсы.":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";
+  $("#launchMsg").textContent=res.ok?"Передано в n8n. Фото товара и AI-аватара переданы как референсы.":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";
   $("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)
 };
 function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderConnections()}
