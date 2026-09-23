@@ -133,7 +133,7 @@ async function uploadCharacterPhotos(character,fileList,statusEl=null){
     try{
       if(statusEl)statusEl.textContent='Загружаю фото аватара '+(i+1)+' из '+files.length+'…';
       const dataBase64=await fileDataUrl(file);
-      const resp=await fetch("/api/media/upload",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({productId:"avatar-"+character.id,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64})});
+      const resp=await fetch("/api/media/upload",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,productId:"avatar-"+character.id,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64})});
       const body=await resp.json().catch(()=>({}));
       if(!resp.ok||!body.media)throw new Error(body.detail||body.error||"Ошибка загрузки");
       if(!character.media.length)body.media.isPrimary=true;
@@ -165,7 +165,7 @@ async function uploadPhotos(productId,fileList,statusEl=null){
     try{
       if(statusEl)statusEl.textContent='Загружаю фото '+(i+1)+' из '+files.length+'…';
       const dataBase64=await fileDataUrl(file);
-      const resp=await fetch("/api/media/upload",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({productId,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64})});
+      const resp=await fetch("/api/media/upload",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,productId,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64})});
       const body=await resp.json().catch(()=>({}));
       if(!resp.ok||!body.media)throw new Error(body.detail||body.error||"Ошибка загрузки");
       if(!p.media.length)body.media.isPrimary=true;
@@ -181,7 +181,7 @@ async function uploadPhotos(productId,fileList,statusEl=null){
 }
 window.uploadExistingPhotos=async(e,productId)=>{const files=[...e.target.files];const status=$("#mediaStatus");await uploadPhotos(productId,files,status);e.target.value="";renderProductDetail()};
 window.makePrimaryMedia=(productId,mediaId)=>{const p=prod(productId);if(!p)return;(p.media||[]).forEach(m=>m.isPrimary=m.id===mediaId);log("Изменено главное фото",p.name);persist();renderProductDetail()};
-window.deleteProductMedia=async(productId,mediaId)=>{const p=prod(productId);if(!p)return;const m=(p.media||[]).find(x=>x.id===mediaId);if(!m||!confirm("Удалить это фото?"))return;try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:m.path})})}catch{};const wasPrimary=!!m.isPrimary;p.media=(p.media||[]).filter(x=>x.id!==mediaId);if(wasPrimary&&p.media[0])p.media[0].isPrimary=true;log("Удалено фото товара",p.name);persist();renderProductDetail()}
+window.deleteProductMedia=async(productId,mediaId)=>{const p=prod(productId);if(!p)return;const m=(p.media||[]).find(x=>x.id===mediaId);if(!m||!confirm("Удалить это фото?"))return;try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:m.path})})}catch{};const wasPrimary=!!m.isPrimary;p.media=(p.media||[]).filter(x=>x.id!==mediaId);if(wasPrimary&&p.media[0])p.media[0].isPrimary=true;log("Удалено фото товара",p.name);persist();renderProductDetail()}
 function rrow(r){return '<button class="run-row" onclick="openRun(\''+r.id+'\')"><span class="run-thumb">'+(prod(r.productId)?.icon||"◆")+'</span><span><b>'+esc(pname(r))+(r.variant?" · вариант "+r.variant:"")+'</b><small>'+esc(norm(r))+' · '+esc(r.created||"")+' · '+esc(r.style||"")+'</small><div class="progress"><i style="width:'+pct(r)+'%"></i></div></span><span class="status '+scl(r.status)+'">'+esc(r.status||"В работе")+'</span></button>'}
 function task(r){return{id:r.id,title:norm(r)+" · "+pname(r),service:norm(r)==="Генерация"?"Higgsfield / Runway":norm(r)==="Озвучка"?"Озвучка":norm(r)==="Монтаж"?"Descript / монтаж":"Content Factory",progress:r.status==="Ошибка"?0:pct(r),state:r.status==="Ошибка"?"Ошибка":r.status==="Готово"?"Готово":"Выполняется",attempt:r.attempt||1,cost:r.cost||0}}
 function taskHtml(t){return '<div class="task-row"><span class="task-icon">'+(t.state==="Ошибка"?"!":"⚙")+'</span><span><b>'+esc(t.title)+'</b><small>'+esc(t.service)+' · попытка '+t.attempt+'/'+(settings.budgetAttempts||3)+(t.cost?" · "+t.cost+" ₽":"")+'</small><div class="progress"><i style="width:'+t.progress+'%"></i></div></span><span class="status '+(t.state==="Ошибка"?"error":t.state==="Готово"?"done":"work")+'">'+t.state+'</span></div>'}
@@ -198,7 +198,7 @@ function renderProduction(){const K=["Идея","Сценарий","Storyboard",
 function renderBackground(){const a=runs.map(task).reverse();$("#backgroundTasks").innerHTML=a.length?a.map(taskHtml).join(""):'<div class="empty">Задач пока нет.</div>'}
 $("#retryFailed").onclick=()=>{let n=0;runs.forEach(r=>{if(r.status==="Ошибка"){r.status="В работе";r.attempt=(r.attempt||1)+1;n++}});if(n)log("Повтор неудачных задач","Перезапущено: "+n);persist()};
 function renderProducts(){$("#productsGrid").innerHTML=products.length?products.map(p=>'<article class="catalog-card">'+productThumb(p)+'<h3>'+esc(p.name)+'</h3><p>'+esc(p.category||"Товар")+'</p><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+p.id+'\')">Создать ролик</button><button class="secondary" onclick="openProduct(\''+p.id+'\')">Паспорт</button><button class="danger-btn" onclick="deleteProduct(\''+p.id+'\')">Удалить</button></div></article>').join(""):'<div class="empty">Товаров пока нет.</div>'}
-window.deleteProduct=async id=>{const p=prod(id);if(!p||!confirm('Удалить товар «'+p.name+'»?'))return;const all=confirm("Удалить также все ролики и историю этого товара?\n\nOK — удалить всё\nОтмена — сохранить историю роликов");for(const m of (p.media||[])){try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:m.path})})}catch{}}if(!all)runs.forEach(r=>{if(r.productId===id)r.productName=p.name});products=products.filter(x=>x.id!==id);if(all)runs=runs.filter(r=>r.productId!==id);campaigns=campaigns.filter(c=>c.productId!==id);selectedProductId=products[0]?.id||null;log("Удалён товар",p.name+(all?" вместе с историей":" — история сохранена"));persist();go("products")};
+window.deleteProduct=async id=>{const p=prod(id);if(!p||!confirm('Удалить товар «'+p.name+'»?'))return;const all=confirm("Удалить также все ролики и историю этого товара?\n\nOK — удалить всё\nОтмена — сохранить историю роликов");for(const m of (p.media||[])){try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:m.path})})}catch{}}if(!all)runs.forEach(r=>{if(r.productId===id)r.productName=p.name});products=products.filter(x=>x.id!==id);if(all)runs=runs.filter(r=>r.productId!==id);campaigns=campaigns.filter(c=>c.productId!==id);selectedProductId=products[0]?.id||null;log("Удалён товар",p.name+(all?" вместе с историей":" — история сохранена"));persist();go("products")};
 function mediaGallery(p){const media=Array.isArray(p.media)?p.media:[];return '<div class="media-toolbar"><div><b>Фотографии товара</b><small>Главное фото используется как основной эталон для AI.</small></div><input id="mediaUploadInput" type="file" accept="image/*" multiple hidden onchange="uploadExistingPhotos(event,\''+p.id+'\')"><button class="btn primary" onclick="document.getElementById(\'mediaUploadInput\').click()">＋ Добавить фото</button></div><div id="mediaStatus" class="message"></div>'+(media.length?'<div class="media-grid">'+media.map(m=>'<article class="media-card '+(m.isPrimary?"primary-media":"")+'"><div class="media-image"><img src="'+esc(m.url)+'" alt="'+esc(p.name)+'">'+(m.isPrimary?'<span class="media-primary-badge">Главное</span>':'')+'</div><div class="media-file">'+esc(m.fileName||"Фото")+'</div><div class="media-actions">'+(!m.isPrimary?'<button class="tiny-btn" onclick="makePrimaryMedia(\''+p.id+'\',\''+m.id+'\')">★ Главное</button>':'<span class="tiny-ok">★ Эталон</span>')+'<button class="tiny-btn danger-mini" onclick="deleteProductMedia(\''+p.id+'\',\''+m.id+'\')">Удалить</button></div></article>').join("")+'</div>':'<div class="media-empty"><span>▧</span><b>Фото ещё нет</b><small>Добавь реальные фотографии товара с нескольких ракурсов.</small><button class="secondary" onclick="document.getElementById(\'mediaUploadInput\').click()">Выбрать фото</button></div>')}
 function renderProductDetail(){const p=prod(selectedProductId)||products[0];if(!p){$("#productDetailBody").innerHTML='<div class="empty">Добавь первый товар.</div>';return}const rr=runs.filter(r=>r.productId===p.id).reverse();$("#productDetailBody").innerHTML='<section class="panel detail-hero">'+productThumb(p)+'<div><span class="kicker">ПАСПОРТ ТОВАРА</span><h1>'+esc(p.name)+'</h1><p class="muted">'+esc(p.category||"Товар")+'</p><div class="detail-chips"><span class="chip">Фото: '+((p.media||[]).length)+'</span><span class="chip">Роликов: '+rr.length+'</span><span class="chip">Кампаний: '+campaigns.filter(c=>c.productId===p.id).length+'</span></div><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+p.id+'\')">＋ Создать ролик</button><button class="danger-btn" onclick="deleteProduct(\''+p.id+'\')">Удалить</button></div></div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">▧</span><h2>Медиа товара</h2><p>Оригинальные фото становятся эталонами для генерации</p></div></div>'+mediaGallery(p)+'</section><section class="panel"><div class="panel-title"><div><span class="mini-icon">▣</span><h2>Паспорт</h2><p>Что система обязана помнить</p></div></div><div class="passport-grid"><div class="passport-block"><h3>УТП</h3><p>'+esc(p.utp||"Не заполнено")+'</p></div><div class="passport-block"><h3>Мастер-стиль</h3><p>'+esc(p.masterStyle||"Не выбран")+'</p></div><div class="passport-block"><h3>Защита товара</h3><div class="lock-list">'+String(p.rules||"Не менять реальный внешний вид товара.").split(/\n|\./).filter(Boolean).map(x=>'<div class="lock-row"><span>🔒</span><div>'+esc(x.trim())+'</div></div>').join("")+'</div></div><div class="passport-block"><h3>AI-эталон</h3><p>'+(primaryMedia(p)?"Главное фото закреплено. Оно будет передаваться в генерацию как основной референс товара.":"Добавь главное фото, чтобы AI сохранял внешний вид товара.")+'</p></div></div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">⌁</span><h2>История производства</h2></div></div><div class="runs-list">'+(rr.length?rr.slice(0,8).map(rrow).join(""):'<div class="empty">Роликов ещё нет.</div>')+'</div></section>'}
 window.openProduct=id=>{selectedProductId=id;renderProductDetail();go("productDetail")};
@@ -264,7 +264,7 @@ window.setPrimaryCharacterPhoto=(characterId,mediaId)=>{
 window.deleteCharacterPhoto=async(characterId,mediaId)=>{
   const c=characters.find(x=>x.id===characterId);if(!c)return;
   const m=(c.media||[]).find(x=>x.id===mediaId);if(!m||!confirm("Удалить это фото аватара?"))return;
-  try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:m.path})})}catch{}
+  try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:m.path})})}catch{}
   const wasPrimary=!!m.isPrimary;
   c.media=(c.media||[]).filter(x=>x.id!==mediaId);
   if(wasPrimary&&c.media[0])c.media[0].isPrimary=true;
@@ -679,13 +679,13 @@ async function uploadAccountPhoto(file){
   if(file.size>10*1024*1024)throw new Error("Фото больше 10 МБ.");
   const dataBase64=await fileDataUrl(file);
   const resp=await fetch("/api/media/upload",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
-    productId:"account-"+activeAccountId,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64
+    accountId:activeAccountId,productId:"account-"+activeAccountId,fileName:file.name,mimeType:file.type||"image/jpeg",dataBase64
   })});
   const body=await resp.json().catch(()=>({}));
   if(!resp.ok||!body.media)throw new Error(body.detail||body.error||"Ошибка загрузки фото");
   const prev=activeAccount();
   if(prev?.avatarPath&&prev.avatarPath!==body.media.path){
-    fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:prev.avatarPath})}).catch(()=>{});
+    fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:prev.avatarPath})}).catch(()=>{});
   }
   await saveAccountPatch({avatarUrl:body.media.url||"",avatarPath:body.media.path||""});
 }
@@ -782,7 +782,7 @@ $("#accountPhotoInput")?.addEventListener("change",async e=>{
 $("#removeAccountPhoto")?.addEventListener("click",async()=>{
   const a=activeAccount(),msg=$("#accountMessage");
   try{
-    if(a?.avatarPath)await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:a.avatarPath})}).catch(()=>{});
+    if(a?.avatarPath)await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:a.avatarPath})}).catch(()=>{});
     await saveAccountPatch({avatarUrl:"",avatarPath:""});
     if(msg)msg.textContent="Фото удалено.";
   }catch(err){if(msg)msg.textContent=String(err?.message||err)}
