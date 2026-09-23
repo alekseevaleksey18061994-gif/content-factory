@@ -356,14 +356,89 @@ window.deleteExpense=async id=>{
 };
 
 let chatHistory=load(chatLocalKey(),[]);
+let chatDraftAttachments=[];
+let chatUploadBusy=false;
+
+function attachmentIcon(a){
+  if(a?.kind==="image")return "🖼";
+  const ext=String(a?.name||"").split(".").pop().toLowerCase();
+  if(ext==="pdf")return "📕";
+  if(["xls","xlsx","csv"].includes(ext))return "📊";
+  if(["doc","docx","txt","md"].includes(ext))return "📄";
+  return "📎";
+}
+function renderChatAttachmentDraft(){
+  const html=chatDraftAttachments.map((a,i)=>
+    '<div class="chat-attachment-chip">'+
+      (a.previewUrl?'<img src="'+a.previewUrl+'" alt="">':'<span>'+attachmentIcon(a)+'</span>')+
+      '<b>'+esc(a.name)+'</b>'+
+      '<button type="button" onclick="removeChatDraftAttachment('+i+')" aria-label="Убрать вложение">×</button>'+
+    '</div>'
+  ).join("");
+  $$(".chat-attachment-draft").forEach(el=>{
+    el.innerHTML=html;
+    el.classList.toggle("has-files",!!html);
+  });
+}
+window.removeChatDraftAttachment=i=>{
+  const item=chatDraftAttachments[i];
+  if(item?.previewUrl)URL.revokeObjectURL(item.previewUrl);
+  chatDraftAttachments.splice(i,1);
+  renderChatAttachmentDraft();
+};
+
+async function uploadChatFile(file){
+  if(file.size>15*1024*1024)throw new Error(file.name+": больше 15 МБ");
+  const dataBase64=await fileDataUrl(file);
+  const r=await fetch("/api/chat/upload",{
+    method:"POST",
+    headers:{"content-type":"application/json"},
+    body:JSON.stringify({fileName:file.name,mimeType:file.type||"application/octet-stream",dataBase64,accountId:activeAccountId})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||!data.attachment)throw new Error(data.detail||data.error||"Ошибка загрузки "+file.name);
+  return {
+    ...data.attachment,
+    previewUrl:String(file.type||"").startsWith("image/")?URL.createObjectURL(file):""
+  };
+}
+async function addChatFiles(files){
+  const list=[...files].slice(0,Math.max(0,4-chatDraftAttachments.length));
+  if(!list.length)return;
+  chatUploadBusy=true;
+  const status=$("#chatStatus");if(status)status.textContent="Загружаю вложение…";
+  try{
+    for(const file of list){
+      const uploaded=await uploadChatFile(file);
+      chatDraftAttachments.push(uploaded);
+      renderChatAttachmentDraft();
+    }
+  }catch(err){
+    alert(String(err?.message||err));
+  }finally{
+    chatUploadBusy=false;
+    refreshChatStatus();
+  }
+}
+$$("[data-chat-attach]").forEach(btn=>btn.addEventListener("click",()=>$("#chatFileInput")?.click()));
+$("#chatFileInput")?.addEventListener("change",e=>{addChatFiles(e.target.files);e.target.value=""});
+
 function renderChat(){
   const box=$("#chatMessages");
   if(!box)return;
   if(!chatHistory.length){
-    box.innerHTML='<div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов управлять Content Factory. Например: «создай кампанию на 20 роликов», «измени бюджет», «запусти 3 UGC-ролика», «перезапусти ошибки».</p></div>';
+    box.innerHTML='<div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов управлять Content Factory. Можно писать текст, прикреплять фото, PDF и документы.</p></div>';
     return;
   }
-  box.innerHTML=chatHistory.map(m=>'<div class="chat-bubble '+(m.role==="user"?"user":"assistant")+'"><b>'+(m.role==="user"?"Ты":"ChatGPT")+'</b><p>'+esc(m.content)+'</p></div>').join("");
+  box.innerHTML=chatHistory.map(m=>{
+    const attachments=(m.attachments||[]).map(a=>
+      '<span class="chat-history-file">'+attachmentIcon(a)+' '+esc(a.name||"Файл")+'</span>'
+    ).join("");
+    return '<div class="chat-bubble '+(m.role==="user"?"user":"assistant")+'"><b>'+(m.role==="user"?"Ты":"ChatGPT")+'</b>'+
+      (m.content?'<p>'+esc(m.content)+'</p>':'')+
+      (attachments?'<div class="chat-history-files">'+attachments+'</div>':'')+
+    '</div>';
+  }).join("");
   box.scrollTop=box.scrollHeight;
 }
 async function refreshChatStatus(){
@@ -377,16 +452,24 @@ async function refreshChatStatus(){
 }
 async function sendChatMessage(raw,input=null){
   const message=String(raw||"").trim();
-  if(!message)return;
+  if(chatUploadBusy)return;
+  if(!message&&!chatDraftAttachments.length)return;
   const previous=chatHistory.slice(-12);
-  chatHistory.push({role:"user",content:message});
+  const sentAttachments=chatDraftAttachments.map(({previewUrl,...a})=>a);
+  chatDraftAttachments.forEach(a=>{if(a.previewUrl)URL.revokeObjectURL(a.previewUrl)});
+  chatDraftAttachments=[];
+  renderChatAttachmentDraft();
+
+  chatHistory.push({role:"user",content:message,attachments:sentAttachments});
   save(chatLocalKey(),chatHistory.slice(-30));
   if(input)input.value="";
   go("assistant");
   renderChat();
   const status=$("#chatStatus"); if(status)status.textContent="Думаю…";
   try{
-    const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message,history:previous,accountId:activeAccountId})});
+    const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      message,history:previous,attachments:sentAttachments,accountId:activeAccountId
+    })});
     const data=await r.json().catch(()=>({}));
     chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});
   }catch(err){
@@ -408,7 +491,11 @@ if($("#mobileChatDock"))$("#mobileChatDock").onsubmit=e=>{
   sendChatMessage(input?.value,input);
 };
 $("#mobileChatDockOpen")?.addEventListener("click",()=>go("assistant"));
-if($("#clearChat"))$("#clearChat").onclick=()=>{chatHistory=[];save(chatLocalKey(),chatHistory);renderChat()};
+if($("#clearChat"))$("#clearChat").onclick=()=>{
+  chatHistory=[];
+  save(chatLocalKey(),chatHistory);
+  renderChat();
+};
 function activeAccount(){
   return accounts.find(x=>x.id===activeAccountId)||accounts[0]||null;
 }
@@ -489,6 +576,9 @@ function loadLocalAccountState(){
   expenses=load(accountLocalKey("cf_expenses"),[]);
   settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
   chatHistory=load(chatLocalKey(),[]);
+  chatDraftAttachments.forEach(a=>{if(a.previewUrl)URL.revokeObjectURL(a.previewUrl)});
+  chatDraftAttachments=[];
+  renderChatAttachmentDraft();
   selectedProductId=products[0]?.id||null;
   selectedRunId=runs.at(-1)?.id||null;
   createMode=settings.mode||"auto";

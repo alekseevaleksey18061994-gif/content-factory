@@ -1158,3 +1158,65 @@ option{background:#fff;color:#0b1730}
     color:#6d8199!important;
   }
 }
+
+
+/* v27: ChatGPT photo/file attachments */
+.chat-form{
+  grid-template-columns:44px minmax(0,1fr) auto!important;
+}
+.chat-form .chat-attachment-draft{
+  grid-column:1/-1;
+}
+.chat-attach-btn,.mobile-chat-attach{
+  width:42px;height:42px;display:grid;place-items:center;align-self:end;
+  border:1px solid #c6dde7;border-radius:14px;background:#f6fbfd;color:#23718a;
+  font-size:25px;line-height:1;font-weight:500;cursor:pointer;
+}
+.chat-attach-btn:hover,.mobile-chat-attach:hover{
+  background:#eaf8fb;border-color:#9ed7df;
+}
+.chat-attachment-draft{
+  display:none;flex-wrap:wrap;gap:7px;
+}
+.chat-attachment-draft.has-files{display:flex}
+.chat-attachment-chip{
+  display:flex;align-items:center;gap:7px;max-width:220px;padding:5px 7px;
+  border:1px solid #cfe1e9;border-radius:12px;background:#f6fbfd;color:#344d66;
+}
+.chat-attachment-chip img{
+  width:32px;height:32px;border-radius:8px;object-fit:cover;flex:0 0 32px;
+}
+.chat-attachment-chip>span{font-size:18px}
+.chat-attachment-chip b{
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-weight:700;
+}
+.chat-attachment-chip button{
+  width:22px;height:22px;border:0;border-radius:50%;background:#e6eef3;color:#61778d;cursor:pointer;
+}
+.chat-history-files{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chat-history-file{
+  padding:5px 8px;border-radius:9px;background:rgba(22,140,255,.08);
+  border:1px solid rgba(22,140,255,.13);font-size:9px;color:#48647e;
+}
+
+@media(max-width:820px){
+  .mobile-chat-dock{
+    grid-template-columns:40px minmax(0,1fr) auto 40px!important;
+  }
+  .mobile-chat-attach{
+    width:38px;height:38px;align-self:center;border-radius:50%;
+    background:#f2fafc;color:#23718a;font-size:24px;
+  }
+  .mobile-chat-attachment-draft{
+    grid-column:1/-1;
+    max-width:100%;
+    overflow-x:auto;
+    flex-wrap:nowrap;
+    padding:0 2px 2px;
+  }
+  .mobile-chat-attachment-draft.has-files{display:flex}
+  .mobile-chat-dock:has(.mobile-chat-attachment-draft.has-files){
+    border-radius:22px;
+  }
+  #assistant .chat-form{display:none!important}
+}
