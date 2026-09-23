@@ -286,15 +286,23 @@ function validHiggsfieldCombined(value){
   const first=v.indexOf(':');
   return first>0 && first===v.lastIndexOf(':') && first<v.length-1;
 }
-function higgsfieldCredentials(){
+function higgsfieldCredentialParts(){
   const id=cleanCredentialPart(process.env.HIGGSFIELD_API_KEY_ID);
   const secret=cleanCredentialPart(process.env.HIGGSFIELD_API_KEY_SECRET);
-  if(validHiggsfieldCombined(id))return id;
-  if(!id&&validHiggsfieldCombined(secret))return secret;
-  if(id&&secret)return id+':'+secret;
-  return '';
+  if(validHiggsfieldCombined(id)){
+    const p=id.indexOf(':');
+    return {apiKey:id.slice(0,p),apiSecret:id.slice(p+1)};
+  }
+  if(!id&&validHiggsfieldCombined(secret)){
+    const p=secret.indexOf(':');
+    return {apiKey:secret.slice(0,p),apiSecret:secret.slice(p+1)};
+  }
+  return {apiKey:id,apiSecret:secret};
 }
-const higgsfieldConfigured = () => Boolean(higgsfieldCredentials());
+const higgsfieldConfigured = () => {
+  const c=higgsfieldCredentialParts();
+  return Boolean(c.apiKey&&c.apiSecret);
+};
 
 const openaiConfigured = () => Boolean(process.env.OPENAI_API_KEY);
 
@@ -1576,9 +1584,10 @@ async function generateHiggsfieldScene(body){
   const aspectRatio=String(body?.aspectRatio || '9:16');
   const generateAudio=body?.generateAudio !== false;
 
-  const credentials=higgsfieldCredentials();
+  const credentials=higgsfieldCredentialParts();
   const client=createHiggsfieldClient({
-    credentials,
+    apiKey:credentials.apiKey,
+    apiSecret:credentials.apiSecret,
     timeout:120000,
     maxRetries:3,
     pollInterval:2500,
