@@ -1199,4 +1199,5 @@ async function bootAuthenticatedApp(){
 }
 setAuthMode("login");
 bootAuthenticatedApp();
+setInterval(()=>{if(document.visibilityState==="visible"&&runs.some(r=>r.status==="В работе"))syncFromServer()},4000);
 
