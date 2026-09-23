@@ -200,7 +200,7 @@ function renderIdeas(){
   const items=runs.filter(r=>r.idea).slice().reverse();
   list.innerHTML=items.length?items.map(r=>{
     const idea=r.idea||{};
-    return '<article class="idea-card"><div><span class="kicker">'+esc(r.status==="Черновик"?"ЧЕРНОВИК":"РОЛИК")+'</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Первые 3 секунды</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div>'+(idea.mechanic?'<div class="idea-hook"><b>Механика</b><span>'+esc(idea.mechanic)+'</span></div>':'')+'</div><div class="idea-actions"><button class="secondary" onclick="openStageDetail(\''+r.id+'\',\'Идея\')">Открыть идею</button><button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\'Идея\')">↻ Другая идея</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'start\')">'+(r.status==="Черновик"?"▶ В сценарий":"▶ Продолжить")+'</button></div></article>';
+    return '<article class="idea-card"><div><span class="kicker">'+esc(r.status==="Черновик"?"ЧЕРНОВИК":"РОЛИК")+'</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Первые 3 секунды</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div>'+(idea.mechanic?'<div class="idea-hook"><b>Механика</b><span>'+esc(idea.mechanic)+'</span></div>':'')+'</div><div class="idea-actions"><button class="secondary" onclick="openStageDetail(\''+r.id+'\',\'Идея\')">Открыть идею</button><button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\'Идея\')">↻ Другая идея</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">'+(r.status==="Черновик"?"▶ В сценарий":"▶ Продолжить")+'</button></div></article>';
   }).join(""):'<div class="empty">Идей пока нет. Выбери товар и нажми «Сгенерировать идею».</div>';
 }
 $("#generateIdeaBtn")?.addEventListener("click",async()=>{
@@ -325,10 +325,22 @@ function stageReportHtml(r,stage){
   }
   else if(stage==="Сценарий"){
     const scriptScenes=Array.isArray(script.scenes)&&script.scenes.length?script.scenes:board.map((x,i)=>({
-      scene:i+1,time:x.duration||"",visual:[x.shot,x.action].filter(Boolean).join(" — "),
-      dialogue:x.voiceover||x.onscreen||"",sound:x.sound||""
+      scene:i+1,time:x.duration||"",purpose:"",visual:x.shot||"",action:x.action||"",
+      dialogue:"",voiceover:x.voiceover||"",onscreen:x.onscreen||"",sound:x.sound||"",
+      transition:"",continuity:"",productRole:""
     }));
-    body='<div class="artifact-script"><div class="script-summary"><div><small>Хук</small><p>'+esc(script.hook||idea.hook||"—")+'</p></div><div><small>CTA</small><p>'+esc(script.cta||"—")+'</p></div></div>'+(scriptScenes.length?'<div class="script-table-wrap"><table class="script-table"><thead><tr><th>№</th><th>Время</th><th>Что в кадре</th><th>Текст / реплики</th><th>Звук</th></tr></thead><tbody>'+scriptScenes.map((x,i)=>'<tr><td>'+(x.scene||i+1)+'</td><td>'+esc(x.time||x.duration||"—")+'</td><td>'+esc(x.visual||x.shot||x.action||"—")+'</td><td>'+esc(x.dialogue||x.text||x.voiceover||"—")+'</td><td>'+esc(x.sound||"—")+'</td></tr>').join("")+'</tbody></table></div>':'<p>'+esc(script.body||script.voiceover||"—")+'</p>')+'</div>';
+    body='<div class="artifact-script">'+
+      '<div class="script-master-head"><span class="kicker">УТВЕРЖДЁННАЯ ИДЕЯ → СЦЕНАРИЙ</span><h3>'+esc(script.title||idea.title||"Сценарий")+'</h3><p>'+esc(script.logline||script.structure||"")+'</p></div>'+
+      '<div class="script-summary">'+
+        '<div><small>Хук</small><p>'+esc(script.hook||idea.hook||"—")+'</p></div>'+
+        '<div><small>CTA</small><p>'+esc(script.cta||idea.ctaDirection||"—")+'</p></div>'+
+        '<div><small>Тон</small><p>'+esc(script.tone||"—")+'</p></div>'+
+        '<div><small>Длительность</small><p>'+esc(script.duration||r.duration||"—")+'</p></div>'+
+      '</div>'+
+      (script.globalContinuity?'<div class="script-rule-box"><small>Continuity всего ролика</small><p>'+esc(script.globalContinuity)+'</p></div>':'')+
+      (script.subtitleRules?'<div class="script-rule-box"><small>Субтитры / safe zone</small><p>'+esc(script.subtitleRules)+'</p></div>':'')+
+      (scriptScenes.length?'<div class="script-table-wrap"><table class="script-table script-table-rich"><thead><tr><th>№</th><th>Время</th><th>Задача сцены</th><th>Что в кадре</th><th>Текст / реплики</th><th>Звук</th></tr></thead><tbody>'+scriptScenes.map((x,i)=>{const speech=[x.dialogue?("Диалог: "+x.dialogue):"",x.voiceover?("Закадрово: "+x.voiceover):"",x.onscreen?("На экране: "+x.onscreen):""].filter(Boolean).join("\n");const visual=[x.visual,x.action].filter(Boolean).join("\n");return '<tr><td>'+(x.scene||i+1)+'</td><td>'+esc(x.time||"—")+'</td><td>'+esc(x.purpose||"—")+'</td><td>'+esc(visual||"—")+'</td><td>'+esc(speech||"—")+'</td><td>'+esc(x.sound||"—")+'</td></tr><tr class="script-detail-row"><td></td><td colspan="5"><div class="script-detail-grid"><span><b>Переход:</b> '+esc(x.transition||"—")+'</span><span><b>Continuity:</b> '+esc(x.continuity||"—")+'</span><span><b>Роль товара:</b> '+esc(x.productRole||"—")+'</span></div></td></tr>'}).join("")+'</tbody></table></div>':'<p>'+esc(script.body||script.voiceover||"—")+'</p>')+
+    '</div>';
   }
   else if(stage==="Storyboard")body=board.length?'<div class="stage-storyboard-list">'+board.map((x,i)=>'<div><b>'+(i+1)+'. '+esc(x.title||"Сцена")+'</b><span>'+esc(x.duration||"")+'</span><p>'+esc(x.shot||"")+' '+esc(x.action||"")+'</p></div>').join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>';
   else if(stage==="Референсы"){
@@ -349,7 +361,8 @@ function stageReportHtml(r,stage){
     body=q?'<div class="artifact-script"><h3>'+(q.passed===false?'Есть замечания':'Проверка завершена')+'</h3><p>'+esc(q.summary||"")+'</p>'+(q.issues?.length?'<ul>'+q.issues.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+'</div>':'<div class="empty compact-empty">AI-проверка ещё не завершена.</div>';
   } else body='<div class="empty compact-empty">Этот этап ещё не выполнен.</div>';
   const canRegen=["Идея","Сценарий","Storyboard","Референсы","Генерация"].includes(stage);
-  return '<section class="panel stage-report" id="stageReport"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(stage)+'</h2><p>Реальный результат этого этапа</p></div><span class="status '+(stageDone(r,stage)?"done":"wait")+'">'+(stageDone(r,stage)?"Готово":"Не готово")+'</span></div>'+body+'<div class="stage-report-actions">'+(canRegen?'<button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\''+stage+'\')">↻ Переделать этап</button>':'')+(r.status==="Остановлено"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">▶ Продолжить</button>':'<button class="danger-btn" onclick="runAction(\''+r.id+'\',\'stop\')">■ Остановить</button>')+'</div></section>';
+  const nextAction=stage==="Идея"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">✓ Утвердить идею → Сценарий</button>':'';
+  return '<section class="panel stage-report" id="stageReport"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(stage)+'</h2><p>Реальный результат этого этапа</p></div><span class="status '+(stageDone(r,stage)?"done":"wait")+'">'+(stageDone(r,stage)?"Готово":"Не готово")+'</span></div>'+body+'<div class="stage-report-actions">'+nextAction+(canRegen?'<button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\''+stage+'\')">↻ Переделать этап</button>':'')+(r.status==="Остановлено"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">▶ Продолжить</button>':'<button class="danger-btn" onclick="runAction(\''+r.id+'\',\'stop\')">■ Остановить</button>')+'</div></section>';
 }
 window.openStageDetail=(id,stage)=>{selectedRunId=id;runStageOpen=stage;renderRunDetail();setTimeout(()=>document.getElementById("stageReport")?.scrollIntoView({behavior:"smooth",block:"start"}),40)};
 window.runAction=async(id,action,stage="")=>{
