@@ -126,7 +126,7 @@ const server=http.createServer(async(req,res)=>{
         databaseError=String(e?.message||e);
       }
     }
-    return json(res,200,{ok:true,service:'Content Factory',version:'1.4.3',database,databaseError,time:new Date().toISOString()});
+    return json(res,200,{ok:true,service:'Content Factory',version:'1.5.0',database,databaseError,time:new Date().toISOString()});
   }
 
   if(url.pathname==='/api/status' && req.method==='GET'){
@@ -190,6 +190,61 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,data);
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось удалить фото.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/generation/callback' && req.method==='POST'){
+    const suppliedKey=req.headers['x-app-api-key'];
+    if(!process.env.CONTENT_FACTORY_DB_SECRET || suppliedKey!==process.env.CONTENT_FACTORY_DB_SECRET){
+      return json(res,403,{ok:false,error:'forbidden'});
+    }
+    if(!supabaseConfigured()){
+      return json(res,503,{ok:false,error:'database_not_configured'});
+    }
+    try{
+      const body=await readBody(req);
+      const current=await readAppState();
+      const state=current.data&&typeof current.data==='object'?current.data:{};
+      const runs=Array.isArray(state.runs)?state.runs:[];
+      const batchId=String(body.batchId||body.jobId||'');
+      let updated=0;
+      for(const run of runs){
+        if(batchId && String(run.batchId||'')===batchId){
+          run.generationProvider=body.provider||'higgsfield';
+          run.providerRequestId=body.requestId||run.providerRequestId||null;
+          run.generationStatus=body.status||'unknown';
+          run.generationUpdatedAt=new Date().toISOString();
+          if(body.videoUrl){
+            run.outputUrl=body.videoUrl;
+            run.status='На проверке';
+            run.stage='На проверке';
+            run.progress=82;
+          }else if(body.status==='failed'){
+            run.status='Ошибка';
+            run.stage='Генерация';
+            run.generationError=body.error||'Higgsfield generation failed';
+          }else{
+            run.status='В работе';
+            run.stage='Генерация';
+            run.progress=Math.max(Number(run.progress)||0,55);
+          }
+          updated++;
+        }
+      }
+      state.runs=runs;
+      state.journal=Array.isArray(state.journal)?state.journal:[];
+      state.journal.push({
+        id:'j'+Date.now()+Math.random().toString(36).slice(2,6),
+        time:new Date().toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}),
+        title:body.status==='completed'?'Higgsfield завершил генерацию':'Higgsfield обновил задачу',
+        detail:(body.productName||batchId)+(body.error?' · '+body.error:''),
+        type:body.status==='failed'?'error':'ok'
+      });
+      state.journal=state.journal.slice(-500);
+      await writeAppState(state);
+      return json(res,200,{ok:true,batchId,updated,videoUrl:body.videoUrl||null});
+    }catch(e){
+      return json(res,502,{ok:false,error:'callback_failed',detail:String(e?.message||e)});
     }
   }
 
