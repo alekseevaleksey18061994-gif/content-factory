@@ -13,7 +13,7 @@ const starter=[
 let activeAccountId=load("cf_active_account","main"),accounts=[];
 const accountLocalKey=key=>activeAccountId==="main"?key:key+"__"+activeAccountId;
 const chatLocalKey=()=>activeAccountId==="main"?"cf_chat_history":"cf_chat_history__"+activeAccountId;
-let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
+let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
 let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto";
 const ST=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];
 const prod=id=>products.find(x=>x.id===id),camp=id=>campaigns.find(x=>x.id===id);
@@ -29,10 +29,11 @@ function saveLocalState(){
   save(accountLocalKey("cf_scripts"),scripts);
   save(accountLocalKey("cf_characters"),characters);
   save(accountLocalKey("cf_journal"),journal.slice(-500));
+  save(accountLocalKey("cf_expenses"),expenses.slice(-3000));
   save(accountLocalKey("cf_settings"),settings);
 }
 function stateSnapshot(){
-  return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),settings};
+  return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),settings};
 }
 let syncTimer=null;
 async function pushState(){
@@ -53,6 +54,7 @@ async function syncFromServer(){
       scripts=Array.isArray(data.scripts)?data.scripts:[];
       characters=Array.isArray(data.characters)?data.characters:[];
       journal=Array.isArray(data.journal)?data.journal:[];
+      expenses=Array.isArray(data.expenses)?data.expenses:[];
       settings=data.settings&&typeof data.settings==="object"?data.settings:settings;
       selectedProductId=products.find(x=>x.id===selectedProductId)?.id||products[0]?.id||null;
       selectedRunId=runs.find(x=>x.id===selectedRunId)?.id||runs.at(-1)?.id||null;
@@ -275,8 +277,83 @@ window.scheduleRun=id=>{const r=runs.find(x=>x.id===id);if(!r)return;const d=pro
 function renderCalendar(){const st=new Date();st.setHours(0,0,0,0);const D=Array.from({length:7},(_,i)=>{const d=new Date(st);d.setDate(st.getDate()+i);return d}),E=runs.filter(r=>r.scheduledAt||r.status==="Опубликовано");$("#calendarGrid").innerHTML='<div class="calendar-grid">'+D.map(d=>{const k=d.toLocaleDateString("ru-RU"),e=E.filter(r=>String(r.scheduledAt||"").startsWith(k)||r.publishedDate===k);return '<div class="day"><div class="day-head"><b>'+d.toLocaleDateString("ru-RU",{weekday:"short"})+'</b><small>'+k.slice(0,5)+'</small></div>'+(e.map(r=>'<div class="calendar-event" onclick="openRun(\''+r.id+'\')"><b>'+esc(pname(r))+'</b><small>'+esc(r.scheduledAt||"Опубликовано")+'</small></div>').join("")||'<div class="muted" style="font-size:10px">Нет публикаций</div>')+'</div>'}).join("")+'</div>'}
 $("#autoSchedule").onclick=()=>{const a=runs.filter(r=>r.status==="Готово");if(!a.length)return alert("Нет готовых роликов.");const b=new Date();a.forEach((r,i)=>{const d=new Date(b);d.setDate(b.getDate()+Math.floor(i/2)+1);d.setHours(i%2?18:12,0,0,0);r.scheduledAt=d.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"});r.status="Запланировано";r.stage="Запланировано";r.progress=96});log("Автораспределение публикаций","Запланировано: "+a.length);persist()};
 function renderAnalytics(){const p=runs.filter(r=>r.status==="Опубликовано"),views=p.reduce((s,r)=>s+(Number(r.metrics?.views)||0),0),clicks=p.reduce((s,r)=>s+(Number(r.metrics?.clicks)||0),0),sales=p.reduce((s,r)=>s+(Number(r.metrics?.sales)||0),0);$("#analyticsStats").innerHTML=stat("▶","Просмотры",views)+stat("◷","Удержание","0%","blue")+stat("↗","Переходы",clicks,"purple")+stat("₽","Продажи",sales);$("#insights").innerHTML='<div class="insight-card"><b>Система копит данные</b><p>После публикаций здесь появятся сравнения по хукам, стилям, персонажам и товарам.</p></div>';$("#trendCards").innerHTML='<div class="trend-card"><b>Тренды</b><p>Темы и форматы для следующих тестов.</p></div><div class="trend-card"><b>Конкуренты</b><p>Структуры роликов, частота публикаций и рекламные гипотезы.</p></div>'}
-function renderCosts(){const t=runs.reduce((s,r)=>s+(Number(r.cost)||0),0),c=runs.filter(r=>Number(r.cost)>0).length,a=c?Math.round(t/c):0,re=runs.reduce((s,r)=>s+Math.max(0,(r.attempt||1)-1),0);$("#costStats").innerHTML=stat("₽","Всего",t+" ₽")+stat("▥","Средний ролик",a+" ₽","blue")+stat("↻","Повторных попыток",re,"warn")+stat("◉","Лимит кампании",(settings.budgetCampaign||5000)+" ₽","purple");$("#budgetCampaign").value=settings.budgetCampaign||5000;$("#budgetAttempts").value=settings.budgetAttempts||3;$("#budgetApproval").value=settings.budgetApproval||100;$("#costRows").innerHTML=runs.filter(r=>r.cost).reverse().slice(0,20).map(r=>'<div class="library-item"><div><h3>'+esc(pname(r))+'</h3><p>'+esc(norm(r))+" · "+esc(r.modelMode||"Авто")+'</p></div><b>'+r.cost+' ₽</b></div>').join("")||'<div class="empty">Расходы появятся после реальных генераций.</div>'}
-$("#saveBudget").onclick=()=>{settings.budgetCampaign=Number($("#budgetCampaign").value)||5000;settings.budgetAttempts=Number($("#budgetAttempts").value)||3;settings.budgetApproval=Number($("#budgetApproval").value)||100;log("Обновлены бюджетные лимиты","Кампания: "+settings.budgetCampaign+" ₽");persist()};
+function expenseRubValue(e){
+  const rate=Number(settings.costRates?.usdRub)||0;
+  return (Number(e.amountRub)||0)+((Number(e.amountUsd)||0)*rate);
+}
+function fmtMoney(n){return (Math.round((Number(n)||0)*100)/100).toLocaleString("ru-RU",{maximumFractionDigits:2})}
+function expenseDate(e){const d=new Date(e.createdAt||0);return Number.isNaN(d.getTime())?null:d}
+function renderCosts(){
+  settings.costRates=settings.costRates||{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0};
+  const nowD=new Date(),month=nowD.getMonth(),year=nowD.getFullYear(),todayKey=nowD.toISOString().slice(0,10);
+  const all=Array.isArray(expenses)?expenses:[];
+  const totalRub=all.reduce((s,e)=>s+expenseRubValue(e),0);
+  const chat=all.filter(e=>e.provider==="OpenAI"&&e.category==="chat");
+  const chatRub=chat.reduce((s,e)=>s+expenseRubValue(e),0);
+  const monthRub=all.filter(e=>{const d=expenseDate(e);return d&&d.getMonth()===month&&d.getFullYear()===year}).reduce((s,e)=>s+expenseRubValue(e),0);
+  const monthlyFixed=all.filter(e=>e.recurring==="monthly").reduce((s,e)=>s+expenseRubValue(e),0);
+  $("#costStats").innerHTML=stat("₽","Всего",fmtMoney(totalRub)+" ₽")+stat("✦","ChatGPT",fmtMoney(chatRub)+" ₽","blue")+stat("◷","Этот месяц",fmtMoney(monthRub)+" ₽","purple")+stat("↻","Постоянные / мес.",fmtMoney(monthlyFixed)+" ₽","warn");
+
+  const providers=["OpenAI","Higgsfield","Runway","Descript","Railway","Supabase","n8n","Google Drive","Другое"];
+  $("#expenseProviderCards").innerHTML=providers.map(p=>{
+    const rows=all.filter(e=>e.provider===p),rub=rows.reduce((s,e)=>s+expenseRubValue(e),0);
+    const usd=rows.reduce((s,e)=>s+(Number(e.amountUsd)||0),0);
+    const usage=rows.length;
+    return '<div class="expense-provider-card"><div><b>'+esc(p)+'</b><small>'+usage+' операций</small></div><strong>'+fmtMoney(rub)+' ₽</strong>'+(usd?'<em>$'+usd.toFixed(4)+'</em>':'')+'</div>'
+  }).join("");
+
+  $("#usdRubRate").value=settings.costRates.usdRub||"";
+  $("#higgsfieldRate").value=settings.costRates.higgsfieldRubPerGeneration||0;
+  $("#runwayRate").value=settings.costRates.runwayRubPerSecond||0;
+  $("#descriptRate").value=settings.costRates.descriptRubPerAction||0;
+  $("#budgetCampaign").value=settings.budgetCampaign||5000;
+  $("#budgetAttempts").value=settings.budgetAttempts||3;
+  $("#budgetApproval").value=settings.budgetApproval||100;
+
+  const pf=$("#costProviderFilter");
+  if(pf&&pf.options.length<=1)providers.forEach(p=>pf.insertAdjacentHTML("beforeend",'<option value="'+esc(p)+'">'+esc(p)+'</option>'));
+  const provider=pf?.value||"",period=$("#costPeriodFilter")?.value||"all";
+  let rows=all.slice();
+  if(provider)rows=rows.filter(e=>e.provider===provider);
+  if(period==="month")rows=rows.filter(e=>{const d=expenseDate(e);return d&&d.getMonth()===month&&d.getFullYear()===year});
+  if(period==="today")rows=rows.filter(e=>(e.createdAt||"").slice(0,10)===todayKey);
+  $("#costRows").innerHTML=rows.slice().reverse().slice(0,200).map(e=>{
+    const d=expenseDate(e),rub=expenseRubValue(e);
+    const usage=e.usage?Object.entries(e.usage).filter(([,v])=>typeof v!=="object").map(([k,v])=>k+": "+v).join(" · "):"";
+    return '<div class="expense-row"><div class="expense-main"><span class="expense-provider-badge">'+esc(e.provider||"Другое")+'</span><div><h3>'+esc(e.description||"Расход")+'</h3><p>'+esc((d?d.toLocaleString("ru-RU"):"")+(e.model?" · "+e.model:"")+(usage?" · "+usage:""))+'</p></div></div><div class="expense-amount"><b>'+fmtMoney(rub)+' ₽</b>'+(e.amountUsd?'<small>$'+Number(e.amountUsd).toFixed(5)+'</small>':'')+(e.source==="manual"?'<button class="tiny-btn danger-mini" onclick="deleteExpense(\''+e.id+'\')">Удалить</button>':'')+'</div></div>'
+  }).join("")||'<div class="empty">Расходов пока нет.</div>';
+}
+$("#saveBudget").onclick=()=>{
+  settings.costRates=settings.costRates||{};
+  settings.costRates.usdRub=Number($("#usdRubRate").value)||0;
+  settings.costRates.higgsfieldRubPerGeneration=Number($("#higgsfieldRate").value)||0;
+  settings.costRates.runwayRubPerSecond=Number($("#runwayRate").value)||0;
+  settings.costRates.descriptRubPerAction=Number($("#descriptRate").value)||0;
+  settings.budgetCampaign=Number($("#budgetCampaign").value)||5000;
+  settings.budgetAttempts=Number($("#budgetAttempts").value)||3;
+  settings.budgetApproval=Number($("#budgetApproval").value)||100;
+  log("Обновлены тарифы и лимиты","Курс USD/RUB: "+(settings.costRates.usdRub||"не задан"));
+  persist();
+};
+$("#costProviderFilter")?.addEventListener("change",renderCosts);
+$("#costPeriodFilter")?.addEventListener("change",renderCosts);
+$("#addExpenseBtn")?.addEventListener("click",()=>{if($("#expenseMessage"))$("#expenseMessage").textContent="";openM("expenseModal")});
+$("#saveExpenseBtn")?.addEventListener("click",async()=>{
+  const msg=$("#expenseMessage"),btn=$("#saveExpenseBtn");btn.disabled=true;if(msg)msg.textContent="Сохраняю…";
+  try{
+    const r=await fetch("/api/expenses",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      accountId:activeAccountId,provider:$("#expenseProvider").value,description:$("#expenseDescription").value.trim()||"Ручной расход",
+      amountRub:Number($("#expenseRub").value)||0,amountUsd:Number($("#expenseUsd").value)||0,recurring:$("#expenseRecurring").value
+    })});
+    const data=await r.json();if(!r.ok)throw new Error(data.error||data.detail||"Ошибка");
+    closeM("expenseModal");await syncFromServer();go("costs");
+  }catch(e){if(msg)msg.textContent=String(e?.message||e)}finally{btn.disabled=false}
+});
+window.deleteExpense=async id=>{
+  if(!confirm("Удалить этот расход?"))return;
+  await fetch("/api/expenses?account="+encodeURIComponent(activeAccountId)+"&id="+encodeURIComponent(id),{method:"DELETE"});
+  await syncFromServer();renderCosts();
+};
 
 let chatHistory=load(chatLocalKey(),[]);
 function renderChat(){
@@ -409,6 +486,7 @@ function loadLocalAccountState(){
   scripts=load(accountLocalKey("cf_scripts"),[]);
   characters=load(accountLocalKey("cf_characters"),[]);
   journal=load(accountLocalKey("cf_journal"),[]);
+  expenses=load(accountLocalKey("cf_expenses"),[]);
   settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
   chatHistory=load(chatLocalKey(),[]);
   selectedProductId=products[0]?.id||null;
