@@ -421,6 +421,28 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=39"></script>
+  <script>
+    (function(){
+      function safeGo(id){
+        document.querySelectorAll(".page").forEach(function(el){el.classList.toggle("active",el.id===id)});
+        document.querySelectorAll(".nav").forEach(function(el){
+          el.classList.toggle("active",el.dataset.go===id||(id==="productDetail"&&el.dataset.go==="products")||(id==="runDetail"&&el.dataset.go==="generations"));
+        });
+        var side=document.getElementById("appSidebar"),backdrop=document.getElementById("mobileDrawerBackdrop");
+        if(side)side.classList.remove("mobile-open");
+        if(backdrop)backdrop.classList.remove("open");
+        document.body.classList.remove("mobile-drawer-open");
+        window.scrollTo(0,0);
+      }
+      window.__safeGo=safeGo;
+      document.addEventListener("click",function(e){
+        var b=e.target.closest&&e.target.closest("[data-go]");
+        if(!b||!b.dataset.go)return;
+        e.preventDefault();
+        safeGo(b.dataset.go);
+      },true);
+    })();
+  </script>
+  <script src="/app.js?v=40"></script>
 </body>
 </html>
