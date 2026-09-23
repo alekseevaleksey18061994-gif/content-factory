@@ -13,7 +13,7 @@ const starter=[
 let activeAccountId=load("cf_active_account","main"),accounts=[];
 const accountLocalKey=key=>activeAccountId==="main"?key:key+"__"+activeAccountId;
 const chatLocalKey=()=>activeAccountId==="main"?"cf_chat_history":"cf_chat_history__"+activeAccountId;
-let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
+let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
 let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto";
 const ST=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];
 const prod=id=>products.find(x=>x.id===id),camp=id=>campaigns.find(x=>x.id===id);
@@ -30,10 +30,11 @@ function saveLocalState(){
   save(accountLocalKey("cf_characters"),characters);
   save(accountLocalKey("cf_journal"),journal.slice(-500));
   save(accountLocalKey("cf_expenses"),expenses.slice(-3000));
+  save(accountLocalKey("cf_video_analyses"),videoAnalyses.slice(-100));
   save(accountLocalKey("cf_settings"),settings);
 }
 function stateSnapshot(){
-  return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),settings};
+  return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),videoAnalyses:videoAnalyses.slice(-100),settings};
 }
 let syncTimer=null;
 async function pushState(){
@@ -55,6 +56,7 @@ async function syncFromServer(){
       characters=Array.isArray(data.characters)?data.characters:[];
       journal=Array.isArray(data.journal)?data.journal:[];
       expenses=Array.isArray(data.expenses)?data.expenses:[];
+      videoAnalyses=Array.isArray(data.videoAnalyses)?data.videoAnalyses:[];
       settings=data.settings&&typeof data.settings==="object"?data.settings:settings;
       selectedProductId=products.find(x=>x.id===selectedProductId)?.id||products[0]?.id||null;
       selectedRunId=runs.find(x=>x.id===selectedRunId)?.id||runs.at(-1)?.id||null;
@@ -339,6 +341,50 @@ $("#saveCharacter").onclick=async()=>{
   setTimeout(()=>closeM("characterModal"),500)
 };
 window.createWithCharacter=id=>{openCreate();setTimeout(()=>$("#characterSelect").value=id,0)};
+
+
+function renderVideoLab(){
+  const psel=$("#analysisProduct"),asel=$("#analysisAvatar");
+  if(psel)psel.innerHTML='<option value="">Без товара</option>'+products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");
+  if(asel)asel.innerHTML='<option value="">Без аватара</option>'+characters.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("");
+  const list=$("#videoAnalysisList");if(!list)return;
+  list.innerHTML=videoAnalyses.length?videoAnalyses.slice().reverse().map(v=>{
+    const a=v.analysis||{},adapt=a.adaptation||{},scenes=Array.isArray(adapt.scenes)?adapt.scenes:[];
+    return '<article class="video-analysis-card"><div class="video-analysis-head"><div><span class="chip">'+esc(v.sourceType==="youtube"?"YouTube":"Загрузка")+'</span><h3>'+esc(v.sourceName||"Видео")+'</h3><p>'+esc((v.productName?"Товар: "+v.productName:"")+(v.avatarName?" · Аватар: "+v.avatarName:""))+'</p></div><button class="secondary" onclick="saveAnalysisAsScript(\''+v.id+'\')">Сохранить сценарий</button></div>'+
+      '<div class="analysis-columns"><div><small>Что происходит</small><p>'+esc(a.summary||"—")+'</p><b>Хук</b><p>'+esc(a.hook||"—")+'</p></div><div><small>Наша адаптация</small><p>'+esc(adapt.concept||"—")+'</p><b>Новый хук</b><p>'+esc(adapt.hook||"—")+'</p></div></div>'+
+      '<div class="analysis-scenes">'+scenes.slice(0,8).map((s,i)=>'<div><span>'+(i+1)+'</span><p><b>'+esc(s.duration||"Сцена")+'</b> '+esc(s.shot||"")+'<br>'+esc(s.voiceover||s.onscreen||"")+'</p></div>').join("")+'</div></article>'
+  }).join(""):'<div class="empty">Разборов пока нет.</div>';
+}
+$("#analyzeVideoFile")?.addEventListener("click",async()=>{
+  const file=$("#competitorVideoFile")?.files?.[0],status=$("#videoFileStatus"),btn=$("#analyzeVideoFile");
+  if(!file){status.textContent="Выбери видео.";return}
+  btn.disabled=true;status.textContent="Извлекаю кадры, аудио и анализирую…";
+  try{
+    const qs=new URLSearchParams({account:activeAccountId,fileName:file.name,productId:$("#analysisProduct")?.value||"",avatarId:$("#analysisAvatar")?.value||""});
+    const r=await fetch("/api/video-analysis/upload?"+qs.toString(),{method:"POST",headers:{"content-type":file.type||"application/octet-stream"},body:file});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.detail||data.error||"Ошибка анализа");
+    await syncFromServer();go("videoLab");status.textContent="Готово.";
+  }catch(e){status.textContent=String(e?.message||e)}finally{btn.disabled=false}
+});
+$("#analyzeYoutube")?.addEventListener("click",async()=>{
+  const url=$("#youtubeAnalysisUrl")?.value.trim(),status=$("#youtubeStatus"),btn=$("#analyzeYoutube");
+  if(!url){status.textContent="Вставь ссылку YouTube.";return}
+  btn.disabled=true;status.textContent="Получаю субтитры и разбираю структуру…";
+  try{
+    const r=await fetch("/api/video-analysis/youtube",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,url,productId:$("#analysisProduct")?.value||"",avatarId:$("#analysisAvatar")?.value||""})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.detail||data.error||"Ошибка анализа");
+    await syncFromServer();go("videoLab");status.textContent="Готово.";
+  }catch(e){status.textContent=String(e?.message||e)}finally{btn.disabled=false}
+});
+window.saveAnalysisAsScript=id=>{
+  const v=videoAnalyses.find(x=>x.id===id);if(!v)return;
+  const a=v.analysis?.adaptation||{};
+  const sceneText=(a.scenes||[]).map((s,i)=>(i+1)+". "+[s.duration,s.shot,s.avatarAction,s.productAction,s.voiceover,s.onscreen].filter(Boolean).join(" · ")).join("\n");
+  scripts.push({id:uid("s"),title:"Адаптация: "+(v.sourceName||"Видео"),hook:a.hook||"",body:[a.concept,sceneText].filter(Boolean).join("\n\n"),cta:a.cta||"",used:0,created:now()});
+  log("Сценарий создан из разбора",v.sourceName||"Видео");persist();go("scripts");
+};
 
 function renderPublish(){const a=runs.filter(r=>["Готово","Запланировано","Опубликовано"].includes(r.status)).reverse();$("#readyGrid").innerHTML=a.length?a.map(r=>'<article class="ready-card"><div class="video-preview" onclick="openRun(\''+r.id+'\')"><div class="video-copy">'+esc(pname(r))+'</div></div><h3>'+esc(pname(r))+'</h3><p>'+esc(r.style||"")+" · "+esc(r.duration||"")+' · 9:16</p><div class="publish-list">'+(r.platforms||["TikTok","Reels","Shorts"]).map(n=>'<div class="publish-row"><span><b>'+n+'</b><small style="display:block;color:var(--muted);margin-top:3px">'+(r.status==="Опубликовано"?"Опубликовано":r.status==="Запланировано"?"Запланировано":"Готово к публикации")+'</small></span><span class="toggle"></span></div>').join("")+'</div><div class="catalog-actions"><button class="secondary" onclick="openRun(\''+r.id+'\')">Проверить</button><button class="btn primary" onclick="scheduleRun(\''+r.id+'\')">Запланировать</button></div></article>').join(""):'<div class="panel empty">После утверждения ролики появятся здесь.</div>'}
 window.scheduleRun=id=>{const r=runs.find(x=>x.id===id);if(!r)return;const d=prompt("Дата и время публикации:",r.scheduledAt||"");if(!d)return;r.scheduledAt=d;r.status="Запланировано";r.stage="Запланировано";r.progress=96;log("Ролик запланирован",pname(r)+" · "+d);persist()};
@@ -678,6 +724,7 @@ function loadLocalAccountState(){
   characters=load(accountLocalKey("cf_characters"),[]);
   journal=load(accountLocalKey("cf_journal"),[]);
   expenses=load(accountLocalKey("cf_expenses"),[]);
+  videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]);
   settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100});
   chatHistory=load(chatLocalKey(),[]);
   chatDraftAttachments.forEach(a=>{if(a.previewUrl)URL.revokeObjectURL(a.previewUrl)});
@@ -827,7 +874,7 @@ $("#launch").onclick=async()=>{
   $("#launchMsg").textContent=res.ok?"Передано в n8n. Фото товара и AI-аватара переданы как референсы.":"Задачи добавлены. Рабочий workflow n8n пока не подключён к кнопке запуска.";
   $("#launch").disabled=false;setTimeout(()=>{closeM("createModal");go("production")},1000)
 };
-function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();renderAccounts();refreshChatStatus();renderConnections()}
+function renderAll(){opts();renderDashboard();renderProduction();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderVideoLab();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();renderAccounts();refreshChatStatus();renderConnections()}
 if("serviceWorker" in navigator){
   navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{});
 }
