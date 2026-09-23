@@ -311,13 +311,22 @@ function renderRunDetail(){
   $("#approveMontageBtn").onclick=()=>approveMontage(r.id);
   $("#approveRunBtn").onclick=()=>markReady(r.id);
 }
-window.acceptScene=(id,n)=>{const r=runs.find(x=>x.id===id);if(!r)return;r.acceptedScenes=[...new Set([...(r.acceptedScenes||[]),n])];log("Сцена утверждена",pname(r)+" · сцена "+n);persist();renderRunDetail()};
-window.regenScene=(id,n)=>{const r=runs.find(x=>x.id===id);if(!r)return;r.sceneVersions=r.sceneVersions||{};r.sceneVersions[n]=(r.sceneVersions[n]||1)+1;r.acceptedScenes=(r.acceptedScenes||[]).filter(x=>x!==n);r.status="В работе";r.stage="Генерация";r.attempt=(r.attempt||1)+1;log("Перегенерация сцены",pname(r)+" · сцена "+n+" · V"+r.sceneVersions[n]);persist();renderRunDetail();api({action:"regenerate_scene",runId:id,scene:n})};
-window.promptScene=(id,n)=>{const t=prompt("Новый промт для сцены "+n+":");if(t){const r=runs.find(x=>x.id===id);r.scenePrompts=r.scenePrompts||{};r.scenePrompts[n]=t;log("Изменён промт сцены",pname(r)+" · сцена "+n);persist();renderRunDetail()}};
-window.modelScene=(id,n)=>{const t=prompt("Модель для сцены "+n+":","Авто");if(t){const r=runs.find(x=>x.id===id);r.sceneModels=r.sceneModels||{};r.sceneModels[n]=t;log("Сменена модель сцены",pname(r)+" · сцена "+n+" → "+t);persist();renderRunDetail()}};
-window.requestEdit=(id,part)=>{const r=runs.find(x=>x.id===id);if(!r)return;const note=prompt("Что изменить: "+part+"?","");if(note===null)return;r.status="В работе";r.stage=part.startsWith("Сцена")?"Генерация":part==="Голос"?"Озвучка":["Музыка","Субтитры","Цветокоррекция"].includes(part)?"Монтаж":"Сценарий";r.revisions=r.revisions||[];r.revisions.push({part,note,time:now()});log("Ролик отправлен на доработку",pname(r)+" · "+part+": "+(note||"без комментария"));persist();renderRunDetail();api({action:"revise",runId:id,part,note})};
-window.approveMontage=id=>{const r=runs.find(x=>x.id===id);if(!r)return;r.status="На проверке";r.stage="На проверке";r.progress=82;log("Монтаж утверждён",pname(r));persist();renderRunDetail()};
-window.markReady=id=>{const r=runs.find(x=>x.id===id);if(!r)return;r.status="Готово";r.stage="Готово";r.progress=91;log("Ролик утверждён",pname(r));persist();renderRunDetail()};
+async function runServerAction(payload){
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,...payload})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(data.detail||data.error||"Ошибка");
+  await syncFromServer();
+  if(payload.runId)selectedRunId=payload.runId;
+  renderRunDetail();
+  return data.run;
+}
+window.acceptScene=async(id,n)=>{try{await runServerAction({runId:id,action:"accept_scene",scene:n})}catch(e){alert(String(e?.message||e))}};
+window.regenScene=async(id,n)=>{if(!confirm("Переделать только сцену "+n+"?"))return;try{await runServerAction({runId:id,action:"regenerate_scene",scene:n})}catch(e){alert(String(e?.message||e))}};
+window.promptScene=async(id,n)=>{const t=prompt("Новый промт для сцены "+n+":");if(!t)return;try{await runServerAction({runId:id,action:"update_scene_prompt",scene:n,prompt:t})}catch(e){alert(String(e?.message||e))}};
+window.modelScene=async(id,n)=>{const t=prompt("Модель для сцены "+n+":","Авто");if(!t)return;try{await runServerAction({runId:id,action:"set_scene_model",scene:n,model:t})}catch(e){alert(String(e?.message||e))}};
+window.requestEdit=async(id,part)=>{const note=prompt("Что изменить: "+part+"?","");if(note===null)return;try{await runServerAction({runId:id,action:"regenerate",stage:part.startsWith("Сцена")?"Генерация":part==="Голос"?"Озвучка":["Музыка","Субтитры","Цветокоррекция"].includes(part)?"Монтаж":"Сценарий",note})}catch(e){alert(String(e?.message||e))}};
+window.approveMontage=async id=>{try{await runServerAction({runId:id,action:"approve_montage"})}catch(e){alert(String(e?.message||e))}};
+window.markReady=async id=>{try{await runServerAction({runId:id,action:"approve_run"})}catch(e){alert(String(e?.message||e))}};
 function renderScripts(){$("#scriptsList").innerHTML=scripts.length?scripts.slice().reverse().map(s=>'<article class="library-item"><div><h3>'+esc(s.title)+'</h3><p><b>Хук:</b> '+esc(s.hook||"—")+"\n"+esc(s.body||"")+"\n<b>CTA:</b> "+esc(s.cta||"—")+'</p><div class="library-meta"><span class="chip">Использован: '+(s.used||0)+' раз</span></div></div><button class="secondary" onclick="useScript(\''+s.id+'\')">Использовать</button></article>').join(""):'<div class="empty">Сценариев пока нет.</div>';const P=[["UGC-хук","Разговорное начало от лица покупателя"],["Проблема → решение","Боль → демонстрация → результат → CTA"],["Демонстрация","Максимум продукта в кадре"]];$("#promptLibrary").innerHTML=P.map((p,i)=>'<div class="prompt-card"><b>'+p[0]+'</b><small>'+p[1]+'</small><div class="dup-meter"><strong>Защита от повторов: включена</strong><div class="progress"><i style="width:'+(18+i*7)+'%"></i></div></div></div>').join("")}
 $("#addScript").onclick=()=>openM("scriptModal");$("#saveScript").onclick=()=>{const n=$("#scriptTitle").value.trim();if(!n)return;scripts.push({id:uid("s"),title:n,hook:$("#scriptHook").value.trim(),body:$("#scriptBody").value.trim(),cta:$("#scriptCta").value.trim(),used:0,created:now()});log("Сохранён сценарий",n);closeM("scriptModal");persist()};
 window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.used||0)+1;$("#brief").value=[s.hook,s.body,s.cta].filter(Boolean).join("\n");openCreate();persist()};
