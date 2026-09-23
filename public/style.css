@@ -1544,3 +1544,11 @@ html,body,button,input,select,textarea{
 @media(max-width:820px){
   .review-scene-list{grid-template-columns:1fr}
 }
+
+.scene-accepted-btn{
+  background:#eaf9f4!important;
+  color:#087f6d!important;
+  border-color:#b9e6d9!important;
+  opacity:1!important;
+  cursor:default!important;
+}
