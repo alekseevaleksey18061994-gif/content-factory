@@ -1779,6 +1779,52 @@ async function applyGenerationCallback(body){
   return {matched,accountId};
 }
 
+async function recoverLegacyPlaceholderRuns(){
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId);
+      const data=state?.data||blankFactoryState();
+      data.runs=Array.isArray(data.runs)?data.runs:[];
+      const candidates=data.runs.filter(run=>
+        run &&
+        run.status==='В работе' &&
+        !run.legacyRecoveryAttempted &&
+        !run.idea &&
+        !run.script &&
+        (!Array.isArray(run.storyboard)||run.storyboard.length===0) &&
+        Number(run.progress||0)<=10 &&
+        ['Идея','Сценарий',''].includes(String(run.stage||''))
+      );
+      for(const run of candidates){
+        run.legacyRecoveryAttempted=true;
+        run.updatedAt=new Date().toISOString();
+        appendFactoryJournal(data,'Автовосстановление запуска',(run.productName||run.id)+' · восстанавливаю идею, сценарий и storyboard');
+        await writeAppState(data,accountId);
+        try{
+          await runControlAction({runId:run.id,action:'resume',note:'Автовосстановление запуска после обновления производственного конвейера'},accountId);
+          console.log('[legacy-recovery] recovered '+accountId+' '+run.id);
+        }catch(e){
+          const fresh=await readAppState(accountId);
+          const fd=fresh?.data||blankFactoryState();
+          const rr=findRunById(fd,run.id);
+          if(rr){
+            rr.status='Ошибка';
+            rr.error='Автовосстановление: '+String(e?.message||e);
+            rr.updatedAt=new Date().toISOString();
+            appendFactoryJournal(fd,'Ошибка автовосстановления',(rr.productName||rr.id)+' · '+String(e?.message||e));
+            await writeAppState(fd,accountId);
+          }
+          console.error('[legacy-recovery] failed '+accountId+' '+run.id+' '+String(e?.message||e));
+        }
+      }
+    }
+  }catch(e){
+    console.error('[legacy-recovery] scan failed '+String(e?.message||e));
+  }
+}
+
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
 
@@ -2395,6 +2441,7 @@ const server=http.createServer(async(req,res)=>{
 
 server.listen(port,'0.0.0.0',async()=>{
   console.log(`Content Factory запущен на порту ${port}`);
+  setTimeout(()=>recoverLegacyPlaceholderRuns(),1200);
   if(process.env.CF_CHAT_SELFTEST==='1'){
     try{
       const turn1=await callOpenAIChat('Ответь только: OK1',[],DEFAULT_ACCOUNT_ID);
