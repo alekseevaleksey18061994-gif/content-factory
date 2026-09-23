@@ -885,13 +885,13 @@ let authMode='login';
 let currentAuthUser=null;
 function setAuthMode(mode){
   authMode=mode==='register'?'register':'login';
-  $("[data-auth-mode]").forEach(b=>b.classList.toggle("active",b.dataset.authMode===authMode));
+  $$("[data-auth-mode]").forEach(b=>b.classList.toggle("active",b.dataset.authMode===authMode));
   if($("#authNameField"))$("#authNameField").hidden=authMode!=="register";
   if($("#authSubmit"))$("#authSubmit").textContent=authMode==="register"?"Создать аккаунт":"Войти";
   if($("#authPassword"))$("#authPassword").autocomplete=authMode==="register"?"new-password":"current-password";
   if($("#authMessage"))$("#authMessage").textContent="";
 }
-$("[data-auth-mode]").forEach(b=>b.addEventListener("click",()=>setAuthMode(b.dataset.authMode)));
+$$("[data-auth-mode]").forEach(b=>b.addEventListener("click",()=>setAuthMode(b.dataset.authMode)));
 $("#authForm")?.addEventListener("submit",async e=>{
   e.preventDefault();
   const btn=$("#authSubmit"),msg=$("#authMessage");
