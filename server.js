@@ -911,6 +911,8 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
     '- Не генерируй читаемый мелкий текст внутри картинки; текст/субтитры добавляются на монтаже. В promptEn укажи no baked-in text.',
     '- Важные объекты и лица держать в центральной safe-zone; не планировать ключевое действие у правого края или самого низа.',
     '- Для динамики чередуй крупности, но не нарушай continuity.',
+    '- Локация не должна выглядеть пустой или стерильной декорацией. Добавляй уместные бытовые детали и 3–5 повторяющихся contextual props, которые поддерживают сюжет и остаются согласованными между сценами.',
+    '- Если действие происходит на кухне, кухня должна быть обжитой: посуда, доска, продукты, текстиль и мелкие кухонные детали по смыслу сцены, без визуального мусора и без случайной смены предметов.',
     '- promptEn пишется на английском: многие видеомодели лучше следуют детальным англоязычным инструкциям.',
     '',
     'ВНУТРЕННЯЯ ПРОВЕРКА',
@@ -1087,17 +1089,22 @@ function previsRefsForFrame(run,frame,done=[]){
     if(prevScene?.url)urls.unshift(prevScene.url);
   }
   const identity=primaryIdentityUrls(run);
-  const hasProductAnchor=done.some(x=>x?.productInFrame&&x?.url);
-  const hasAvatarAnchor=done.some(x=>x?.avatarInFrame&&x?.url);
-  if(frame.productInFrame&&!hasProductAnchor&&identity.product)urls.push(identity.product);
-  if(frame.avatarInFrame&&!hasAvatarAnchor&&identity.avatar)urls.push(identity.avatar);
-  return [...new Set(urls.filter(Boolean))].slice(0,3);
+  if(frame.productInFrame&&identity.product)urls.push(identity.product);
+  if(frame.avatarInFrame&&identity.avatar)urls.push(identity.avatar);
+  return [...new Set(urls.filter(Boolean))].slice(0,4);
 }
 async function generatePrevisImage(accountId,run,frame,referenceUrls=[]){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const phase=String(frame.frameType||'').toLowerCase();
+  const phaseRule=phase==='start'
+    ? 'FRAME PHASE: START. Show the initial state immediately BEFORE the main action is completed. Do not show the result yet.'
+    : phase==='middle'
+      ? 'FRAME PHASE: MIDDLE. Show the action clearly IN PROGRESS, visibly different from START and END.'
+      : 'FRAME PHASE: END. Show the completed result of this scene and visually prepare the next scene. Do not repeat the START pose.';
   const prompt=[
     'Generate exactly one cinematic vertical 9:16 previsualization keyframe for a future commercial video.',
     'This is frame '+frame.frame+' ('+frame.frameType+') of scene '+frame.scene+'.',
+    phaseRule,
     'Product: '+String(run.productName||''),
     'Product identity locks: '+String(run.productRules||run.product?.rules||''),
     run.character?.name?('Avatar identity locks: '+String(run.character.name)+'; '+String(run.character.look||'')+'; '+String(run.character.locks||'')):'',
@@ -1112,7 +1119,8 @@ async function generatePrevisImage(accountId,run,frame,referenceUrls=[]){
     'Continuity: '+String(frame.continuityNotes||''),
     'Next visual intent: '+String(frame.nextIntent||''),
     String(frame.imagePromptEn||frame.imagePromptRu||''),
-    'REFERENCE POLICY: source product/avatar photos are identity guides only. Generated reference frames are the primary visual anchors. Preserve identity while changing action phase/composition naturally. Do not copy a reference frame pixel-for-pixel.',
+    'REFERENCE POLICY: generated frames control composition and continuity. Source product/avatar photos are strict identity locks only. Never copy the source composition, but NEVER let generated anchors override the real product geometry, proportions, mounting parts, color, texture or the avatar identity.',
+    'ENVIRONMENT QUALITY: make the location feel real, inhabited and commercially believable. Keep recurring contextual props appropriate to the approved scene; avoid empty sterile showroom backgrounds unless the storyboard explicitly requires them.',
     'No baked-in text, no random logos, no extra fingers, no product deformation, no face change, no wardrobe change unless the approved scenario explicitly requires it.',
     frame.negativePrompt?('Negative: '+frame.negativePrompt):''
   ].filter(Boolean).join('\n').slice(0,15000);
@@ -1475,9 +1483,13 @@ async function processRunPostProduction(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
   if(run.postProductionRunning)return {ok:true,alreadyRunning:true};
-  const total=Number(run.generationResult?.totalScenes||run.sceneCount||0);
-  const accepted=new Set((Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).map(Number));
-  if(!total||accepted.size<total)return {ok:false,error:'Не все сцены подтверждены'};
+  const total=Number(run.generationResult?.totalScenes||0);
+  const generatedUrls=Array.isArray(run.generationResult?.urls)?run.generationResult.urls.filter(Boolean):[];
+  const accepted=new Set((Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).map(Number).filter(n=>n>=1&&n<=total));
+  if(!run.generationResult?.completed||!total||generatedUrls.length<total){
+    return {ok:false,error:'Видео-сцены ещё не сгенерированы полностью'};
+  }
+  if(accepted.size<total)return {ok:false,error:'Не все видео-сцены подтверждены'};
   const dir=fs.mkdtempSync('/tmp/cf-post-');
   try{
     run.postProductionRunning=true;run.awaitingApproval=false;run.status='В работе';run.stage=run.voiceoverResult?'Монтаж':'Озвучка';run.progress=Math.max(Number(run.progress)||0,74);run.updatedAt=new Date().toISOString();
@@ -1768,14 +1780,28 @@ async function runControlAction(body,accountId){
   }
   if(action==='accept_scene'){
     const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
-    run.acceptedScenes=[...new Set([...(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]),scene])];
-    const total=Number(run.generationResult?.totalScenes||run.sceneCount||0);
+    const total=Number(run.generationResult?.totalScenes||0);
+    const sceneResult=run.sceneResults?.[scene];
+    const generatedUrls=Array.isArray(sceneResult?.urls)?sceneResult.urls.filter(Boolean):[];
+    if(
+      run.mode!=='manual' ||
+      run.stage!=='На проверке' ||
+      run.status!=='На проверке' ||
+      !run.generationResult?.completed ||
+      !total ||
+      !sceneResult?.ok ||
+      !generatedUrls.length
+    ){
+      throw new Error('Нельзя принять сцену до фактической генерации её видео.');
+    }
+    run.acceptedScenes=[...new Set([...(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]),scene])]
+      .filter(n=>Number(n)>=1&&Number(n)<=total);
     const acceptedCount=new Set(run.acceptedScenes.map(Number)).size;
     run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Сцена утверждена',(run.productName||run.id)+' · сцена '+scene);
-    if(total>0&&acceptedCount>=total){
+    if(acceptedCount>=total){
       run.status='В работе';run.stage='Озвучка';run.progress=Math.max(Number(run.progress)||0,74);run.awaitingApproval=false;run.postProductionRunning=false;
-      appendFactoryJournal(data,'Все сцены утверждены',(run.productName||run.id)+' · запускаю озвучку и монтаж');
+      appendFactoryJournal(data,'Все видео-сцены утверждены',(run.productName||run.id)+' · запускаю озвучку и монтаж');
       await writeAppState(data,accountId);
       enqueuePostProduction(accountId,run.id,'accept-all-scenes');
       return run;
