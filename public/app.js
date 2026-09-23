@@ -265,7 +265,9 @@ function stageReportHtml(r,stage){
   else if(stage==="Сценарий")body='<div class="artifact-script"><h3>Хук</h3><p>'+esc(script.hook||"—")+'</p><h3>Текст / озвучка</h3><p>'+esc(script.body||script.voiceover||"—")+'</p><h3>CTA</h3><p>'+esc(script.cta||"—")+'</p></div>';
   else if(stage==="Storyboard")body=board.length?'<div class="stage-storyboard-list">'+board.map((x,i)=>'<div><b>'+(i+1)+'. '+esc(x.title||"Сцена")+'</b><span>'+esc(x.duration||"")+'</span><p>'+esc(x.shot||"")+' '+esc(x.action||"")+'</p></div>').join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>';
   else if(stage==="Референсы"){
-    const imgs=[...(refs.product||[]).map(url=>({url,label:"Товар"})),...(refs.avatar||[]).map(url=>({url,label:"Аватар"}))];
+    const productUrls=[...(refs.product||[]),...(r.media||r.product?.media||[]).map(x=>x?.url)].filter(url=>/^https:\/\//i.test(String(url||'')));
+    const avatarUrls=[...(refs.avatar||[]),...(r.avatarReferences||r.character?.media||[]).map(x=>x?.url)].filter(url=>/^https:\/\//i.test(String(url||'')));
+    const imgs=[...[...new Set(productUrls)].map(url=>({url,label:"Товар"})),...[...new Set(avatarUrls)].map(url=>({url,label:"Аватар"}))];
     body=(imgs.length?'<div class="reference-grid">'+imgs.map(x=>'<figure><img src="'+esc(x.url)+'" alt=""><figcaption>'+x.label+'</figcaption></figure>').join("")+'</div>':'<div class="empty compact-empty">Референсы ещё не собраны.</div>')+'<p class="artifact-note">'+esc(refs.notes||"")+'</p>';
   } else if(stage==="Генерация"){
     const urls=r.generationResult?.urls||[];
