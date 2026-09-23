@@ -1417,4 +1417,19 @@ const server=http.createServer(async(req,res)=>{
   }
 });
 
-server.listen(port,'0.0.0.0',()=>console.log(`Content Factory запущен на порту ${port}`));
+server.listen(port,'0.0.0.0',async()=>{
+  console.log(`Content Factory запущен на порту ${port}`);
+  if(process.env.CF_CHAT_SELFTEST==='1'){
+    try{
+      const turn1=await callOpenAIChat('Ответь только: OK1',[],DEFAULT_ACCOUNT_ID);
+      const history=[
+        {role:'user',content:'Ответь только: OK1'},
+        {role:'assistant',content:String(turn1?.text||'OK1')}
+      ];
+      const turn2=await callOpenAIChat('Ответь только: OK2',history,DEFAULT_ACCOUNT_ID);
+      console.log('[chat-selftest] PASS turn1='+JSON.stringify(String(turn1?.text||''))+' turn2='+JSON.stringify(String(turn2?.text||'')));
+    }catch(e){
+      console.error('[chat-selftest] FAIL '+String(e?.message||e));
+    }
+  }
+});
