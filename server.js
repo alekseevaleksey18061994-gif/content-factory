@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHiggsfieldClient } from '@higgsfield/client/v2';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -112,6 +113,114 @@ async function callProductMedia(payload){
   return data;
 }
 
+
+const higgsfieldConfigured = () =>
+  Boolean(process.env.HIGGSFIELD_API_KEY_ID && process.env.HIGGSFIELD_API_KEY_SECRET);
+
+function internalRequestAllowed(req){
+  const expected=process.env.CONTENT_FACTORY_DB_SECRET;
+  const supplied=req.headers['x-content-factory-key'];
+  return Boolean(expected && supplied && supplied===expected);
+}
+
+function clampNumber(value,min,max,fallback){
+  const n=Number(value);
+  return Number.isFinite(n) ? Math.max(min,Math.min(max,n)) : fallback;
+}
+
+function normalizeReferenceUrls(items=[]){
+  const flat=Array.isArray(items)?items:[items];
+  const seen=new Set();
+  const out=[];
+  for(const item of flat){
+    const raw=typeof item==='string' ? item : (item?.url || item?.publicUrl || item?.src || '');
+    if(typeof raw!=='string' || !/^https:\/\//i.test(raw)) continue;
+    if(seen.has(raw)) continue;
+    seen.add(raw);
+    out.push(raw);
+    if(out.length>=9) break;
+  }
+  return out;
+}
+
+async function generateHiggsfieldScene(body){
+  if(!higgsfieldConfigured()) throw new Error('Higgsfield API is not configured');
+
+  const prompt=String(body?.prompt || '').trim();
+  if(!prompt) throw new Error('Scene prompt is required');
+
+  const refs=normalizeReferenceUrls(body?.referenceMedia || body?.references || body?.imageUrls || []);
+  const duration=clampNumber(body?.duration,4,15,5);
+  const aspectRatio=String(body?.aspectRatio || '9:16');
+  const generateAudio=body?.generateAudio !== false;
+
+  const credentials=`${process.env.HIGGSFIELD_API_KEY_ID}:${process.env.HIGGSFIELD_API_KEY_SECRET}`;
+  const client=createHiggsfieldClient({
+    credentials,
+    timeout:120000,
+    maxRetries:3,
+    pollInterval:2500,
+    maxPollTime:360000
+  });
+
+  const model=String(
+    body?.model ||
+    (refs.length ? 'bytedance/seedance-2.0/reference-to-video' : 'bytedance/seedance-2.0/text-to-video')
+  );
+
+  const input={
+    prompt,
+    duration,
+    resolution:String(body?.resolution || '720p'),
+    aspect_ratio:aspectRatio,
+    generate_audio:generateAudio
+  };
+  if(refs.length) input.image_urls=refs;
+
+  const result=await client.subscribe(model,{input,withPolling:true});
+  const jobs=Array.isArray(result?.jobs)?result.jobs:[];
+  const urls=jobs
+    .map(job=>job?.results?.raw?.url || job?.results?.url || job?.result?.url)
+    .filter(Boolean);
+
+  return {
+    ok:Boolean(result?.isCompleted ?? urls.length),
+    provider:'higgsfield',
+    model,
+    input:{...input,image_urls:refs.length?refs:undefined},
+    requestId:result?.requestId || result?.request_id || null,
+    isCompleted:Boolean(result?.isCompleted ?? urls.length),
+    isNsfw:Boolean(result?.isNsfw),
+    urls,
+    jobs
+  };
+}
+
+async function applyGenerationCallback(body){
+  if(!supabaseConfigured()) throw new Error('Server database is not configured');
+  const state=await readAppState();
+  const data=state.data || {};
+  const runs=Array.isArray(data.runs)?data.runs:[];
+  const batchId=body?.batchId || body?.jobId || null;
+  if(!batchId) throw new Error('batchId or jobId is required');
+
+  let matched=0;
+  for(const run of runs){
+    if(run?.batchId===batchId || run?.jobId===batchId || run?.id===batchId){
+      matched++;
+      run.stage=body?.ok===false ? 'Ошибка генерации' : 'Генерация';
+      run.status=body?.ok===false ? 'Ошибка' : 'В работе';
+      run.progress=body?.ok===false ? (run.progress || 0) : Math.max(Number(run.progress)||0,65);
+      run.generationResult=body?.result || null;
+      run.generationError=body?.error || null;
+      run.updatedAt=new Date().toISOString();
+    }
+  }
+  data.runs=runs;
+  await writeAppState(data);
+  return {matched};
+}
+
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
 
@@ -134,7 +243,8 @@ const server=http.createServer(async(req,res)=>{
       database:supabaseConfigured(),
       n8nServer:await n8nAlive(),
       n8nWorkflow:process.env.N8N_CONTENT_WEBHOOK_ACTIVE === 'true',
-      higgsfield:Boolean(process.env.HF_CREDENTIALS || (process.env.HIGGSFIELD_API_KEY_ID && process.env.HIGGSFIELD_API_KEY_SECRET)),
+      higgsfield:higgsfieldConfigured(),
+      n8nGeneration:Boolean(process.env.N8N_GENERATION_WEBHOOK),
       runway:Boolean(process.env.RUNWAYML_API_SECRET),
       descript:Boolean(process.env.DESCRIPT_API_TOKEN),
       drive:process.env.GOOGLE_DRIVE_CONNECTED === 'true',
@@ -193,26 +303,78 @@ const server=http.createServer(async(req,res)=>{
     }
   }
 
+  if(url.pathname==='/api/higgsfield/generate-scene' && req.method==='POST'){
+    if(!internalRequestAllowed(req)){
+      return json(res,401,{ok:false,error:'Unauthorized internal request'});
+    }
+    try{
+      const body=await readBody(req);
+      const result=await generateHiggsfieldScene(body);
+      return json(res,200,result);
+    }catch(e){
+      return json(res,502,{ok:false,error:'Higgsfield generation failed',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/generation/callback' && req.method==='POST'){
+    if(!internalRequestAllowed(req)){
+      return json(res,401,{ok:false,error:'Unauthorized internal request'});
+    }
+    try{
+      const body=await readBody(req);
+      const saved=await applyGenerationCallback(body);
+      return json(res,200,{ok:true,...saved});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Generation callback failed',detail:String(e?.message||e)});
+    }
+  }
+
   if(url.pathname==='/api/start' && req.method==='POST'){
     const direct=process.env.N8N_CONTENT_WEBHOOK;
     const base=process.env.N8N_WEBHOOK_BASE;
     const webhook=direct || (base ? `${base.replace(/\/$/,'')}/content-factory-run` : '');
-    if(!webhook){
-      return json(res,503,{ok:false,code:'workflow_not_connected',error:'Рабочий процесс n8n ещё не подключён к кнопке запуска.'});
+    const generationWebhook=process.env.N8N_GENERATION_WEBHOOK || '';
+
+    if(!webhook && !generationWebhook){
+      return json(res,503,{ok:false,code:'workflow_not_connected',error:'Рабочие процессы n8n ещё не подключены к кнопке запуска.'});
     }
+
     try{
       const payload=await readBody(req);
-      const r=await fetch(webhook,{
-        method:'POST',
-        headers:{'content-type':'application/json'},
-        body:JSON.stringify(payload)
-      });
-      const text=await r.text();
-      let data;
-      try{ data=JSON.parse(text); } catch { data={message:text}; }
-      return json(res,r.status,{ok:r.ok,data});
+      const results={archive:null,generation:null};
+
+      if(webhook){
+        const r=await fetch(webhook,{
+          method:'POST',
+          headers:{'content-type':'application/json'},
+          body:JSON.stringify(payload)
+        });
+        const text=await r.text();
+        let data;
+        try{ data=JSON.parse(text); } catch { data={message:text}; }
+        results.archive={ok:r.ok,status:r.status,data};
+      }
+
+      if(generationWebhook){
+        try{
+          const r=await fetch(generationWebhook,{
+            method:'POST',
+            headers:{'content-type':'application/json'},
+            body:JSON.stringify(payload)
+          });
+          const text=await r.text();
+          let data;
+          try{ data=JSON.parse(text); } catch { data={message:text}; }
+          results.generation={ok:r.ok,status:r.status,data};
+        }catch(e){
+          results.generation={ok:false,status:0,error:String(e?.message||e)};
+        }
+      }
+
+      const primaryOk=results.archive ? results.archive.ok : Boolean(results.generation?.ok);
+      return json(res,primaryOk?202:502,{ok:primaryOk,data:results});
     }catch(e){
-      return json(res,502,{ok:false,error:'Не удалось связаться с рабочим процессом n8n.',detail:String(e?.message||e)});
+      return json(res,502,{ok:false,error:'Не удалось связаться с рабочими процессами n8n.',detail:String(e?.message||e)});
     }
   }
 
