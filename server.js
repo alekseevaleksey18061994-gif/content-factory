@@ -499,7 +499,20 @@ function normalizeRunPlan(raw,payload={}){
       hook:String(script.hook||idea.hook||'').slice(0,4000),
       body:String(script.body||script.voiceover||'').slice(0,12000),
       cta:String(script.cta||'').slice(0,3000),
-      voiceover:String(script.voiceover||script.body||'').slice(0,12000)
+      voiceover:String(script.voiceover||script.body||'').slice(0,12000),
+      scenes:(Array.isArray(script.scenes)?script.scenes:storyboard.map((x,i)=>({
+        scene:i+1,
+        time:x.duration||'',
+        visual:[x.shot,x.action].filter(Boolean).join(' — '),
+        dialogue:x.voiceover||x.onscreen||'',
+        sound:x.sound||''
+      }))).slice(0,targetCount).map((x,i)=>({
+        scene:Number(x?.scene)||i+1,
+        time:String(x?.time||x?.duration||storyboard[i]?.duration||'').slice(0,120),
+        visual:String(x?.visual||x?.shot||x?.action||'').slice(0,5000),
+        dialogue:String(x?.dialogue||x?.text||x?.voiceover||'').slice(0,5000),
+        sound:String(x?.sound||'').slice(0,2000)
+      }))
     },
     storyboard,
     references:{
@@ -531,8 +544,10 @@ async function buildRunPlan(payload,accountId,variant=1,feedback=''){
     'Вариант: '+variant,
     feedback?('Комментарий к переделке: '+feedback):'',
     'Верни ТОЛЬКО JSON без markdown. Структура:',
-    '{"idea":{"title":"","concept":"","hook":"","angle":"","why":""},"script":{"hook":"","body":"","cta":"","voiceover":""},"sceneCount":5,"storyboard":[{"scene":1,"title":"Хук","duration":"0–5 сек","shot":"","action":"","voiceover":"","onscreen":"","prompt":""}],"references":{"product":[],"avatar":[],"style":"","notes":""}}',
-    'Storyboard должен покрывать весь ролик, 5 сцен по смыслу: хук → проблема → демонстрация → результат → CTA.',
+    '{"idea":{"title":"","concept":"","hook":"","angle":"","why":""},"script":{"hook":"","body":"","cta":"","voiceover":"","scenes":[{"scene":1,"time":"0–5 сек","visual":"","dialogue":"","sound":""}]},"sceneCount":5,"storyboard":[{"scene":1,"title":"Хук","duration":"0–5 сек","shot":"","action":"","voiceover":"","onscreen":"","sound":"","prompt":""}],"references":{"product":[],"avatar":[],"style":"","notes":""}}',
+    'Сценарий — отдельный этап ДО storyboard. Сделай его полноценным и режиссёрским: для каждой сцены обязательно time, visual (что в кадре), dialogue (реплики/текст/озвучка) и sound (музыка/SFX/тишина).',
+    'Структура сценария должна быть такой же подробной по логике, как профессиональное ТЗ: тайминг → что в кадре → текст/реплики → звук. Не копируй чужие сюжеты, шутки или формулировки.',
+    'Storyboard должен быть визуальным продолжением уже готового сценария и покрывать весь ролик по сценам.',
     'Каждый prompt — готовый подробный промт для генерации вертикальной сцены 9:16. Товар всегда должен оставаться узнаваемым и соответствовать референсам.'
   ].filter(Boolean).join('\n');
   const input=[{role:'user',content:[
