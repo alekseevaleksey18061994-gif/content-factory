@@ -1,0 +1,435 @@
+{
+  "id": "CFHIGGSFIELDV3",
+  "name": "Content Factory — Higgsfield генерация v3",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content-factory-generate-v3",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "12f87e5b-11cf-4fd1-8a1f-101c4ba3a301",
+      "name": "Запуск генерации v3",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -760,
+        60
+      ],
+      "webhookId": "content-factory-generate-v3"
+    },
+    {
+      "parameters": {
+        "jsCode": "const incoming=$json.body??$json;\nconst batchId=incoming.batchId||incoming.jobId||('batch-'+Date.now());\nconst productName=incoming.productName||incoming.product?.name||'Товар';\nconst productUtp=incoming.productUtp||incoming.product?.utp||'';\nconst productRules=incoming.productRules||incoming.product?.rules||'';\nconst brief=String(incoming.brief||'').trim();\nconst style=String(incoming.style||'UGC').trim();\nconst character=incoming.character||null;\nconst urlOf=x=>typeof x==='string'?x:(x?.url||'');\nconst productRefs=(incoming.productMedia||incoming.media||incoming.product?.media||[]).map(urlOf);\nconst avatarRefs=(incoming.avatarReferences||character?.media||[]).map(urlOf);\nconst references=[...new Set([...productRefs,...avatarRefs].filter(x=>/^https?:\\/\\//i.test(x)))].slice(0,9);\nconst hasReferences=references.length>0;\nconst endpoint='https://api.higgsfield.ai/bytedance/seedance-2.0/'+(hasReferences?'reference-to-video':'text-to-video');\nconst prompt=[\n  'Create a photorealistic vertical 9:16 product advertising shot.',\n  'Product: '+productName+'.',\n  brief?('Creative brief: '+brief):'',\n  style?('Visual style: '+style+'.'):'',\n  productUtp?('Product information supplied by seller: '+productUtp):'',\n  productRules?('Strict product constraints: '+productRules):'',\n  character?('Use the same presenter identity from the supplied avatar reference images. Presenter description: '+[character.name,character.look].filter(Boolean).join(', ')+'.'):'',\n  'Preserve the exact real product shape, proportions, color, construction and visible details from all product references.',\n  'Do not invent accessories, features, packaging, labels, materials, claims or product properties.',\n  'Natural human motion, believable hands and product handling, premium commercial lighting, realistic skin and textures.',\n  'No artificial text overlays, subtitles or captions in the generated footage.',\n  'Strong visual hook in the first second, clear product focus, smartphone-friendly composition.'\n].filter(Boolean).join('\\n');\nreturn [{json:{\n  batchId,productName,productId:incoming.productId||null,prompt,references,\n  endpoint,duration:5,resolution:'720p',aspectRatio:'9:16',\n  provider:'higgsfield',model:'bytedance/seedance-2.0/'+(hasReferences?'reference-to-video':'text-to-video')\n}}];"
+      },
+      "id": "23f87e5b-11cf-4fd1-8a1f-101c4ba3a302",
+      "name": "Подготовить генерацию",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok:true, batchId:$('Подготовить генерацию').item.json.batchId, status:'accepted', stage:'higgsfield_generation', provider:'higgsfield', model:$('Подготовить генерацию').item.json.model } }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "34f87e5b-11cf-4fd1-8a1f-101c4ba3a303",
+      "name": "Ответить Content Factory",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -260,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.endpoint }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Key ' + $env.HIGGSFIELD_API_KEY_ID + ':' + $env.HIGGSFIELD_API_KEY_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ prompt:$json.prompt, duration:$json.duration, resolution:$json.resolution, aspect_ratio:$json.aspectRatio, generate_audio:true, ...($json.references?.length ? { image_urls:$json.references } : {}) }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "45f87e5b-11cf-4fd1-8a1f-101c4ba3a304",
+      "name": "Higgsfield — отправить",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -260,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const submit=$json;\nconst prep=$('Подготовить генерацию').item.json;\nconst requestId=submit.request_id||submit.id;\nif(!requestId) throw new Error('Higgsfield не вернул request_id: '+JSON.stringify(submit));\nconst statusUrl=submit.status_url||('https://api.higgsfield.ai/requests/'+requestId+'/status');\nreturn [{json:{...prep,requestId,statusUrl,hfStatus:String(submit.status||'queued').toLowerCase()}}];"
+      },
+      "id": "56f87e5b-11cf-4fd1-8a1f-101c4ba3a305",
+      "name": "Запомнить request_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "67f87e5b-11cf-4fd1-8a1f-101c4ba3a306",
+      "name": "Подождать Higgsfield",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        120
+      ],
+      "webhookId": "67f87e5b-11cf-4fd1-8a1f-101c4ba3a306"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.statusUrl || ('https://api.higgsfield.ai/requests/' + $json.requestId + '/status') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Key ' + $env.HIGGSFIELD_API_KEY_ID + ':' + $env.HIGGSFIELD_API_KEY_SECRET }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "78f87e5b-11cf-4fd1-8a1f-101c4ba3a307",
+      "name": "Higgsfield — проверить статус",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const status=$json;\nconst submitted=$('Запомнить request_id').item.json;\nconst rawState=String(status.status||status.state||status.request_status||'').toLowerCase();\nconst videoUrl=status.video?.url||status.output?.video?.url||status.result?.video?.url||status.data?.video?.url||null;\nconst done=!!videoUrl||['completed','succeeded','success','done'].includes(rawState);\nconst failed=['failed','error','canceled','cancelled','nsfw','ip_detected'].includes(rawState);\nreturn [{json:{...submitted,hfStatus:rawState||submitted.hfStatus,videoUrl,done,failed,statusPayload:status}}];"
+      },
+      "id": "89f87e5b-11cf-4fd1-8a1f-101c4ba3a308",
+      "name": "Разобрать статус",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c1f87e5b-11cf-4fd1-8a1f-101c4ba3a311",
+              "leftValue": "={{ $json.done === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "90f87e5b-11cf-4fd1-8a1f-101c4ba3a309",
+      "name": "Готово?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        960,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d2f87e5b-11cf-4fd1-8a1f-101c4ba3a312",
+              "leftValue": "={{ $json.failed === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1f87e5b-11cf-4fd1-8a1f-101c4ba3a310",
+      "name": "Ошибка?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1200,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CONTENT_FACTORY_CALLBACK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-app-api-key",
+              "value": "={{ $env.CONTENT_FACTORY_DB_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ batchId:$json.batchId, productName:$json.productName, status:'completed', provider:'higgsfield', requestId:$json.requestId, model:$json.model, videoUrl:$json.videoUrl, rawStatus:$json.hfStatus, finishedAt:$now.toISO() }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "b2f87e5b-11cf-4fd1-8a1f-101c4ba3a313",
+      "name": "Вернуть готовое видео",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CONTENT_FACTORY_CALLBACK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-app-api-key",
+              "value": "={{ $env.CONTENT_FACTORY_DB_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ batchId:$json.batchId, productName:$json.productName, status:'failed', provider:'higgsfield', requestId:$json.requestId, model:$json.model, error:$json.statusPayload?.error?.message || $json.statusPayload?.error || ('Higgsfield status: '+$json.hfStatus), rawStatus:$json.hfStatus, finishedAt:$now.toISO() }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "c3f87e5b-11cf-4fd1-8a1f-101c4ba3a314",
+      "name": "Вернуть ошибку",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Content Factory — Stage 3: Higgsfield\\n\\nРабочий генератор: webhook → подготовка референсов → Higgsfield Seedance 2.0 → polling → callback в Content Factory.\\n\\nЕсли есть фото товара/аватара — используется reference-to-video. Без фото — text-to-video.\\n\\nГенерация тестово идёт 5 секунд, 720p, 9:16. Это безопасный базовый worker до подключения OpenAI storyboard.",
+        "height": 280,
+        "width": 1220,
+        "color": 7
+      },
+      "id": "d4f87e5b-11cf-4fd1-8a1f-101c4ba3a315",
+      "name": "Описание Stage 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        -360
+      ]
+    }
+  ],
+  "connections": {
+    "Запуск генерации v3": {
+      "main": [
+        [
+          {
+            "node": "Подготовить генерацию",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Подготовить генерацию": {
+      "main": [
+        [
+          {
+            "node": "Ответить Content Factory",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Higgsfield — отправить",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Higgsfield — отправить": {
+      "main": [
+        [
+          {
+            "node": "Запомнить request_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Запомнить request_id": {
+      "main": [
+        [
+          {
+            "node": "Подождать Higgsfield",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Подождать Higgsfield": {
+      "main": [
+        [
+          {
+            "node": "Higgsfield — проверить статус",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Higgsfield — проверить статус": {
+      "main": [
+        [
+          {
+            "node": "Разобрать статус",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Разобрать статус": {
+      "main": [
+        [
+          {
+            "node": "Готово?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Готово?": {
+      "main": [
+        [
+          {
+            "node": "Вернуть готовое видео",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ошибка?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ошибка?": {
+      "main": [
+        [
+          {
+            "node": "Вернуть ошибку",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Подождать Higgsfield",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "saveManualExecutions": true
+  },
+  "active": true,
+  "versionId": "e4c2f9fb-132e-4f06-bfd2-940b5d5bc901",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
