@@ -1310,7 +1310,6 @@ async function analyzeReferenceMaterial(opts){
   if(!r.ok)throw new Error(response?.error?.message||('OpenAI analysis error '+r.status));
   const analysis=safeAnalysisJson(openAIText(response));
   const priced=openAIUsageCost(model,response?.usage||{});
-  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'analysis',description:'Разбор видео',amountUsd:priced.amountUsd,model,usage:priced.details,source:'auto'}).catch(()=>{});
   const item={
     id:factoryId('va'),
     sourceType:String(opts.sourceType||'video'),
@@ -1326,6 +1325,7 @@ async function analyzeReferenceMaterial(opts){
   data.videoAnalyses=data.videoAnalyses.slice(-100);
   appendFactoryJournal(data,'Разобрано видео',item.sourceName);
   await writeAppState(data,accountId);
+  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'analysis',description:'Разбор видео',amountUsd:priced.amountUsd,model,usage:priced.details,source:'auto'}).catch(()=>{});
   return item;
 }
 async function streamRequestToFile(req,filePath,maxBytes=150*1024*1024){
