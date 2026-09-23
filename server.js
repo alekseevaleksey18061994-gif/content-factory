@@ -138,7 +138,8 @@ function blankFactoryState(){
     scripts:[],
     characters:[],
     journal:[],
-    settings:{mode:'auto',budgetCampaign:5000,budgetAttempts:3,budgetApproval:100}
+    expenses:[],
+    settings:{mode:'auto',budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}}
   };
 }
 
@@ -271,6 +272,50 @@ function appendFactoryJournal(data,title,detail='',type='ok'){
     type
   });
   data.journal=data.journal.slice(-500);
+}
+
+async function recordExpense(accountId,entry={}){
+  accountId=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const state=await readAppState(accountId);
+  const data=state?.data&&typeof state.data==='object'?state.data:blankFactoryState();
+  data.expenses=Array.isArray(data.expenses)?data.expenses:[];
+  const expense={
+    id:factoryId('exp'),
+    provider:String(entry.provider||'Другое').slice(0,80),
+    category:String(entry.category||'other').slice(0,80),
+    description:String(entry.description||'Расход').slice(0,500),
+    amountRub:Number(entry.amountRub)||0,
+    amountUsd:Number(entry.amountUsd)||0,
+    usage:entry.usage&&typeof entry.usage==='object'?entry.usage:null,
+    model:String(entry.model||'').slice(0,160),
+    source:String(entry.source||'auto').slice(0,40),
+    recurring:String(entry.recurring||'').slice(0,40),
+    createdAt:entry.createdAt||new Date().toISOString()
+  };
+  data.expenses.push(expense);
+  data.expenses=data.expenses.slice(-3000);
+  await writeAppState(data,accountId);
+  return expense;
+}
+
+async function costRates(accountId){
+  const state=await readAppState(sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID));
+  return state?.data?.settings?.costRates||{};
+}
+
+function openAIUsageCost(model,usage={}){
+  const name=String(model||'gpt-5.6-luna').toLowerCase();
+  let inputRate=0.20,cachedRate=0.02,outputRate=1.20;
+  if(name.includes('gpt-5.6-terra')){inputRate=2;cachedRate=.2;outputRate=12}
+  else if(name.includes('gpt-5.6-sol')){inputRate=4;cachedRate=.4;outputRate=20}
+  const input=Number(usage.input_tokens)||0;
+  const output=Number(usage.output_tokens)||0;
+  const cached=Number(usage.input_tokens_details?.cached_tokens)||0;
+  const uncached=Math.max(0,input-cached);
+  return {
+    amountUsd:(uncached*inputRate+cached*cachedRate+output*outputRate)/1e6,
+    details:{inputTokens:input,cachedTokens:cached,outputTokens:output,inputRate,cachedRate,outputRate}
+  };
 }
 
 async function dispatchFactoryStart(payload){
@@ -455,7 +500,7 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
   accountId=sanitizeAccountId(accountId);
   const state=await readAppState(accountId);
   const data=state?.data && typeof state.data==='object' ? state.data : {
-    version:1,products:[],runs:[],campaigns:[],scripts:[],characters:[],journal:[],settings:{}
+    version:1,products:[],runs:[],campaigns:[],scripts:[],characters:[],journal:[],expenses:[],settings:{}
   };
   data.products=Array.isArray(data.products)?data.products:[];
   data.runs=Array.isArray(data.runs)?data.runs:[];
@@ -706,6 +751,15 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
   let data; try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
   if(!r.ok) throw new Error(data?.error?.message||data?.message||('OpenAI error '+r.status));
 
+  const usageTotal={input_tokens:0,output_tokens:0,input_tokens_details:{cached_tokens:0}};
+  const addUsage=u=>{
+    if(!u)return;
+    usageTotal.input_tokens+=Number(u.input_tokens)||0;
+    usageTotal.output_tokens+=Number(u.output_tokens)||0;
+    usageTotal.input_tokens_details.cached_tokens+=Number(u.input_tokens_details?.cached_tokens)||0;
+  };
+  addUsage(data.usage);
+
   const actions=[];
   for(let round=0;round<4;round++){
     const calls=(Array.isArray(data?.output)?data.output:[]).filter(x=>x?.type==='function_call');
@@ -736,6 +790,21 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
     text=await r.text();
     try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
     if(!r.ok) throw new Error(data?.error?.message||data?.message||('OpenAI error '+r.status));
+    addUsage(data.usage);
+  }
+
+  const usedModel=data?.model||process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const priced=openAIUsageCost(usedModel,usageTotal);
+  if(priced.amountUsd>0){
+    await recordExpense(accountId,{
+      provider:'OpenAI',
+      category:'chat',
+      description:'ChatGPT-пульт',
+      amountUsd:priced.amountUsd,
+      model:usedModel,
+      usage:priced.details,
+      source:'auto'
+    }).catch(()=>{});
   }
 
   return {
@@ -812,6 +881,14 @@ async function generateHiggsfieldScene(body){
     .map(job=>job?.results?.raw?.url || job?.results?.url || job?.result?.url)
     .filter(Boolean);
 
+  const hfAccount=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+  const hfRates=await costRates(hfAccount).catch(()=>({}));
+  const hfRub=(Number(hfRates.higgsfieldRubPerGeneration)||0)*Math.max(1,jobs.length||1);
+  await recordExpense(hfAccount,{
+    provider:'Higgsfield',category:'generation',description:'Генерация видео',amountRub:hfRub,
+    usage:{jobs:Math.max(1,jobs.length||1),duration},model,source:'auto'
+  }).catch(()=>{});
+
   return {
     ok:Boolean(result?.isCompleted ?? urls.length),
     provider:'higgsfield',
@@ -848,6 +925,13 @@ async function generateRunwayScene(body){
     const created=await pending;
     const completed=await pending.waitForTaskOutput();
     const output=Array.isArray(completed?.output)?completed.output:[];
+    const rwAccount=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+    const rwRates=await costRates(rwAccount).catch(()=>({}));
+    const rwRub=(Number(rwRates.runwayRubPerSecond)||0)*duration;
+    await recordExpense(rwAccount,{
+      provider:'Runway',category:'generation',description:'Генерация видео',amountRub:rwRub,
+      usage:{seconds:duration},model:String(body?.model||process.env.RUNWAY_MODEL||'gen4.5'),source:'auto'
+    }).catch(()=>{});
     return {
       ok:true,
       provider:'runway',
@@ -884,7 +968,7 @@ async function descriptRequest(pathname,{method='GET',body}={}){
 }
 
 async function descriptImport(body){
-  return descriptRequest('/jobs/import/project_media',{
+  const result=await descriptRequest('/jobs/import/project_media',{
     method:'POST',
     body:{
       project_name:String(body?.projectName||'Content Factory project'),
@@ -893,13 +977,17 @@ async function descriptImport(body){
       ...(body?.callbackUrl?{callback_url:String(body.callbackUrl)}:{})
     }
   });
+  const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+  const rates=await costRates(accountId).catch(()=>({}));
+  await recordExpense(accountId,{provider:'Descript',category:'editing',description:'Импорт проекта',amountRub:Number(rates.descriptRubPerAction)||0,usage:{actions:1},source:'auto'}).catch(()=>{});
+  return result;
 }
 
 async function descriptAgent(body){
   const projectId=String(body?.projectId||'').trim();
   const prompt=String(body?.prompt||'').trim();
   if(!projectId||!prompt) throw new Error('projectId and prompt are required');
-  return descriptRequest('/jobs/agent',{
+  const result=await descriptRequest('/jobs/agent',{
     method:'POST',
     body:{
       project_id:projectId,
@@ -907,6 +995,10 @@ async function descriptAgent(body){
       ...(body?.callbackUrl?{callback_url:String(body.callbackUrl)}:{})
     }
   });
+  const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+  const rates=await costRates(accountId).catch(()=>({}));
+  await recordExpense(accountId,{provider:'Descript',category:'editing',description:'AI-монтаж / agent',amountRub:Number(rates.descriptRubPerAction)||0,usage:{actions:1},source:'auto'}).catch(()=>{});
+  return result;
 }
 
 async function applyGenerationCallback(body){
@@ -1125,6 +1217,40 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,deletedId:id});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось удалить аккаунт.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/expenses' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      const expense=await recordExpense(accountId,{
+        provider:body?.provider||'Другое',
+        category:body?.category||'manual',
+        description:body?.description||'Ручной расход',
+        amountRub:body?.amountRub,
+        amountUsd:body?.amountUsd,
+        recurring:body?.recurring||'',
+        source:'manual',
+        createdAt:body?.createdAt||new Date().toISOString()
+      });
+      return json(res,201,{ok:true,expense});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось сохранить расход',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/expenses' && req.method==='DELETE'){
+    try{
+      const accountId=sanitizeAccountId(url.searchParams.get('account')||DEFAULT_ACCOUNT_ID);
+      const id=String(url.searchParams.get('id')||'');
+      const state=await readAppState(accountId);
+      const data=state?.data||blankFactoryState();
+      data.expenses=(Array.isArray(data.expenses)?data.expenses:[]).filter(x=>x.id!==id);
+      await writeAppState(data,accountId);
+      return json(res,200,{ok:true});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось удалить расход',detail:String(e?.message||e)});
     }
   }
 
