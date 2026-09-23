@@ -377,6 +377,35 @@ function findCharacterInState(data,query){
     || null;
 }
 
+function characterSnapshot(character){
+  if(!character)return null;
+  return {
+    id:String(character.id||''),
+    name:String(character.name||''),
+    age:String(character.age||''),
+    look:String(character.look||''),
+    voice:String(character.voice||''),
+    topics:String(character.topics||''),
+    locks:String(character.locks||''),
+    voiceLinked:!!character.voiceLinked,
+    media:(Array.isArray(character.media)?character.media:[]).map(m=>({
+      id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary
+    })).filter(m=>m.url)
+  };
+}
+function resolveProductCharacter(data,product,payload={}){
+  const explicitId=String(payload.characterId||payload.character?.id||'').trim();
+  if(payload.characterOverride===true){
+    return explicitId?findCharacterInState(data,explicitId):null;
+  }
+  if(explicitId){
+    const explicit=findCharacterInState(data,explicitId);
+    if(explicit)return explicit;
+  }
+  const linkedId=String(product?.defaultCharacterId||'').trim();
+  return linkedId?findCharacterInState(data,linkedId):null;
+}
+
 function appendFactoryJournal(data,title,detail='',type='ok'){
   data.journal=Array.isArray(data.journal)?data.journal:[];
   data.journal.push({
@@ -583,8 +612,11 @@ async function recentIdeaContext(accountId,productId){
 async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
   const ctx=await recentIdeaContext(accountId,payload.productId||payload.product?.id);
-  const refs=(payload.media||payload.product?.media||[])
+  const productRefs=(payload.media||payload.product?.media||[])
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,3);
+  const avatarRefs=(payload.avatarReferences||payload.character?.media||[])
+    .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,2);
+  const refs=[...productRefs,...avatarRefs].slice(0,5);
   const master=[
     'ROLE: Ты senior creative director и performance-креатор коротких вертикальных видео для TikTok, Reels и YouTube Shorts.',
     'ЗАДАЧА: придумать не просто тему, а сильную КРЕАТИВНУЮ МЕХАНИКУ ролика, которую хочется досмотреть и которая органично продаёт товар.',
@@ -599,6 +631,8 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Длительность: '+String(payload.duration||'30 сек'),
     'Желаемый стиль: '+String(payload.style||'UGC'),
     'Бриф пользователя: '+String(payload.brief||''),
+    payload.character?.name?('ПРИВЯЗАННЫЙ AI-АВАТАР: '+String(payload.character.name)+'. Возраст/образ: '+String(payload.character.age||'')+'. Внешность: '+String(payload.character.look||'')+'. Манера речи: '+String(payload.character.voice||'')+'. Темы/роль: '+String(payload.character.topics||'')+'. Locks: '+String(payload.character.locks||'')):'',
+    payload.character?.name?'AVATAR LOCK: если в идее есть человек, используй именно этого привязанного аватара. Идея должна быть органична его образу, манере речи и тематике. Не подменяй его случайным ведущим.':'',
     'Вариант запуска: '+variant,
     feedback?('Комментарий пользователя к переделке: '+feedback):'',
     '',
@@ -747,6 +781,9 @@ async function generateScriptStage(payload,accountId,feedback=''){
     'Бриф пользователя: '+String(payload.brief||''),
     'AI-персонаж: '+String(payload.character?.name||'не задан'),
     'Внешность/locks персонажа: '+String(payload.character?.look||'')+' '+String(payload.character?.locks||''),
+    'Манера речи привязанного аватара: '+String(payload.character?.voice||''),
+    'Темы/роль аватара: '+String(payload.character?.topics||''),
+    payload.character?.name?'AVATAR LOCK: этот персонаж привязан к товару и является ведущим по умолчанию. Сценарий должен быть написан под его образ и голос; не заменяй его другим случайным человеком.':'',
     feedback?('Комментарий пользователя к переделке: '+feedback):'',
     '',
     'ПРИНЦИПЫ',
@@ -770,6 +807,9 @@ async function generateScriptStage(payload,accountId,feedback=''){
     '18) Не копируй сюжет, реплики, шутки или персонажей конкурентов. Можно использовать только паттерны структуры и удержания.',
     '19) Сценарий должен работать как история: причина → развитие → payoff/результат → естественный CTA.',
     '20) Если идея юмористическая, реклама может быть отложена к финалу; если демонстрационная — товар должен появиться раньше. Следуй утверждённой идее.',
+    '21) АУДИО: для ролика около 30 секунд не оставляй всю речь в одной средней сцене. Если формат предполагает голос, распределяй короткие естественные voiceover-фразы минимум по 3 смысловым точкам: хук/начало, развитие и payoff/финал. Полностью немые сцены допустимы только осознанно и должны иметь sound/SFX.',
+    '22) По умолчанию используй voiceover для рекламной речи. dialogue оставляй только когда персонаж действительно должен говорить в кадре; постобработка не должна зависеть от случайно сгенерированного голоса видеомодели.',
+    '23) Манера текста разговорная: короткие фразы, естественные паузы, без дикторских штампов и канцелярита.',
     '',
     'КОНТРОЛЬ СУБТИТРОВ И ИНТЕРФЕЙСА',
     'Крупный читаемый текст, без длинных абзацев.',
@@ -1534,6 +1574,12 @@ function enqueuePostProduction(accountId,runId,label='post-production'){
   postProductionQueues.set(key,next);
   return next;
 }
+async function fileHasAudio(filePath){
+  try{
+    const {stdout}=await execFile('ffprobe',['-v','error','-select_streams','a','-show_entries','stream=index','-of','csv=p=0',filePath],{timeout:15000});
+    return Boolean(String(stdout||'').trim());
+  }catch{return false}
+}
 async function downloadUrlFile(url,filePath){
   const r=await fetch(String(url||''));
   if(!r.ok)throw new Error('Не удалось скачать сцену: HTTP '+r.status);
@@ -1543,12 +1589,23 @@ async function downloadUrlFile(url,filePath){
 }
 function runVoiceLines(run){
   const board=Array.isArray(run?.storyboard)?run.storyboard:[];
-  return board.map((scene,i)=>({scene:i+1,duration:sceneDurationSeconds(scene),text:String(scene?.voiceover||'').trim()}));
+  return board.map((scene,i)=>{
+    const voiceover=String(scene?.voiceover||'').trim();
+    const dialogue=String(scene?.dialogue||'').trim();
+    const text=voiceover || dialogue;
+    return {
+      scene:i+1,
+      duration:sceneDurationSeconds(scene),
+      text,
+      source:voiceover?'voiceover':dialogue?'dialogue-as-narration':'none'
+    };
+  });
 }
-async function generateOpenAITts(text,instructions=''){
+
+async function generateOpenAITts(text,instructions='',voice='coral'){
   if(!openaiConfigured())throw new Error('OpenAI TTS не настроен');
-  const body={model:'gpt-4o-mini-tts',voice:'coral',input:String(text||'').slice(0,4000),response_format:'mp3'};
-  if(String(instructions||'').trim())body.instructions=String(instructions).slice(0,1200);
+  const body={model:'gpt-4o-mini-tts',voice:String(voice||'coral'),input:String(text||'').slice(0,4000),response_format:'mp3'};
+  if(String(instructions||'').trim())body.instructions=String(instructions).slice(0,1800);
   const r=await fetch('https://api.openai.com/v1/audio/speech',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -1561,17 +1618,39 @@ async function generateOpenAITts(text,instructions=''){
   }
   return Buffer.from(await r.arrayBuffer());
 }
+
 async function createRunVoiceover(run,dir){
   const lines=runVoiceLines(run);
-  const instructions=String(run?.character?.voice||'Спокойный, естественный, доброжелательный женский голос. Чёткая дикция, без навязчивой рекламной подачи.');
+  const avatarVoice=String(run?.character?.voice||'').trim();
+  const instructions=[
+    'Говори на естественном разговорном русском языке как живой UGC-автор, а не диктор рекламы.',
+    'Один и тот же голос и характер на всём ролике. Тёплая, уверенная, спокойная подача.',
+    'Короткие естественные фразы, микропаузы между смысловыми частями, лёгкая улыбка там, где уместно.',
+    'Без театральности, без радиодикторской интонации, без чрезмерных ударений, без монотонного роботизированного ритма.',
+    'Не спеши; окончания фраз не проглатывай.',
+    avatarVoice?('Манера конкретного AI-аватара: '+avatarVoice):''
+  ].filter(Boolean).join(' ');
+  const voice='coral';
   const wavs=[],spoken=[];
   for(const line of lines){
     const wav=path.join(dir,'voice-'+line.scene+'.wav');
     if(line.text){
       const mp3=path.join(dir,'voice-'+line.scene+'.mp3');
-      fs.writeFileSync(mp3,await generateOpenAITts(line.text,instructions));
-      await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',mp3,'-af','apad','-t',String(line.duration),'-ar','48000','-ac','2','-c:a','pcm_s16le','-y',wav],{timeout:120000});
-      spoken.push({scene:line.scene,text:line.text,duration:line.duration});
+      fs.writeFileSync(mp3,await generateOpenAITts(line.text,instructions,voice));
+      const rawDur=await probeDuration(mp3);
+      const target=Math.max(0.8,Number(line.duration)||5);
+      const available=Math.max(0.6,target-0.35);
+      const tempo=rawDur>available?Math.min(1.22,rawDur/available):1;
+      const filters=[];
+      if(tempo>1.001)filters.push('atempo='+tempo.toFixed(4));
+      filters.push('afade=t=in:st=0:d=0.04');
+      filters.push('adelay=120|120');
+      filters.push('apad');
+      filters.push('atrim=0:'+target.toFixed(3));
+      filters.push('afade=t=out:st='+Math.max(0,target-0.08).toFixed(3)+':d=0.08');
+      filters.push('loudnorm=I=-18:TP=-2:LRA=7');
+      await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',mp3,'-af',filters.join(','),'-ar','48000','-ac','2','-c:a','pcm_s16le','-y',wav],{timeout:120000});
+      spoken.push({scene:line.scene,text:line.text,duration:target,source:line.source,rawDuration:Math.round(rawDur*100)/100});
     }else{
       await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t',String(line.duration),'-c:a','pcm_s16le','-y',wav],{timeout:30000});
     }
@@ -1581,35 +1660,76 @@ async function createRunVoiceover(run,dir){
   fs.writeFileSync(list,wavs.map(x=>"file '"+x.replace(/'/g,"'\\''")+"'").join('\n'));
   const out=path.join(dir,'voiceover.wav');
   await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','concat','-safe','0','-i',list,'-c:a','pcm_s16le','-y',out],{timeout:120000});
-  return {path:out,spoken,provider:'openai',model:'gpt-4o-mini-tts',voice:'coral'};
+  return {path:out,spoken,provider:'openai',model:'gpt-4o-mini-tts',voice,instructions};
 }
+
 async function assembleRunVideo(run,dir,voicePath){
   const urls=(run?.generationResult?.urls||[]).filter(Boolean);
   if(!urls.length)throw new Error('Нет сгенерированных сцен для монтажа');
   const normalized=[];
   for(let i=0;i<urls.length;i++){
-    const src=path.join(dir,'scene-'+(i+1)+'.mp4');
+    const srcFile=path.join(dir,'scene-'+(i+1)+'.mp4');
     const norm=path.join(dir,'scene-'+(i+1)+'-norm.mp4');
-    await downloadUrlFile(urls[i],src);
-    await execFile('ffmpeg',[
-      '-hide_banner','-loglevel','error','-i',src,
-      '-vf','scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,fps=30',
-      '-an','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-movflags','+faststart','-y',norm
-    ],{timeout:240000});
+    await downloadUrlFile(urls[i],srcFile);
+    const dur=Math.max(0.5,await probeDuration(srcFile));
+    const hasAudio=await fileHasAudio(srcFile);
+    if(hasAudio){
+      await execFile('ffmpeg',[
+        '-hide_banner','-loglevel','error','-i',srcFile,
+        '-vf','scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,fps=30',
+        '-map','0:v:0','-map','0:a:0',
+        '-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p',
+        '-c:a','aac','-b:a','128k','-ar','48000','-ac','2',
+        '-movflags','+faststart','-y',norm
+      ],{timeout:240000});
+    }else{
+      await execFile('ffmpeg',[
+        '-hide_banner','-loglevel','error','-i',srcFile,
+        '-f','lavfi','-t',String(dur),'-i','anullsrc=r=48000:cl=stereo',
+        '-vf','scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,fps=30',
+        '-map','0:v:0','-map','1:a:0','-shortest',
+        '-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p',
+        '-c:a','aac','-b:a','128k','-ar','48000','-ac','2',
+        '-movflags','+faststart','-y',norm
+      ],{timeout:240000});
+    }
     normalized.push(norm);
   }
   const list=path.join(dir,'video-list.txt');
   fs.writeFileSync(list,normalized.map(x=>"file '"+x.replace(/'/g,"'\\''")+"'").join('\n'));
-  const silent=path.join(dir,'combined-silent.mp4');
-  await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart','-y',silent],{timeout:120000});
+  const combined=path.join(dir,'combined.mp4');
+  await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart','-y',combined],{timeout:120000});
+  const totalDur=Math.max(1,await probeDuration(combined));
   const finalPath=path.join(dir,'final.mp4');
-  if(voicePath&&fs.existsSync(voicePath)){
-    await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',silent,'-i',voicePath,'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','160k','-shortest','-movflags','+faststart','-y',finalPath],{timeout:120000});
+  const hasVoice=Boolean(voicePath&&fs.existsSync(voicePath));
+  const args=['-hide_banner','-loglevel','error','-i',combined];
+  if(hasVoice)args.push('-i',voicePath);
+  args.push('-f','lavfi','-t',String(totalDur),'-i','anoisesrc=color=pink:amplitude=0.015:r=48000');
+  const roomIndex=hasVoice?2:1;
+  const filters=[
+    '[0:a]volume=0.28[scene]',
+    '['+roomIndex+':a]highpass=f=80,lowpass=f=5500,volume=0.06[room]'
+  ];
+  if(hasVoice){
+    filters.push('[1:a]volume=1.0[voice]');
+    filters.push('[scene][room][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]');
   }else{
-    fs.copyFileSync(silent,finalPath);
+    filters.push('[scene][room]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]');
+  }
+  args.push('-filter_complex',filters.join(';'),'-map','0:v:0','-map','[aout]','-c:v','copy','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-shortest','-movflags','+faststart','-y',finalPath);
+  try{
+    await execFile('ffmpeg',args,{timeout:180000});
+  }catch(e){
+    const fallback=['-hide_banner','-loglevel','error','-i',combined];
+    if(hasVoice){
+      fallback.push('-i',voicePath,'-filter_complex','[0:a]volume=0.25[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[aout]','-map','0:v:0','-map','[aout]');
+    }else fallback.push('-map','0:v:0','-map','0:a:0');
+    fallback.push('-c:v','copy','-c:a','aac','-b:a','192k','-shortest','-movflags','+faststart','-y',finalPath);
+    await execFile('ffmpeg',fallback,{timeout:180000});
   }
   return finalPath;
 }
+
 async function uploadRunMedia(accountId,runId,filePath,fileName,mimeType){
   const stat=fs.statSync(filePath);
   if(stat.size>145*1024*1024)throw new Error('Финальный файл слишком большой для хранилища');
@@ -1683,7 +1803,7 @@ async function processRunPostProduction(accountId,runId){
       const voice=await createRunVoiceover(run,dir);
       voicePath=voice.path;
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.voiceoverResult={ok:true,provider:voice.provider,model:voice.model,voice:voice.voice,spokenScenes:voice.spoken,completedAt:new Date().toISOString()};
+      run.voiceoverResult={ok:true,provider:voice.provider,model:voice.model,voice:voice.voice,voiceStyle:voice.instructions,soundDesign:'scene-audio + continuous room tone + narration',spokenScenes:voice.spoken,completedAt:new Date().toISOString()};
       run.stage='Монтаж';run.progress=80;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Озвучка готова',(run.productName||run.id)+' · '+voice.spoken.length+' сцен с речью');
       await writeAppState(data,accountId);
@@ -1773,6 +1893,7 @@ async function processRunGeneration(accountId,runId){
         'PREVIZ LOCK: используй превиз-кадры как композиционные anchors и реально разыграй заданное действие во времени. Не превращай сцену в статичную девушку, которая просто держит товар.',
         'PRODUCT LOCK: источник товара важнее previz при конфликте формы. Не менять силуэт, пропорции, крепёж, торцы, материал, цвет и ключевые детали.',
         'ENVIRONMENT: сохраняй ту же обжитую локацию и повторяющийся реквизит. Не делай пустой стерильный фон, если storyboard этого не требует.',
+        'SOUND: generate only natural diegetic room/action sounds for the scene (paper, fabric, kitchen/bathroom ambience, object handling as appropriate). NO generated speech, NO narration, NO random music; narration is added in post-production.',
         'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
       ].filter(Boolean).join('\n').slice(0,1000);
       let result=null,lastError=null,sceneQc=null;
@@ -1782,7 +1903,7 @@ async function processRunGeneration(accountId,runId){
         try{
           candidate=await generateHiggsfieldScene({
             accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
-            aspectRatio:'9:16',resolution:'720p',generateAudio:false
+            aspectRatio:'9:16',resolution:'720p',generateAudio:true
           });
           if(!(candidate?.ok&&candidate?.urls?.length)){
             lastError=new Error('Higgsfield не вернул готовое видео'+(candidate?.status?' · статус '+candidate.status:''));
@@ -1890,21 +2011,37 @@ async function createBatchRuns(payload,accountId){
   data.runs=Array.isArray(data.runs)?data.runs:[];
   const product=findProductInState(data,payload.productId||payload.productName);
   if(!product)throw new Error('Товар не найден');
+  const resolvedCharacter=resolveProductCharacter(data,product,payload);
+  const character=characterSnapshot(resolvedCharacter);
+  const productMedia=(Array.isArray(product.media)?product.media:[]).map(m=>({id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary})).filter(m=>m.url);
+  const basePayload={
+    ...payload,
+    productId:product.id,
+    productName:product.name,
+    productUtp:product.utp||'',
+    productRules:product.rules||'',
+    media:productMedia,
+    product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',media:productMedia,defaultCharacterId:product.defaultCharacterId||null},
+    characterId:character?.id||null,
+    character,
+    avatarReferences:character?.media||[],
+    characterSource:character?(String(payload.characterId||payload.character?.id||'')?'launch-selection':'product-default'):'none'
+  };
   const count=Math.max(1,Math.min(20,parseInt(payload.count)||1));
   const batchId=String(payload.batchId||factoryId('batch'));
   const created=[];
   for(let i=1;i<=count;i++){
     const run={
-      id:factoryId('r'),...payload,
-      accountId,batchId,productId:product.id,productName:product.name,
+      id:factoryId('r'),...basePayload,
+      accountId,batchId,
       variant:count>1?i:null,status:'В работе',stage:'Идея',progress:3,attempt:1,
       sceneCount:0,sceneVersions:{},acceptedScenes:[],
-      pipelineVersion:'previs-v1',idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,generationResult:null,
+      pipelineVersion:'previs-v2-audio',idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,generationResult:null,
       created:payload.created||new Date().toISOString(),updatedAt:new Date().toISOString()
     };
     data.runs.push(run);created.push(run);
   }
-  appendFactoryJournal(data,'Создан запуск',product.name+' · '+count+' ролик(а/ов) · '+(payload.mode==='manual'?'ручной режим':'автопилот'));
+  appendFactoryJournal(data,'Создан запуск',product.name+' · '+count+' ролик(а/ов) · '+(payload.mode==='manual'?'ручной режим':'автопилот')+(character?' · аватар '+character.name:''));
   await writeAppState(data,accountId);
 
   for(const run of created){
@@ -1914,7 +2051,7 @@ async function createBatchRuns(payload,accountId){
         const fresh=await readAppState(accountId),fd=fresh?.data||blankFactoryState(),rr=findRunById(fd,run.id);
         if(!rr)continue;
         rr.idea=idea;rr.status='На проверке';rr.stage='Идея';rr.progress=8;rr.awaitingApproval=true;rr.updatedAt=new Date().toISOString();
-        appendFactoryJournal(fd,'Идея готова',product.name+' · '+idea.title);
+        appendFactoryJournal(fd,'Идея готова',product.name+' · '+idea.title+(character?' · '+character.name:''));
         await writeAppState(fd,accountId);
       }catch(e){
         await saveRunPatch(accountId,run.id,{status:'Ошибка',stage:'Идея',error:'Ошибка идеи: '+String(e?.message||e)});
@@ -1932,9 +2069,13 @@ async function createIdeaDraft(body,accountId){
   const data=state?.data||blankFactoryState();
   const product=findProductInState(data,body.productId||body.product);
   if(!product)throw new Error('Товар не найден');
+  const resolvedCharacter=resolveProductCharacter(data,product,{});
+  const character=characterSnapshot(resolvedCharacter);
+  const productMedia=(product.media||[]);
   const payload={
     accountId,productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',
-    media:(product.media||[]),product:{id:product.id,name:product.name,utp:product.utp||'',rules:product.rules||'',media:(product.media||[])},
+    media:productMedia,product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',media:productMedia,defaultCharacterId:product.defaultCharacterId||null},
+    characterId:character?.id||null,character,avatarReferences:character?.media||[],characterSource:character?'product-default':'none',
     brief:String(body.brief||''),style:String(body.style||'UGC'),duration:String(body.duration||'30 сек'),
     format:'9:16',mode:'manual',modelMode:'Авто — умный выбор',budget:Number(body.budget)||500,maxAttempts:3,
     created:new Date().toISOString()
@@ -1942,12 +2083,13 @@ async function createIdeaDraft(body,accountId){
   const idea=await generateIdeaStage(payload,accountId,1);
   const fresh=await readAppState(accountId);
   const fd=fresh?.data||blankFactoryState();fd.runs=Array.isArray(fd.runs)?fd.runs:[];
-  const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),pipelineVersion:'previs-v1',status:'Черновик',stage:'Идея',progress:8,attempt:0,
+  const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),pipelineVersion:'previs-v2-audio',status:'Черновик',stage:'Идея',progress:8,attempt:0,
     idea,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,sceneCount:0,
     sceneVersions:{},acceptedScenes:[],generationResult:null,updatedAt:new Date().toISOString()};
-  fd.runs.push(run);appendFactoryJournal(fd,'Создана идея',product.name+' · '+idea.title);await writeAppState(fd,accountId);
+  fd.runs.push(run);appendFactoryJournal(fd,'Создана идея',product.name+' · '+idea.title+(character?' · аватар '+character.name:''));await writeAppState(fd,accountId);
   return run;
 }
+
 async function runControlAction(body,accountId){
   const runId=String(body?.runId||'');
   const action=String(body?.action||'');
