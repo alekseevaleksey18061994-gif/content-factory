@@ -89,7 +89,6 @@ $("#mobileMenuToggle")?.addEventListener("click",()=>setMobileDrawer(true));
 $("#mobileDrawerClose")?.addEventListener("click",()=>setMobileDrawer(false));
 $("#mobileDrawerBackdrop")?.addEventListener("click",()=>setMobileDrawer(false));
 document.addEventListener("keydown",e=>{if(e.key==="Escape")setMobileDrawer(false)});
-$$("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));
 document.addEventListener("click",e=>{
   const b=e.target.closest?.("[data-go]");
   if(!b||!b.dataset.go)return;
