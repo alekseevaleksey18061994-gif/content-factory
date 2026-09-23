@@ -1678,7 +1678,9 @@ function normalizeReferenceUrls(items=[]){
   return out;
 }
 
+let higgsfieldCreditBlockedUntil=0;
 async function generateHiggsfieldScene(body){
+  if(Date.now()<higgsfieldCreditBlockedUntil)throw new Error('Higgsfield: недостаточно кредитов, временно используем fallback');
   if(!higgsfieldConfigured()) throw new Error('Higgsfield API is not configured');
 
   const prompt=String(body?.prompt || '').trim();
@@ -1741,7 +1743,9 @@ async function generateHiggsfieldScene(body){
   if(!urls.length)console.warn('[higgsfield-shape] status='+hfStatus+' keys='+Object.keys(result||{}).join(','));
   const hfCompleted=Boolean(result?.isCompleted || hfStatus==='completed' || urls.length);
   if(!hfCompleted && ['failed','nsfw','canceled','cancelled'].includes(hfStatus)){
-    throw new Error('Higgsfield '+hfStatus+(result?.error?': '+String(result.error):''));
+    const hfError='Higgsfield '+hfStatus+(result?.error?': '+String(result.error):'');
+    if(/credit balance is too low|insufficient.*credit|low.*balance/i.test(hfError))higgsfieldCreditBlockedUntil=Date.now()+6*60*60*1000;
+    throw new Error(hfError);
   }
 
   const hfAccount=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
@@ -1791,7 +1795,7 @@ async function generateRunwayScene(body){
     const pending=client.imageToVideo.create({
       model,
       ...(refs[0]?{promptImage:refs[0]}:{}),
-      promptText:prompt,
+      promptText:prompt.slice(0,950),
       ratio,
       duration
     });
@@ -1812,6 +1816,7 @@ async function generateRunwayScene(body){
       model,
       duration,
       ratio,
+      promptChars:Math.min(prompt.length,950),
       urls:output.filter(x=>typeof x==='string'),
       raw:completed
     };
