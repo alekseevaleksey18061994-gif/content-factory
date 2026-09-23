@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=26" />
+  <link rel="stylesheet" href="/style.css?v=27" />
 </head>
 <body>
   <div class="shell">
@@ -228,8 +228,10 @@
             <div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов. Напиши задачу или спроси, что сейчас происходит в Content Factory.</p></div>
           </div>
           <form id="chatForm" class="chat-form">
+            <button class="chat-attach-btn" type="button" data-chat-attach aria-label="Прикрепить фото или файл">＋</button>
             <textarea id="chatInput" rows="3" placeholder="Например: какие ролики сейчас в работе?"></textarea>
             <button class="btn primary" type="submit">Отправить</button>
+            <div class="chat-attachment-draft"></div>
           </form>
         </section>
       </section>
@@ -280,10 +282,13 @@
   </div>
 
   <form class="mobile-chat-dock" id="mobileChatDock" autocomplete="off">
+    <button class="mobile-chat-attach" type="button" data-chat-attach aria-label="Прикрепить фото или файл">＋</button>
     <input id="mobileChatInput" type="text" inputmode="text" placeholder="Спросить ChatGPT…" aria-label="Сообщение ChatGPT" />
     <button class="mobile-chat-dock-icon" id="mobileChatDockOpen" type="button" aria-label="Открыть ChatGPT"><span>✦</span><b>GPT</b></button>
     <button class="mobile-chat-dock-send" type="submit" aria-label="Отправить">↑</button>
+    <div class="chat-attachment-draft mobile-chat-attachment-draft"></div>
   </form>
+  <input id="chatFileInput" type="file" multiple hidden accept="image/jpeg,image/png,image/webp,image/gif,.pdf,.txt,.csv,.json,.md,.doc,.docx,.xls,.xlsx,.ppt,.pptx" />
 
   <button class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" type="button" aria-label="Закрыть меню"></button>
 
@@ -362,6 +367,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=25"></script>
+  <script src="/app.js?v=27"></script>
 </body>
 </html>
