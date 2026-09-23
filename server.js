@@ -1091,7 +1091,6 @@ function previsRefsForFrame(run,frame,done=[]){
   const hasAvatarAnchor=done.some(x=>x?.avatarInFrame&&x?.url);
   if(frame.productInFrame&&!hasProductAnchor&&identity.product)urls.push(identity.product);
   if(frame.avatarInFrame&&!hasAvatarAnchor&&identity.avatar)urls.push(identity.avatar);
-  if(!done.length&&identity.product)urls.push(identity.product);
   return [...new Set(urls.filter(Boolean))].slice(0,3);
 }
 async function generatePrevisImage(accountId,run,frame,referenceUrls=[]){
@@ -1564,8 +1563,9 @@ async function processRunGeneration(accountId,runId){
         'Сцена '+sceneNo+': '+String(scene.title||''),
         'Кадр: '+String(scene.shot||''),
         'Действие: '+String(scene.action||''),
-        String(scene.prompt||''),
-        'Сохраняй реальный внешний вид товара по референсам. Не меняй форму, цвет и рисунок товара. Без случайных надписей и логотипов.'
+        String(scene.promptEn||scene.prompt||''),
+        'Главные визуальные anchors этой видеосцены — уже сгенерированные превиз-кадры. Следуй их композиции, персонажу, товару и continuity; исходные фото товара не должны заставлять сцену повторять один и тот же ракурс.',
+        'Сохраняй реальный внешний вид товара. Не меняй форму, цвет и рисунок товара. Без случайных надписей и логотипов.'
       ].filter(Boolean).join('\n');
       let result=null,lastError=null;
       const maxAttempts=Math.max(1,Math.min(2,Number(run.maxAttempts)||1));
