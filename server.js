@@ -63,37 +63,110 @@ function supabaseHeaders(extra={}){
   };
 }
 
-async function readAppState(){
+const DEFAULT_ACCOUNT_ID='main';
+const ACCOUNTS_REGISTRY_ID='accounts_registry';
+
+function sanitizeAccountId(value){
+  const raw=String(value||DEFAULT_ACCOUNT_ID).trim();
+  if(raw===DEFAULT_ACCOUNT_ID) return DEFAULT_ACCOUNT_ID;
+  const safe=raw.replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  return safe||DEFAULT_ACCOUNT_ID;
+}
+
+function accountStateRowId(accountId=DEFAULT_ACCOUNT_ID){
+  const id=sanitizeAccountId(accountId);
+  return id===DEFAULT_ACCOUNT_ID ? 'main' : 'account_'+id;
+}
+
+async function readStateRow(rowId){
   if(!supabaseConfigured()) return {configured:false,data:null};
   const base=process.env.SUPABASE_URL.replace(/\/$/,'');
-  const r=await fetch(`${base}/rest/v1/app_state?id=eq.main&select=data,updated_at&limit=1`,{
+  const r=await fetch(base+'/rest/v1/app_state?id=eq.'+encodeURIComponent(rowId)+'&select=data,updated_at&limit=1',{
     headers:supabaseHeaders()
   });
   if(!r.ok){
     const detail=await r.text();
-    throw new Error(`Supabase read failed: ${r.status} ${detail}`);
+    throw new Error('Supabase read failed: '+r.status+' '+detail);
   }
   const rows=await r.json();
-  return {
-    configured:true,
-    data:rows?.[0]?.data ?? null,
-    updatedAt:rows?.[0]?.updated_at ?? null
-  };
+  return {configured:true,data:rows?.[0]?.data??null,updatedAt:rows?.[0]?.updated_at??null};
 }
 
-async function writeAppState(data){
+async function writeStateRow(rowId,data){
   if(!supabaseConfigured()) return {configured:false};
   const base=process.env.SUPABASE_URL.replace(/\/$/,'');
-  const r=await fetch(`${base}/rest/v1/app_state?on_conflict=id`,{
+  const r=await fetch(base+'/rest/v1/app_state?on_conflict=id',{
     method:'POST',
     headers:supabaseHeaders({'prefer':'resolution=merge-duplicates,return=minimal'}),
-    body:JSON.stringify([{id:'main',data,updated_at:new Date().toISOString()}])
+    body:JSON.stringify([{id:rowId,data,updated_at:new Date().toISOString()}])
   });
   if(!r.ok){
     const detail=await r.text();
-    throw new Error(`Supabase write failed: ${r.status} ${detail}`);
+    throw new Error('Supabase write failed: '+r.status+' '+detail);
   }
   return {configured:true};
+}
+
+async function deleteStateRow(rowId){
+  if(!supabaseConfigured()) return {configured:false};
+  const base=process.env.SUPABASE_URL.replace(/\/$/,'');
+  const r=await fetch(base+'/rest/v1/app_state?id=eq.'+encodeURIComponent(rowId),{
+    method:'DELETE',
+    headers:supabaseHeaders({'prefer':'return=minimal'})
+  });
+  if(!r.ok){
+    const detail=await r.text();
+    throw new Error('Supabase delete failed: '+r.status+' '+detail);
+  }
+  return {configured:true};
+}
+
+async function readAppState(accountId=DEFAULT_ACCOUNT_ID){
+  return readStateRow(accountStateRowId(accountId));
+}
+
+async function writeAppState(data,accountId=DEFAULT_ACCOUNT_ID){
+  return writeStateRow(accountStateRowId(accountId),data);
+}
+
+function blankFactoryState(){
+  return {
+    version:1,
+    products:[],
+    runs:[],
+    campaigns:[],
+    scripts:[],
+    characters:[],
+    journal:[],
+    settings:{mode:'auto',budgetCampaign:5000,budgetAttempts:3,budgetApproval:100}
+  };
+}
+
+async function ensureAccountsRegistry(){
+  const row=await readStateRow(ACCOUNTS_REGISTRY_ID);
+  if(row.data?.accounts?.length) return row.data;
+  const registry={
+    version:1,
+    accounts:[{
+      id:DEFAULT_ACCOUNT_ID,
+      name:'Основной аккаунт',
+      owner:'Алексей',
+      company:'',
+      email:'',
+      phone:'',
+      notes:'',
+      createdAt:new Date().toISOString()
+    }]
+  };
+  await writeStateRow(ACCOUNTS_REGISTRY_ID,registry);
+  return registry;
+}
+
+async function writeAccountsRegistry(registry){
+  registry.version=1;
+  registry.accounts=Array.isArray(registry.accounts)?registry.accounts:[];
+  await writeStateRow(ACCOUNTS_REGISTRY_ID,registry);
+  return registry;
 }
 
 async function callProductMedia(payload){
@@ -369,8 +442,9 @@ const factoryTools=[
   }
 ];
 
-async function executeFactoryTool(name,args={}){
-  const state=await readAppState();
+async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
+  accountId=sanitizeAccountId(accountId);
+  const state=await readAppState(accountId);
   const data=state?.data && typeof state.data==='object' ? state.data : {
     version:1,products:[],runs:[],campaigns:[],scripts:[],characters:[],journal:[],settings:{}
   };
@@ -396,7 +470,7 @@ async function executeFactoryTool(name,args={}){
     if(args.budgetAttempts!==undefined) data.settings.budgetAttempts=Math.round(clampNumber(args.budgetAttempts,1,10,data.settings.budgetAttempts||3));
     if(args.budgetApproval!==undefined) data.settings.budgetApproval=clampNumber(args.budgetApproval,0,1000000,data.settings.budgetApproval||100);
     appendFactoryJournal(data,'ChatGPT изменил настройки','Режим: '+(data.settings.mode||'auto')+' · бюджет кампании: '+(data.settings.budgetCampaign||0)+' ₽');
-    await writeAppState(data);
+    await writeAppState(data,accountId);
     return {ok:true,settings:data.settings};
   }
 
@@ -414,7 +488,7 @@ async function executeFactoryTool(name,args={}){
     };
     data.campaigns.push(campaign);
     appendFactoryJournal(data,'ChatGPT создал кампанию',campaign.name+' · '+product.name);
-    await writeAppState(data);
+    await writeAppState(data,accountId);
     return {ok:true,campaign,product:{id:product.id,name:product.name}};
   }
 
@@ -429,7 +503,7 @@ async function executeFactoryTool(name,args={}){
     };
     data.scripts.push(script);
     appendFactoryJournal(data,'ChatGPT добавил сценарий',script.title);
-    await writeAppState(data);
+    await writeAppState(data,accountId);
     return {ok:true,script};
   }
 
@@ -441,7 +515,7 @@ async function executeFactoryTool(name,args={}){
       if(args[k]!==undefined && String(args[k]).trim()) product[k]=String(args[k]).trim().slice(0,k==='rules'||k==='utp'?12000:1000);
     }
     appendFactoryJournal(data,'ChatGPT изменил товар',product.name);
-    await writeAppState(data);
+    await writeAppState(data,accountId);
     return {ok:true,product:{id:product.id,name:product.name,category:product.category,utp:product.utp,rules:product.rules,masterStyle:product.masterStyle}};
   }
 
@@ -460,6 +534,7 @@ async function executeFactoryTool(name,args={}){
     const media=(product.media||[]).map(m=>({id:m.id,url:m.url,path:m.path,isPrimary:!!m.isPrimary}));
     const payload={
       action:'create_batch',
+      accountId,
       batchId,
       productId:product.id,
       productName:product.name,
@@ -497,7 +572,7 @@ async function executeFactoryTool(name,args={}){
       });
     }
     appendFactoryJournal(data,'ChatGPT запустил производство',product.name+' · '+count+' ролик(а/ов) · '+style);
-    await writeAppState(data);
+    await writeAppState(data,accountId);
     return {ok:true,batchId,count,product:product.name,style,duration,budget,dispatch:dispatched.data};
   }
 
@@ -516,7 +591,7 @@ async function executeFactoryTool(name,args={}){
     }
     if(changed){
       appendFactoryJournal(data,'ChatGPT перезапустил ошибки','Запусков: '+changed);
-      await writeAppState(data);
+      await writeAppState(data,accountId);
     }
     return {ok:true,retried:changed};
   }
@@ -529,7 +604,7 @@ async function executeFactoryTool(name,args={}){
     run.progress=100;
     run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'ChatGPT утвердил ролик',run.productName||run.id);
-    await writeAppState(data);
+    await writeAppState(data,accountId);
     return {ok:true,run:{id:run.id,productName:run.productName,status:run.status}};
   }
 
@@ -541,7 +616,7 @@ async function executeFactoryTool(name,args={}){
     }
     data.runs=data.runs.filter(x=>x.id!==run.id);
     appendFactoryJournal(data,'ChatGPT удалил запуск',(run.productName||'Ролик')+' · '+run.id);
-    await writeAppState(data);
+    await writeAppState(data,accountId);
     return {ok:true,deleted:{id:run.id,productName:run.productName}};
   }
 
@@ -563,13 +638,14 @@ async function executeFactoryTool(name,args={}){
   return {ok:false,error:'Неизвестный инструмент: '+name};
 }
 
-async function callOpenAIChat(message,history=[]){
+async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
   if(!openaiConfigured()) throw new Error('OpenAI API is not configured');
   const safeHistory=(Array.isArray(history)?history:[]).slice(-12).map(x=>({
     role:x?.role==='assistant'?'assistant':'user',
     content:String(x?.content||'').slice(0,8000)
   }));
-  const state=await readAppState().catch(()=>({data:null}));
+  accountId=sanitizeAccountId(accountId);
+  const state=await readAppState(accountId).catch(()=>({data:null}));
   const snapshot=state?.data||{};
   const context={
     products:(snapshot.products||[]).map(p=>({id:p.id,name:p.name,category:p.category,utp:p.utp,rules:p.rules,mediaCount:(p.media||[]).length})),
@@ -616,7 +692,7 @@ async function callOpenAIChat(message,history=[]){
       let args={};
       try{args=call.arguments?JSON.parse(call.arguments):{}}catch{}
       let result;
-      try{result=await executeFactoryTool(call.name,args)}
+      try{result=await executeFactoryTool(call.name,args,accountId)}
       catch(e){result={ok:false,error:String(e?.message||e)}}
       actions.push({name:call.name,args,result});
       outputs.push({type:'function_call_output',call_id:call.call_id,output:JSON.stringify(result)});
@@ -812,7 +888,8 @@ async function descriptAgent(body){
 
 async function applyGenerationCallback(body){
   if(!supabaseConfigured()) throw new Error('Server database is not configured');
-  const state=await readAppState();
+  const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+  const state=await readAppState(accountId);
   const data=state.data || {};
   const runs=Array.isArray(data.runs)?data.runs:[];
   const batchId=body?.batchId || body?.jobId || null;
@@ -831,8 +908,8 @@ async function applyGenerationCallback(body){
     }
   }
   data.runs=runs;
-  await writeAppState(data);
-  return {matched};
+  await writeAppState(data,accountId);
+  return {matched,accountId};
 }
 
 const server=http.createServer(async(req,res)=>{
@@ -955,13 +1032,81 @@ const server=http.createServer(async(req,res)=>{
     },details});
   }
 
+  if(url.pathname==='/api/accounts' && req.method==='GET'){
+    try{
+      const registry=await ensureAccountsRegistry();
+      return json(res,200,{ok:true,accounts:registry.accounts||[]});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось загрузить аккаунты.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/accounts' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const registry=await ensureAccountsRegistry();
+      const id='acc_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7);
+      const account={
+        id,
+        name:String(body?.name||'Новый аккаунт').trim().slice(0,120)||'Новый аккаунт',
+        owner:String(body?.owner||'').trim().slice(0,160),
+        company:String(body?.company||'').trim().slice(0,200),
+        email:String(body?.email||'').trim().slice(0,240),
+        phone:String(body?.phone||'').trim().slice(0,80),
+        notes:String(body?.notes||'').trim().slice(0,5000),
+        createdAt:new Date().toISOString()
+      };
+      registry.accounts.push(account);
+      await writeAccountsRegistry(registry);
+      await writeAppState(blankFactoryState(),id);
+      return json(res,201,{ok:true,account});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось создать аккаунт.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/accounts' && req.method==='PUT'){
+    try{
+      const body=await readBody(req);
+      const id=sanitizeAccountId(body?.id||url.searchParams.get('id')||'');
+      const registry=await ensureAccountsRegistry();
+      const account=registry.accounts.find(x=>x.id===id);
+      if(!account) return json(res,404,{ok:false,error:'Аккаунт не найден'});
+      for(const key of ['name','owner','company','email','phone','notes']){
+        if(body?.[key]!==undefined) account[key]=String(body[key]||'').trim().slice(0,key==='notes'?5000:240);
+      }
+      if(!account.name) account.name='Аккаунт';
+      account.updatedAt=new Date().toISOString();
+      await writeAccountsRegistry(registry);
+      return json(res,200,{ok:true,account});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось сохранить аккаунт.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/accounts' && req.method==='DELETE'){
+    try{
+      const id=sanitizeAccountId(url.searchParams.get('id')||'');
+      if(id===DEFAULT_ACCOUNT_ID) return json(res,400,{ok:false,error:'Основной аккаунт нельзя удалить.'});
+      const registry=await ensureAccountsRegistry();
+      if(!registry.accounts.some(x=>x.id===id)) return json(res,404,{ok:false,error:'Аккаунт не найден'});
+      registry.accounts=registry.accounts.filter(x=>x.id!==id);
+      await writeAccountsRegistry(registry);
+      await deleteStateRow(accountStateRowId(id));
+      return json(res,200,{ok:true,deletedId:id});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось удалить аккаунт.',detail:String(e?.message||e)});
+    }
+  }
+
   if(url.pathname==='/api/state' && req.method==='GET'){
     if(!supabaseConfigured()){
       return json(res,503,{ok:false,configured:false,error:'Серверная база ещё не подключена.'});
     }
     try{
-      const state=await readAppState();
-      return json(res,200,{ok:true,...state});
+      const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId);
+      return json(res,200,{ok:true,accountId,...state});
     }catch(e){
       return json(res,502,{ok:false,configured:true,error:'Не удалось прочитать серверное состояние.',detail:String(e?.message||e)});
     }
@@ -974,7 +1119,7 @@ const server=http.createServer(async(req,res)=>{
     try{
       const body=await readBody(req);
       const data=body?.data ?? body;
-      await writeAppState(data);
+      await writeAppState(data,accountId);
       return json(res,200,{ok:true,configured:true,savedAt:new Date().toISOString()});
     }catch(e){
       return json(res,502,{ok:false,configured:true,error:'Не удалось сохранить серверное состояние.',detail:String(e?.message||e)});
@@ -1072,7 +1217,8 @@ const server=http.createServer(async(req,res)=>{
       const body=await readBody(req);
       const message=String(body?.message||'').trim();
       if(!message) return json(res,400,{ok:false,error:'Пустое сообщение'});
-      const result=await callOpenAIChat(message,body?.history||[]);
+      const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      const result=await callOpenAIChat(message,body?.history||[],accountId);
       return json(res,200,{ok:true,...result});
     }catch(e){
       return json(res,502,{ok:false,error:'OpenAI chat failed',detail:String(e?.message||e)});
