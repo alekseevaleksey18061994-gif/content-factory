@@ -1141,7 +1141,8 @@ async function currentUsdRubRate(){
   const r=await fetch('https://www.cbr.ru/scripts/XML_daily.asp',{headers:{'user-agent':'ContentFactory/1.5'}});
   const xml=await r.text();
   if(!r.ok)throw new Error('CBR rate error '+r.status);
-  const block=(xml.match(/<Valute[^>]*>[\s\S]*?<CharCode>USD<\/CharCode>[\s\S]*?<\/Valute>/i)||[])[0]||'';
+  const blocks=[...xml.matchAll(/<Valute\b[^>]*>[\s\S]*?<\/Valute>/gi)].map(m=>m[0]);
+  const block=blocks.find(v=>/<CharCode>USD<\/CharCode>/i.test(v))||'';
   const nominal=Number((block.match(/<Nominal>([^<]+)<\/Nominal>/i)||[])[1]||1);
   const raw=(block.match(/<Value>([^<]+)<\/Value>/i)||[])[1]||'';
   const value=Number(String(raw).replace(',','.'));
