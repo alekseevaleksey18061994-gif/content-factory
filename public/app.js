@@ -200,11 +200,11 @@ function renderIdeas(){
   const items=runs.filter(r=>r.idea).slice().reverse();
   list.innerHTML=items.length?items.map(r=>{
     const idea=r.idea||{};
-    return '<article class="idea-card"><div><span class="kicker">'+esc(r.status==="Черновик"?"ЧЕРНОВИК":"РОЛИК")+'</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Хук</b><span>'+esc(idea.hook||"—")+'</span></div></div><div class="idea-actions"><button class="secondary" onclick="openRun(\''+r.id+'\')">Открыть</button><button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\'Идея\')">↻ Переделать</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'start\')">'+(r.status==="Черновик"?"▶ Запустить":"▶ Продолжить")+'</button></div></article>';
+    return '<article class="idea-card"><div><span class="kicker">'+esc(r.status==="Черновик"?"ЧЕРНОВИК":"РОЛИК")+'</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Первые 3 секунды</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div>'+(idea.mechanic?'<div class="idea-hook"><b>Механика</b><span>'+esc(idea.mechanic)+'</span></div>':'')+'</div><div class="idea-actions"><button class="secondary" onclick="openStageDetail(\''+r.id+'\',\'Идея\')">Открыть идею</button><button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\'Идея\')">↻ Другая идея</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'start\')">'+(r.status==="Черновик"?"▶ В сценарий":"▶ Продолжить")+'</button></div></article>';
   }).join(""):'<div class="empty">Идей пока нет. Выбери товар и нажми «Сгенерировать идею».</div>';
 }
 $("#generateIdeaBtn")?.addEventListener("click",async()=>{
-  const btn=$("#generateIdeaBtn"),status=$("#ideaStatus");btn.disabled=true;status.textContent="Генерирую идею, сценарий и storyboard…";
+  const btn=$("#generateIdeaBtn"),status=$("#ideaStatus");btn.disabled=true;status.textContent="Ищу 8 разных механик и выбираю сильнейшую идею…";
   try{
     const r=await fetch("/api/ideas/generate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       accountId:activeAccountId,productId:$("#ideaProduct")?.value||"",style:$("#ideaStyle")?.value||"UGC",brief:$("#ideaBrief")?.value.trim()||""
@@ -303,7 +303,26 @@ let runStageOpen="";
 function stageReportHtml(r,stage){
   const idea=r.idea||{},script=r.script||{},refs=r.references||{},board=Array.isArray(r.storyboard)?r.storyboard:[];
   let body='';
-  if(stage==="Идея")body='<div class="artifact-grid"><div><small>Концепция</small><h3>'+esc(idea.title||"Идея ещё не создана")+'</h3><p>'+esc(idea.concept||"")+'</p></div><div><small>Хук</small><p>'+esc(idea.hook||"—")+'</p><small>Угол подачи</small><p>'+esc(idea.angle||"—")+'</p><small>Почему должно сработать</small><p>'+esc(idea.why||"—")+'</p></div></div>';
+  if(stage==="Идея"){
+    const alternatives=Array.isArray(idea.alternatives)?idea.alternatives:[];
+    body='<div class="idea-master-report">'+
+      '<div class="idea-master-hero"><span class="kicker">ВЫБРАННАЯ ИДЕЯ</span><h3>'+esc(idea.title||"Идея ещё не создана")+'</h3><p>'+esc(idea.concept||"")+'</p></div>'+
+      '<div class="idea-master-grid">'+
+        '<div><small>Целевая аудитория</small><p>'+esc(idea.audience||"—")+'</p></div>'+
+        '<div><small>Хук</small><p>'+esc(idea.hook||"—")+'</p></div>'+
+        '<div><small>Первые 3 секунды</small><p>'+esc(idea.first3Seconds||"—")+'</p></div>'+
+        '<div><small>Механика</small><p>'+esc(idea.mechanic||"—")+'</p></div>'+
+        '<div><small>Роль товара</small><p>'+esc(idea.productRole||"—")+'</p></div>'+
+        '<div><small>Что удерживает</small><p>'+esc(idea.retention||"—")+'</p></div>'+
+        '<div><small>Финальный payoff</small><p>'+esc(idea.payoff||"—")+'</p></div>'+
+        '<div><small>Угол подачи</small><p>'+esc(idea.angle||"—")+'</p></div>'+
+        '<div><small>CTA</small><p>'+esc(idea.ctaDirection||"—")+'</p></div>'+
+        '<div><small>Сложность</small><p>'+esc(idea.production||"—")+'</p></div>'+
+      '</div>'+
+      '<div class="idea-why"><small>Почему эта идея выбрана</small><p>'+esc(idea.why||"—")+'</p></div>'+
+      (alternatives.length?'<div class="idea-alt-wrap"><h3>Запасные идеи</h3><div class="idea-alt-list">'+alternatives.map((x,i)=>'<article><span>'+String(i+1)+'</span><div><b>'+esc(x.title||"Вариант")+'</b><small>'+esc(x.hook||"")+'</small><p>'+esc(x.concept||"")+'</p></div></article>').join("")+'</div></div>':'')+
+    '</div>';
+  }
   else if(stage==="Сценарий"){
     const scriptScenes=Array.isArray(script.scenes)&&script.scenes.length?script.scenes:board.map((x,i)=>({
       scene:i+1,time:x.duration||"",visual:[x.shot,x.action].filter(Boolean).join(" — "),
