@@ -1603,3 +1603,22 @@ html,body,button,input,select,textarea{
   .production-flow-head h2{font-size:19px}
   .script-summary{grid-template-columns:1fr}
 }
+
+
+/* v45: final review after montage */
+.final-review-panel{scroll-margin-top:130px}
+.final-review-panel video{
+  width:100%;max-height:680px;aspect-ratio:9/16;object-fit:contain;
+  border-radius:16px;background:#07121d;display:block
+}
+.final-qc-summary{
+  margin-top:12px;padding:13px 14px;border:1px solid #d7e6ed;border-radius:14px;background:#f8fcfe;color:#263b54
+}
+.final-qc-summary b{font-size:13px}
+.final-qc-summary p{margin:6px 0 0;line-height:1.5;color:#52667e}
+.final-qc-summary ul{margin:8px 0 0;padding-left:18px;color:#52667e}
+.final-review-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
+@media(max-width:820px){
+  .final-review-panel video{max-height:72vh}
+  .final-review-actions>*{width:100%}
+}
