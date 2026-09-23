@@ -14,7 +14,7 @@ let activeAccountId=load("cf_active_account","main"),accounts=[];
 const accountLocalKey=key=>activeAccountId==="main"?key:key+"__"+activeAccountId;
 const chatLocalKey=()=>activeAccountId==="main"?"cf_chat_history":"cf_chat_history__"+activeAccountId;
 let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
-let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto";
+let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto",editingProductId=null;
 const ST=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];
 const prod=id=>products.find(x=>x.id===id),camp=id=>campaigns.find(x=>x.id===id);
 const pname=r=>prod(r.productId)?.name||r.productName||"Удалённый товар";
@@ -384,10 +384,108 @@ $("#retryFailed").onclick=()=>{let n=0;runs.forEach(r=>{if(r.status==="Ошиб�
 function renderProducts(){$("#productsGrid").innerHTML=products.length?products.map(p=>'<article class="catalog-card">'+productThumb(p)+'<h3>'+esc(p.name)+'</h3><p>'+esc(p.category||"Товар")+'</p><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+p.id+'\')">Создать ролик</button><button class="secondary" onclick="openProduct(\''+p.id+'\')">Паспорт</button><button class="danger-btn" onclick="deleteProduct(\''+p.id+'\')">Удалить</button></div></article>').join(""):'<div class="empty">Товаров пока нет.</div>'}
 window.deleteProduct=async id=>{const p=prod(id);if(!p||!confirm('Удалить товар «'+p.name+'»?'))return;const all=confirm("Удалить также все ролики и историю этого товара?\n\nOK — удалить всё\nОтмена — сохранить историю роликов");for(const m of (p.media||[])){try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:m.path})})}catch{}}if(!all)runs.forEach(r=>{if(r.productId===id)r.productName=p.name});products=products.filter(x=>x.id!==id);if(all)runs=runs.filter(r=>r.productId!==id);campaigns=campaigns.filter(c=>c.productId!==id);selectedProductId=products[0]?.id||null;log("Удалён товар",p.name+(all?" вместе с историей":" — история сохранена"));persist();go("products")};
 function mediaGallery(p){const media=Array.isArray(p.media)?p.media:[];return '<div class="media-toolbar"><div><b>Фотографии товара</b><small>Фото задают identity товара: форму, цвет и детали. После первых превиз-кадров основой становятся уже сгенерированные кадры.</small></div><input id="mediaUploadInput" type="file" accept="image/*" multiple hidden onchange="uploadExistingPhotos(event,\''+p.id+'\')"><button class="btn primary" onclick="document.getElementById(\'mediaUploadInput\').click()">＋ Добавить фото</button></div><div id="mediaStatus" class="message"></div>'+(media.length?'<div class="media-grid">'+media.map(m=>'<article class="media-card '+(m.isPrimary?"primary-media":"")+'"><div class="media-image"><img src="'+esc(m.url)+'" alt="'+esc(p.name)+'">'+(m.isPrimary?'<span class="media-primary-badge">Главное</span>':'')+'</div><div class="media-file">'+esc(m.fileName||"Фото")+'</div><div class="media-actions">'+(!m.isPrimary?'<button class="tiny-btn" onclick="makePrimaryMedia(\''+p.id+'\',\''+m.id+'\')">★ Главное</button>':'<span class="tiny-ok">★ Эталон</span>')+'<button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url)+'\',\''+esc(m.fileName||"product-photo.jpg")+'\')">↓ Скачать</button><button class="tiny-btn danger-mini" onclick="deleteProductMedia(\''+p.id+'\',\''+m.id+'\')">Удалить</button></div></article>').join("")+'</div>':'<div class="media-empty"><span>▧</span><b>Фото ещё нет</b><small>Добавь реальные фотографии товара с нескольких ракурсов.</small><button class="secondary" onclick="document.getElementById(\'mediaUploadInput\').click()">Выбрать фото</button></div>')}
-function renderProductDetail(){const p=prod(selectedProductId)||products[0];if(!p){$("#productDetailBody").innerHTML='<div class="empty">Добавь первый товар.</div>';return}const rr=runs.filter(r=>r.productId===p.id).reverse();$("#productDetailBody").innerHTML='<section class="panel detail-hero">'+productThumb(p)+'<div><span class="kicker">ПАСПОРТ ТОВАРА</span><h1>'+esc(p.name)+'</h1><p class="muted">'+esc(p.category||"Товар")+'</p><div class="detail-chips"><span class="chip">Фото: '+((p.media||[]).length)+'</span><span class="chip">Роликов: '+rr.length+'</span><span class="chip">Кампаний: '+campaigns.filter(c=>c.productId===p.id).length+'</span></div><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+p.id+'\')">＋ Создать ролик</button><button class="danger-btn" onclick="deleteProduct(\''+p.id+'\')">Удалить</button></div></div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">▧</span><h2>Медиа товара</h2><p>Оригинальные фото становятся эталонами для генерации</p></div></div>'+mediaGallery(p)+'</section><section class="panel"><div class="panel-title"><div><span class="mini-icon">▣</span><h2>Паспорт</h2><p>Что система обязана помнить</p></div></div><div class="passport-grid"><div class="passport-block"><h3>УТП</h3><p>'+esc(p.utp||"Не заполнено")+'</p></div><div class="passport-block"><h3>Мастер-стиль</h3><p>'+esc(p.masterStyle||"Не выбран")+'</p></div><div class="passport-block"><h3>Защита товара</h3><div class="lock-list">'+String(p.rules||"Не менять реальный внешний вид товара.").split(/\n|\./).filter(Boolean).map(x=>'<div class="lock-row"><span>🔒</span><div>'+esc(x.trim())+'</div></div>').join("")+'</div></div><div class="passport-block"><h3>AI-аватар товара</h3><select onchange="setProductDefaultCharacter(\''+p.id+'\',this.value)">'+characterOptions(p.defaultCharacterId||"","Без привязки")+'</select><p>'+(productCharacter(p)?'По умолчанию идеи, сценарии, storyboard, превиз, видео и озвучка создаются под аватара «'+esc(productCharacter(p).name)+'». Старые запуски сохраняют свой снимок аватара.':'Аватар не привязан. При запуске можно выбрать его вручную.')+'</p></div><div class="passport-block"><h3>AI-identity</h3><p>'+(primaryMedia(p)?"Фото товара закреплены как контроль внешности. Они не должны быть главным anchor каждого кадра.":"Добавь фото товара, чтобы AI понимал его реальный внешний вид.")+'</p></div></div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">⌁</span><h2>История производства</h2></div></div><div class="runs-list">'+(rr.length?rr.slice(0,8).map(rrow).join(""):'<div class="empty">Роликов ещё нет.</div>')+'</div></section>'}
+function renderProductDetail(){const p=prod(selectedProductId)||products[0];if(!p){$("#productDetailBody").innerHTML='<div class="empty">Добавь первый товар.</div>';return}const rr=runs.filter(r=>r.productId===p.id).reverse();$("#productDetailBody").innerHTML='<section class="panel detail-hero">'+productThumb(p)+'<div><span class="kicker">ПАСПОРТ ТОВАРА</span><h1>'+esc(p.name)+'</h1><p class="muted">'+esc(p.category||"Товар")+'</p><div class="detail-chips"><span class="chip">Фото: '+((p.media||[]).length)+'</span><span class="chip">Роликов: '+rr.length+'</span><span class="chip">Кампаний: '+campaigns.filter(c=>c.productId===p.id).length+'</span></div><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+p.id+'\')">＋ Создать ролик</button><button class="secondary" onclick="openProductEditor(\''+p.id+'\')">✎ Редактировать</button><button class="danger-btn" onclick="deleteProduct(\''+p.id+'\')">Удалить</button></div></div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">▧</span><h2>Медиа товара</h2><p>Оригинальные фото становятся эталонами для генерации</p></div></div>'+mediaGallery(p)+'</section><section class="panel"><div class="panel-title"><div><span class="mini-icon">▣</span><h2>Паспорт</h2><p>Что система обязана помнить</p></div></div><div class="passport-grid"><div class="passport-block"><h3>УТП</h3><p>'+esc(p.utp||"Не заполнено")+'</p></div><div class="passport-block"><h3>Мастер-стиль</h3><p>'+esc(p.masterStyle||"Не выбран")+'</p></div><div class="passport-block"><h3>Защита товара</h3><div class="lock-list">'+String(p.rules||"Не менять реальный внешний вид товара.").split(/\n|\./).filter(Boolean).map(x=>'<div class="lock-row"><span>🔒</span><div>'+esc(x.trim())+'</div></div>').join("")+'</div></div><div class="passport-block"><h3>AI-аватар товара</h3><select onchange="setProductDefaultCharacter(\''+p.id+'\',this.value)">'+characterOptions(p.defaultCharacterId||"","Без привязки")+'</select><p>'+(productCharacter(p)?'По умолчанию идеи, сценарии, storyboard, превиз, видео и озвучка создаются под аватара «'+esc(productCharacter(p).name)+'». Старые запуски сохраняют свой снимок аватара.':'Аватар не привязан. При запуске можно выбрать его вручную.')+'</p></div><div class="passport-block"><h3>AI-identity</h3><p>'+(primaryMedia(p)?"Фото товара закреплены как контроль внешности. Они не должны быть главным anchor каждого кадра.":"Добавь фото товара, чтобы AI понимал его реальный внешний вид.")+'</p></div></div></section><section class="panel"><div class="panel-title"><div><span class="mini-icon">⌁</span><h2>История производства</h2></div></div><div class="runs-list">'+(rr.length?rr.slice(0,8).map(rrow).join(""):'<div class="empty">Роликов ещё нет.</div>')+'</div></section>'}
 window.openProduct=id=>{selectedProductId=id;renderProductDetail();go("productDetail")};
-$("#addProduct").onclick=()=>{opts();if($("#newProductCharacter"))$("#newProductCharacter").value="";if($("#saveProductMsg"))$("#saveProductMsg").textContent="";openM("productModal")};
-$("#saveProduct").onclick=async()=>{const n=$("#newProductName").value.trim();if(!n)return;const btn=$("#saveProduct"),msg=$("#saveProductMsg"),files=[...($("#newProductImages")?.files||[])];btn.disabled=true;msg.textContent="Сохраняю товар…";const p={id:uid("p"),name:n,category:$("#newProductCategory").value.trim()||"Товар",icon:"◆",tag:"Новый",utp:$("#newProductUtp").value.trim(),rules:$("#newProductRules").value.trim(),defaultCharacterId:$("#newProductCharacter")?.value||null,masterStyle:"Не выбран",media:[]};products.push(p);selectedProductId=p.id;log("Добавлен товар",n);saveLocalState();renderAll();if(files.length)await uploadPhotos(p.id,files,msg);persist();["newProductName","newProductCategory","newProductUtp","newProductRules"].forEach(id=>$("#"+id).value="");if($("#newProductCharacter"))$("#newProductCharacter").value="";if($("#newProductImages"))$("#newProductImages").value="";btn.disabled=false;msg.textContent=files.length?"Товар и фотографии сохранены.":"Товар сохранён.";setTimeout(()=>{closeM("productModal");openProduct(p.id)},500)};
+function resetProductModal(){
+  editingProductId=null;
+  opts();
+  ["newProductName","newProductCategory","newProductUtp","newProductRules"].forEach(id=>{const el=$("#"+id);if(el)el.value=""});
+  if($("#newProductCharacter"))$("#newProductCharacter").value="";
+  if($("#newProductImages"))$("#newProductImages").value="";
+  const modal=$("#productModal");
+  if(modal){
+    const kicker=modal.querySelector(".kicker"),title=modal.querySelector("h2");
+    if(kicker)kicker.textContent="НОВЫЙ ТОВАР";
+    if(title)title.textContent="Добавить товар";
+  }
+  if($("#saveProduct"))$("#saveProduct").textContent="Сохранить товар";
+  if($("#newProductImagesHint"))$("#newProductImagesHint").textContent="Можно выбрать сразу несколько фото. Первое станет главным.";
+  if($("#saveProductMsg"))$("#saveProductMsg").textContent="";
+}
+$("#addProduct").onclick=()=>{resetProductModal();openM("productModal")};
+
+window.openProductEditor=id=>{
+  const p=prod(id);if(!p)return;
+  editingProductId=p.id;
+  opts();
+  $("#newProductName").value=p.name||"";
+  $("#newProductCategory").value=p.category||"";
+  $("#newProductUtp").value=p.utp||"";
+  $("#newProductRules").value=p.rules||"";
+  if($("#newProductCharacter"))$("#newProductCharacter").value=p.defaultCharacterId||"";
+  if($("#newProductImages"))$("#newProductImages").value="";
+  const modal=$("#productModal");
+  if(modal){
+    const kicker=modal.querySelector(".kicker"),title=modal.querySelector("h2");
+    if(kicker)kicker.textContent="РЕДАКТИРОВАНИЕ ТОВАРА";
+    if(title)title.textContent="Редактировать товар";
+  }
+  if($("#saveProduct"))$("#saveProduct").textContent="Сохранить изменения";
+  if($("#newProductImagesHint"))$("#newProductImagesHint").textContent=(p.media||[]).length
+    ?'Сейчас сохранено фото: '+(p.media||[]).length+'. Новые фото добавятся к существующим. Удалить или назначить главное фото можно в карточке товара.'
+    :'Новые фото добавятся к товару. Первое станет главным.';
+  if($("#saveProductMsg"))$("#saveProductMsg").textContent="";
+  openM("productModal");
+};
+
+$("#saveProduct").onclick=async()=>{
+  const n=$("#newProductName").value.trim();
+  const msg=$("#saveProductMsg"),btn=$("#saveProduct");
+  if(!n){if(msg)msg.textContent="Укажи название товара.";return}
+  const files=[...($("#newProductImages")?.files||[])];
+  btn.disabled=true;
+  beginLocalMutation();
+  try{
+    const existing=editingProductId?prod(editingProductId):null;
+    const p=existing||{
+      id:uid("p"),icon:"◆",tag:"Новый",masterStyle:"Не выбран",media:[],created:now()
+    };
+    const oldName=p.name||n;
+    p.name=n;
+    p.category=$("#newProductCategory").value.trim()||"Товар";
+    p.utp=$("#newProductUtp").value.trim();
+    p.rules=$("#newProductRules").value.trim();
+    p.defaultCharacterId=$("#newProductCharacter")?.value||null;
+    p.media=Array.isArray(p.media)?p.media:[];
+    p.updatedAt=new Date().toISOString();
+
+    if(!existing){
+      products.push(p);
+      log("Добавлен товар",n);
+    }else{
+      log("Изменён товар",oldName+(oldName!==n?" → "+n:""));
+    }
+    selectedProductId=p.id;
+    saveLocalState();
+    renderAll();
+
+    if(files.length){
+      msg.textContent=existing?"Сохраняю изменения и загружаю новые фото…":"Сохраняю товар и фотографии…";
+      await uploadPhotos(p.id,files,msg);
+    }else{
+      msg.textContent=existing?"Сохраняю изменения…":"Сохраняю товар…";
+    }
+
+    saveLocalState();
+    renderAll();
+    clearTimeout(syncTimer);
+    const saved=await pushState();
+    if(!saved)throw new Error("Не удалось сохранить изменения товара на сервере");
+
+    if($("#newProductImages"))$("#newProductImages").value="";
+    msg.textContent=existing?"Изменения товара сохранены.":files.length?"Товар и фотографии сохранены.":"Товар сохранён.";
+    const productId=p.id;
+    editingProductId=null;
+    setTimeout(()=>{closeM("productModal");openProduct(productId)},350);
+  }catch(e){
+    if(msg)msg.textContent="Ошибка сохранения: "+String(e?.message||e);
+  }finally{
+    finishLocalMutation();
+    btn.disabled=false;
+    if(localMutationDepth===0&&deferredServerSync)setTimeout(()=>syncFromServer(),0);
+  }
+};
+
 function renderCampaigns(){$("#campaignGrid").innerHTML=campaigns.length?campaigns.map(c=>{const made=runs.filter(r=>r.campaignId===c.id).length,pc=Math.round(made/Math.max(1,c.target)*100),spent=runs.filter(r=>r.campaignId===c.id).reduce((s,r)=>s+(Number(r.cost)||0),0);return '<article class="campaign-card"><span class="kicker">КАМПАНИЯ</span><h3>'+esc(c.name)+'</h3><p>'+esc(prod(c.productId)?.name||"Товар удалён")+'</p><div class="campaign-meta"><span class="chip">'+made+"/"+c.target+' роликов</span><span class="chip">'+c.budget+' ₽</span></div><div class="campaign-progress"><div class="progress"><i style="width:'+Math.min(100,pc)+'%"></i></div><div class="campaign-budget"><span>Прогресс '+pc+'%</span><span>Потрачено '+spent+' ₽</span></div></div><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+c.productId+'\')">Добавить ролики</button><button class="danger-btn" onclick="deleteCampaign(\''+c.id+'\')">Удалить</button></div></article>'}).join(""):'<div class="empty">Кампаний пока нет.</div>'}
 $("#addCampaign").onclick=()=>{opts();openM("campaignModal")};$("#saveCampaign").onclick=()=>{const n=$("#campaignName").value.trim();if(!n)return;campaigns.push({id:uid("c"),name:n,productId:$("#campaignProduct").value,target:Number($("#campaignTarget").value)||30,budget:Number($("#campaignBudget").value)||5000,mix:$("#campaignMix").value.trim(),created:now()});log("Создана кампания",n);closeM("campaignModal");persist()};
 function renderRuns(){$("#runsTable").innerHTML=runs.length?runs.slice().reverse().map(rrow).join(""):'<div class="empty"><h3>Пока нет роликов</h3><p>Запусти первый ролик.</p></div>'}
