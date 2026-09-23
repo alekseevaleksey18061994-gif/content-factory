@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHiggsfieldClient } from '@higgsfield/client/v2';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFile=promisify(execFileCb);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -122,6 +126,15 @@ const openaiConfigured = () => Boolean(process.env.OPENAI_API_KEY);
 async function moduleAvailable(name){
   try{
     await import(name);
+    return true;
+  }catch{
+    return false;
+  }
+}
+
+async function commandAvailable(command,args=['-version']){
+  try{
+    await execFile(command,args,{timeout:5000});
     return true;
   }catch{
     return false;
@@ -320,7 +333,7 @@ const server=http.createServer(async(req,res)=>{
     const higgsfieldCallbackVerified=process.env.HIGGSFIELD_FINAL_CALLBACK_VERIFIED === 'true';
     const openai=openaiConfigured();
     const chatgptControl=openai && process.env.CHATGPT_CONTROL_ENABLED === 'true';
-    const ffmpeg=await moduleAvailable('ffmpeg-static');
+    const ffmpeg=await commandAvailable('ffmpeg',['-version']);
     const remotion=await moduleAvailable('@remotion/renderer');
     const runway=Boolean(process.env.RUNWAYML_API_SECRET);
     const descript=Boolean(process.env.DESCRIPT_API_TOKEN);
