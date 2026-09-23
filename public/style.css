@@ -1656,3 +1656,29 @@ html,body,button,input,select,textarea{
 @media(max-width:820px){
   .idea-master-grid{grid-template-columns:1fr}
 }
+
+
+/* v46: master scenario stage */
+.script-master-head{
+  padding:16px;border:1px solid #cfe0e9;border-radius:16px;background:#f8fcfe;margin-bottom:12px
+}
+.script-master-head h3{margin:6px 0 7px;font-size:21px;color:#0b1730}
+.script-master-head p{margin:0;color:#4c6179;line-height:1.55;white-space:pre-wrap}
+.script-rule-box{
+  padding:12px 13px;border:1px solid #d9e7ef;border-radius:13px;background:#fff;margin-bottom:10px
+}
+.script-rule-box small{
+  display:block;margin-bottom:5px;font-size:9px;font-weight:850;text-transform:uppercase;color:#71849b
+}
+.script-rule-box p{margin:0;color:#344a63;line-height:1.5;white-space:pre-wrap}
+.script-table-rich{min-width:980px}
+.script-table-rich .script-detail-row td{background:#f9fcfe;border-top:0}
+.script-detail-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.script-detail-grid span{
+  padding:8px 9px;border:1px solid #e0eaf0;border-radius:10px;background:#fff;color:#566b83;font-size:10px;line-height:1.45
+}
+.script-detail-grid b{color:#20354f}
+@media(max-width:820px){
+  .script-detail-grid{grid-template-columns:1fr}
+  .script-table-rich{min-width:900px}
+}
