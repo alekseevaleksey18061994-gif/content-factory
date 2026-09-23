@@ -276,7 +276,7 @@ function renderChat(){
   const box=$("#chatMessages");
   if(!box)return;
   if(!chatHistory.length){
-    box.innerHTML='<div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов. Напиши задачу или спроси, что сейчас происходит в Content Factory.</p></div>';
+    box.innerHTML='<div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов управлять Content Factory. Например: «создай кампанию на 20 роликов», «измени бюджет», «запусти 3 UGC-ролика», «перезапусти ошибки».</p></div>';
     return;
   }
   box.innerHTML=chatHistory.map(m=>'<div class="chat-bubble '+(m.role==="user"?"user":"assistant")+'"><b>'+(m.role==="user"?"Ты":"ChatGPT")+'</b><p>'+esc(m.content)+'</p></div>').join("");
@@ -309,6 +309,7 @@ async function sendChatMessage(raw,input=null){
     chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});
   }
   save("cf_chat_history",chatHistory.slice(-30));
+  await syncFromServer();
   renderChat();
   refreshChatStatus();
 }
