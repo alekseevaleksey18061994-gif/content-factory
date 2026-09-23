@@ -639,7 +639,21 @@ async function processRunGeneration(accountId,runId){
             aspectRatio:'9:16',resolution:'720p',generateAudio:false
           });
           if(result?.ok&&result?.urls?.length)break;
-          lastError=new Error('Higgsfield не вернул готовое видео');
+          lastError=new Error('Higgsfield не вернул готовое видео'+(result?.status?' · статус '+result.status:''));
+          if(process.env.RUNWAYML_API_SECRET){
+            try{
+              const fallback=await generateRunwayScene({
+                accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
+              });
+              if(fallback?.ok&&fallback?.urls?.length){
+                fallback.fallbackFrom='higgsfield';
+                result=fallback;
+                break;
+              }
+            }catch(re){
+              lastError=new Error(String(lastError.message)+'; Runway: '+String(re?.message||re));
+            }
+          }
         }catch(e){
           lastError=e;
           console.error('[higgsfield-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
@@ -1610,9 +1624,16 @@ async function generateHiggsfieldScene(body){
 
   const result=await client.subscribe(model,{input,withPolling:true});
   const jobs=Array.isArray(result?.jobs)?result.jobs:[];
-  const urls=jobs
-    .map(job=>job?.results?.raw?.url || job?.results?.url || job?.result?.url)
-    .filter(Boolean);
+  const urls=[...new Set([
+    ...jobs.map(job=>job?.results?.raw?.url || job?.results?.url || job?.result?.url),
+    result?.video?.url,
+    ...(Array.isArray(result?.images)?result.images.map(x=>x?.url):[])
+  ].filter(Boolean))];
+  const hfStatus=String(result?.status||'').toLowerCase();
+  const hfCompleted=Boolean(result?.isCompleted || hfStatus==='completed' || urls.length);
+  if(!hfCompleted && ['failed','nsfw','canceled','cancelled'].includes(hfStatus)){
+    throw new Error('Higgsfield '+hfStatus+(result?.error?': '+String(result.error):''));
+  }
 
   const hfAccount=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
   const hfRates=await costRates(hfAccount).catch(()=>({}));
@@ -1623,13 +1644,14 @@ async function generateHiggsfieldScene(body){
   }).catch(()=>{});
 
   return {
-    ok:Boolean(result?.isCompleted ?? urls.length),
+    ok:hfCompleted,
     provider:'higgsfield',
     model,
     input:{...input,image_urls:refs.length?refs:undefined},
     requestId:result?.requestId || result?.request_id || null,
-    isCompleted:Boolean(result?.isCompleted ?? urls.length),
-    isNsfw:Boolean(result?.isNsfw),
+    status:hfStatus||null,
+    isCompleted:hfCompleted,
+    isNsfw:Boolean(result?.isNsfw || hfStatus==='nsfw'),
     urls,
     jobs
   };
