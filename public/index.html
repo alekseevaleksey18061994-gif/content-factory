@@ -7,8 +7,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
-  <link rel="manifest" href="/manifest.webmanifest?v=14" />
-  <link rel="stylesheet" href="/style.css?v=14" />
+  <link rel="manifest" href="/manifest.webmanifest?v=15" />
+  <link rel="stylesheet" href="/style.css?v=15" />
 </head>
 <body>
   <div class="shell">
@@ -34,7 +34,7 @@
         <nav class="side-nav">
           <button class="nav" data-go="scripts"><span>✎</span><b>Сценарии</b></button>
           <button class="nav" data-go="scenes"><span>▤</span><b>Сцены и медиа</b></button>
-          <button class="nav" data-go="characters"><span>◉</span><b>Персонажи и стили</b></button>
+          <button class="nav" data-go="characters"><span>◉</span><b>AI-аватары и стили</b></button>
           <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
           <button class="nav" data-go="calendar"><span>▦</span><b>Календарь</b></button>
         </nav>
@@ -151,8 +151,8 @@
       </section>
 
       <section class="page" id="characters">
-        <header class="section-head"><div><span class="kicker">ПОСТОЯННЫЕ ГЕРОИ</span><h1>Персонажи и стили</h1><p>Фиксированная внешность, голос, характер и визуальная система</p></div><button class="btn primary" id="addCharacter">＋ Создать AI-персонажа</button></header>
-        <section class="panel"><div class="panel-title"><div><span class="mini-icon">◉</span><h2>AI-персонажи</h2><p>Один и тот же герой во всех роликах</p></div></div><div class="character-grid" id="characterGrid"></div></section>
+        <header class="section-head"><div><span class="kicker">ПОСТОЯННЫЕ ГЕРОИ</span><h1>AI-аватары и стили</h1><p>Загружай реальные фото и сохраняй постоянную внешность, голос, характер и визуальную систему</p></div><button class="btn primary" id="addCharacter">＋ Создать AI-аватара</button></header>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">◉</span><h2>AI-аватары</h2><p>Референсные фото закрепляются за героем и передаются в генерацию</p></div></div><div class="character-grid" id="characterGrid"></div></section>
         <section class="panel"><div class="panel-title"><div><span class="mini-icon">✦</span><h2>Визуальные стили</h2><p>Сохраняются отдельно от лица и голоса</p></div></div><div class="style-grid" id="styleGrid"></div></section>
       </section>
 
@@ -241,7 +241,7 @@
   </div>
 
   <div class="modal" id="characterModal" aria-hidden="true">
-    <div class="modal-card"><button class="close" data-close="characterModal">×</button><span class="kicker">AI-ПЕРСОНАЖ</span><h2>Создать постоянного ведущего</h2><p class="muted">Паспорт персонажа будет использоваться во всех роликах, чтобы сохранять лицо, голос и манеру подачи.</p><div class="field-grid"><label>Имя<input id="characterName" placeholder="Алина"></label><label>Возраст<input id="characterAge" placeholder="27"></label><label>Внешность<textarea id="characterLook" placeholder="Русые волосы, каре, естественный макияж…"></textarea></label><label>Манера речи<textarea id="characterVoice" placeholder="Спокойная, уверенная, разговорная…"></textarea></label><label>Темы страницы<textarea id="characterTopics" placeholder="Товары для дома, бытовые лайфхаки…"></textarea></label><label>Неизменяемые признаки<textarea id="characterLocks" placeholder="Лицо, возраст, цвет глаз, форма носа…"></textarea></label></div><button class="btn primary full" id="saveCharacter">Сохранить персонажа</button></div>
+    <div class="modal-card"><button class="close" data-close="characterModal">×</button><span class="kicker">AI-АВАТАР</span><h2>Создать постоянного AI-аватара</h2><p class="muted">Загрузи 1–10 реальных фото лица. Они станут референсами, чтобы сохранять внешность героя между роликами.</p><label class="character-photo-field">Фото для аватара<input id="characterImages" type="file" accept="image/*" multiple></label><div id="characterPhotoPreview" class="avatar-upload-preview"><div class="avatar-preview-empty">Фото пока не выбраны</div></div><div class="message" id="characterImagesHint">Лучше использовать 3–10 чётких фото: анфас, полубоком и с разным выражением лица.</div><div class="field-grid"><label>Имя<input id="characterName" placeholder="Алина"></label><label>Возраст<input id="characterAge" placeholder="27"></label><label>Внешность<textarea id="characterLook" placeholder="Русые волосы, каре, естественный макияж…"></textarea></label><label>Манера речи<textarea id="characterVoice" placeholder="Спокойная, уверенная, разговорная…"></textarea></label><label>Темы страницы<textarea id="characterTopics" placeholder="Товары для дома, бытовые лайфхаки…"></textarea></label><label>Неизменяемые признаки<textarea id="characterLocks" placeholder="Лицо, возраст, цвет глаз, форма носа…"></textarea></label></div><button class="btn primary full" id="saveCharacter">Сохранить AI-аватара</button><div class="message" id="saveCharacterMsg"></div></div>
   </div>
 
   <div class="modal" id="scriptModal" aria-hidden="true">
@@ -252,6 +252,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=14"></script>
+  <script src="/app.js?v=15"></script>
 </body>
 </html>
