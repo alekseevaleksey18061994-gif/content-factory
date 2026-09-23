@@ -276,8 +276,25 @@ async function callProductMedia(payload){
 }
 
 
-const higgsfieldConfigured = () =>
-  Boolean(process.env.HIGGSFIELD_API_KEY_ID && process.env.HIGGSFIELD_API_KEY_SECRET);
+function cleanCredentialPart(value){
+  let v=String(value||'').trim();
+  if((v.startsWith('"')&&v.endsWith('"'))||(v.startsWith("'")&&v.endsWith("'")))v=v.slice(1,-1).trim();
+  return v;
+}
+function validHiggsfieldCombined(value){
+  const v=cleanCredentialPart(value);
+  const first=v.indexOf(':');
+  return first>0 && first===v.lastIndexOf(':') && first<v.length-1;
+}
+function higgsfieldCredentials(){
+  const id=cleanCredentialPart(process.env.HIGGSFIELD_API_KEY_ID);
+  const secret=cleanCredentialPart(process.env.HIGGSFIELD_API_KEY_SECRET);
+  if(validHiggsfieldCombined(id))return id;
+  if(!id&&validHiggsfieldCombined(secret))return secret;
+  if(id&&secret)return id+':'+secret;
+  return '';
+}
+const higgsfieldConfigured = () => Boolean(higgsfieldCredentials());
 
 const openaiConfigured = () => Boolean(process.env.OPENAI_API_KEY);
 
@@ -615,13 +632,31 @@ async function processRunGeneration(accountId,runId){
           });
           if(result?.ok&&result?.urls?.length)break;
           lastError=new Error('Higgsfield не вернул готовое видео');
-        }catch(e){lastError=e}
+        }catch(e){
+          lastError=e;
+          console.error('[higgsfield-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
+          if(process.env.RUNWAYML_API_SECRET){
+            try{
+              result=await generateRunwayScene({
+                accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
+                ratio:'720:1280'
+              });
+              if(result?.ok&&result?.urls?.length){
+                result.fallbackFrom='higgsfield';
+                break;
+              }
+            }catch(re){
+              lastError=new Error('Higgsfield: '+String(e?.message||e)+'; Runway: '+String(re?.message||re));
+              console.error('[runway-fallback] '+runId+' scene '+sceneNo+' '+String(re?.message||re));
+            }
+          }
+        }
       }
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       if(!run)return {ok:false,error:'Ролик удалён во время генерации'};
       run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
       if(result?.ok&&result?.urls?.length){
-        run.sceneResults[sceneNo]={ok:true,urls:result.urls,provider:result.provider,model:result.model,requestId:result.requestId||null,completedAt:new Date().toISOString()};
+        run.sceneResults[sceneNo]={ok:true,urls:result.urls,provider:result.provider,model:result.model,requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',completedAt:new Date().toISOString()};
         appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total);
       }else{
         const err=String(lastError?.message||'Ошибка Higgsfield');
@@ -1541,7 +1576,7 @@ async function generateHiggsfieldScene(body){
   const aspectRatio=String(body?.aspectRatio || '9:16');
   const generateAudio=body?.generateAudio !== false;
 
-  const credentials=`${process.env.HIGGSFIELD_API_KEY_ID}:${process.env.HIGGSFIELD_API_KEY_SECRET}`;
+  const credentials=higgsfieldCredentials();
   const client=createHiggsfieldClient({
     credentials,
     timeout:120000,
@@ -1900,8 +1935,11 @@ async function recoverPendingBackendGenerations(){
       for(const run of (data.runs||[])){
         const hasPlan=!!run?.idea&&!!run?.script&&Array.isArray(run?.storyboard)&&run.storyboard.length>0;
         const complete=!!run?.generationResult?.completed;
-        if(run&&hasPlan&&!complete&&!run.paused&&run.status==='В работе'&&run.stage==='Генерация'){
+        if(run&&hasPlan&&!complete&&!run.paused&&['В работе','Ошибка'].includes(run.status)&&run.stage==='Генерация'){
           run.backendGenerationRunning=false;
+          run.status='В работе';
+          run.error='';
+          run.generationError='';
           run.updatedAt=new Date().toISOString();
           await writeAppState(data,accountId);
           processRunGeneration(accountId,run.id).catch(e=>console.error('[backend-generation-recovery] '+run.id+' '+String(e?.message||e)));
