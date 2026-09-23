@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=51" />
+  <link rel="stylesheet" href="/style.css?v=52" />
 </head>
 <body>
   <div class="auth-gate" id="authGate">
@@ -386,7 +386,7 @@
         <label>Количество<select id="count"><option>1 вариант</option><option>3 варианта</option><option selected>5 вариантов</option><option>10 вариантов</option><option>20 вариантов</option></select></label>
         <label>Формат<select id="format"><option selected>9:16</option></select></label>
         <label>AI-персонаж<select id="characterSelect"><option value="">Без персонажа</option></select><small id="characterSelectHint">Если к товару привязан аватар, он выберется автоматически.</small></label>
-        <label>Модель<select id="modelMode"><option selected>Авто — умный выбор</option><option>Higgsfield</option><option>Runway</option><option>Veo</option><option>Kling</option></select></label>
+        <label>Видео-модель<select id="modelMode"><option selected>Higgsfield → Runway (резерв)</option><option>Только Higgsfield</option><option>Только Runway</option></select><small>Превиз-фото: Nano Banana Pro → GPT Image (резерв)</small></label>
         <label>Лимит бюджета, ₽<input id="runBudget" type="number" value="500"></label>
         <label>Макс. попыток на сцену<input id="runAttempts" type="number" value="3"></label>
       </div>
@@ -443,6 +443,6 @@
       },true);
     })();
   </script>
-  <script src="/app.js?v=51"></script>
+  <script src="/app.js?v=52"></script>
 </body>
 </html>
