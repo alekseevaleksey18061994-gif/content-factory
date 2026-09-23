@@ -213,7 +213,46 @@ $("#generateIdeaBtn")?.addEventListener("click",async()=>{
     await syncFromServer();selectedRunId=data.run?.id||selectedRunId;status.textContent="Идея готова.";
   }catch(e){status.textContent=String(e?.message||e)}finally{btn.disabled=false}
 });
-function renderProduction(){const K=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];$("#kanban").innerHTML=K.map(k=>{const a=runs.filter(r=>norm(r)===k);return '<div class="kanban-col"><div class="kanban-head"><b>'+k+'</b><span class="count-bubble">'+a.length+'</span></div>'+(a.length?a.map(r=>'<div class="kanban-card" onclick="openRun(\''+r.id+'\')"><b>'+esc(pname(r))+'</b><small>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</small><div class="progress mini-progress"><i style="width:'+pct(r)+'%"></i></div></div>').join(""):'<div class="empty" style="padding:28px 5px">0</div>')+'</div>'}).join("")}
+function productionStageDone(r,k){
+  if(k==="Идея")return !!r.idea;
+  if(k==="Сценарий")return !!r.script;
+  if(k==="Storyboard")return Array.isArray(r.storyboard)&&r.storyboard.length>0;
+  if(k==="Референсы")return !!r.references;
+  if(k==="Генерация")return !!(r.generationResult?.urls?.length||r.generationResult?.jobs?.length);
+  if(k==="Озвучка")return !!r.voiceoverResult;
+  if(k==="Монтаж")return !!r.montageResult;
+  if(k==="AI-проверка")return !!r.qcResult;
+  if(k==="Проверка")return r.status==="На проверке"||["Готово","Запланировано","Опубликовано"].includes(r.status);
+  if(k==="Готово")return ["Готово","Запланировано","Опубликовано"].includes(r.status);
+  return false;
+}
+window.openProductionStage=(stage)=>{
+  const map={Проверка:"На проверке"};
+  const target=map[stage]||stage;
+  const candidates=runs.filter(r=>productionStageDone(r,stage)||norm(r)===target).slice().reverse();
+  const r=candidates[0];
+  if(!r)return;
+  selectedRunId=r.id;
+  if(stage==="Проверка"){openRunReview(r.id);return}
+  runStageOpen=target;
+  renderRunDetail();
+  go("runDetail");
+  setTimeout(()=>document.getElementById("stageReport")?.scrollIntoView({behavior:"smooth",block:"start"}),80);
+};
+function renderProduction(){
+  const K=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","Проверка","Готово"];
+  const steps=K.map((k,i)=>{
+    const done=runs.filter(r=>productionStageDone(r,k)).length;
+    const current=runs.filter(r=>norm(r)===(k==="Проверка"?"На проверке":k)).length;
+    return '<button class="production-step" onclick="openProductionStage(\''+k+'\')"><span class="production-step-num">'+(i+1)+'</span><span class="production-step-copy"><b>'+k+'</b><small>'+(i<K.length-1?'Шаг '+(i+1)+' из '+K.length:'Финиш')+'</small></span><span class="production-step-stats"><strong>'+done+'</strong><small>готово'+(current?' · сейчас '+current:'')+'</small></span></button>';
+  }).join("");
+  const active=runs.slice().reverse().filter(r=>!["Готово","Запланировано","Опубликовано"].includes(r.status));
+  const cards=active.length?active.map(r=>{
+    const artifactCount=K.filter(k=>productionStageDone(r,k)).length;
+    return '<button class="production-run-card" onclick="openRun(\''+r.id+'\')"><span><b>'+esc(pname(r))+'</b><small>Сейчас: '+esc(norm(r))+' · '+artifactCount+'/'+K.length+' этапов с результатом</small></span><span class="status '+scl(r.status)+'">'+esc(r.status||"В работе")+'</span></button>';
+  }).join(""):'<div class="empty compact-empty">Активных роликов нет.</div>';
+  $("#kanban").innerHTML='<section class="production-flow"><div class="production-flow-head"><div><span class="kicker">ПОРЯДОК</span><h2>1 → 10, строго по этапам</h2><p>Число справа — сколько роликов уже имеют реальный результат этого этапа, а не сколько сейчас стоят в колонке.</p></div></div><div class="production-steps">'+steps+'</div></section><section class="production-active"><div class="production-flow-head"><div><span class="kicker">РОЛИКИ</span><h2>Что сейчас происходит</h2></div></div><div class="production-run-list">'+cards+'</div></section>';
+}
 function renderBackground(){const a=runs.map(task).reverse();$("#backgroundTasks").innerHTML=a.length?a.map(taskHtml).join(""):'<div class="empty">Задач пока нет.</div>'}
 $("#retryFailed").onclick=()=>{let n=0;runs.forEach(r=>{if(r.status==="Ошибка"){r.status="В работе";r.attempt=(r.attempt||1)+1;n++}});if(n)log("Повтор неудачных задач","Перезапущено: "+n);persist()};
 function renderProducts(){$("#productsGrid").innerHTML=products.length?products.map(p=>'<article class="catalog-card">'+productThumb(p)+'<h3>'+esc(p.name)+'</h3><p>'+esc(p.category||"Товар")+'</p><div class="catalog-actions"><button class="btn primary" onclick="openCreate(\''+p.id+'\')">Создать ролик</button><button class="secondary" onclick="openProduct(\''+p.id+'\')">Паспорт</button><button class="danger-btn" onclick="deleteProduct(\''+p.id+'\')">Удалить</button></div></article>').join(""):'<div class="empty">Товаров пока нет.</div>'}
@@ -263,7 +302,13 @@ function stageReportHtml(r,stage){
   const idea=r.idea||{},script=r.script||{},refs=r.references||{},board=Array.isArray(r.storyboard)?r.storyboard:[];
   let body='';
   if(stage==="Идея")body='<div class="artifact-grid"><div><small>Концепция</small><h3>'+esc(idea.title||"Идея ещё не создана")+'</h3><p>'+esc(idea.concept||"")+'</p></div><div><small>Хук</small><p>'+esc(idea.hook||"—")+'</p><small>Угол подачи</small><p>'+esc(idea.angle||"—")+'</p><small>Почему должно сработать</small><p>'+esc(idea.why||"—")+'</p></div></div>';
-  else if(stage==="Сценарий")body='<div class="artifact-script"><h3>Хук</h3><p>'+esc(script.hook||"—")+'</p><h3>Текст / озвучка</h3><p>'+esc(script.body||script.voiceover||"—")+'</p><h3>CTA</h3><p>'+esc(script.cta||"—")+'</p></div>';
+  else if(stage==="Сценарий"){
+    const scriptScenes=Array.isArray(script.scenes)&&script.scenes.length?script.scenes:board.map((x,i)=>({
+      scene:i+1,time:x.duration||"",visual:[x.shot,x.action].filter(Boolean).join(" — "),
+      dialogue:x.voiceover||x.onscreen||"",sound:x.sound||""
+    }));
+    body='<div class="artifact-script"><div class="script-summary"><div><small>Хук</small><p>'+esc(script.hook||idea.hook||"—")+'</p></div><div><small>CTA</small><p>'+esc(script.cta||"—")+'</p></div></div>'+(scriptScenes.length?'<div class="script-table-wrap"><table class="script-table"><thead><tr><th>№</th><th>Время</th><th>Что в кадре</th><th>Текст / реплики</th><th>Звук</th></tr></thead><tbody>'+scriptScenes.map((x,i)=>'<tr><td>'+(x.scene||i+1)+'</td><td>'+esc(x.time||x.duration||"—")+'</td><td>'+esc(x.visual||x.shot||x.action||"—")+'</td><td>'+esc(x.dialogue||x.text||x.voiceover||"—")+'</td><td>'+esc(x.sound||"—")+'</td></tr>').join("")+'</tbody></table></div>':'<p>'+esc(script.body||script.voiceover||"—")+'</p>')+'</div>';
+  }
   else if(stage==="Storyboard")body=board.length?'<div class="stage-storyboard-list">'+board.map((x,i)=>'<div><b>'+(i+1)+'. '+esc(x.title||"Сцена")+'</b><span>'+esc(x.duration||"")+'</span><p>'+esc(x.shot||"")+' '+esc(x.action||"")+'</p></div>').join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>';
   else if(stage==="Референсы"){
     const productUrls=[...(refs.product||[]),...(r.media||r.product?.media||[]).map(x=>x?.url)].filter(url=>/^https:\/\//i.test(String(url||'')));
