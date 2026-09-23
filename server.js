@@ -1265,6 +1265,42 @@ async function buildRunPlan(payload,accountId,variant=1,feedback=''){
 function findRunById(data,runId){
   return (Array.isArray(data?.runs)?data.runs:[]).find(r=>r?.id===runId)||null;
 }
+function invalidateAfterPrevisChange(run){
+  run.sceneResults={};
+  run.generationResult=null;
+  run.acceptedScenes=[];
+  run.voiceoverResult=null;
+  run.montageResult=null;
+  run.qcResult=null;
+  run.backendGenerationRunning=false;
+  run.postProductionRunning=false;
+  run.generationError='';
+  run.error='';
+  run.stage='Превиз-кадры';
+  run.status='На проверке';
+  run.awaitingApproval=true;
+  run.progress=Math.min(36,Math.max(28,Number(run.progress)||28));
+  run.updatedAt=new Date().toISOString();
+}
+function runKnownMediaUrls(data,accountId){
+  const set=new Set();
+  for(const product of (Array.isArray(data?.products)?data.products:[])){
+    for(const m of (Array.isArray(product?.media)?product.media:[]))if(m?.url)set.add(String(m.url));
+  }
+  for(const c of (Array.isArray(data?.characters)?data.characters:[])){
+    for(const m of (Array.isArray(c?.media)?c.media:[]))if(m?.url)set.add(String(m.url));
+  }
+  for(const run of (Array.isArray(data?.runs)?data.runs:[])){
+    for(const f of (Array.isArray(run?.previsFrames)?run.previsFrames:[]))if(f?.url)set.add(String(f.url));
+    for(const u of (Array.isArray(run?.generationResult?.urls)?run.generationResult.urls:[]))if(u)set.add(String(u));
+    for(const sr of Object.values(run?.sceneResults||{})){
+      if(sr?.url)set.add(String(sr.url));
+      for(const u of (Array.isArray(sr?.urls)?sr.urls:[]))if(u)set.add(String(u));
+    }
+    if(run?.montageResult?.url)set.add(String(run.montageResult.url));
+  }
+  return set;
+}
 function mergeByIdPreserveExisting(existing=[],incoming=[],limit=5000){
   const map=new Map();
   for(const item of (Array.isArray(existing)?existing:[])){
@@ -1778,6 +1814,71 @@ async function runControlAction(body,accountId){
     enqueueRunGeneration(accountId,run.id,'regenerate-scene');
     return run;
   }
+  if(action==='delete_previs_frame'){
+    const frameId=String(body?.frameId||'');
+    const scene=Math.max(1,Math.min(50,Number(body?.scene)||1));
+    const frameNo=Math.max(1,Math.min(10,Number(body?.frame)||1));
+    run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
+    const pos=run.previsFrames.findIndex(x=>frameId?String(x?.id)===frameId:(Number(x?.scene)===scene&&Number(x?.frame)===frameNo));
+    if(pos<0)throw new Error('Превиз-кадр не найден');
+    const old=run.previsFrames[pos];
+    if(old?.path){
+      try{await callProductMedia({action:'delete',path:String(old.path)})}catch(e){console.warn('[previs-delete] '+String(e?.message||e))}
+    }
+    run.previsFrames.splice(pos,1);
+    const expected=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*3);
+    const ready=run.previsFrames.filter(x=>x?.url).length;
+    run.previsResult={completed:false,totalFrames:ready,totalScenes:Number(run.previsPlan?.totalScenes)||run.sceneCount||0};
+    invalidateAfterPrevisChange(run);
+    appendFactoryJournal(data,'Удалён превиз-кадр',(run.productName||run.id)+' · сцена '+(old?.scene||scene)+' · кадр '+(old?.frame||frameNo));
+    await writeAppState(data,accountId);
+    return run;
+  }
+  if(action==='replace_previs_frame'){
+    const frameId=String(body?.frameId||'');
+    const scene=Math.max(1,Math.min(50,Number(body?.scene)||1));
+    const frameNo=Math.max(1,Math.min(10,Number(body?.frame)||1));
+    const media=body?.media&&typeof body.media==='object'?body.media:null;
+    if(!media?.url||!media?.path)throw new Error('Загруженный кадр не передан');
+    const prefix=(sanitizeAccountId(accountId)+'__').replace(/[^a-zA-Z0-9_-]/g,'');
+    if(!String(media.path).startsWith(prefix))throw new Error('Этот файл не принадлежит текущему аккаунту');
+    const planFrames=Array.isArray(run.previsPlan?.frames)?run.previsPlan.frames:[];
+    const spec=planFrames.find(x=>frameId?String(x?.id)===frameId:(Number(x?.scene)===scene&&Number(x?.frame)===frameNo));
+    if(!spec)throw new Error('Слот превиз-кадра не найден');
+    run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
+    const pos=run.previsFrames.findIndex(x=>String(x?.id)===String(spec.id));
+    const old=pos>=0?run.previsFrames[pos]:null;
+    if(old?.path&&old.path!==media.path){
+      try{await callProductMedia({action:'delete',path:String(old.path)})}catch(e){console.warn('[previs-replace-delete] '+String(e?.message||e))}
+    }
+    const item={
+      ...spec,
+      ...(old||{}),
+      url:String(media.url),
+      path:String(media.path),
+      fileName:String(media.fileName||('previs-'+spec.id+'.jpg')),
+      mimeType:String(media.mimeType||'image/jpeg'),
+      model:'user-upload',
+      provider:'user',
+      source:'user-upload',
+      generatedAt:new Date().toISOString()
+    };
+    if(pos>=0)run.previsFrames[pos]=item;else run.previsFrames.push(item);
+    run.previsFrames.sort((a,b)=>(Number(a.scene)-Number(b.scene))||(Number(a.frame)-Number(b.frame)));
+    const expected=Number(run.previsPlan?.totalFrames)||planFrames.length||((run.storyboard||[]).length*3);
+    const ready=run.previsFrames.filter(x=>x?.url).length;
+    run.previsResult={
+      completed:Boolean(expected&&ready>=expected),
+      totalFrames:ready,
+      totalScenes:Number(run.previsPlan?.totalScenes)||run.sceneCount||0,
+      completedAt:expected&&ready>=expected?new Date().toISOString():null
+    };
+    invalidateAfterPrevisChange(run);
+    if(run.previsResult.completed)run.progress=36;
+    appendFactoryJournal(data,'Загружен свой превиз-кадр',(run.productName||run.id)+' · сцена '+spec.scene+' · кадр '+spec.frame);
+    await writeAppState(data,accountId);
+    return run;
+  }
   if(action==='accept_scene'){
     const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
     const total=Number(run.generationResult?.totalScenes||0);
@@ -1868,7 +1969,9 @@ async function runControlAction(body,accountId){
       return run;
     }
     if(current==='Превиз-кадры'||current==='Референсы'){
-      if(!run.previsResult?.completed||!(run.previsFrames||[]).length)throw new Error('Превиз ещё не готов');
+      const expected=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*3);
+      const ready=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).length;
+      if(!run.previsResult?.completed||!expected||ready<expected)throw new Error('Превиз ещё не готов полностью: '+ready+' из '+expected+' кадров');
       run.status='В работе';run.stage='Генерация';run.progress=38;run.awaitingApproval=false;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Превиз утверждён',(run.productName||run.id)+' · запускаю видео по превиз-кадрам');
       await writeAppState(data,accountId);
@@ -3652,6 +3755,36 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,item});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось разобрать YouTube-видео',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/media/download' && req.method==='GET'){
+    try{
+      const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      const target=String(url.searchParams.get('url')||'');
+      if(!/^https:\/\//i.test(target))return json(res,400,{ok:false,error:'Некорректная ссылка'});
+      const state=await readAppState(accountId);
+      const data=state?.data||{};
+      const known=runKnownMediaUrls(data,accountId);
+      if(!known.has(target))return json(res,403,{ok:false,error:'Файл не принадлежит текущему проекту.'});
+      const remote=await fetch(target,{redirect:'follow'});
+      if(!remote.ok)throw new Error('Источник вернул HTTP '+remote.status);
+      const len=Number(remote.headers.get('content-length')||0);
+      if(len>180*1024*1024)throw new Error('Файл слишком большой для скачивания через приложение');
+      const type=remote.headers.get('content-type')||'application/octet-stream';
+      const rawName=String(url.searchParams.get('name')||'content-factory-file').replace(/[\r\n"]/g,'_').slice(0,180);
+      const buf=Buffer.from(await remote.arrayBuffer());
+      res.writeHead(200,{
+        'content-type':type,
+        'content-length':buf.length,
+        'content-disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(rawName),
+        'cache-control':'private, no-store'
+      });
+      res.end(buf);
+      return;
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось скачать файл.',detail:String(e?.message||e)});
     }
   }
 
