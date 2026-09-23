@@ -558,6 +558,34 @@ async function buildRunPlan(payload,accountId,variant=1,feedback=''){
 function findRunById(data,runId){
   return (Array.isArray(data?.runs)?data.runs:[]).find(r=>r?.id===runId)||null;
 }
+function mergeByIdPreserveExisting(existing=[],incoming=[],limit=5000){
+  const map=new Map();
+  for(const item of (Array.isArray(existing)?existing:[])){
+    if(item&&item.id)map.set(String(item.id),item);
+  }
+  for(const item of (Array.isArray(incoming)?incoming:[])){
+    if(item&&item.id&&!map.has(String(item.id)))map.set(String(item.id),item);
+    else if(item&&item.id){
+      const prev=map.get(String(item.id))||{};
+      map.set(String(item.id),{...prev,...item});
+    }
+  }
+  return [...map.values()].slice(-limit);
+}
+function mergeClientStateWithServer(existingData={},incomingData={}){
+  const out={...existingData,...incomingData};
+  // Production runs are server-authoritative. Client snapshots must never roll
+  // backend stage/progress/results/errors backwards.
+  out.runs=Array.isArray(existingData.runs)?existingData.runs:[];
+  out.expenses=mergeByIdPreserveExisting(existingData.expenses,incomingData.expenses,3000);
+  out.journal=mergeByIdPreserveExisting(existingData.journal,incomingData.journal,500);
+  out.scripts=mergeByIdPreserveExisting(existingData.scripts,incomingData.scripts,2000);
+  out.videoAnalyses=mergeByIdPreserveExisting(existingData.videoAnalyses,incomingData.videoAnalyses,200);
+  if(Object.prototype.hasOwnProperty.call(existingData,'chatHistory')){
+    out.chatHistory=normalizeStoredChatHistory(existingData.chatHistory||[]);
+  }
+  return out;
+}
 async function saveRunPatch(accountId,runId,patch={}){
   const state=await readAppState(accountId);
   const data=state?.data||blankFactoryState();
@@ -816,6 +844,41 @@ async function runControlAction(body,accountId){
   if(action==='stop'){
     run.status='Остановлено';run.paused=true;run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Производство остановлено',run.productName||run.id);await writeAppState(data,accountId);return run;
+  }
+  if(action==='accept_scene'){
+    const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
+    run.acceptedScenes=[...new Set([...(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]),scene])];
+    run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Сцена утверждена',(run.productName||run.id)+' · сцена '+scene);
+    await writeAppState(data,accountId);return run;
+  }
+  if(action==='update_scene_prompt'){
+    const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
+    const prompt=String(body?.prompt||'').trim().slice(0,12000);
+    run.scenePrompts=run.scenePrompts&&typeof run.scenePrompts==='object'?run.scenePrompts:{};
+    run.scenePrompts[scene]=prompt;
+    if(Array.isArray(run.storyboard)&&run.storyboard[scene-1])run.storyboard[scene-1].prompt=prompt;
+    run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Изменён промт сцены',(run.productName||run.id)+' · сцена '+scene);
+    await writeAppState(data,accountId);return run;
+  }
+  if(action==='set_scene_model'){
+    const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
+    run.sceneModels=run.sceneModels&&typeof run.sceneModels==='object'?run.sceneModels:{};
+    run.sceneModels[scene]=String(body?.model||'Авто').slice(0,120);
+    run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Сменена модель сцены',(run.productName||run.id)+' · сцена '+scene+' → '+run.sceneModels[scene]);
+    await writeAppState(data,accountId);return run;
+  }
+  if(action==='approve_montage'){
+    run.status='На проверке';run.stage='На проверке';run.progress=Math.max(82,Number(run.progress)||0);run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Монтаж утверждён',run.productName||run.id);
+    await writeAppState(data,accountId);return run;
+  }
+  if(action==='approve_run'){
+    run.status='Готово';run.stage='Готово';run.progress=100;run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Ролик утверждён',run.productName||run.id);
+    await writeAppState(data,accountId);return run;
   }
   if(action==='start'||action==='resume'){
     run.paused=false;run.status='В работе';
@@ -2391,11 +2454,9 @@ const server=http.createServer(async(req,res)=>{
       const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||body?.accountId||DEFAULT_ACCOUNT_ID);
       if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
       const incoming=body?.data ?? body;
-      const data=incoming&&typeof incoming==='object'?incoming:{};
+      const incomingData=incoming&&typeof incoming==='object'?incoming:{};
       const existing=await readAppState(accountId);
-      if(Object.prototype.hasOwnProperty.call(existing?.data||{},'chatHistory')){
-        data.chatHistory=normalizeStoredChatHistory(existing.data.chatHistory||[]);
-      }
+      const data=mergeClientStateWithServer(existing?.data||{},incomingData);
       await writeAppState(data,accountId);
       return json(res,200,{ok:true,configured:true,accountId,savedAt:new Date().toISOString()});
     }catch(e){
