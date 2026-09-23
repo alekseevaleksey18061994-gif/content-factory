@@ -241,37 +241,105 @@ function renderScripts(){$("#scriptsList").innerHTML=scripts.length?scripts.slic
 $("#addScript").onclick=()=>openM("scriptModal");$("#saveScript").onclick=()=>{const n=$("#scriptTitle").value.trim();if(!n)return;scripts.push({id:uid("s"),title:n,hook:$("#scriptHook").value.trim(),body:$("#scriptBody").value.trim(),cta:$("#scriptCta").value.trim(),used:0,created:now()});log("Сохранён сценарий",n);closeM("scriptModal");persist()};
 window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.used||0)+1;$("#brief").value=[s.hook,s.body,s.cta].filter(Boolean).join("\n");openCreate();persist()};
 function renderScenes(){const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);$("#scenesWorkspace").innerHTML=r?'<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(pname(r))+'</h2><p>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</p></div><button class="text-btn" onclick="openRun(\''+r.id+'\')">Открыть ролик ›</button></div><div class="storyboard">'+scenes(r)+'</div></section>':'<div class="panel empty">Создай ролик — здесь появится storyboard.</div>'}
+let editingCharacterId=null;
+
+function renderCharacterExistingMedia(){
+  const box=$("#characterExistingMedia");if(!box)return;
+  const c=characters.find(x=>x.id===editingCharacterId);
+  if(!c){box.innerHTML="";box.classList.remove("has-media");return}
+  const media=Array.isArray(c.media)?c.media:[];
+  box.classList.toggle("has-media",media.length>0);
+  box.innerHTML=media.length?'<div class="avatar-existing-title"><b>Сохранённые фото</b><small>'+media.length+' шт.</small></div><div class="avatar-existing-grid">'+media.map(m=>
+    '<div class="avatar-existing-item '+(m.isPrimary?'primary':'')+'"><img src="'+esc(m.url)+'" alt=""><div><button type="button" onclick="setPrimaryCharacterPhoto(\''+c.id+'\',\''+m.id+'\')">'+(m.isPrimary?'Главное':'Сделать главным')+'</button><button class="danger-mini" type="button" onclick="deleteCharacterPhoto(\''+c.id+'\',\''+m.id+'\')">Удалить</button></div></div>'
+  ).join("")+'</div>':"";
+}
+window.setPrimaryCharacterPhoto=(characterId,mediaId)=>{
+  const c=characters.find(x=>x.id===characterId);if(!c)return;
+  (c.media||[]).forEach(m=>m.isPrimary=m.id===mediaId);
+  log("Изменено главное фото AI-аватара",c.name);
+  persist();renderCharacterExistingMedia();renderCharacters();
+};
+window.deleteCharacterPhoto=async(characterId,mediaId)=>{
+  const c=characters.find(x=>x.id===characterId);if(!c)return;
+  const m=(c.media||[]).find(x=>x.id===mediaId);if(!m||!confirm("Удалить это фото аватара?"))return;
+  try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:m.path})})}catch{}
+  const wasPrimary=!!m.isPrimary;
+  c.media=(c.media||[]).filter(x=>x.id!==mediaId);
+  if(wasPrimary&&c.media[0])c.media[0].isPrimary=true;
+  log("Удалено фото AI-аватара",c.name);
+  persist();renderCharacterExistingMedia();renderCharacters();
+};
+
 function renderCharacters(){
   $("#characterGrid").innerHTML=characters.length?characters.map(c=>{
     const m=primaryCharacterMedia(c),count=(c.media||[]).length;
-    return '<article class="character-card"><div class="avatar-art '+(m?"has-photo":"")+'">'+(m?'<img src="'+esc(m.url)+'" alt="'+esc(c.name)+'">':'◉')+'</div><h3>'+esc(c.name)+'</h3><p>'+esc((c.age?c.age+" лет · ":"")+(c.look||""))+'</p><div class="character-tags"><span class="chip">Фото: '+count+'</span><span class="chip">'+(count?"Лицо закреплено":"Нужны фото")+'</span><span class="chip">Голос: '+(c.voiceLinked?"подключён":"ожидает")+'</span></div><div id="avatarStatus-'+c.id+'" class="message"></div><input id="avatarUpload-'+c.id+'" type="file" accept="image/*" multiple hidden onchange="uploadExistingCharacterPhotos(event,\''+c.id+'\')"><div class="catalog-actions"><button class="btn primary" onclick="createWithCharacter(\''+c.id+'\')">Создать ролик</button><button class="secondary" onclick="document.getElementById(\'avatarUpload-'+c.id+'\').click()">＋ Фото</button></div></article>'
+    return '<article class="character-card"><div class="avatar-art '+(m?"has-photo":"")+'">'+(m?'<img src="'+esc(m.url)+'" alt="'+esc(c.name)+'">':'◉')+'</div><h3>'+esc(c.name)+'</h3><p>'+esc((c.age?c.age+" лет · ":"")+(c.look||""))+'</p><div class="character-tags"><span class="chip">Фото: '+count+'</span><span class="chip">'+(count?"Лицо закреплено":"Нужны фото")+'</span><span class="chip">Голос: '+(c.voiceLinked?"подключён":"ожидает")+'</span></div><div id="avatarStatus-'+c.id+'" class="message"></div><input id="avatarUpload-'+c.id+'" type="file" accept="image/*" multiple hidden onchange="uploadExistingCharacterPhotos(event,\''+c.id+'\')"><div class="catalog-actions"><button class="btn primary" onclick="createWithCharacter(\''+c.id+'\')">Создать ролик</button><button class="secondary" onclick="editCharacter(\''+c.id+'\')">Редактировать</button><button class="secondary" onclick="document.getElementById(\'avatarUpload-'+c.id+'\').click()">＋ Фото</button></div></article>'
   }).join(""):'<div class="empty">AI-аватаров пока нет. Создай первого и загрузи его реальные фото.</div>';
   const S=[["UGC","Живая подача и естественный свет"],["Premium","Контролируемый свет и hero-shot"],["Viral","Быстрый хук и активный монтаж"]];
   $("#styleGrid").innerHTML=S.map(s=>'<article class="style-card"><div class="style-swatch"></div><h3>'+s[0]+'</h3><p>'+s[1]+'</p></article>').join("")
 }
-$("#addCharacter").onclick=()=>{
+function resetCharacterModal(){
+  editingCharacterId=null;
   ["characterName","characterAge","characterLook","characterVoice","characterTopics","characterLocks"].forEach(id=>{if($("#"+id))$("#"+id).value=""});
   if($("#characterImages"))$("#characterImages").value="";
   if($("#saveCharacterMsg"))$("#saveCharacterMsg").textContent="";
-  renderCharacterDraftPreview();openM("characterModal")
+  if($("#characterModalTitle"))$("#characterModalTitle").textContent="Создать постоянного AI-аватара";
+  if($("#characterModalHelp"))$("#characterModalHelp").textContent="Загрузи 1–10 реальных фото лица. Они станут референсами, чтобы сохранять внешность героя между роликами.";
+  if($("#characterPhotoLabel"))$("#characterPhotoLabel").textContent="Фото для аватара";
+  if($("#saveCharacter"))$("#saveCharacter").textContent="Сохранить AI-аватара";
+  renderCharacterExistingMedia();
+  renderCharacterDraftPreview();
+}
+$("#addCharacter").onclick=()=>{resetCharacterModal();openM("characterModal")};
+window.editCharacter=id=>{
+  const c=characters.find(x=>x.id===id);if(!c)return;
+  editingCharacterId=id;
+  $("#characterName").value=c.name||"";
+  $("#characterAge").value=c.age||"";
+  $("#characterLook").value=c.look||"";
+  $("#characterVoice").value=c.voice||"";
+  $("#characterTopics").value=c.topics||"";
+  $("#characterLocks").value=c.locks||"";
+  if($("#characterImages"))$("#characterImages").value="";
+  if($("#saveCharacterMsg"))$("#saveCharacterMsg").textContent="";
+  $("#characterModalTitle").textContent="Редактировать AI-аватара";
+  $("#characterModalHelp").textContent="Измени данные, добавь новые фото или выбери главное референсное фото.";
+  $("#characterPhotoLabel").textContent="Добавить новые фото";
+  $("#saveCharacter").textContent="Сохранить изменения";
+  renderCharacterExistingMedia();
+  renderCharacterDraftPreview();
+  openM("characterModal");
 };
 if($("#characterImages"))$("#characterImages").onchange=renderCharacterDraftPreview;
 $("#saveCharacter").onclick=async()=>{
   const n=$("#characterName").value.trim(),files=[...($("#characterImages")?.files||[])].slice(0,10),msg=$("#saveCharacterMsg"),btn=$("#saveCharacter");
   if(!n){msg.textContent="Укажи имя аватара.";return}
-  if(!files.length){msg.textContent="Добавь хотя бы одно фото лица.";return}
-  btn.disabled=true;msg.textContent="Сохраняю AI-аватара…";
-  const c={id:uid("ch"),name:n,age:$("#characterAge").value.trim(),look:$("#characterLook").value.trim(),voice:$("#characterVoice").value.trim(),topics:$("#characterTopics").value.trim(),locks:$("#characterLocks").value.trim(),voiceLinked:false,media:[],created:now()};
-  characters.push(c);saveLocalState();renderCharacters();
-  const result=await uploadCharacterPhotos(c,files,msg);
-  if(!result.ok){
+  const existing=editingCharacterId?characters.find(x=>x.id===editingCharacterId):null;
+  if(!existing&&!files.length){msg.textContent="Добавь хотя бы одно фото лица.";return}
+  btn.disabled=true;msg.textContent=existing?"Сохраняю изменения…":"Сохраняю AI-аватара…";
+  const c=existing||{id:uid("ch"),voiceLinked:false,media:[],created:now()};
+  c.name=n;
+  c.age=$("#characterAge").value.trim();
+  c.look=$("#characterLook").value.trim();
+  c.voice=$("#characterVoice").value.trim();
+  c.topics=$("#characterTopics").value.trim();
+  c.locks=$("#characterLocks").value.trim();
+  c.updatedAt=new Date().toISOString();
+  if(!existing){characters.push(c);saveLocalState();renderCharacters()}
+  let result={ok:1,failed:0};
+  if(files.length)result=await uploadCharacterPhotos(c,files,msg);
+  if(!existing&&!result.ok){
     characters=characters.filter(x=>x.id!==c.id);saveLocalState();renderAll();btn.disabled=false;msg.textContent="Аватар не сохранён: не удалось загрузить фото.";return
   }
-  log("Создан AI-аватар",n+" · фото: "+c.media.length);persist();
-  if($("#characterImages"))$("#characterImages").value="";renderCharacterDraftPreview();btn.disabled=false;msg.textContent="AI-аватар сохранён.";
+  log(existing?"Изменён AI-аватар":"Создан AI-аватар",n+" · фото: "+(c.media||[]).length);
+  persist();
+  if($("#characterImages"))$("#characterImages").value="";
+  renderCharacterDraftPreview();renderCharacterExistingMedia();
+  btn.disabled=false;msg.textContent=existing?"Изменения сохранены.":"AI-аватар сохранён.";
   setTimeout(()=>closeM("characterModal"),500)
 };
 window.createWithCharacter=id=>{openCreate();setTimeout(()=>$("#characterSelect").value=id,0)};
+
 function renderPublish(){const a=runs.filter(r=>["Готово","Запланировано","Опубликовано"].includes(r.status)).reverse();$("#readyGrid").innerHTML=a.length?a.map(r=>'<article class="ready-card"><div class="video-preview" onclick="openRun(\''+r.id+'\')"><div class="video-copy">'+esc(pname(r))+'</div></div><h3>'+esc(pname(r))+'</h3><p>'+esc(r.style||"")+" · "+esc(r.duration||"")+' · 9:16</p><div class="publish-list">'+(r.platforms||["TikTok","Reels","Shorts"]).map(n=>'<div class="publish-row"><span><b>'+n+'</b><small style="display:block;color:var(--muted);margin-top:3px">'+(r.status==="Опубликовано"?"Опубликовано":r.status==="Запланировано"?"Запланировано":"Готово к публикации")+'</small></span><span class="toggle"></span></div>').join("")+'</div><div class="catalog-actions"><button class="secondary" onclick="openRun(\''+r.id+'\')">Проверить</button><button class="btn primary" onclick="scheduleRun(\''+r.id+'\')">Запланировать</button></div></article>').join(""):'<div class="panel empty">После утверждения ролики появятся здесь.</div>'}
 window.scheduleRun=id=>{const r=runs.find(x=>x.id===id);if(!r)return;const d=prompt("Дата и время публикации:",r.scheduledAt||"");if(!d)return;r.scheduledAt=d;r.status="Запланировано";r.stage="Запланировано";r.progress=96;log("Ролик запланирован",pname(r)+" · "+d);persist()};
 function renderCalendar(){const st=new Date();st.setHours(0,0,0,0);const D=Array.from({length:7},(_,i)=>{const d=new Date(st);d.setDate(st.getDate()+i);return d}),E=runs.filter(r=>r.scheduledAt||r.status==="Опубликовано");$("#calendarGrid").innerHTML='<div class="calendar-grid">'+D.map(d=>{const k=d.toLocaleDateString("ru-RU"),e=E.filter(r=>String(r.scheduledAt||"").startsWith(k)||r.publishedDate===k);return '<div class="day"><div class="day-head"><b>'+d.toLocaleDateString("ru-RU",{weekday:"short"})+'</b><small>'+k.slice(0,5)+'</small></div>'+(e.map(r=>'<div class="calendar-event" onclick="openRun(\''+r.id+'\')"><b>'+esc(pname(r))+'</b><small>'+esc(r.scheduledAt||"Опубликовано")+'</small></div>').join("")||'<div class="muted" style="font-size:10px">Нет публикаций</div>')+'</div>'}).join("")+'</div>'}
