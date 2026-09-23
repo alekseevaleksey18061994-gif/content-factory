@@ -354,6 +354,10 @@ function renderAccountChrome(){
   document.querySelectorAll(".account-avatar").forEach(el=>el.textContent=accountInitial(a));
   const side=$("#accountSideName");
   if(side)side.textContent=a?.name||"Основной аккаунт";
+  const mobileName=$("#mobileAccountName");
+  if(mobileName)mobileName.textContent=a?.name||"Основной";
+  const desktopName=$("#desktopAccountName");
+  if(desktopName)desktopName.textContent=a?.name||"Основной аккаунт";
 }
 function renderAccounts(){
   const list=$("#accountList"); if(!list)return;
