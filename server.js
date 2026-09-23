@@ -117,6 +117,74 @@ async function callProductMedia(payload){
 const higgsfieldConfigured = () =>
   Boolean(process.env.HIGGSFIELD_API_KEY_ID && process.env.HIGGSFIELD_API_KEY_SECRET);
 
+const openaiConfigured = () => Boolean(process.env.OPENAI_API_KEY);
+
+async function moduleAvailable(name){
+  try{
+    await import(name);
+    return true;
+  }catch{
+    return false;
+  }
+}
+
+function openAIText(response){
+  if(typeof response?.output_text==='string' && response.output_text.trim()) return response.output_text.trim();
+  const out=Array.isArray(response?.output)?response.output:[];
+  const parts=[];
+  for(const item of out){
+    if(item?.type==='message' && Array.isArray(item.content)){
+      for(const c of item.content){
+        if(c?.type==='output_text' && c.text) parts.push(c.text);
+      }
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+async function callOpenAIChat(message,history=[]){
+  if(!openaiConfigured()) throw new Error('OpenAI API is not configured');
+  const safeHistory=(Array.isArray(history)?history:[]).slice(-12).map(x=>({
+    role:x?.role==='assistant'?'assistant':'user',
+    content:String(x?.content||'').slice(0,8000)
+  }));
+  const state=await readAppState().catch(()=>({data:null}));
+  const snapshot=state?.data||{};
+  const context={
+    products:(snapshot.products||[]).map(p=>({id:p.id,name:p.name,category:p.category,utp:p.utp,rules:p.rules,mediaCount:(p.media||[]).length})),
+    runs:(snapshot.runs||[]).slice(-20).map(r=>({id:r.id,batchId:r.batchId,productName:r.productName,status:r.status,stage:r.stage,progress:r.progress,style:r.style,duration:r.duration})),
+    settings:snapshot.settings||{}
+  };
+  const input=[
+    {role:'system',content:[{type:'input_text',text:
+      'Ты — управляющий Content Factory. Отвечай по-русски, коротко и по делу. '+
+      'У тебя есть контекст товаров, запусков и настроек. Пока доступны только информационные действия: анализировать состояние, предлагать план, находить товар/запуск. '+
+      'Не утверждай, что запустил, удалил, опубликовал или изменил что-либо, если backend явно не сообщает о выполненном действии. '+
+      'Если пользователь просит действие, которое пока не подключено, скажи какой сервис/инструмент нужен. Контекст: '+JSON.stringify(context)
+    }]} ,
+    ...safeHistory.map(x=>({role:x.role,content:[{type:'input_text',text:x.content}]})),
+    {role:'user',content:[{type:'input_text',text:String(message||'').slice(0,12000)}]}
+  ];
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{
+      'authorization':`Bearer ${process.env.OPENAI_API_KEY}`,
+      'content-type':'application/json'
+    },
+    body:JSON.stringify({
+      model:process.env.OPENAI_MODEL||'gpt-5.6-luna',
+      input,
+      reasoning:{effort:'low'},
+      max_output_tokens:1800
+    })
+  });
+  const text=await r.text();
+  let data;
+  try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
+  if(!r.ok) throw new Error(data?.error?.message||data?.message||`OpenAI error ${r.status}`);
+  return {text:openAIText(data),responseId:data?.id||null,model:data?.model||process.env.OPENAI_MODEL||'gpt-5.6-luna'};
+}
+
 function internalRequestAllowed(req){
   const expected=process.env.CONTENT_FACTORY_DB_SECRET;
   const supplied=req.headers['x-content-factory-key'];
@@ -250,10 +318,10 @@ const server=http.createServer(async(req,res)=>{
     const driveMigrated=process.env.GOOGLE_DRIVE_PERSISTENT_MIGRATED === 'true';
     const higgsfield=higgsfieldConfigured();
     const higgsfieldCallbackVerified=process.env.HIGGSFIELD_FINAL_CALLBACK_VERIFIED === 'true';
-    const openai=Boolean(process.env.OPENAI_API_KEY);
-    const chatgptControl=process.env.CHATGPT_CONTROL_ENABLED === 'true';
-    const ffmpeg=process.env.FFMPEG_ENABLED === 'true';
-    const remotion=process.env.REMOTION_ENABLED === 'true';
+    const openai=openaiConfigured();
+    const chatgptControl=openai && process.env.CHATGPT_CONTROL_ENABLED === 'true';
+    const ffmpeg=await moduleAvailable('ffmpeg-static');
+    const remotion=await moduleAvailable('@remotion/renderer');
     const runway=Boolean(process.env.RUNWAYML_API_SECRET);
     const descript=Boolean(process.env.DESCRIPT_API_TOKEN);
     const tiktok=Boolean(process.env.TIKTOK_ACCESS_TOKEN);
@@ -416,6 +484,21 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,...saved});
     }catch(e){
       return json(res,502,{ok:false,error:'Generation callback failed',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/chat' && req.method==='POST'){
+    if(!openaiConfigured() || process.env.CHATGPT_CONTROL_ENABLED!=='true'){
+      return json(res,503,{ok:false,error:'ChatGPT-пульт ещё не подключён. Нужен OpenAI API и включение управляющего чата.'});
+    }
+    try{
+      const body=await readBody(req);
+      const message=String(body?.message||'').trim();
+      if(!message) return json(res,400,{ok:false,error:'Пустое сообщение'});
+      const result=await callOpenAIChat(message,body?.history||[]);
+      return json(res,200,{ok:true,...result});
+    }catch(e){
+      return json(res,502,{ok:false,error:'OpenAI chat failed',detail:String(e?.message||e)});
     }
   }
 
