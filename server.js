@@ -478,8 +478,8 @@ function normalizeRunPlan(raw,payload={}){
     },
     storyboard,
     references:{
-      product:Array.isArray(references.product)?references.product.filter(Boolean).slice(0,8):productRefs,
-      avatar:Array.isArray(references.avatar)?references.avatar.filter(Boolean).slice(0,8):avatarRefs,
+      product:productRefs,
+      avatar:avatarRefs,
       style:String(references.style||payload.style||'').slice(0,2000),
       notes:String(references.notes||'Сохранять реальный товар и внешность выбранного AI-аватара.').slice(0,4000)
     }
@@ -543,27 +543,139 @@ async function saveRunPatch(accountId,runId,patch={}){
   await writeAppState(data,accountId);
   return run;
 }
+async function notifyN8nArchive(payload){
+  const direct=process.env.N8N_CONTENT_WEBHOOK;
+  const base=process.env.N8N_WEBHOOK_BASE;
+  const webhook=direct || (base ? base.replace(/\/$/,'')+'/content-factory-run' : '');
+  if(!webhook)return {ok:true,status:0,skipped:true};
+  try{
+    const r=await fetch(webhook,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...payload,workerMode:'backend-direct'})});
+    return {ok:r.ok,status:r.status};
+  }catch(e){
+    return {ok:false,status:0,error:String(e?.message||e)};
+  }
+}
+function runReferenceUrls(run){
+  const urls=[
+    ...(run.media||run.product?.media||[]).map(x=>x?.url),
+    ...(run.avatarReferences||run.character?.media||[]).map(x=>x?.url)
+  ].filter(x=>/^https:\/\//i.test(String(x||'')));
+  return [...new Set(urls)].slice(0,9);
+}
+function sceneDurationSeconds(scene){
+  const nums=String(scene?.duration||'').match(/\d+(?:[.,]\d+)?/g)||[];
+  if(nums.length>=2){
+    const a=Number(nums[0].replace(',','.')),b=Number(nums[1].replace(',','.'));
+    if(Number.isFinite(a)&&Number.isFinite(b)&&b>a)return Math.max(4,Math.min(15,Math.round(b-a)));
+  }
+  return 5;
+}
+async function processRunGeneration(accountId,runId){
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+  if(run.backendGenerationRunning)return {ok:true,alreadyRunning:true};
+  run.backendGenerationRunning=true;
+  run.backendGenerationStartedAt=new Date().toISOString();
+  run.stage='Генерация';run.status='В работе';run.progress=Math.max(38,Number(run.progress)||0);
+  run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
+  run.generationError='';
+  await writeAppState(data,accountId);
+
+  const board=Array.isArray(run.storyboard)&&run.storyboard.length?run.storyboard:[planSceneDefaults(0,1)];
+  const refs=runReferenceUrls(run);
+  const total=board.length;
+  try{
+    for(let i=0;i<board.length;i++){
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      if(!run||run.paused||run.status==='Остановлено'){
+        if(run){run.backendGenerationRunning=false;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId)}
+        return {ok:false,stopped:true};
+      }
+      const scene=board[i]||{};
+      const sceneNo=i+1;
+      if(run.sceneResults?.[sceneNo]?.ok&&run.sceneResults?.[sceneNo]?.urls?.length)continue;
+      const prompt=[
+        'Вертикальный рекламный ролик 9:16.',
+        'Товар: '+String(run.productName||''),
+        String(run.productRules||run.product?.rules||''),
+        run.character?.name?('AI-аватар: '+run.character.name+'. '+String(run.character.look||'')+' '+String(run.character.locks||'')):'',
+        'Сцена '+sceneNo+': '+String(scene.title||''),
+        'Кадр: '+String(scene.shot||''),
+        'Действие: '+String(scene.action||''),
+        String(scene.prompt||''),
+        'Сохраняй реальный внешний вид товара по референсам. Не меняй форму, цвет и рисунок товара. Без случайных надписей и логотипов.'
+      ].filter(Boolean).join('\n');
+      let result=null,lastError=null;
+      const maxAttempts=Math.max(1,Math.min(2,Number(run.maxAttempts)||1));
+      for(let attempt=1;attempt<=maxAttempts;attempt++){
+        try{
+          result=await generateHiggsfieldScene({
+            accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
+            aspectRatio:'9:16',resolution:'720p',generateAudio:false
+          });
+          if(result?.ok&&result?.urls?.length)break;
+          lastError=new Error('Higgsfield не вернул готовое видео');
+        }catch(e){lastError=e}
+      }
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      if(!run)return {ok:false,error:'Ролик удалён во время генерации'};
+      run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
+      if(result?.ok&&result?.urls?.length){
+        run.sceneResults[sceneNo]={ok:true,urls:result.urls,provider:result.provider,model:result.model,requestId:result.requestId||null,completedAt:new Date().toISOString()};
+        appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total);
+      }else{
+        const err=String(lastError?.message||'Ошибка Higgsfield');
+        run.sceneResults[sceneNo]={ok:false,error:err,completedAt:new Date().toISOString()};
+        run.backendGenerationRunning=false;run.status='Ошибка';run.stage='Генерация';run.generationError='Сцена '+sceneNo+': '+err;run.error=run.generationError;
+        run.updatedAt=new Date().toISOString();
+        appendFactoryJournal(data,'Ошибка генерации сцены',(run.productName||run.id)+' · сцена '+sceneNo+' · '+err);
+        await writeAppState(data,accountId);
+        return {ok:false,error:err,scene:sceneNo};
+      }
+      const completed=Object.values(run.sceneResults).filter(x=>x?.ok&&x?.urls?.length).length;
+      const urls=Object.keys(run.sceneResults).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
+      run.generationResult={provider:'higgsfield',urls,completedScenes:completed,totalScenes:total,completed:completed>=total};
+      run.progress=Math.min(65,38+Math.round((completed/Math.max(1,total))*27));
+      run.updatedAt=new Date().toISOString();
+      await writeAppState(data,accountId);
+    }
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run){
+      const urls=Object.keys(run.sceneResults||{}).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
+      run.generationResult={provider:'higgsfield',urls,completedScenes:board.length,totalScenes:board.length,completed:true};
+      run.backendGenerationRunning=false;run.stage='На проверке';run.status='На проверке';run.progress=70;run.awaitingApproval=true;run.error='';run.generationError='';run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Генерация сцен завершена',(run.productName||run.id)+' · '+board.length+' сцен');
+      await writeAppState(data,accountId);
+    }
+    return {ok:true,completedScenes:board.length};
+  }catch(e){
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run){
+      run.backendGenerationRunning=false;run.status='Ошибка';run.stage='Генерация';run.generationError=String(e?.message||e);run.error=run.generationError;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Ошибка генерации',run.generationError);
+      await writeAppState(data,accountId);
+    }
+    return {ok:false,error:String(e?.message||e)};
+  }
+}
 async function dispatchExistingRun(accountId,run){
   const payload={...run,action:'create_batch',accountId,batchId:run.batchId,runId:run.id,runIds:[run.id]};
-  const dispatched=await dispatchFactoryStart(payload);
+  const archive=await notifyN8nArchive(payload);
   const state=await readAppState(accountId);
   const data=state?.data||blankFactoryState();
   const current=findRunById(data,run.id);
   if(current){
     current.workflow={
       sentAt:new Date().toISOString(),
-      archiveStatus:dispatched.data?.archive?.status||0,
-      generationStatus:dispatched.data?.generation?.status||0,
-      ok:!!dispatched.ok
+      archiveStatus:archive.status||0,
+      generationStatus:'backend-direct',
+      ok:true
     };
-    if(!dispatched.ok){
-      current.status='Ошибка';
-      current.error='Не удалось передать задачу в workflow';
-    }
     current.updatedAt=new Date().toISOString();
     await writeAppState(data,accountId);
   }
-  return dispatched;
+  processRunGeneration(accountId,run.id).catch(e=>console.error('[backend-generation] '+run.id+' '+String(e?.message||e)));
+  return {ok:true,data:{archive,generation:{ok:true,status:'backend-direct'}}};
 }
 async function createBatchRuns(payload,accountId){
   const state=await readAppState(accountId);
@@ -1779,6 +1891,26 @@ async function applyGenerationCallback(body){
   return {matched,accountId};
 }
 
+async function recoverPendingBackendGenerations(){
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+      for(const run of (data.runs||[])){
+        const hasPlan=!!run?.idea&&!!run?.script&&Array.isArray(run?.storyboard)&&run.storyboard.length>0;
+        const complete=!!run?.generationResult?.completed;
+        if(run&&hasPlan&&!complete&&!run.paused&&run.status==='В работе'&&run.stage==='Генерация'){
+          run.backendGenerationRunning=false;
+          run.updatedAt=new Date().toISOString();
+          await writeAppState(data,accountId);
+          processRunGeneration(accountId,run.id).catch(e=>console.error('[backend-generation-recovery] '+run.id+' '+String(e?.message||e)));
+        }
+      }
+    }
+  }catch(e){console.error('[backend-generation-recovery] scan '+String(e?.message||e))}
+}
+
 async function recoverLegacyPlaceholderRuns(){
   try{
     const registry=await ensureAccountsRegistry();
@@ -2442,6 +2574,7 @@ const server=http.createServer(async(req,res)=>{
 server.listen(port,'0.0.0.0',async()=>{
   console.log(`Content Factory запущен на порту ${port}`);
   setTimeout(()=>recoverLegacyPlaceholderRuns(),1200);
+  setTimeout(()=>recoverPendingBackendGenerations(),3500);
   if(process.env.CF_CHAT_SELFTEST==='1'){
     try{
       const turn1=await callOpenAIChat('Ответь только: OK1',[],DEFAULT_ACCOUNT_ID);
