@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=23" />
+  <link rel="stylesheet" href="/style.css?v=24" />
 </head>
 <body>
   <div class="shell">
@@ -191,10 +191,28 @@
       </section>
 
       <section class="page" id="costs">
-        <header class="section-head"><div><span class="kicker">ЭКОНОМИКА</span><h1>Расходы</h1><p>Стоимость роликов, моделей, повторных попыток и лимиты</p></div></header>
+        <header class="section-head"><div><span class="kicker">ЭКОНОМИКА</span><h1>Расходы</h1><p>Все затраты Content Factory по сервисам и активному аккаунту</p></div><button class="btn primary" id="addExpenseBtn">＋ Добавить расход</button></header>
         <div class="stats wide-stats" id="costStats"></div>
-        <section class="panel"><div class="panel-title"><div><span class="mini-icon">₽</span><h2>Бюджетные ограничения</h2><p>Контроль затрат перед генерацией</p></div></div><div class="settings-grid"><label class="setting form-setting"><small>Лимит на кампанию</small><input id="budgetCampaign" type="number" value="5000"></label><label class="setting form-setting"><small>Макс. попыток на сцену</small><input id="budgetAttempts" type="number" value="3"></label><label class="setting form-setting"><small>Подтверждать дороже</small><input id="budgetApproval" type="number" value="100"></label><div class="setting"><small>Умный выбор модели</small><b>Авто · включён</b></div></div><button class="btn primary" id="saveBudget">Сохранить лимиты</button></section>
-        <section class="panel"><div class="panel-title"><div><span class="mini-icon">▥</span><h2>Последние расходы</h2></div></div><div id="costRows" class="library-list"></div></section>
+
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">◫</span><h2>По сервисам</h2><p>Сколько тратится на каждое приложение</p></div></div><div id="expenseProviderCards" class="expense-provider-grid"></div></section>
+
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">⚙</span><h2>Тарифы и лимиты</h2><p>OpenAI считается автоматически по токенам; остальные тарифы можно указать вручную</p></div></div>
+          <div class="settings-grid">
+            <label class="setting form-setting"><small>Курс USD → ₽</small><input id="usdRubRate" type="number" step="0.01" placeholder="Например 95"></label>
+            <label class="setting form-setting"><small>Higgsfield, ₽ / генерация</small><input id="higgsfieldRate" type="number" step="0.01" value="0"></label>
+            <label class="setting form-setting"><small>Runway, ₽ / секунда</small><input id="runwayRate" type="number" step="0.01" value="0"></label>
+            <label class="setting form-setting"><small>Descript, ₽ / действие</small><input id="descriptRate" type="number" step="0.01" value="0"></label>
+            <label class="setting form-setting"><small>Лимит на кампанию, ₽</small><input id="budgetCampaign" type="number" value="5000"></label>
+            <label class="setting form-setting"><small>Макс. попыток на сцену</small><input id="budgetAttempts" type="number" value="3"></label>
+            <label class="setting form-setting"><small>Подтверждать дороже, ₽</small><input id="budgetApproval" type="number" value="100"></label>
+          </div>
+          <button class="btn primary" id="saveBudget">Сохранить тарифы и лимиты</button>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">▥</span><h2>Журнал расходов</h2><p>Автоматические и ручные операции</p></div><div class="cost-filters"><select id="costProviderFilter"><option value="">Все сервисы</option></select><select id="costPeriodFilter"><option value="all">За всё время</option><option value="month">Этот месяц</option><option value="today">Сегодня</option></select></div></div>
+          <div id="costRows" class="library-list"></div>
+        </section>
       </section>
 
       <section class="page" id="journal">
@@ -269,6 +287,18 @@
 
   <button class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" type="button" aria-label="Закрыть меню"></button>
 
+  <div class="modal" id="expenseModal" aria-hidden="true">
+    <div class="modal-card small">
+      <button class="close" data-close="expenseModal">×</button>
+      <span class="kicker">РАСХОД</span><h2>Добавить расход</h2>
+      <label>Сервис<select id="expenseProvider"><option>Railway</option><option>Supabase</option><option>n8n</option><option>OpenAI</option><option>Higgsfield</option><option>Runway</option><option>Descript</option><option>Google Drive</option><option>Другое</option></select></label>
+      <label>Описание<input id="expenseDescription" placeholder="Например: Railway Pro"></label>
+      <div class="field-grid"><label>Сумма, ₽<input id="expenseRub" type="number" step="0.01" value="0"></label><label>Сумма, $<input id="expenseUsd" type="number" step="0.0001" value="0"></label></div>
+      <label>Тип<select id="expenseRecurring"><option value="">Разовый</option><option value="monthly">Ежемесячный</option></select></label>
+      <button class="btn primary full" id="saveExpenseBtn">Сохранить расход</button><div class="message" id="expenseMessage"></div>
+    </div>
+  </div>
+
   <div class="modal" id="accountModal" aria-hidden="true">
     <div class="modal-card small">
       <button class="close" data-close="accountModal">×</button>
@@ -332,6 +362,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=23"></script>
+  <script src="/app.js?v=24"></script>
 </body>
 </html>
