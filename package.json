@@ -5,5 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "@higgsfield/client": "0.2.6"
   }
 }
