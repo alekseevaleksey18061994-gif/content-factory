@@ -1118,9 +1118,10 @@ const server=http.createServer(async(req,res)=>{
     }
     try{
       const body=await readBody(req);
+      const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||body?.accountId||DEFAULT_ACCOUNT_ID);
       const data=body?.data ?? body;
       await writeAppState(data,accountId);
-      return json(res,200,{ok:true,configured:true,savedAt:new Date().toISOString()});
+      return json(res,200,{ok:true,configured:true,accountId,savedAt:new Date().toISOString()});
     }catch(e){
       return json(res,502,{ok:false,configured:true,error:'Не удалось сохранить серверное состояние.',detail:String(e?.message||e)});
     }
