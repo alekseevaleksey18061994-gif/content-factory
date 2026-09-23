@@ -37,13 +37,20 @@ function stateSnapshot(){
   return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),videoAnalyses:videoAnalyses.slice(-100),settings};
 }
 let syncTimer=null;
+let localMutationDepth=0;
+let deferredServerSync=false;
+const beginLocalMutation=()=>{localMutationDepth++};
+const finishLocalMutation=()=>{localMutationDepth=Math.max(0,localMutationDepth-1)};
 async function pushState(){
   try{
-    await fetch("/api/state?account="+encodeURIComponent(activeAccountId),{method:"PUT",headers:{"content-type":"application/json","x-content-account":activeAccountId},body:JSON.stringify({accountId:activeAccountId,data:stateSnapshot()})});
-  }catch{}
+    const r=await fetch("/api/state?account="+encodeURIComponent(activeAccountId),{method:"PUT",headers:{"content-type":"application/json","x-content-account":activeAccountId},body:JSON.stringify({accountId:activeAccountId,data:stateSnapshot()})});
+    return r.ok;
+  }catch{return false}
 }
 async function syncFromServer(){
+  if(localMutationDepth>0){deferredServerSync=true;return}
   try{
+    deferredServerSync=false;
     const r=await fetch("/api/state?account="+encodeURIComponent(activeAccountId),{cache:"no-store",headers:{"x-content-account":activeAccountId}});
     if(!r.ok)return;
     const payload=await r.json();
@@ -588,27 +595,57 @@ $("#saveCharacter").onclick=async()=>{
   if(!n){msg.textContent="Укажи имя аватара.";return}
   const existing=editingCharacterId?characters.find(x=>x.id===editingCharacterId):null;
   if(!existing&&!files.length){msg.textContent="Добавь хотя бы одно фото лица.";return}
-  btn.disabled=true;msg.textContent=existing?"Сохраняю изменения…":"Сохраняю AI-аватара…";
-  const c=existing||{id:uid("ch"),voiceLinked:false,media:[],created:now()};
-  c.name=n;
-  c.age=$("#characterAge").value.trim();
-  c.look=$("#characterLook").value.trim();
-  c.voice=$("#characterVoice").value.trim();
-  c.topics=$("#characterTopics").value.trim();
-  c.locks=$("#characterLocks").value.trim();
-  c.updatedAt=new Date().toISOString();
-  if(!existing){characters.push(c);saveLocalState();renderCharacters()}
-  let result={ok:1,failed:0};
-  if(files.length)result=await uploadCharacterPhotos(c,files,msg);
-  if(!existing&&!result.ok){
-    characters=characters.filter(x=>x.id!==c.id);saveLocalState();renderAll();btn.disabled=false;msg.textContent="Аватар не сохранён: не удалось загрузить фото.";return
+  btn.disabled=true;
+  beginLocalMutation();
+  try{
+    msg.textContent=existing?"Сохраняю изменения…":"Сохраняю AI-аватара…";
+    const c=existing||{id:uid("ch"),voiceLinked:false,media:[],created:now()};
+    c.name=n;
+    c.age=$("#characterAge").value.trim();
+    c.look=$("#characterLook").value.trim();
+    c.voice=$("#characterVoice").value.trim();
+    c.topics=$("#characterTopics").value.trim();
+    c.locks=$("#characterLocks").value.trim();
+    c.updatedAt=new Date().toISOString();
+
+    if(!existing){
+      characters.push(c);
+      saveLocalState();
+      renderCharacters();
+    }
+
+    let result={ok:1,failed:0};
+    if(files.length)result=await uploadCharacterPhotos(c,files,msg);
+
+    if(!existing&&!result.ok){
+      characters=characters.filter(x=>x.id!==c.id);
+      saveLocalState();
+      renderAll();
+      clearTimeout(syncTimer);
+      await pushState();
+      msg.textContent="Аватар не сохранён: не удалось загрузить фото.";
+      return;
+    }
+
+    log(existing?"Изменён AI-аватар":"Создан AI-аватар",n+" · фото: "+(c.media||[]).length);
+    saveLocalState();
+    renderAll();
+    clearTimeout(syncTimer);
+    const saved=await pushState();
+    if(!saved)throw new Error("Не удалось сохранить аватара на сервере");
+
+    if($("#characterImages"))$("#characterImages").value="";
+    renderCharacterDraftPreview();
+    renderCharacterExistingMedia();
+    msg.textContent=existing?"Изменения сохранены.":"AI-аватар сохранён.";
+    setTimeout(()=>closeM("characterModal"),500);
+  }catch(e){
+    msg.textContent="Ошибка сохранения: "+String(e?.message||e);
+  }finally{
+    finishLocalMutation();
+    btn.disabled=false;
+    if(localMutationDepth===0&&deferredServerSync)setTimeout(()=>syncFromServer(),0);
   }
-  log(existing?"Изменён AI-аватар":"Создан AI-аватар",n+" · фото: "+(c.media||[]).length);
-  persist();
-  if($("#characterImages"))$("#characterImages").value="";
-  renderCharacterDraftPreview();renderCharacterExistingMedia();
-  btn.disabled=false;msg.textContent=existing?"Изменения сохранены.":"AI-аватар сохранён.";
-  setTimeout(()=>closeM("characterModal"),500)
 };
 window.createWithCharacter=id=>{openCreate();setTimeout(()=>$("#characterSelect").value=id,0)};
 
