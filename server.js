@@ -731,7 +731,13 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
       'У активного аккаунта есть долговременная память отдельно от видимой истории чата. Если пользователь явно говорит «запомни», «сохрани на будущее», «забудь» или просит изменить память — используй set_account_memory. Не сохраняй чувствительные данные без явной просьбы. '+
       'Если можно выполнить задачу инструментом, предпочитай выполнить её, а не объяснять пользователю ручные шаги. Контекст: '+JSON.stringify(context)
     }]} ,
-    ...safeHistory.map(x=>({role:x.role,content:[{type:'input_text',text:x.content}]})),
+    ...safeHistory.map(x=>({
+      role:x.role,
+      content:[{
+        type:x.role==='assistant'?'output_text':'input_text',
+        text:x.content
+      }]
+    })),
     {role:'user',content:[{type:'input_text',text:String(message||'').slice(0,12000)}]}
   ];
 
