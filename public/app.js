@@ -68,8 +68,28 @@ function persist(){
   syncTimer=setTimeout(pushState,180);
 }
 function log(t,d="",type="ok"){journal.push({id:uid("j"),time:now(),title:t,detail:d,type});save("cf_journal",journal.slice(-500))}
-function go(id){$$(".page").forEach(x=>x.classList.toggle("active",x.id===id));$$(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));if(id==="profile")renderConnections();scrollTo({top:0,behavior:"smooth"})}
-window.go=go;$$("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));
+function setMobileDrawer(open){
+  const side=$("#appSidebar"),backdrop=$("#mobileDrawerBackdrop"),toggle=$("#mobileMenuToggle");
+  if(!side)return;
+  side.classList.toggle("mobile-open",!!open);
+  backdrop?.classList.toggle("open",!!open);
+  document.body.classList.toggle("mobile-drawer-open",!!open);
+  toggle?.setAttribute("aria-expanded",open?"true":"false");
+}
+function go(id){
+  $(".page").forEach(x=>x.classList.toggle("active",x.id===id));
+  $(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
+  setMobileDrawer(false);
+  if(id==="profile")renderConnections();
+  if(id==="assistant")refreshChatStatus();
+  scrollTo({top:0,behavior:"smooth"});
+}
+window.go=go;
+$("#mobileMenuToggle")?.addEventListener("click",()=>setMobileDrawer(true));
+$("#mobileDrawerClose")?.addEventListener("click",()=>setMobileDrawer(false));
+$("#mobileDrawerBackdrop")?.addEventListener("click",()=>setMobileDrawer(false));
+document.addEventListener("keydown",e=>{if(e.key==="Escape")setMobileDrawer(false)});
+$("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));
 function openM(id){$("#"+id)?.classList.add("open")} function closeM(id){$("#"+id)?.classList.remove("open")} window.closeModal=closeM;
 $$("[data-close]").forEach(b=>b.onclick=()=>closeM(b.dataset.close));$$(".modal").forEach(m=>m.onclick=e=>{if(e.target===m)closeM(m.id)});
 function opts(){const po=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");["productSelect","campaignProduct"].forEach(id=>{if($("#"+id))$("#"+id).innerHTML=po});if($("#campaignSelect"))$("#campaignSelect").innerHTML='<option value="">Без кампании</option>'+campaigns.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("");if($("#characterSelect"))$("#characterSelect").innerHTML='<option value="">Без персонажа</option>'+characters.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("")}
@@ -246,12 +266,12 @@ function renderAnalytics(){const p=runs.filter(r=>r.status==="Опубликов
 function renderCosts(){const t=runs.reduce((s,r)=>s+(Number(r.cost)||0),0),c=runs.filter(r=>Number(r.cost)>0).length,a=c?Math.round(t/c):0,re=runs.reduce((s,r)=>s+Math.max(0,(r.attempt||1)-1),0);$("#costStats").innerHTML=stat("₽","Всего",t+" ₽")+stat("▥","Средний ролик",a+" ₽","blue")+stat("↻","Повторных попыток",re,"warn")+stat("◉","Лимит кампании",(settings.budgetCampaign||5000)+" ₽","purple");$("#budgetCampaign").value=settings.budgetCampaign||5000;$("#budgetAttempts").value=settings.budgetAttempts||3;$("#budgetApproval").value=settings.budgetApproval||100;$("#costRows").innerHTML=runs.filter(r=>r.cost).reverse().slice(0,20).map(r=>'<div class="library-item"><div><h3>'+esc(pname(r))+'</h3><p>'+esc(norm(r))+" · "+esc(r.modelMode||"Авто")+'</p></div><b>'+r.cost+' ₽</b></div>').join("")||'<div class="empty">Расходы появятся после реальных генераций.</div>'}
 $("#saveBudget").onclick=()=>{settings.budgetCampaign=Number($("#budgetCampaign").value)||5000;settings.budgetAttempts=Number($("#budgetAttempts").value)||3;settings.budgetApproval=Number($("#budgetApproval").value)||100;log("Обновлены бюджетные лимиты","Кампания: "+settings.budgetCampaign+" ₽");persist()};
 
-let chatHistory=[];
+let chatHistory=load("cf_chat_history",[]);
 function renderChat(){
   const box=$("#chatMessages");
   if(!box)return;
   if(!chatHistory.length){
-    box.innerHTML='<div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов принимать команды после подключения OpenAI API.</p></div>';
+    box.innerHTML='<div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов. Напиши задачу или спроси, что сейчас происходит в Content Factory.</p></div>';
     return;
   }
   box.innerHTML=chatHistory.map(m=>'<div class="chat-bubble '+(m.role==="user"?"user":"assistant")+'"><b>'+(m.role==="user"?"Ты":"ChatGPT")+'</b><p>'+esc(m.content)+'</p></div>').join("");
@@ -270,18 +290,18 @@ if($("#chatForm"))$("#chatForm").onsubmit=async e=>{
   e.preventDefault();
   const input=$("#chatInput"),message=input.value.trim();
   if(!message)return;
-  chatHistory.push({role:"user",content:message});input.value="";renderChat();
+  chatHistory.push({role:"user",content:message});save("cf_chat_history",chatHistory.slice(-30));input.value="";renderChat();
   const status=$("#chatStatus"); if(status)status.textContent="Думаю…";
   try{
     const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message,history:chatHistory.slice(0,-1)})});
     const data=await r.json().catch(()=>({}));
-    chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});
+    chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});save("cf_chat_history",chatHistory.slice(-30));
   }catch(err){
-    chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});
+    chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});save("cf_chat_history",chatHistory.slice(-30));
   }
   renderChat();refreshChatStatus();
 };
-if($("#clearChat"))$("#clearChat").onclick=()=>{chatHistory=[];renderChat()};
+if($("#clearChat"))$("#clearChat").onclick=()=>{chatHistory=[];save("cf_chat_history",chatHistory);renderChat()};
 function renderJournal(){$("#journalList").innerHTML=journal.length?journal.slice().reverse().map(j=>'<div class="journal-row '+(j.type==="error"?"error":"")+'"><span class="journal-time">'+esc(j.time)+'</span><span class="journal-dot"></span><span><b>'+esc(j.title)+'</b><small>'+esc(j.detail||"")+'</small></span></div>').join(""):'<div class="empty">Журнал пока пуст.</div>'}
 async function renderConnections(){
   let s={services:{},details:{}};

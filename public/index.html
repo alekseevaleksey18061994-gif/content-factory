@@ -8,11 +8,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=18" />
+  <link rel="stylesheet" href="/style.css?v=19" />
 </head>
 <body>
   <div class="shell">
-    <aside class="side">
+    <aside class="side" id="appSidebar" aria-label="Главное меню">
+      <button class="mobile-drawer-close" id="mobileDrawerClose" type="button" aria-label="Закрыть меню">×</button>
       <button class="brand" data-go="home">
         <span class="brand-mark">F</span>
         <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод</small></span>
@@ -61,11 +62,12 @@
       </div>
 
       <div class="mobile-global-head">
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Открыть меню" aria-controls="appSidebar" aria-expanded="false">☰</button>
         <button class="mobile-global-brand" data-go="home">
           <span class="brand-mark">F</span>
-          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · v1.4</small></span>
+          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · v1.5</small></span>
         </button>
-        <button class="mobile-account" data-go="profile" aria-label="Профиль"><span>Алексей</span><span class="avatar">А</span></button>
+        <button class="mobile-chat-shortcut" data-go="assistant" aria-label="Открыть ChatGPT"><span>✦</span><b>GPT</b></button>
       </div>
 
       <section class="page active" id="home">
@@ -193,7 +195,7 @@
         <section class="panel chat-panel">
           <div class="chat-toolbar"><div><b>Content Factory Assistant</b><small id="chatStatus">Проверяю подключение…</small></div><button class="secondary" id="clearChat">Очистить</button></div>
           <div id="chatMessages" class="chat-messages">
-            <div class="chat-bubble assistant"><b>ChatGPT</b><p>После подключения OpenAI API здесь можно будет управлять заводом обычными командами.</p></div>
+            <div class="chat-bubble assistant"><b>ChatGPT</b><p>Готов. Напиши задачу или спроси, что сейчас происходит в Content Factory.</p></div>
           </div>
           <form id="chatForm" class="chat-form">
             <textarea id="chatInput" rows="3" placeholder="Например: какие ролики сейчас в работе?"></textarea>
@@ -210,13 +212,7 @@
     </main>
   </div>
 
-  <nav class="bottom-nav">
-    <button class="nav active" data-go="home"><span>⌂</span><b>Главная</b></button>
-    <button class="nav" data-go="production"><span>⌁</span><b>Производство</b></button>
-    <button class="nav" data-go="products"><span>▣</span><b>Товары</b></button>
-    <button class="nav" data-go="publish"><span>➤</span><b>Публикация</b></button>
-    <button class="nav" data-go="profile"><span>⚙</span><b>Система</b></button>
-  </nav>
+  <button class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" type="button" aria-label="Закрыть меню"></button>
 
   <div class="modal" id="createModal" aria-hidden="true">
     <div class="modal-card">
@@ -267,6 +263,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=18"></script>
+  <script src="/app.js?v=19"></script>
 </body>
 </html>
