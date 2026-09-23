@@ -1220,3 +1220,25 @@ option{background:#fff;color:#0b1730}
   }
   #assistant .chat-form{display:none!important}
 }
+
+
+/* v28: editable AI avatars */
+.avatar-existing-media{display:none;margin:12px 0 14px}
+.avatar-existing-media.has-media{display:block}
+.avatar-existing-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.avatar-existing-title b{font-size:12px;color:var(--text)}
+.avatar-existing-title small{font-size:9px;color:var(--muted)}
+.avatar-existing-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.avatar-existing-item{position:relative;border:1px solid #cfe0e9;border-radius:14px;background:#f7fbfd;padding:6px}
+.avatar-existing-item.primary{border-color:#57ced3;box-shadow:0 0 0 2px rgba(63,202,208,.12)}
+.avatar-existing-item img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:10px;display:block}
+.avatar-existing-item>div{display:grid;gap:4px;margin-top:6px}
+.avatar-existing-item button{border:1px solid #d4e3eb;border-radius:8px;background:#fff;color:#526b83;font-size:8px;padding:6px;cursor:pointer}
+.avatar-existing-item button:first-child{color:#087f91}
+.avatar-existing-item .danger-mini{color:#c8505d}
+.character-card .catalog-actions{flex-wrap:wrap}
+.character-card .catalog-actions .secondary{flex:1 1 auto}
+
+@media(max-width:820px){
+  .avatar-existing-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
