@@ -139,6 +139,7 @@ function blankFactoryState(){
     characters:[],
     journal:[],
     expenses:[],
+    chatHistory:[],
     settings:{mode:'auto',budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}}
   };
 }
@@ -756,6 +757,14 @@ function normalizeChatAttachments(items=[]){
     kind:x?.kind==='image'?'image':'file',
     size:Number(x?.size)||0
   })).filter(x=>/^file-[A-Za-z0-9_-]+$/.test(x.fileId));
+}
+
+function normalizeStoredChatHistory(history=[]){
+  return (Array.isArray(history)?history:[]).slice(-200).map(m=>({
+    role:m?.role==='assistant'?'assistant':'user',
+    content:String(m?.content||'').slice(0,20000),
+    attachments:normalizeChatAttachments(m?.attachments)
+  })).filter(m=>m.content||m.attachments.length);
 }
 
 function chatAttachmentParts(items=[]){
@@ -1410,7 +1419,12 @@ const server=http.createServer(async(req,res)=>{
     try{
       const body=await readBody(req);
       const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||body?.accountId||DEFAULT_ACCOUNT_ID);
-      const data=body?.data ?? body;
+      const incoming=body?.data ?? body;
+      const data=incoming&&typeof incoming==='object'?incoming:{};
+      const existing=await readAppState(accountId);
+      if(Object.prototype.hasOwnProperty.call(existing?.data||{},'chatHistory')){
+        data.chatHistory=normalizeStoredChatHistory(existing.data.chatHistory||[]);
+      }
       await writeAppState(data,accountId);
       return json(res,200,{ok:true,configured:true,accountId,savedAt:new Date().toISOString()});
     }catch(e){
@@ -1498,6 +1512,45 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,...saved});
     }catch(e){
       return json(res,502,{ok:false,error:'Generation callback failed',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/chat/history' && req.method==='GET'){
+    try{
+      const accountId=sanitizeAccountId(url.searchParams.get('account')||req.headers['x-content-account']||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId);
+      const data=state?.data||{};
+      const hasCloudHistory=Object.prototype.hasOwnProperty.call(data,'chatHistory');
+      return json(res,200,{ok:true,accountId,hasCloudHistory,history:normalizeStoredChatHistory(data.chatHistory||[])});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось загрузить историю чата',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/chat/history' && req.method==='PUT'){
+    try{
+      const body=await readBody(req);
+      const accountId=sanitizeAccountId(body?.accountId||url.searchParams.get('account')||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId);
+      const data=state?.data&&typeof state.data==='object'?state.data:blankFactoryState();
+      data.chatHistory=normalizeStoredChatHistory(body?.history||[]);
+      await writeAppState(data,accountId);
+      return json(res,200,{ok:true,accountId,count:data.chatHistory.length});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось сохранить историю чата',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/chat/history' && req.method==='DELETE'){
+    try{
+      const accountId=sanitizeAccountId(url.searchParams.get('account')||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId);
+      const data=state?.data&&typeof state.data==='object'?state.data:blankFactoryState();
+      data.chatHistory=[];
+      await writeAppState(data,accountId);
+      return json(res,200,{ok:true,accountId});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось очистить историю чата',detail:String(e?.message||e)});
     }
   }
 
