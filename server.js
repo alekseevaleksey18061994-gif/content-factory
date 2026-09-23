@@ -1080,8 +1080,17 @@ async function runControlAction(body,accountId){
   if(action==='accept_scene'){
     const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
     run.acceptedScenes=[...new Set([...(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]),scene])];
+    const total=Number(run.generationResult?.totalScenes||run.sceneCount||0);
+    const acceptedCount=new Set(run.acceptedScenes.map(Number)).size;
     run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Сцена утверждена',(run.productName||run.id)+' · сцена '+scene);
+    if(total>0&&acceptedCount>=total){
+      run.status='В работе';run.stage='Озвучка';run.progress=Math.max(Number(run.progress)||0,74);run.awaitingApproval=false;run.postProductionRunning=false;
+      appendFactoryJournal(data,'Все сцены утверждены',(run.productName||run.id)+' · запускаю озвучку и монтаж');
+      await writeAppState(data,accountId);
+      enqueuePostProduction(accountId,run.id,'accept-all-scenes');
+      return run;
+    }
     await writeAppState(data,accountId);return run;
   }
   if(action==='update_scene_prompt'){
@@ -2284,6 +2293,26 @@ async function applyGenerationCallback(body){
   return {matched,accountId};
 }
 
+async function recoverAcceptedRunsForPostProduction(){
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+      for(const run of (data.runs||[])){
+        const total=Number(run?.generationResult?.totalScenes||run?.sceneCount||0);
+        const accepted=new Set((Array.isArray(run?.acceptedScenes)?run.acceptedScenes:[]).map(Number)).size;
+        const needsPost=run&&total>0&&accepted>=total&&!run?.montageResult&&!run?.paused&&run?.status!=='Остановлено';
+        if(needsPost){
+          run.postProductionRunning=false;run.status='В работе';run.stage=run.voiceoverResult?'Монтаж':'Озвучка';run.progress=Math.max(Number(run.progress)||0,74);run.awaitingApproval=false;run.updatedAt=new Date().toISOString();
+          await writeAppState(data,accountId);
+          enqueuePostProduction(accountId,run.id,'post-production-recovery');
+        }
+      }
+    }
+  }catch(e){console.error('[post-production-recovery] '+String(e?.message||e))}
+}
+
 async function recoverPendingBackendGenerations(){
   try{
     const registry=await ensureAccountsRegistry();
@@ -2977,6 +3006,11 @@ server.listen(port,'0.0.0.0',async()=>{
       await recoverPendingBackendGenerations();
     }catch(e){
       console.error('[startup-recovery] generation '+String(e?.message||e));
+    }
+    try{
+      await recoverAcceptedRunsForPostProduction();
+    }catch(e){
+      console.error('[startup-recovery] post-production '+String(e?.message||e));
     }
   },1200);
   if(process.env.CF_CHAT_SELFTEST==='1'){
