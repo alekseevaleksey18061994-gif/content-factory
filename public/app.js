@@ -77,8 +77,8 @@ function setMobileDrawer(open){
   toggle?.setAttribute("aria-expanded",open?"true":"false");
 }
 function go(id){
-  $(".page").forEach(x=>x.classList.toggle("active",x.id===id));
-  $(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
+  $$(".page").forEach(x=>x.classList.toggle("active",x.id===id));
+  $$(".nav").forEach(x=>x.classList.toggle("active",x.dataset.go===id||(id==="productDetail"&&x.dataset.go==="products")||(id==="runDetail"&&x.dataset.go==="generations")));
   setMobileDrawer(false);
   if(id==="profile")renderConnections();
   if(id==="assistant")refreshChatStatus();
@@ -89,7 +89,13 @@ $("#mobileMenuToggle")?.addEventListener("click",()=>setMobileDrawer(true));
 $("#mobileDrawerClose")?.addEventListener("click",()=>setMobileDrawer(false));
 $("#mobileDrawerBackdrop")?.addEventListener("click",()=>setMobileDrawer(false));
 document.addEventListener("keydown",e=>{if(e.key==="Escape")setMobileDrawer(false)});
-$("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));
+$$("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));
+document.addEventListener("click",e=>{
+  const b=e.target.closest?.("[data-go]");
+  if(!b||!b.dataset.go)return;
+  e.preventDefault();
+  go(b.dataset.go);
+});
 function openM(id){$("#"+id)?.classList.add("open")} function closeM(id){$("#"+id)?.classList.remove("open")} window.closeModal=closeM;
 $$("[data-close]").forEach(b=>b.onclick=()=>closeM(b.dataset.close));$$(".modal").forEach(m=>m.onclick=e=>{if(e.target===m)closeM(m.id)});
 function opts(){const po=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");["productSelect","campaignProduct"].forEach(id=>{if($("#"+id))$("#"+id).innerHTML=po});if($("#campaignSelect"))$("#campaignSelect").innerHTML='<option value="">Без кампании</option>'+campaigns.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("");if($("#characterSelect"))$("#characterSelect").innerHTML='<option value="">Без персонажа</option>'+characters.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("")}
@@ -286,21 +292,38 @@ async function refreshChatStatus(){
     el.className=ok?"chat-online":"chat-offline";
   }catch{el.textContent="Статус недоступен"}
 }
-if($("#chatForm"))$("#chatForm").onsubmit=async e=>{
-  e.preventDefault();
-  const input=$("#chatInput"),message=input.value.trim();
+async function sendChatMessage(raw,input=null){
+  const message=String(raw||"").trim();
   if(!message)return;
-  chatHistory.push({role:"user",content:message});save("cf_chat_history",chatHistory.slice(-30));input.value="";renderChat();
+  const previous=chatHistory.slice(-12);
+  chatHistory.push({role:"user",content:message});
+  save("cf_chat_history",chatHistory.slice(-30));
+  if(input)input.value="";
+  go("assistant");
+  renderChat();
   const status=$("#chatStatus"); if(status)status.textContent="Думаю…";
   try{
-    const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message,history:chatHistory.slice(0,-1)})});
+    const r=await fetch("/api/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({message,history:previous})});
     const data=await r.json().catch(()=>({}));
-    chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});save("cf_chat_history",chatHistory.slice(-30));
+    chatHistory.push({role:"assistant",content:r.ok?(data.text||"Готово."):(data.detail||data.error||"Ошибка подключения")});
   }catch(err){
-    chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});save("cf_chat_history",chatHistory.slice(-30));
+    chatHistory.push({role:"assistant",content:"Ошибка связи: "+String(err?.message||err)});
   }
-  renderChat();refreshChatStatus();
+  save("cf_chat_history",chatHistory.slice(-30));
+  renderChat();
+  refreshChatStatus();
+}
+if($("#chatForm"))$("#chatForm").onsubmit=e=>{
+  e.preventDefault();
+  const input=$("#chatInput");
+  sendChatMessage(input?.value,input);
 };
+if($("#mobileChatDock"))$("#mobileChatDock").onsubmit=e=>{
+  e.preventDefault();
+  const input=$("#mobileChatInput");
+  sendChatMessage(input?.value,input);
+};
+$("#mobileChatDockOpen")?.addEventListener("click",()=>go("assistant"));
 if($("#clearChat"))$("#clearChat").onclick=()=>{chatHistory=[];save("cf_chat_history",chatHistory);renderChat()};
 function renderJournal(){$("#journalList").innerHTML=journal.length?journal.slice().reverse().map(j=>'<div class="journal-row '+(j.type==="error"?"error":"")+'"><span class="journal-time">'+esc(j.time)+'</span><span class="journal-dot"></span><span><b>'+esc(j.title)+'</b><small>'+esc(j.detail||"")+'</small></span></div>').join(""):'<div class="empty">Журнал пока пуст.</div>'}
 async function renderConnections(){
@@ -328,7 +351,7 @@ async function renderConnections(){
     const [statusClass,label,dotClass]=statusMeta(x.state);
     return '<div class="conn conn-detailed"><div class="conn-left"><span class="dot '+dotClass+'"></span><span><b>'+esc(name)+'</b><small>'+esc(x.description||"")+'</small>'+(x.detail?'<small class="conn-note">'+esc(x.detail)+'</small>':'')+(x.next?'<small class="conn-next">Следующий шаг: '+esc(x.next)+'</small>':'')+'</span></div><span class="status '+statusClass+'">'+label+'</span></div>'
   }).join("");
-  $(".mode-card[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===settings.mode))
+  $$(".mode-card[data-mode]").forEach(b=>b.classList.toggle("active",b.dataset.mode===settings.mode))
 }
 $$(".mode-card[data-mode]").forEach(b=>b.onclick=()=>{settings.mode=b.dataset.mode;createMode=settings.mode;log("Изменён режим производства",settings.mode==="auto"?"Автопилот":"Ручной контроль");persist()});$$(".mode-card[data-create-mode]").forEach(b=>b.onclick=()=>{$$(".mode-card[data-create-mode]").forEach(x=>x.classList.remove("active"));b.classList.add("active");createMode=b.dataset.createMode});
 function renderSearch(q=""){const z=q.trim().toLowerCase(),I=[...products.map(x=>({t:"Товар",n:x.name,s:x.category,a:"openProduct('"+x.id+"')"})),...runs.map(x=>({t:"Ролик",n:pname(x),s:norm(x)+" · "+(x.style||""),a:"openRun('"+x.id+"')"})),...campaigns.map(x=>({t:"Кампания",n:x.name,s:prod(x.productId)?.name||"",a:"go('campaigns')"})),...scripts.map(x=>({t:"Сценарий",n:x.title,s:x.hook||"",a:"go('scripts')"})),...characters.map(x=>({t:"Персонаж",n:x.name,s:x.look||"",a:"go('characters')"}))].filter(x=>!z||(x.n+" "+x.s+" "+x.t).toLowerCase().includes(z)).slice(0,30);$("#searchResults").innerHTML=I.length?I.map(x=>'<button class="search-result" onclick="closeModal(\'searchModal\');'+x.a+'"><b>'+esc(x.n)+'</b><small>'+x.t+" · "+esc(x.s)+'</small></button>').join(""):'<div class="empty">Ничего не найдено.</div>'}
