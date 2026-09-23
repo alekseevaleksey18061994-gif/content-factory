@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=34" />
+  <link rel="stylesheet" href="/style.css?v=35" />
 </head>
 <body>
   <div class="auth-gate" id="authGate">
@@ -38,6 +38,7 @@
         <nav class="side-nav">
           <button class="nav active" data-go="home"><span>⌂</span><b>Главная</b></button>
           <button class="nav" data-go="production"><span>⌁</span><b>Производство</b></button>
+          <button class="nav" data-go="ideas"><span>✦</span><b>Идеи</b></button>
           <button class="nav" data-go="products"><span>▣</span><b>Товары</b></button>
           <button class="nav" data-go="campaigns"><span>◫</span><b>Кампании</b></button>
           <button class="nav" data-go="generations"><span>▷</span><b>Ролики</b></button>
@@ -137,6 +138,21 @@
       <section class="page" id="production">
         <header class="section-head"><div><span class="kicker">ПРОИЗВОДСТВО</span><h1>Конвейер</h1><p>Каждый ролик виден на своём этапе</p></div><button class="btn primary" data-create>＋ Новый ролик</button></header>
         <div class="kanban" id="kanban"></div>
+      </section>
+
+      <section class="page" id="ideas">
+        <header class="section-head"><div><span class="kicker">ИДЕИ КОНТЕНТА</span><h1>Идеи</h1><p>Сначала создаём концепцию, потом запускаем её в производство</p></div></header>
+        <section class="panel idea-generator">
+          <div class="panel-title"><div><span class="mini-icon">✦</span><h2>Новая идея</h2><p>OpenAI подготовит хук, механику, сценарий и storyboard</p></div></div>
+          <div class="field-grid"><label>Товар<select id="ideaProduct"></select></label><label>Стиль<select id="ideaStyle"><option>UGC</option><option>Проблема → решение</option><option>Демонстрация</option><option>Экспертный</option><option>Вирусный хук</option></select></label></div>
+          <label>Что хотим показать<textarea id="ideaBrief" placeholder="Например: показать фактуру мочалки, пену и результат на коже"></textarea></label>
+          <button class="btn primary" id="generateIdeaBtn">✦ Сгенерировать идею</button>
+          <div class="message" id="ideaStatus"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">▤</span><h2>Готовые идеи</h2><p>Каждую можно открыть, переделать или запустить</p></div></div>
+          <div id="ideaList" class="idea-list"></div>
+        </section>
       </section>
 
       <section class="page" id="background">
@@ -405,6 +421,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=34"></script>
+  <script src="/app.js?v=35"></script>
 </body>
 </html>
