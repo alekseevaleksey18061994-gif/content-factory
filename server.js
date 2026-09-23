@@ -581,11 +581,11 @@ async function notifyN8nArchive(payload){
   }
 }
 function runReferenceUrls(run){
-  const urls=[
-    ...(run.media||run.product?.media||[]).map(x=>x?.url),
-    ...(run.avatarReferences||run.character?.media||[]).map(x=>x?.url)
-  ].filter(x=>/^https:\/\//i.test(String(x||'')));
-  return [...new Set(urls)].slice(0,9);
+  const productMedia=Array.isArray(run.media)?run.media:(Array.isArray(run.product?.media)?run.product.media:[]);
+  const avatarMedia=Array.isArray(run.avatarReferences)?run.avatarReferences:(Array.isArray(run.character?.media)?run.character.media:[]);
+  const productPrimary=productMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||''))) || productMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
+  const avatarPrimary=avatarMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||''))) || avatarMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
+  return [productPrimary?.url,avatarPrimary?.url].filter(Boolean);
 }
 function sceneDurationSeconds(scene){
   const nums=String(scene?.duration||'').match(/\d+(?:[.,]\d+)?/g)||[];
@@ -1676,6 +1676,14 @@ async function generateHiggsfieldScene(body){
 }
 
 
+function normalizedRunwayModel(value){
+  const allowed=new Set(['gen4_turbo','gen4','gen4.5','kling2.5_turbo_pro','kling3.0_pro','kling3.0_4k','kling3.0_standard','klingO3_pro','klingO3_standard','klingO3_4k','veo3.1','veo3.1_fast','robotics_v1','seedance2','seedance2_fast','seedance2_mini','seedance2_5','hailuo3','h3_max','happyhorse_1_0','gemini_omni_flash_1.1','grok_imagine_1_5','gemini_omni_flash','wan3','wan3_prime']);
+  let raw=cleanCredentialPart(value||'').trim();
+  const compact=raw.toLowerCase().replace(/\s+/g,'');
+  if(['gen-4.5','gen4_5','gen-4-5','gen4-5'].includes(compact))raw='gen4.5';
+  if(['gen-4','gen_4'].includes(compact))raw='gen4';
+  return allowed.has(raw)?raw:'gen4.5';
+}
 async function generateRunwayScene(body){
   if(!process.env.RUNWAYML_API_SECRET) throw new Error('Runway API is not configured');
   const prompt=String(body?.prompt||'').trim();
@@ -1686,10 +1694,11 @@ async function generateRunwayScene(body){
   const duration=requested>=8?10:5;
   const ratio=String(body?.ratio||'720:1280');
   const client=new RunwayML({apiKey:process.env.RUNWAYML_API_SECRET});
+  const model=normalizedRunwayModel(body?.model||process.env.RUNWAY_MODEL);
 
   try{
     const pending=client.imageToVideo.create({
-      model:String(body?.model||process.env.RUNWAY_MODEL||'gen4.5'),
+      model,
       ...(refs[0]?{promptImage:refs[0]}:{}),
       promptText:prompt,
       ratio,
@@ -1709,7 +1718,7 @@ async function generateRunwayScene(body){
       ok:true,
       provider:'runway',
       taskId:created?.id||completed?.id||null,
-      model:String(body?.model||process.env.RUNWAY_MODEL||'gen4.5'),
+      model,
       duration,
       ratio,
       urls:output.filter(x=>typeof x==='string'),
