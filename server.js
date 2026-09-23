@@ -1683,7 +1683,6 @@ async function createBatchRuns(payload,accountId){
   const state=await readAppState(accountId);
   const data=state?.data||blankFactoryState();
   data.runs=Array.isArray(data.runs)?data.runs:[];
-  data.scripts=Array.isArray(data.scripts)?data.scripts:[];
   const product=findProductInState(data,payload.productId||payload.productName);
   if(!product)throw new Error('Товар не найден');
   const count=Math.max(1,Math.min(20,parseInt(payload.count)||1));
@@ -1691,47 +1690,38 @@ async function createBatchRuns(payload,accountId){
   const created=[];
   for(let i=1;i<=count;i++){
     const run={
-      id:factoryId('r'),
-      ...payload,
+      id:factoryId('r'),...payload,
       accountId,batchId,productId:product.id,productName:product.name,
       variant:count>1?i:null,status:'В работе',stage:'Идея',progress:3,attempt:1,
-      sceneCount:5,sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[],
-      idea:null,script:null,storyboard:[],references:null,generationResult:null,
+      sceneCount:0,sceneVersions:{},acceptedScenes:[],
+      idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,generationResult:null,
       created:payload.created||new Date().toISOString(),updatedAt:new Date().toISOString()
     };
     data.runs.push(run);created.push(run);
   }
-  appendFactoryJournal(data,'Создан запуск',product.name+' · '+count+' ролик(а/ов)');
+  appendFactoryJournal(data,'Создан запуск',product.name+' · '+count+' ролик(а/ов) · '+(payload.mode==='manual'?'ручной режим':'автопилот'));
   await writeAppState(data,accountId);
 
   for(const run of created){
-    try{
-      const plan=await buildRunPlan(run,accountId,run.variant||1);
-      const fresh=await readAppState(accountId);
-      const fd=fresh?.data||blankFactoryState();
-      const rr=findRunById(fd,run.id);
-      if(!rr)continue;
-      rr.idea=plan.idea;rr.script=plan.script;rr.storyboard=plan.storyboard;rr.references=plan.references;
-      rr.sceneCount=plan.storyboard.length;rr.stage='Референсы';rr.progress=32;rr.updatedAt=new Date().toISOString();
-      fd.scripts=Array.isArray(fd.scripts)?fd.scripts:[];
-      fd.scripts.push({id:factoryId('s'),runId:rr.id,title:plan.idea.title,hook:plan.script.hook,body:plan.script.body,cta:plan.script.cta,used:1,created:new Date().toISOString()});
-      appendFactoryJournal(fd,'Подготовлен производственный план',product.name+' · идея, сценарий, storyboard и референсы');
-      await writeAppState(fd,accountId);
-      Object.assign(run,rr);
-    }catch(e){
-      await saveRunPatch(accountId,run.id,{status:'Ошибка',stage:'Идея',error:'Ошибка подготовки: '+String(e?.message||e)});
-      continue;
-    }
     if(run.mode==='manual'){
-      await saveRunPatch(accountId,run.id,{status:'На проверке',stage:'Референсы',progress:32,awaitingApproval:true});
+      try{
+        const idea=await generateIdeaStage(run,accountId,run.variant||1);
+        const fresh=await readAppState(accountId),fd=fresh?.data||blankFactoryState(),rr=findRunById(fd,run.id);
+        if(!rr)continue;
+        rr.idea=idea;rr.status='На проверке';rr.stage='Идея';rr.progress=8;rr.awaitingApproval=true;rr.updatedAt=new Date().toISOString();
+        appendFactoryJournal(fd,'Идея готова',product.name+' · '+idea.title);
+        await writeAppState(fd,accountId);
+      }catch(e){
+        await saveRunPatch(accountId,run.id,{status:'Ошибка',stage:'Идея',error:'Ошибка идеи: '+String(e?.message||e)});
+      }
     }else{
-      await saveRunPatch(accountId,run.id,{status:'В работе',stage:'Генерация',progress:38,awaitingApproval:false});
-      await dispatchExistingRun(accountId,run);
+      enqueueAutoPipeline(accountId,run.id);
     }
   }
   const final=await readAppState(accountId);
   return {batchId,runs:(final?.data?.runs||[]).filter(r=>r.batchId===batchId)};
 }
+
 async function createIdeaDraft(body,accountId){
   const state=await readAppState(accountId);
   const data=state?.data||blankFactoryState();
@@ -1827,7 +1817,7 @@ async function runControlAction(body,accountId){
       await writeAppState(data,accountId);
       const script=await generateScriptStage(run,accountId,String(body?.note||''));
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.script=script;run.storyboard=[];run.references=null;run.sceneCount=0;
+      run.script=script;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
       run.status='На проверке';run.stage='Сценарий';run.progress=18;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Сценарий готов',(run.productName||run.id)+' · '+String(script.title||''));
       await writeAppState(data,accountId);return run;
@@ -1839,31 +1829,57 @@ async function runControlAction(body,accountId){
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       run.storyboard=storyboard;run.sceneCount=storyboard.length;
       run.sceneVersions=Object.fromEntries(storyboard.map((_,i)=>[i+1,1]));
-      run.references=null;run.status='На проверке';run.stage='Storyboard';run.progress=26;run.updatedAt=new Date().toISOString();
+      run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;
+      run.status='На проверке';run.stage='Storyboard';run.progress=26;run.awaitingApproval=true;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Storyboard готов',(run.productName||run.id)+' · '+storyboard.length+' сцен');
       await writeAppState(data,accountId);return run;
+    }
+    if(current==='Storyboard'){
+      run.status='В работе';run.stage='Превиз-кадры';run.progress=28;run.awaitingApproval=false;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Запущен превиз',(run.productName||run.id)+' · генерирую 3 кадра на сцену');
+      await writeAppState(data,accountId);
+      enqueueRunPrevis(accountId,run.id,'manual-previs');
+      return run;
+    }
+    if(current==='Превиз-кадры'||current==='Референсы'){
+      if(!run.previsResult?.completed||!(run.previsFrames||[]).length)throw new Error('Превиз ещё не готов');
+      run.status='В работе';run.stage='Генерация';run.progress=38;run.awaitingApproval=false;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Превиз утверждён',(run.productName||run.id)+' · запускаю видео по превиз-кадрам');
+      await writeAppState(data,accountId);
+      await dispatchExistingRun(accountId,run);
+      return (await readAppState(accountId)).data.runs.find(x=>x.id===runId);
     }
     throw new Error('Переход для этапа «'+current+'» ещё не настроен');
   }
   if(action==='start'||action==='resume'){
-    run.paused=false;run.status='В работе';
-    if(!run.idea||!run.script||!Array.isArray(run.storyboard)||!run.storyboard.length){
-      run.stage='Идея';run.progress=5;await writeAppState(data,accountId);
-      const plan=await buildRunPlan(run,accountId,run.variant||1,String(body?.note||''));
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.idea=plan.idea;run.script=plan.script;run.storyboard=plan.storyboard;run.references=plan.references;run.sceneCount=plan.storyboard.length;
+    run.paused=false;run.error='';run.updatedAt=new Date().toISOString();
+    if(run.mode!=='manual'){
+      run.status='В работе';run.awaitingApproval=false;
+      await writeAppState(data,accountId);
+      enqueueAutoPipeline(accountId,run.id);
+      return run;
     }
-    run.stage='Генерация';run.progress=Math.max(Number(run.progress)||0,38);run.status='В работе';run.updatedAt=new Date().toISOString();
-    await writeAppState(data,accountId);
-    await dispatchExistingRun(accountId,run);
-    return (await readAppState(accountId)).data.runs.find(r=>r.id===runId);
+    if(!run.idea){
+      run.status='В работе';run.stage='Идея';run.progress=5;await writeAppState(data,accountId);
+      const idea=await generateIdeaStage(run,accountId,run.variant||1,String(body?.note||''));
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.idea=idea;
+    }
+    if(run.stage==='Генерация'){
+      run.status='В работе';run.awaitingApproval=false;await writeAppState(data,accountId);await dispatchExistingRun(accountId,run);return run;
+    }
+    if(run.stage==='Превиз-кадры'&&!run.previsResult?.completed){
+      run.status='В работе';run.awaitingApproval=false;await writeAppState(data,accountId);enqueueRunPrevis(accountId,run.id,'resume-previs');return run;
+    }
+    run.status='На проверке';run.stage=run.stage==='Референсы'?'Превиз-кадры':(run.stage||'Идея');run.awaitingApproval=true;run.progress=Math.max(Number(run.progress)||0,8);
+    await writeAppState(data,accountId);return run;
   }
   if(action==='regenerate'){
     const stage=String(body?.stage||'Идея');
     if(stage==='Идея'){
       const idea=await generateIdeaStage(run,accountId,run.variant||1,String(body?.note||''));
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.idea=idea;run.script=null;run.storyboard=[];run.references=null;run.sceneCount=0;
+      run.idea=idea;run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
       run.status='Черновик';run.stage='Идея';run.progress=8;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Идея переделана',(run.productName||run.id)+' · '+idea.title);
       await writeAppState(data,accountId);return run;
@@ -1881,9 +1897,17 @@ async function runControlAction(body,accountId){
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       run.storyboard=storyboard;run.sceneCount=storyboard.length;
       run.sceneVersions=Object.fromEntries(storyboard.map((_,i)=>[i+1,(Number(run.sceneVersions?.[i+1])||0)+1]));
-      run.references=null;run.status='На проверке';run.stage='Storyboard';run.progress=26;run.updatedAt=new Date().toISOString();
+      run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.status='На проверке';run.stage='Storyboard';run.progress=26;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Storyboard переделан',(run.productName||run.id)+' · '+storyboard.length+' сцен');
       await writeAppState(data,accountId);return run;
+    }
+    if(stage==='Превиз-кадры'||stage==='Референсы'){
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.previsError='';run.error='';run.status='В работе';run.stage='Превиз-кадры';run.progress=28;run.awaitingApproval=false;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Превиз переделывается',run.productName||run.id);
+      await writeAppState(data,accountId);
+      enqueueRunPrevis(accountId,run.id,'regenerate-previs');
+      return run;
     }
     if(stage==='Генерация'){
       run.status='В работе';run.stage='Генерация';run.progress=Math.max(38,Number(run.progress)||0);run.attempt=(Number(run.attempt)||0)+1;
