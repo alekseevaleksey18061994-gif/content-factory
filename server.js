@@ -702,12 +702,71 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
   return {ok:false,error:'Неизвестный инструмент: '+name};
 }
 
-async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
+function normalizeChatAttachments(items=[]){
+  return (Array.isArray(items)?items:[]).slice(0,4).map(x=>({
+    fileId:String(x?.fileId||'').trim(),
+    name:String(x?.name||'file').slice(0,180),
+    mimeType:String(x?.mimeType||'application/octet-stream').slice(0,120),
+    kind:x?.kind==='image'?'image':'file',
+    size:Number(x?.size)||0
+  })).filter(x=>/^file-[A-Za-z0-9_-]+$/.test(x.fileId));
+}
+
+function chatAttachmentParts(items=[]){
+  return normalizeChatAttachments(items).map(a=>a.kind==='image'
+    ? {type:'input_image',file_id:a.fileId,detail:'auto'}
+    : {type:'input_file',file_id:a.fileId}
+  );
+}
+
+async function uploadOpenAIChatFile(body={}){
+  if(!openaiConfigured()) throw new Error('OpenAI API is not configured');
+  const fileName=String(body.fileName||'file').replace(/[\\/\0]/g,'_').slice(0,180);
+  const mimeType=String(body.mimeType||'application/octet-stream').toLowerCase();
+  const allowed=new Set([
+    'image/jpeg','image/png','image/webp','image/gif',
+    'application/pdf','text/plain','text/csv','application/json','text/markdown',
+    'application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint','application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  ]);
+  if(!allowed.has(mimeType)) throw new Error('Этот формат файла пока не поддерживается');
+  const raw=String(body.dataBase64||'');
+  const match=raw.match(/^data:([^;]+);base64,([A-Za-z0-9+/=\r\n]+)$/);
+  if(!match) throw new Error('Некорректные данные файла');
+  const buf=Buffer.from(match[2].replace(/\s+/g,''),'base64');
+  if(!buf.length) throw new Error('Пустой файл');
+  if(buf.length>15*1024*1024) throw new Error('Максимальный размер файла — 15 МБ');
+
+  const kind=mimeType.startsWith('image/')?'image':'file';
+  const form=new FormData();
+  form.append('purpose',kind==='image'?'vision':'user_data');
+  form.append('file',new Blob([buf],{type:mimeType}),fileName);
+  const r=await fetch('https://api.openai.com/v1/files',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY},
+    body:form
+  });
+  const text=await r.text();
+  let data; try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
+  if(!r.ok) throw new Error(data?.error?.message||data?.message||('OpenAI file upload error '+r.status));
+  return {
+    fileId:data.id,
+    name:fileName,
+    mimeType,
+    kind,
+    size:buf.length
+  };
+}
+
+async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,attachments=[]){
   if(!openaiConfigured()) throw new Error('OpenAI API is not configured');
   const safeHistory=(Array.isArray(history)?history:[]).slice(-12).map(x=>({
     role:x?.role==='assistant'?'assistant':'user',
-    content:String(x?.content||'').slice(0,8000)
+    content:String(x?.content||'').slice(0,8000),
+    attachments:normalizeChatAttachments(x?.attachments)
   }));
+  const currentAttachments=normalizeChatAttachments(attachments);
   accountId=sanitizeAccountId(accountId);
   const state=await readAppState(accountId).catch(()=>({data:null}));
   const snapshot=state?.data||{};
@@ -733,12 +792,17 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID){
     }]} ,
     ...safeHistory.map(x=>({
       role:x.role,
-      content:[{
-        type:x.role==='assistant'?'output_text':'input_text',
-        text:x.content
-      }]
+      content:x.role==='assistant'
+        ? [{type:'output_text',text:x.content}]
+        : [
+            {type:'input_text',text:x.content||'Посмотри вложение.'},
+            ...chatAttachmentParts(x.attachments)
+          ]
     })),
-    {role:'user',content:[{type:'input_text',text:String(message||'').slice(0,12000)}]}
+    {role:'user',content:[
+      {type:'input_text',text:String(message||'').slice(0,12000)||'Посмотри вложение.'},
+      ...chatAttachmentParts(currentAttachments)
+    ]}
   ];
 
   let r=await fetch('https://api.openai.com/v1/responses',{
@@ -1371,6 +1435,19 @@ const server=http.createServer(async(req,res)=>{
     }
   }
 
+  if(url.pathname==='/api/chat/upload' && req.method==='POST'){
+    if(!openaiConfigured() || process.env.CHATGPT_CONTROL_ENABLED!=='true'){
+      return json(res,503,{ok:false,error:'ChatGPT-пульт ещё не подключён.'});
+    }
+    try{
+      const body=await readBody(req);
+      const attachment=await uploadOpenAIChatFile(body);
+      return json(res,201,{ok:true,attachment});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось прикрепить файл',detail:String(e?.message||e)});
+    }
+  }
+
   if(url.pathname==='/api/chat' && req.method==='POST'){
     if(!openaiConfigured() || process.env.CHATGPT_CONTROL_ENABLED!=='true'){
       return json(res,503,{ok:false,error:'ChatGPT-пульт ещё не подключён. Нужен OpenAI API и включение управляющего чата.'});
@@ -1378,9 +1455,10 @@ const server=http.createServer(async(req,res)=>{
     try{
       const body=await readBody(req);
       const message=String(body?.message||'').trim();
-      if(!message) return json(res,400,{ok:false,error:'Пустое сообщение'});
+      const attachments=normalizeChatAttachments(body?.attachments);
+      if(!message && !attachments.length) return json(res,400,{ok:false,error:'Пустое сообщение'});
       const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
-      const result=await callOpenAIChat(message,body?.history||[],accountId);
+      const result=await callOpenAIChat(message,body?.history||[],accountId,attachments);
       return json(res,200,{ok:true,...result});
     }catch(e){
       return json(res,502,{ok:false,error:'OpenAI chat failed',detail:String(e?.message||e)});
