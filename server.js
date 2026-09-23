@@ -594,6 +594,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Категория: '+String(payload.product?.category||payload.category||''),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Правила/ограничения: '+String(payload.productRules||payload.product?.rules||''),
+    'FACT LOCK: любые невидимые свойства товара (способ крепления, прочность, материал, размеры, мощность, водостойкость, эффект и т.п.) разрешено упоминать ТОЛЬКО если они прямо записаны в УТП, правилах или брифе пользователя. По фото можно брать только визуально наблюдаемые форму, цвет, пропорции и детали. Если факт не подтверждён — не использовать его в идее.',
     'Формат: 9:16',
     'Длительность: '+String(payload.duration||'30 сек'),
     'Желаемый стиль: '+String(payload.style||'UGC'),
@@ -739,6 +740,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     'Название: '+String(payload.productName||payload.product?.name||'Товар'),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Факты/ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
+    'FACT LOCK: запрещено добавлять способ установки, материал, размеры, прочность, характеристики или обещания, если они не указаны явно выше/в брифе. Фотографии подтверждают только внешний вид товара. Не превращай предположение по фото в рекламный факт.',
     'Длительность ролика: '+String(payload.duration||'30 сек'),
     'Формат: вертикальный 9:16.',
     'Стиль: '+String(payload.style||'UGC'),
@@ -869,6 +871,7 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
+    'FACT LOCK: storyboard не имеет права визуализировать неподтверждённый способ установки/крепления или характеристику. Если сценарий случайно содержит неподтверждённый факт — не усиливай его и пометь безопасную нейтральную визуализацию реального товара без демонстрации выдуманного механизма.',
     'Персонаж/аватар: '+String(payload.character?.name||'не задан'),
     'Внешность: '+String(payload.character?.look||''),
     'Locks: '+String(payload.character?.locks||''),
@@ -970,7 +973,11 @@ function normalizePrevisPlan(raw,payload={}){
         goal:String(x.goal||scene.purpose||'').slice(0,2200),
         storyFunction:String(x.storyFunction||'').slice(0,900),
         continuityRole:String(x.continuityRole||'').slice(0,1800),
-        composition:String(x.composition||scene.shot||'').slice(0,3500),
+        composition:String(
+          j===0 ? (x.composition||scene.startFrame||scene.shot||'') :
+          j===1 ? (x.composition||scene.shot||'') :
+                  (x.composition||scene.endFrame||scene.shot||'')
+        ).slice(0,3500),
         framing:String(x.framing||scene.framing||'').slice(0,1000),
         cameraAngle:String(x.cameraAngle||scene.angle||'').slice(0,1000),
         cameraPosition:String(x.cameraPosition||'').slice(0,1200),
@@ -987,7 +994,11 @@ function normalizePrevisPlan(raw,payload={}){
         avatarDescription:String(x.avatarDescription||scene.characters||'').slice(0,3000),
         expression:String(x.expression||'').slice(0,900),
         pose:String(x.pose||'').slice(0,1200),
-        action:String(x.action||scene.action||'').slice(0,3500),
+        action:String(
+          j===0 ? ('START STATE — до выполнения главного действия. '+String(scene.startFrame||x.action||scene.action||'')) :
+          j===1 ? ('MIDDLE ACTION — действие явно происходит сейчас. '+String(x.action||scene.action||'')) :
+                  ('END STATE — действие завершено, виден результат. '+String(scene.endFrame||x.action||scene.action||''))
+        ).slice(0,3500),
         productInFrame:Boolean(x.productInFrame ?? !!scene.product),
         productRole:String(x.productRole||scene.product||'').slice(0,2200),
         productPlacement:String(x.productPlacement||'').slice(0,1200),
@@ -1040,6 +1051,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     '',
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
     'Правила товара: '+String(payload.productRules||payload.product?.rules||''),
+    'FACT LOCK: не дорисовывай и не демонстрируй неподтверждённый механизм крепления, скрытые детали или свойства. Исходные фото задают только реальную видимую геометрию товара.',
     'AI-аватар: '+String(payload.character?.name||'не задан'),
     'Avatar locks: '+String(payload.character?.look||'')+' '+String(payload.character?.locks||''),
     'Идея: '+JSON.stringify(payload.idea||{}),
@@ -1155,6 +1167,112 @@ function enqueueRunPrevis(accountId,runId,label='previs'){
   next=previous.catch(()=>{}).then(()=>processRunPrevis(key,runId)).catch(e=>{console.error('['+label+'] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}}).finally(()=>{if(previsQueues.get(key)===next)previsQueues.delete(key)});
   previsQueues.set(key,next);return next;
 }
+async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
+  if(!openaiConfigured())return {passed:null,score:null,summary:'OpenAI QC недоступен',issues:[]};
+  const identity=primaryIdentityUrls(run);
+  const content=[
+    {type:'input_text',text:[
+      'ROLE: строгий QC-контролёр рекламного PREVIZ-кадра.',
+      'Проверь КАНДИДАТ на соответствие утверждённому storyboard, фазе кадра и реальному товару.',
+      'Кандидат должен быть пригоден как визуальный anchor будущего видео.',
+      'Товар: '+String(run.productName||''),
+      'Фаза: '+String(frame.frameType||'')+'. Сцена '+frame.scene+', кадр '+frame.frame+'.',
+      'Задача/действие: '+String(frame.action||frame.goal||''),
+      'Композиция: '+String(frame.composition||''),
+      'Локация: '+String(frame.environment||frame.location||''),
+      'CRITICAL: если товар есть в кадре, его геометрия, пропорции, крепёжные элементы, цвет и материал должны совпадать с SOURCE PRODUCT IMAGE. Generated anchors не имеют права переопределять форму товара.',
+      'CRITICAL: START/MIDDLE/END должны отражать правильную фазу действия, а не одинаковую позу.',
+      'Локация должна выглядеть правдоподобно и обжито, если storyboard не требует стерильной студии.',
+      'Не наказывай за небольшие художественные различия. FAIL только за заметную ошибку товара, неверное действие/фазу, серьёзный артефакт, неправильного персонажа или явное нарушение storyboard.',
+      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
+    ].join('\n')},
+    {type:'input_text',text:'CANDIDATE PREVIZ:'},
+    {type:'input_image',image_url:imageUrl,detail:'low'}
+  ];
+  if(frame.productInFrame&&identity.product){
+    content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY — главный эталон формы товара:'});
+    content.push({type:'input_image',image_url:identity.product,detail:'high'});
+  }
+  if(frame.avatarInFrame&&identity.avatar){
+    content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'});
+    content.push({type:'input_image',image_url:identity.avatar,detail:'low'});
+  }
+  if(previousUrl){
+    content.push({type:'input_text',text:'PREVIOUS GENERATED FRAME — только continuity/composition reference:'});
+    content.push({type:'input_image',image_url:previousUrl,detail:'low'});
+  }
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'low'},max_output_tokens:1200})
+  });
+  const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+  if(!r.ok)throw new Error(data?.error?.message||('Previs QC error '+r.status));
+  const parsed=safeAnalysisJson(openAIText(data))||{};
+  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-qc',description:'QC превиз-кадра '+frame.scene+'.'+frame.frame,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+  const score=Number(parsed.score);
+  return {
+    passed:parsed.passed!==false&&(!Number.isFinite(score)||score>=8),
+    score:Number.isFinite(score)?score:null,
+    summary:String(parsed.summary||'').slice(0,1200),
+    checks:parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{},
+    issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,10):[]
+  };
+}
+
+async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
+  if(!openaiConfigured())return {passed:null,score:null,summary:'OpenAI QC недоступен',issues:[]};
+  const dir=fs.mkdtempSync('/tmp/cf-scene-qc-');
+  let evidence=null;
+  try{
+    const videoPath=path.join(dir,'scene.mp4');
+    await downloadUrlFile(videoUrl,videoPath);
+    evidence=await extractVideoEvidence(videoPath);
+    const identity=primaryIdentityUrls(run);
+    const previs=(Array.isArray(run.previsFrames)?run.previsFrames:[])
+      .filter(x=>Number(x?.scene)===Number(sceneNo)&&x?.url).sort((a,b)=>Number(a.frame)-Number(b.frame));
+    const content=[{type:'input_text',text:[
+      'ROLE: строгий QC-контролёр отдельной рекламной видео-сцены.',
+      'Проверь реальные кадры видео против утверждённого Storyboard и референсов.',
+      'Товар: '+String(run.productName||''),
+      'Сцена '+sceneNo+'. Storyboard кадр: '+String(scene.shot||''),
+      'Действие: '+String(scene.action||''),
+      'Начало: '+String(scene.startFrame||''),
+      'Конец: '+String(scene.endFrame||''),
+      'Continuity: '+String(scene.continuity||''),
+      'CRITICAL FAIL: форма/пропорции/детали товара отличаются от исходного фото; сцена стала просто демонстрацией товара вместо нужного действия; неправильная фаза/действие; заметно другой персонаж; серьёзные артефакты рук/товара; локация противоречит storyboard.',
+      'Среда должна выглядеть естественно и достаточно живо для рекламного ролика, но без случайного визуального мусора.',
+      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
+    ].join('\n')},...(evidence?.frames||[]).slice(0,4)];
+    if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
+    if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
+    for(const f of [previs[0],previs[previs.length-1]].filter(Boolean)){
+      content.push({type:'input_text',text:'APPROVED PREVIZ ANCHOR:'},{type:'input_image',image_url:f.url,detail:'low'});
+    }
+    const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+    const r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'low'},max_output_tokens:1400})
+    });
+    const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+    if(!r.ok)throw new Error(data?.error?.message||('Scene QC error '+r.status));
+    const parsed=safeAnalysisJson(openAIText(data))||{};
+    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+    if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'scene-qc',description:'QC видео-сцены '+sceneNo,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+    const score=Number(parsed.score);
+    return {
+      passed:parsed.passed!==false&&(!Number.isFinite(score)||score>=8),
+      score:Number.isFinite(score)?score:null,
+      summary:String(parsed.summary||'').slice(0,1600),
+      checks:parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{},
+      issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,12):[]
+    };
+  }finally{
+    try{fs.rmSync(dir,{recursive:true,force:true})}catch{}
+  }
+}
+
 async function processRunPrevis(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
@@ -1171,31 +1289,48 @@ async function processRunPrevis(accountId,runId){
       if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
       run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
       if(run.previsFrames.some(x=>x?.id===spec.id&&x?.url))continue;
-      const refs=previsRefsForFrame(run,spec,run.previsFrames);
-      const img=await generatePrevisImage(accountId,run,spec,refs);
+      let img=null,qc=null,lastQcError='';
+      const previous=run.previsFrames.filter(x=>Number(x?.scene)===Number(spec.scene)&&x?.url).sort((a,b)=>Number(a.frame)-Number(b.frame)).slice(-1)[0];
+      for(let attempt=1;attempt<=2;attempt++){
+        const refs=previsRefsForFrame(run,spec,run.previsFrames);
+        img=await generatePrevisImage(accountId,run,spec,refs);
+        try{
+          qc=await runPrevisFrameQc(run,spec,img.url,accountId,previous?.url||'');
+        }catch(e){
+          qc={passed:null,score:null,summary:'QC недоступен: '+String(e?.message||e),issues:[]};
+        }
+        if(qc.passed!==false)break;
+        lastQcError=(qc.issues||[]).join('; ')||qc.summary||'кадр не прошёл QC';
+        if(img?.path){try{await callProductMedia({action:'delete',path:img.path})}catch{}}
+        img=null;
+      }
+      if(!img)throw new Error('Сцена '+spec.scene+', кадр '+spec.frame+' не прошёл QC: '+lastQcError);
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
-      run.previsFrames.push({...spec,...img,generatedAt:new Date().toISOString()});
-      run.progress=Math.min(36,28+Math.round((run.previsFrames.length/Math.max(1,plan.frames.length))*8));
+      run.previsFrames.push({...spec,...img,qc,generatedAt:new Date().toISOString()});
+      run.progress=Math.min(36,28+Math.round((run.previsFrames.filter(x=>x?.url).length/Math.max(1,plan.frames.length))*8));
       run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Превиз-кадр готов',(run.productName||run.id)+' · сцена '+spec.scene+' · кадр '+spec.frame);
+      appendFactoryJournal(data,'Превиз-кадр готов',(run.productName||run.id)+' · сцена '+spec.scene+' · кадр '+spec.frame+(qc?.score?' · QC '+qc.score+'/10':''));
       await writeAppState(data,accountId);
     }
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    const expected=Number(plan.totalFrames)||plan.frames.length;
+    const ready=(run.previsFrames||[]).filter(x=>x?.url).length;
     run.previsRunning=false;
-    run.previsResult={completed:true,totalFrames:run.previsFrames?.length||0,totalScenes:plan.totalScenes,completedAt:new Date().toISOString()};
-    run.references={...(run.references||{}),style:String(run.style||''),notes:'Исходные фото — только identity. Видео строится по сгенерированным превиз-кадрам.',product:(run.media||run.product?.media||[]).map(x=>x?.url).filter(Boolean),avatar:(run.avatarReferences||run.character?.media||[]).map(x=>x?.url).filter(Boolean)};
+    run.previsResult={completed:Boolean(expected&&ready>=expected),totalFrames:ready,totalScenes:plan.totalScenes,completedAt:ready>=expected?new Date().toISOString():null};
+    run.references={...(run.references||{}),style:String(run.style||''),notes:'Generated previz controls composition; source product/avatar remain strict identity locks.' ,product:(run.media||run.product?.media||[]).map(x=>x?.url).filter(Boolean),avatar:(run.avatarReferences||run.character?.media||[]).map(x=>x?.url).filter(Boolean)};
     run.updatedAt=new Date().toISOString();
-    appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+run.previsFrames.length+' кадров');
+    appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+ready+'/'+expected+' кадров');
     if(run.mode==='manual'){
       run.status='На проверке';run.stage='Превиз-кадры';run.progress=36;run.awaitingApproval=true;
       await writeAppState(data,accountId);
     }else{
+      if(!run.previsResult.completed)throw new Error('Превиз неполный: '+ready+' из '+expected);
       run.status='В работе';run.stage='Генерация';run.progress=38;run.awaitingApproval=false;
       await writeAppState(data,accountId);
       await dispatchExistingRun(accountId,run);
     }
-    return {ok:true,totalFrames:run.previsFrames.length};
+    return {ok:true,totalFrames:ready};
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     if(run){run.previsRunning=false;run.status='Ошибка';run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.error='Превиз: '+run.previsError;run.updatedAt=new Date().toISOString();appendFactoryJournal(data,'Ошибка превиза',(run.productName||run.id)+' · '+run.previsError);await writeAppState(data,accountId)}
@@ -1203,9 +1338,14 @@ async function processRunPrevis(accountId,runId){
   }
 }
 function previsSceneReferenceUrls(run,sceneNo){
-  const frames=(Array.isArray(run?.previsFrames)?run.previsFrames:[]).filter(x=>Number(x?.scene)===Number(sceneNo)&&/^https:\/\//i.test(String(x?.url||'')));
-  if(frames.length)return frames.slice(0,3).map(x=>x.url);
-  return runReferenceUrls(run);
+  const frames=(Array.isArray(run?.previsFrames)?run.previsFrames:[])
+    .filter(x=>Number(x?.scene)===Number(sceneNo)&&/^https:\/\//i.test(String(x?.url||'')))
+    .sort((a,b)=>Number(a.frame)-Number(b.frame));
+  const identity=runReferenceUrls(run);
+  const anchors=frames.length
+    ? [frames[0]?.url,frames[Math.floor((frames.length-1)/2)]?.url,frames[frames.length-1]?.url].filter(Boolean)
+    : [];
+  return [...new Set([...anchors.slice(0,2),...identity])].slice(0,4);
 }
 async function processAutoPipeline(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
@@ -1478,33 +1618,39 @@ async function uploadRunMedia(accountId,runId,filePath,fileName,mimeType){
   return data?.media||null;
 }
 async function runFinalQc(run,finalPath,accountId){
-  if(!openaiConfigured())return {passed:null,summary:'OpenAI недоступен — визуальная AI-проверка не выполнена.',issues:[]};
+  if(!openaiConfigured())return {passed:null,score:null,summary:'OpenAI недоступен — визуальная AI-проверка не выполнена.',issues:[]};
   let evidence=null;
   try{
     evidence=await extractVideoEvidence(finalPath);
-    const refs=runReferenceUrls(run).slice(0,2).map(url=>({type:'input_image',image_url:url,detail:'low'}));
-    const prompt=[
-      'Ты контролёр качества рекламного вертикального ролика.',
-      'Проверь только то, что реально видно на кадрах. Не выдумывай.',
+    const identity=primaryIdentityUrls(run);
+    const content=[{type:'input_text',text:[
+      'ROLE: финальный строгий QC-аудитор вертикального рекламного ролика.',
+      'Проверяй только видимое. Сравни финал с утверждённой идеей, сценарием, storyboard, исходным товаром и continuity.',
       'Товар: '+String(run.productName||''),
       'Правила товара: '+String(run.productRules||run.product?.rules||''),
-      'Оцени: узнаваемость товара, явные визуальные артефакты, грубые скачки между сценами, пригодность для 9:16.',
-      'Верни ТОЛЬКО JSON: {"passed":true,"summary":"","checks":{"productConsistency":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail"},"issues":[""]}'
-    ].join('\n');
+      'Идея: '+JSON.stringify(run.idea||{}),
+      'Сценарий: '+JSON.stringify(run.script||{}),
+      'CRITICAL FAIL: другой/деформированный товар, потеря ключевого действия или payoff, грубая смена персонажа/локации, серьёзные артефакты, пропущенная/дублированная сцена, неправильный формат.',
+      'Оцени также живость окружения, монтажную связность, понятность проблемы→решения, естественность рекламы и соответствие 9:16.',
+      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail"},"issues":[""]}'
+    ].join('\n')},...(evidence.frames||[]).slice(0,8)];
+    if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
+    if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
     const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-      body:JSON.stringify({model,input:[{role:'user',content:[{type:'input_text',text:prompt},...evidence.frames,...refs]}],reasoning:{effort:'low'},max_output_tokens:1800})
+      body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'medium'},max_output_tokens:2200})
     });
-    const raw=await r.text();
-    let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
+    const raw=await r.text();let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
     if(!r.ok)throw new Error(response?.error?.message||('OpenAI QC error '+r.status));
-    const parsed=safeAnalysisJson(openAIText(response));
+    const parsed=safeAnalysisJson(openAIText(response))||{};
     const priced=openAIUsageCost(response?.model||model,response?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'qc',description:'AI-проверка финального ролика',amountUsd:priced.amountUsd,model:response?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+    const score=Number(parsed.score);
     return {
-      passed:parsed?.passed!==false,
+      passed:parsed?.passed!==false&&(!Number.isFinite(score)||score>=8),
+      score:Number.isFinite(score)?score:null,
       summary:String(parsed?.summary||'AI-проверка завершена.').slice(0,3000),
       checks:parsed?.checks&&typeof parsed.checks==='object'?parsed.checks:{},
       issues:Array.isArray(parsed?.issues)?parsed.issues.map(x=>String(x)).slice(0,20):[],
@@ -1560,6 +1706,10 @@ async function processRunPostProduction(accountId,runId){
     if(run.mode==='manual'){
       run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;
       appendFactoryJournal(data,'Финальный ролик готов к проверке',(run.productName||run.id)+' · '+String(qc?.summary||''));
+    }else if(qc?.passed===false){
+      run.stage='AI-проверка';run.status='Ошибка';run.awaitingApproval=false;run.progress=92;
+      run.error='Финальный QC не пройден: '+String((qc?.issues||[]).join('; ')||qc?.summary||'качество ниже порога');
+      appendFactoryJournal(data,'Финальный QC не пройден',(run.productName||run.id)+' · '+run.error);
     }else{
       run.stage='Готово';run.status='Готово';run.awaitingApproval=false;run.progress=100;
       appendFactoryJournal(data,'Автопилот завершил ролик',(run.productName||run.id)+' · '+String(qc?.summary||''));
@@ -1583,6 +1733,9 @@ async function processRunGeneration(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
   if(run.backendGenerationRunning)return {ok:true,alreadyRunning:true};
+  const expectedPrevis=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*3);
+  const readyPrevis=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).length;
+  if(!run.previsResult?.completed||!expectedPrevis||readyPrevis<expectedPrevis)return {ok:false,error:'Нельзя запускать видео: превиз готов не полностью ('+readyPrevis+'/'+expectedPrevis+')'};
   run.backendGenerationRunning=true;
   run.backendGenerationStartedAt=new Date().toISOString();
   run.stage='Генерация';run.status='В работе';run.progress=Math.max(38,Number(run.progress)||0);
@@ -1602,91 +1755,95 @@ async function processRunGeneration(accountId,runId){
       const scene=board[i]||{};
       const sceneNo=i+1;
       const refs=previsSceneReferenceUrls(run,sceneNo);
-      if(run.sceneResults?.[sceneNo]?.ok&&run.sceneResults?.[sceneNo]?.urls?.length)continue;
+      if(run.sceneResults?.[sceneNo]?.ok&&run.sceneResults?.[sceneNo]?.urls?.length&&run.sceneResults?.[sceneNo]?.qc?.passed!==false)continue;
       const prompt=[
-        'Вертикальный рекламный ролик 9:16.',
+        'Вертикальный рекламный ролик 9:16. ОДНА утверждённая сцена, не меняй её смысл.',
         'Товар: '+String(run.productName||''),
-        String(run.productRules||run.product?.rules||''),
+        'Подтверждённые правила товара: '+String(run.productRules||run.product?.rules||''),
+        'FACT LOCK: не показывай и не заявляй неподтверждённый механизм, функцию или характеристику. Исходное фото товара — абсолютный геометрический identity-lock.',
         run.character?.name?('AI-аватар: '+run.character.name+'. '+String(run.character.look||'')+' '+String(run.character.locks||'')):'',
         'Сцена '+sceneNo+': '+String(scene.title||''),
         'Кадр: '+String(scene.shot||''),
+        'START: '+String(scene.startFrame||''),
         'Действие: '+String(scene.action||''),
+        'END: '+String(scene.endFrame||''),
+        'Continuity: '+String(scene.continuity||''),
+        'Environment: '+String(scene.environment||''),
         String(scene.promptEn||scene.prompt||''),
-        'Главные визуальные anchors этой видеосцены — уже сгенерированные превиз-кадры. Следуй их композиции, персонажу, товару и continuity; исходные фото товара не должны заставлять сцену повторять один и тот же ракурс.',
-        'Сохраняй реальный внешний вид товара. Не меняй форму, цвет и рисунок товара. Без случайных надписей и логотипов.'
-      ].filter(Boolean).join('\n');
-      let result=null,lastError=null;
-      const maxAttempts=Math.max(1,Math.min(2,Number(run.maxAttempts)||1));
+        'PREVIZ LOCK: используй превиз-кадры как композиционные anchors и реально разыграй заданное действие во времени. Не превращай сцену в статичную девушку, которая просто держит товар.',
+        'PRODUCT LOCK: источник товара важнее previz при конфликте формы. Не менять силуэт, пропорции, крепёж, торцы, материал, цвет и ключевые детали.',
+        'ENVIRONMENT: сохраняй ту же обжитую локацию и повторяющийся реквизит. Не делай пустой стерильный фон, если storyboard этого не требует.',
+        'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
+      ].filter(Boolean).join('\n').slice(0,1000);
+      let result=null,lastError=null,sceneQc=null;
+      const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
       for(let attempt=1;attempt<=maxAttempts;attempt++){
+        let candidate=null;
         try{
-          result=await generateHiggsfieldScene({
+          candidate=await generateHiggsfieldScene({
             accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
             aspectRatio:'9:16',resolution:'720p',generateAudio:false
           });
-          if(result?.ok&&result?.urls?.length)break;
-          lastError=new Error('Higgsfield не вернул готовое видео'+(result?.status?' · статус '+result.status:''));
-          if(process.env.RUNWAYML_API_SECRET){
-            try{
-              const fallback=await generateRunwayScene({
-                accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
-              });
-              if(fallback?.ok&&fallback?.urls?.length){
-                fallback.fallbackFrom='higgsfield';
-                result=fallback;
-                break;
-              }
-            }catch(re){
-              lastError=new Error(String(lastError.message)+'; Runway: '+String(re?.message||re));
-            }
+          if(!(candidate?.ok&&candidate?.urls?.length)){
+            lastError=new Error('Higgsfield не вернул готовое видео'+(candidate?.status?' · статус '+candidate.status:''));
+            candidate=null;
           }
         }catch(e){
           lastError=e;
           console.error('[higgsfield-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
-          if(process.env.RUNWAYML_API_SECRET){
-            try{
-              result=await generateRunwayScene({
-                accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
-                ratio:'720:1280'
-              });
-              if(result?.ok&&result?.urls?.length){
-                result.fallbackFrom='higgsfield';
-                break;
-              }
-            }catch(re){
-              lastError=new Error('Higgsfield: '+String(e?.message||e)+'; Runway: '+String(re?.message||re));
-              console.error('[runway-fallback] '+runId+' scene '+sceneNo+' '+String(re?.message||re));
-            }
+        }
+        if(!candidate&&process.env.RUNWAYML_API_SECRET){
+          try{
+            candidate=await generateRunwayScene({
+              accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
+            });
+            if(candidate?.ok&&candidate?.urls?.length)candidate.fallbackFrom='higgsfield';
+            else candidate=null;
+          }catch(re){
+            lastError=new Error((lastError?String(lastError.message)+'; ':'')+'Runway: '+String(re?.message||re));
+            console.error('[runway-fallback] '+runId+' scene '+sceneNo+' '+String(re?.message||re));
           }
         }
+        if(!candidate)continue;
+        try{
+          sceneQc=await runGeneratedSceneQc(run,scene,sceneNo,candidate.urls[0],accountId);
+        }catch(e){
+          sceneQc={passed:null,score:null,summary:'QC недоступен: '+String(e?.message||e),issues:[]};
+        }
+        if(sceneQc.passed!==false){result=candidate;break}
+        lastError=new Error('AI-QC сцены: '+((sceneQc.issues||[]).join('; ')||sceneQc.summary||'качество ниже порога'));
+        console.warn('[scene-qc-retry] '+runId+' scene '+sceneNo+' attempt '+attempt+' '+String(lastError.message));
       }
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       if(!run)return {ok:false,error:'Ролик удалён во время генерации'};
       run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
       if(result?.ok&&result?.urls?.length){
-        run.sceneResults[sceneNo]={ok:true,urls:result.urls,provider:result.provider,model:result.model,requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',completedAt:new Date().toISOString()};
-        appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total);
+        run.sceneResults[sceneNo]={ok:true,urls:result.urls,provider:result.provider,model:result.model,requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,completedAt:new Date().toISOString()};
+        appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total+(sceneQc?.score?' · QC '+sceneQc.score+'/10':''));
       }else{
-        const err=String(lastError?.message||'Ошибка Higgsfield');
-        run.sceneResults[sceneNo]={ok:false,error:err,completedAt:new Date().toISOString()};
+        const err=String(lastError?.message||'Не удалось получить качественную сцену');
+        run.sceneResults[sceneNo]={ok:false,error:err,qc:sceneQc,completedAt:new Date().toISOString()};
         run.backendGenerationRunning=false;run.status='Ошибка';run.stage='Генерация';run.generationError='Сцена '+sceneNo+': '+err;run.error=run.generationError;
         run.updatedAt=new Date().toISOString();
         appendFactoryJournal(data,'Ошибка генерации сцены',(run.productName||run.id)+' · сцена '+sceneNo+' · '+err);
         await writeAppState(data,accountId);
         return {ok:false,error:err,scene:sceneNo};
       }
-      const completed=Object.values(run.sceneResults).filter(x=>x?.ok&&x?.urls?.length).length;
+      const completed=Object.values(run.sceneResults).filter(x=>x?.ok&&x?.urls?.length&&x?.qc?.passed!==false).length;
       const urls=Object.keys(run.sceneResults).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
-      run.generationResult={provider:'higgsfield',urls,completedScenes:completed,totalScenes:total,completed:completed>=total};
+      run.generationResult={provider:'mixed',urls,completedScenes:completed,totalScenes:total,completed:completed>=total};
       run.progress=Math.min(65,38+Math.round((completed/Math.max(1,total))*27));
       run.updatedAt=new Date().toISOString();
       await writeAppState(data,accountId);
     }
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     if(run){
+      const goodScenes=Object.values(run.sceneResults||{}).filter(x=>x?.ok&&x?.urls?.length&&x?.qc?.passed!==false).length;
       const urls=Object.keys(run.sceneResults||{}).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
-      run.generationResult={provider:'higgsfield',urls,completedScenes:board.length,totalScenes:board.length,completed:true};
+      if(goodScenes<board.length||urls.length<board.length)throw new Error('Не все видео-сцены прошли QC: '+goodScenes+'/'+board.length);
+      run.generationResult={provider:'mixed',urls,completedScenes:board.length,totalScenes:board.length,completed:true};
       run.backendGenerationRunning=false;run.error='';run.generationError='';run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Генерация сцен завершена',(run.productName||run.id)+' · '+board.length+' сцен');
+      appendFactoryJournal(data,'Генерация сцен завершена',(run.productName||run.id)+' · '+board.length+' сцен прошли QC');
       if(run.mode==='manual'){
         run.stage='На проверке';run.status='На проверке';run.progress=70;run.awaitingApproval=true;
         await writeAppState(data,accountId);
