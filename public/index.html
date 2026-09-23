@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=21" />
+  <link rel="stylesheet" href="/style.css?v=22" />
 </head>
 <body>
   <div class="shell">
@@ -59,7 +59,7 @@
     <main class="main">
       <div class="desktop-toolbar">
         <button class="global-search" id="openSearch"><span>⌕</span><span>Поиск по товарам, роликам, сценариям…</span><kbd>⌘K</kbd></button>
-        <div class="toolbar-actions"><button class="btn ghost" data-go="background">Фоновые задачи <span class="badge" id="bgBadge">0</span></button><button class="avatar account-avatar" data-go="account" aria-label="Аккаунт">А</button></div>
+        <div class="toolbar-actions"><button class="btn ghost" data-go="background">Фоновые задачи <span class="badge" id="bgBadge">0</span></button><button class="desktop-account-summary" data-go="account" aria-label="Аккаунт"><span id="desktopAccountName">Основной аккаунт</span><span class="avatar account-avatar">А</span></button></div>
       </div>
 
       <div class="mobile-global-head">
@@ -68,7 +68,10 @@
           <span class="brand-mark">F</span>
           <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · v1.5</small></span>
         </button>
-        <button class="mobile-chat-shortcut" data-go="assistant" aria-label="Открыть ChatGPT"><span>✦</span><b>GPT</b></button>
+        <button class="mobile-account-summary" data-go="account" aria-label="Открыть аккаунт">
+          <span class="mobile-account-copy"><small>Аккаунт</small><b id="mobileAccountName">Основной</b></span>
+          <span class="account-avatar mobile-account-avatar">А</span>
+        </button>
       </div>
 
       <section class="page active" id="home">
@@ -250,8 +253,8 @@
   </div>
 
   <form class="mobile-chat-dock" id="mobileChatDock" autocomplete="off">
-    <button class="mobile-chat-dock-icon" id="mobileChatDockOpen" type="button" aria-label="Открыть ChatGPT">✦</button>
     <input id="mobileChatInput" type="text" inputmode="text" placeholder="Спросить ChatGPT…" aria-label="Сообщение ChatGPT" />
+    <button class="mobile-chat-dock-icon" id="mobileChatDockOpen" type="button" aria-label="Открыть ChatGPT"><span>✦</span><b>GPT</b></button>
     <button class="mobile-chat-dock-send" type="submit" aria-label="Отправить">↑</button>
   </form>
 
@@ -320,6 +323,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=21"></script>
+  <script src="/app.js?v=22"></script>
 </body>
 </html>
