@@ -229,7 +229,7 @@ function productionStageDone(r,k){
 window.openProductionStage=(stage)=>{
   const map={Проверка:"На проверке"};
   const target=map[stage]||stage;
-  const candidates=runs.filter(r=>productionStageDone(r,stage)||norm(r)===target).slice().reverse();
+  const candidates=runs.filter(r=>r.status!=="Остановлено"&&(productionStageDone(r,stage)||norm(r)===target)).slice().reverse();
   const r=candidates[0];
   if(!r)return;
   selectedRunId=r.id;
@@ -241,12 +241,13 @@ window.openProductionStage=(stage)=>{
 };
 function renderProduction(){
   const K=["Идея","Сценарий","Storyboard","Референсы","Генерация","Озвучка","Монтаж","AI-проверка","Проверка","Готово"];
+  const liveRuns=runs.filter(r=>r.status!=="Остановлено");
   const steps=K.map((k,i)=>{
-    const done=runs.filter(r=>productionStageDone(r,k)).length;
-    const current=runs.filter(r=>norm(r)===(k==="Проверка"?"На проверке":k)).length;
+    const done=liveRuns.filter(r=>productionStageDone(r,k)).length;
+    const current=liveRuns.filter(r=>norm(r)===(k==="Проверка"?"На проверке":k)).length;
     return '<button class="production-step" onclick="openProductionStage(\''+k+'\')"><span class="production-step-num">'+(i+1)+'</span><span class="production-step-copy"><b>'+k+'</b><small>'+(i<K.length-1?'Шаг '+(i+1)+' из '+K.length:'Финиш')+'</small></span><span class="production-step-stats"><strong>'+done+'</strong><small>готово'+(current?' · сейчас '+current:'')+'</small></span></button>';
   }).join("");
-  const active=runs.slice().reverse().filter(r=>!["Готово","Запланировано","Опубликовано"].includes(r.status));
+  const active=liveRuns.slice().reverse().filter(r=>!["Готово","Запланировано","Опубликовано"].includes(r.status));
   const cards=active.length?active.map(r=>{
     const artifactCount=K.filter(k=>productionStageDone(r,k)).length;
     return '<button class="production-run-card" onclick="openRun(\''+r.id+'\')"><span><b>'+esc(pname(r))+'</b><small>Сейчас: '+esc(norm(r))+' · '+artifactCount+'/'+K.length+' этапов с результатом</small></span><span class="status '+scl(r.status)+'">'+esc(r.status||"В работе")+'</span></button>';
