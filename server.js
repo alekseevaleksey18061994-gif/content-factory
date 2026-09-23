@@ -493,7 +493,21 @@ function normalizeRunPlan(raw,payload={}){
       concept:String(idea.concept||idea.summary||payload.brief||'Демонстрация товара через проблему и решение').slice(0,5000),
       hook:String(idea.hook||script.hook||'').slice(0,2000),
       angle:String(idea.angle||'').slice(0,2000),
-      why:String(idea.why||idea.whyWorks||'').slice(0,4000)
+      why:String(idea.why||idea.whyWorks||'').slice(0,4000),
+      audience:String(idea.audience||'').slice(0,2000),
+      first3Seconds:String(idea.first3Seconds||idea.first3seconds||'').slice(0,3000),
+      mechanic:String(idea.mechanic||'').slice(0,3000),
+      productRole:String(idea.productRole||'').slice(0,3000),
+      retention:String(idea.retention||idea.retentionMechanic||'').slice(0,3000),
+      payoff:String(idea.payoff||'').slice(0,3000),
+      ctaDirection:String(idea.ctaDirection||'').slice(0,2000),
+      production:String(idea.production||idea.productionComplexity||'').slice(0,1200),
+      alternatives:(Array.isArray(idea.alternatives)?idea.alternatives:[]).slice(0,5).map(x=>({
+        title:String(x?.title||'').slice(0,240),
+        hook:String(x?.hook||'').slice(0,1500),
+        concept:String(x?.concept||'').slice(0,3000),
+        angle:String(x?.angle||'').slice(0,1500)
+      }))
     },
     script:{
       hook:String(script.hook||idea.hook||'').slice(0,4000),
@@ -523,16 +537,153 @@ function normalizeRunPlan(raw,payload={}){
     }
   };
 }
+function normalizeIdeaStage(raw,payload={}){
+  const src=raw&&typeof raw==='object'?(raw.selected||raw.idea||raw):{};
+  const alts=Array.isArray(raw?.alternatives)?raw.alternatives:(Array.isArray(src?.alternatives)?src.alternatives:[]);
+  return {
+    title:String(src.title||payload.productName||'Идея ролика').slice(0,240),
+    concept:String(src.concept||src.summary||payload.brief||'').slice(0,5000),
+    hook:String(src.hook||'').slice(0,2000),
+    angle:String(src.angle||'').slice(0,2000),
+    why:String(src.why||src.whyWorks||'').slice(0,4000),
+    audience:String(src.audience||'').slice(0,2000),
+    first3Seconds:String(src.first3Seconds||src.first3seconds||'').slice(0,3000),
+    mechanic:String(src.mechanic||'').slice(0,3000),
+    productRole:String(src.productRole||'').slice(0,3000),
+    retention:String(src.retention||src.retentionMechanic||'').slice(0,3000),
+    payoff:String(src.payoff||'').slice(0,3000),
+    ctaDirection:String(src.ctaDirection||'').slice(0,2000),
+    production:String(src.production||src.productionComplexity||'').slice(0,1200),
+    alternatives:alts.slice(0,5).map(x=>({
+      title:String(x?.title||'').slice(0,240),
+      hook:String(x?.hook||'').slice(0,1500),
+      concept:String(x?.concept||'').slice(0,3000),
+      angle:String(x?.angle||'').slice(0,1500)
+    }))
+  };
+}
+async function recentIdeaContext(accountId,productId){
+  try{
+    const state=await readAppState(accountId);
+    const data=state?.data||{};
+    const recent=(Array.isArray(data.runs)?data.runs:[])
+      .filter(r=>r?.idea && (!productId||r.productId===productId))
+      .slice(-12)
+      .map(r=>({title:r.idea?.title||'',hook:r.idea?.hook||'',concept:r.idea?.concept||''}));
+    const analyses=(Array.isArray(data.videoAnalyses)?data.videoAnalyses:[])
+      .slice(-5)
+      .map(v=>({
+        title:String(v?.title||v?.name||'').slice(0,200),
+        summary:String(v?.summary||v?.analysis?.summary||v?.result?.summary||'').slice(0,1200),
+        hooks:Array.isArray(v?.hooks)?v.hooks.slice(0,5):[]
+      }));
+    return {recent,analyses};
+  }catch{return {recent:[],analyses:[]}}
+}
+async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
+  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const ctx=await recentIdeaContext(accountId,payload.productId||payload.product?.id);
+  const refs=(payload.media||payload.product?.media||[])
+    .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,3);
+  const master=[
+    'ROLE: Ты senior creative director и performance-креатор коротких вертикальных видео для TikTok, Reels и YouTube Shorts.',
+    'ЗАДАЧА: придумать не просто тему, а сильную КРЕАТИВНУЮ МЕХАНИКУ ролика, которую хочется досмотреть и которая органично продаёт товар.',
+    '',
+    'КОНТЕКСТ ТОВАРА',
+    'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
+    'Категория: '+String(payload.product?.category||payload.category||''),
+    'УТП: '+String(payload.productUtp||payload.product?.utp||''),
+    'Правила/ограничения: '+String(payload.productRules||payload.product?.rules||''),
+    'Формат: 9:16',
+    'Длительность: '+String(payload.duration||'30 сек'),
+    'Желаемый стиль: '+String(payload.style||'UGC'),
+    'Бриф пользователя: '+String(payload.brief||''),
+    'Вариант запуска: '+variant,
+    feedback?('Комментарий пользователя к переделке: '+feedback):'',
+    '',
+    'ЦЕЛЬ ИДЕИ',
+    '1) В первые 1–2 секунды должно быть понятно, почему не хочется свайпнуть.',
+    '2) Идея должна работать ВИЗУАЛЬНО даже без звука; товар или интрига вокруг товара появляются максимально рано.',
+    '3) Товар — часть действия и механики ролика, а не реквизит в руке.',
+    '4) Нужен один сильный центральный приём: тест, неожиданность, проблема→решение, POV, мини-история, визуальное сравнение, эксперимент, демонстрация, экспертный разбор или другая понятная механика.',
+    '5) Идея должна быть реально генерируемой нейросетями по отдельным сценам. Не предлагай сложные толпы, невозможную физику, мелкий текст в кадре или десятки объектов.',
+    '6) Не придумывай характеристики, которых нет в данных товара. Не делай медицинских, гарантированных или недоказанных обещаний.',
+    '7) Не делай банальную рекламу вида «красивая девушка держит товар, улыбается и рассказывает преимущества», если в этом нет отдельного сильного приёма.',
+    '8) Не начинай с логотипа, упаковки на столе или общего плана ванной/комнаты без действия.',
+    '9) Если есть анализы конкурентов, бери из них только ПАТТЕРНЫ удержания, структуру и приёмы. Не копируй чужие тексты, персонажей, шутки, сюжет или брендинг.',
+    '10) Избегай повторения уже использованных нами идей.',
+    '',
+    'ПРОЦЕСС МЫШЛЕНИЯ',
+    'Сначала придумай 8 принципиально разных концепций. Они должны отличаться не формулировкой, а механикой.',
+    'Мысленно оцени каждую по пяти критериям: удержание первых секунд, органичность товара, визуальная понятность, оригинальность, простота/стоимость производства.',
+    'Отбрось слабые, шаблонные и слишком дорогие. Выбери одну лучшую для текущего товара.',
+    'Не показывай внутренние оценки и рассуждения.',
+    '',
+    'ОСНОВНАЯ ИДЕЯ ДОЛЖНА СОДЕРЖАТЬ',
+    '- title: короткое рабочее название;',
+    '- audience: кому это должно зацепить;',
+    '- hook: сама идея хука, а не готовый сценарий;',
+    '- first3Seconds: буквально что зритель увидит в первые 3 секунды;',
+    '- concept: что происходит в ролике от начала до результата в 3–6 предложениях;',
+    '- mechanic: центральная механика/приём;',
+    '- angle: угол подачи;',
+    '- productRole: как именно товар участвует в действии;',
+    '- retention: что удерживает зрителя до конца;',
+    '- payoff: какой визуальный/сюжетный результат получает зритель;',
+    '- ctaDirection: естественное направление CTA без рекламного клише;',
+    '- production: low / medium / high + коротко почему;',
+    '- why: почему эта идея должна сработать именно для этого товара.',
+    '',
+    'АЛЬТЕРНАТИВЫ',
+    'Верни ещё 4 действительно разные запасные идеи — каждая с title, hook, concept, angle.',
+    '',
+    'ПРОВЕРКА ПЕРЕД ОТВЕТОМ',
+    '- Можно ли понять хук без звука?',
+    '- Есть ли причина смотреть после 3-й секунды?',
+    '- Товар действительно нужен для сюжета?',
+    '- Не выглядит ли это как обычная реклама маркетплейса?',
+    '- Можно ли разбить идею на 3–8 генерируемых сцен?',
+    '- Не повторяет ли она прошлые идеи?',
+    '',
+    'Недавние наши идеи (НЕ ПОВТОРЯТЬ): '+JSON.stringify(ctx.recent),
+    'Разборы конкурентов/референсных видео, если были (ТОЛЬКО КАК ПАТТЕРНЫ): '+JSON.stringify(ctx.analyses),
+    '',
+    'Верни ТОЛЬКО валидный JSON без markdown:',
+    '{"selected":{"title":"","audience":"","hook":"","first3Seconds":"","concept":"","mechanic":"","angle":"","productRole":"","retention":"","payoff":"","ctaDirection":"","production":"","why":""},"alternatives":[{"title":"","hook":"","concept":"","angle":""}]}'
+  ].filter(Boolean).join('\n');
+  const input=[{role:'user',content:[
+    {type:'input_text',text:master},
+    ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
+  ]}];
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({model,input,reasoning:{effort:'medium'},max_output_tokens:2800})
+  });
+  const txt=await r.text();
+  let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
+  if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
+  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{
+    provider:'OpenAI',category:'idea',description:'Генерация креативной идеи ролика',
+    amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
+  }).catch(()=>{});
+  return normalizeIdeaStage(safeAnalysisJson(openAIText(data)),payload);
+}
+
 async function buildRunPlan(payload,accountId,variant=1,feedback=''){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
   const duration=String(payload.duration||'30 сек');
+  const lockedIdea=payload.idea?normalizeIdeaStage(payload.idea,payload):await generateIdeaStage(payload,accountId,variant,feedback);
   const refs=[
     ...(payload.media||payload.product?.media||[]).map(x=>x?.url),
     ...(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url)
   ].filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,4);
   const prompt=[
-    'Ты продюсер коротких рекламных Reels/TikTok/Shorts. Создай производственный план ролика.',
-    'Нужен НОВЫЙ оригинальный ролик, не копирующий чужие тексты или брендинг.',
+    'Ты режиссёр и продюсер коротких рекламных Reels/TikTok/Shorts. ИДЕЯ УЖЕ УТВЕРЖДЕНА — не меняй её, а преврати её в производственный план.',
+    'Утверждённая идея: '+JSON.stringify(lockedIdea),
+    'Сценарий и storyboard должны точно реализовывать эту идею, а не придумывать другой ролик.',
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
@@ -568,7 +719,9 @@ async function buildRunPlan(payload,accountId,variant=1,feedback=''){
     provider:'OpenAI',category:'planning',description:'Идея + сценарий + storyboard',
     amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
   }).catch(()=>{});
-  return normalizeRunPlan(safeAnalysisJson(openAIText(data)),payload);
+  const planned=normalizeRunPlan(safeAnalysisJson(openAIText(data)),payload);
+  planned.idea=lockedIdea;
+  return planned;
 }
 function findRunById(data,runId){
   return (Array.isArray(data?.runs)?data.runs:[]).find(r=>r?.id===runId)||null;
@@ -1045,13 +1198,13 @@ async function createIdeaDraft(body,accountId){
     format:'9:16',mode:'manual',modelMode:'Авто — умный выбор',budget:Number(body.budget)||500,maxAttempts:3,
     created:new Date().toISOString()
   };
-  const plan=await buildRunPlan(payload,accountId,1);
+  const idea=await generateIdeaStage(payload,accountId,1);
   const fresh=await readAppState(accountId);
   const fd=fresh?.data||blankFactoryState();fd.runs=Array.isArray(fd.runs)?fd.runs:[];
   const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),status:'Черновик',stage:'Идея',progress:8,attempt:0,
-    idea:plan.idea,script:plan.script,storyboard:plan.storyboard,references:plan.references,sceneCount:plan.storyboard.length,
-    sceneVersions:{1:1,2:1,3:1,4:1,5:1},acceptedScenes:[],generationResult:null,updatedAt:new Date().toISOString()};
-  fd.runs.push(run);appendFactoryJournal(fd,'Создана идея',product.name+' · '+plan.idea.title);await writeAppState(fd,accountId);
+    idea,script:null,storyboard:[],references:null,sceneCount:0,
+    sceneVersions:{},acceptedScenes:[],generationResult:null,updatedAt:new Date().toISOString()};
+  fd.runs.push(run);appendFactoryJournal(fd,'Создана идея',product.name+' · '+idea.title);await writeAppState(fd,accountId);
   return run;
 }
 async function runControlAction(body,accountId){
@@ -1136,6 +1289,14 @@ async function runControlAction(body,accountId){
   }
   if(action==='regenerate'){
     const stage=String(body?.stage||'Идея');
+    if(stage==='Идея'){
+      const idea=await generateIdeaStage(run,accountId,run.variant||1,String(body?.note||''));
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.idea=idea;run.script=null;run.storyboard=[];run.references=null;run.sceneCount=0;
+      run.status='Черновик';run.stage='Идея';run.progress=8;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Идея переделана',(run.productName||run.id)+' · '+idea.title);
+      await writeAppState(data,accountId);return run;
+    }
     if(stage==='Генерация'){
       run.status='В работе';run.stage='Генерация';run.progress=Math.max(38,Number(run.progress)||0);run.attempt=(Number(run.attempt)||0)+1;
       await writeAppState(data,accountId);await dispatchExistingRun(accountId,run);
