@@ -541,6 +541,21 @@ const factoryTools=[
   },
   {
     type:'function',
+    name:'generate_image',
+    description:'Сгенерировать отдельное изображение/фото по запросу пользователя через OpenAI GPT Image и вернуть готовую картинку в чат. Используй, когда пользователь просит создать, нарисовать, сгенерировать или сделать фото/изображение/кадр.',
+    parameters:{
+      type:'object',
+      properties:{
+        prompt:{type:'string',description:'Подробный промт для изображения. Не добавляй текст на изображение, если пользователь явно не просил.'},
+        orientation:{type:'string',enum:['portrait','square','landscape']},
+        quality:{type:'string',enum:['low','medium','high']}
+      },
+      required:['prompt'],
+      additionalProperties:false
+    }
+  },
+  {
+    type:'function',
     name:'create_video_batch',
     description:'Запустить производство роликов для существующего товара через n8n. Это может расходовать платные AI-кредиты. Если count больше 3, confirmed должен быть true только после отдельного подтверждения пользователя.',
     parameters:{
@@ -605,6 +620,68 @@ const factoryTools=[
   }
 ];
 
+function imageGenerationFallbackUsd(quality,size){
+  const q=['low','medium','high'].includes(quality)?quality:'medium';
+  const square=size==='1024x1024';
+  if(q==='low')return square?0.006:0.005;
+  if(q==='high')return square?0.211:0.165;
+  return square?0.053:0.041;
+}
+async function generateOpenAIChatImage(accountId,args={}){
+  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const prompt=String(args?.prompt||'').trim().slice(0,16000);
+  if(!prompt)throw new Error('Нужен промт для изображения');
+  const orientation=['portrait','square','landscape'].includes(args?.orientation)?args.orientation:'portrait';
+  const quality=['low','medium','high'].includes(args?.quality)?args.quality:'medium';
+  const size=orientation==='square'?'1024x1024':orientation==='landscape'?'1360x1024':'1024x1360';
+  const model='gpt-image-2';
+  const r=await fetch('https://api.openai.com/v1/images/generations',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({model,prompt,size,quality,n:1,output_format:'png'})
+  });
+  const raw=await r.text();
+  let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
+  if(!r.ok)throw new Error(response?.error?.message||('OpenAI image error '+r.status));
+  const b64=String(response?.data?.[0]?.b64_json||'');
+  if(!b64)throw new Error('OpenAI не вернул изображение');
+  const scopedProductId=(sanitizeAccountId(accountId)+'__chat_images').replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  const uploaded=await callProductMedia({
+    action:'upload',
+    productId:scopedProductId,
+    fileName:'chat-'+Date.now()+'.png',
+    mimeType:'image/png',
+    dataBase64:'data:image/png;base64,'+b64
+  });
+  if(!uploaded?.media?.url)throw new Error(uploaded?.error||'Не удалось сохранить изображение');
+  const usage=response?.usage||{};
+  const details=usage?.input_tokens_details||{};
+  const outDetails=usage?.output_tokens_details||{};
+  const textIn=Number(details.text_tokens)||Number(usage.input_tokens)||0;
+  const imageIn=Number(details.image_tokens)||0;
+  const imageOut=Number(outDetails.image_tokens)||Number(usage.output_tokens)||0;
+  let amountUsd=(textIn/1e6*2.5)+(imageIn/1e6*4)+(imageOut/1e6*15);
+  if(!(amountUsd>0))amountUsd=imageGenerationFallbackUsd(quality,size);
+  await recordExpense(accountId,{
+    provider:'OpenAI',
+    category:'image',
+    description:'Генерация изображения',
+    amountUsd,
+    model,
+    usage:{...usage,size,quality},
+    source:'auto'
+  }).catch(()=>{});
+  return {ok:true,image:{
+    url:uploaded.media.url,
+    path:uploaded.media.path||'',
+    name:'AI image',
+    model,
+    prompt,
+    size,
+    quality
+  }};
+}
+
 async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
   accountId=sanitizeAccountId(accountId);
   const state=await readAppState(accountId);
@@ -617,6 +694,10 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
   data.scripts=Array.isArray(data.scripts)?data.scripts:[];
   data.characters=Array.isArray(data.characters)?data.characters:[];
   data.settings=data.settings&&typeof data.settings==='object'?data.settings:{};
+
+  if(name==='generate_image'){
+    return await generateOpenAIChatImage(accountId,args);
+  }
 
   if(name==='get_factory_state'){
     return {
@@ -838,12 +919,21 @@ function normalizeChatAttachments(items=[]){
   })).filter(x=>/^file-[A-Za-z0-9_-]+$/.test(x.fileId));
 }
 
+function normalizeChatImages(items=[]){
+  return (Array.isArray(items)?items:[]).slice(0,8).map(x=>({
+    url:String(x?.url||'').trim().slice(0,2400),
+    name:String(x?.name||'AI image').slice(0,180),
+    model:String(x?.model||'').slice(0,120),
+    prompt:String(x?.prompt||'').slice(0,4000)
+  })).filter(x=>/^https:\/\//i.test(x.url));
+}
 function normalizeStoredChatHistory(history=[]){
   return (Array.isArray(history)?history:[]).slice(-200).map(m=>({
     role:m?.role==='assistant'?'assistant':'user',
     content:String(m?.content||'').slice(0,20000),
-    attachments:normalizeChatAttachments(m?.attachments)
-  })).filter(m=>m.content||m.attachments.length);
+    attachments:normalizeChatAttachments(m?.attachments),
+    images:normalizeChatImages(m?.images)
+  })).filter(m=>m.content||m.attachments.length||m.images.length);
 }
 
 function chatAttachmentParts(items=[]){
@@ -942,6 +1032,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
       'Если соцсети не подключены, честно сообщи, что публикация заблокирована. '+
       'У активного аккаунта есть долговременная память отдельно от видимой истории чата. Если пользователь явно говорит «запомни», «сохрани на будущее», «забудь» или просит изменить память — используй set_account_memory. Не сохраняй чувствительные данные без явной просьбы. '+
       'AI-аватары активного аккаунта перечислены в context. Если пользователь называет существующий аватар, не говори, что его нет. Для упомянутого аватара backend автоматически добавляет его сохранённые референсные фото в текущий запрос. Если пользователь просит заполнить или изменить данные аватара, проанализируй доступные фото и используй update_avatar для реального сохранения изменений. Не выдумывай сведения, которые нельзя определить по фото или контексту. '+
+      'Если пользователь просит создать/сгенерировать отдельное фото, изображение, картинку или кадр — используй generate_image и реально верни готовое изображение; не говори, что инструмента генерации фото нет. '+
       'Если можно выполнить задачу инструментом, предпочитай выполнить её, а не объяснять пользователю ручные шаги. Контекст: '+JSON.stringify(context)
     }]} ,
     ...safeHistory.map(x=>({
@@ -1032,12 +1123,32 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     }).catch(()=>{});
   }
 
+  const images=actions
+    .filter(a=>a?.name==='generate_image'&&a?.result?.ok&&a?.result?.image?.url)
+    .map(a=>a.result.image);
   return {
     text:openAIText(data)|| (actions.length?'Готово.':''),
     actions,
+    images,
     responseId:data?.id||null,
     model:data?.model||process.env.OPENAI_MODEL||'gpt-5.6-luna'
   };
+}
+
+let usdRubCache={rate:0,at:0,date:''};
+async function currentUsdRubRate(){
+  if(usdRubCache.rate>0 && Date.now()-usdRubCache.at<6*60*60*1000)return usdRubCache;
+  const r=await fetch('https://www.cbr.ru/scripts/XML_daily.asp',{headers:{'user-agent':'ContentFactory/1.5'}});
+  const xml=await r.text();
+  if(!r.ok)throw new Error('CBR rate error '+r.status);
+  const block=(xml.match(/<Valute[^>]*>[\s\S]*?<CharCode>USD<\/CharCode>[\s\S]*?<\/Valute>/i)||[])[0]||'';
+  const nominal=Number((block.match(/<Nominal>([^<]+)<\/Nominal>/i)||[])[1]||1);
+  const raw=(block.match(/<Value>([^<]+)<\/Value>/i)||[])[1]||'';
+  const value=Number(String(raw).replace(',','.'));
+  const rate=value/Math.max(1,nominal);
+  if(!(rate>0))throw new Error('Не удалось определить курс USD/RUB');
+  usdRubCache={rate:Math.round(rate*10000)/10000,at:Date.now(),date:(xml.match(/Date="([^"]+)"/i)||[])[1]||''};
+  return usdRubCache;
 }
 
 function internalRequestAllowed(req){
@@ -1692,6 +1803,15 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{ok:true,deletedId:id});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось удалить аккаунт.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/fx/usd-rub' && req.method==='GET'){
+    try{
+      const fx=await currentUsdRubRate();
+      return json(res,200,{ok:true,rate:fx.rate,date:fx.date,source:'Банк России'});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось получить курс USD/RUB',detail:String(e?.message||e)});
     }
   }
 
