@@ -8,9 +8,23 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=29" />
+  <link rel="stylesheet" href="/style.css?v=31" />
 </head>
 <body>
+  <div class="auth-gate" id="authGate">
+    <div class="auth-card">
+      <div class="auth-brand"><span class="brand-mark">F</span><div><b>Content <em>Factory</em></b><small>Личный кабинет AI-контент-завода</small></div></div>
+      <div class="auth-tabs"><button class="active" type="button" data-auth-mode="login">Вход</button><button type="button" data-auth-mode="register">Регистрация</button></div>
+      <form id="authForm">
+        <label id="authNameField" hidden>Имя<input id="authDisplayName" autocomplete="name" placeholder="Алексей"></label>
+        <label>Логин<input id="authLogin" autocomplete="username" placeholder="Ваш логин"></label>
+        <label>Пароль<input id="authPassword" type="password" autocomplete="current-password" placeholder="Минимум 8 символов"></label>
+        <button class="btn primary full" id="authSubmit" type="submit">Войти</button>
+        <div class="message" id="authMessage"></div>
+      </form>
+      <p class="auth-note">У каждого пользователя отдельный личный кабинет, аккаунты, товары, аватары и история GPT.</p>
+    </div>
+  </div>
   <div class="shell">
     <aside class="side" id="appSidebar" aria-label="Главное меню">
       <button class="mobile-drawer-close" id="mobileDrawerClose" type="button" aria-label="Закрыть меню">×</button>
@@ -237,7 +251,7 @@
       </section>
 
       <section class="page" id="account">
-        <header class="section-head"><div><span class="kicker">РАБОЧЕЕ ПРОСТРАНСТВО</span><h1>Аккаунт</h1><p>Отдельные товары, ролики, настройки и GPT-контекст для каждого профиля</p></div><button class="btn primary" id="addAccount">＋ Новый аккаунт</button></header>
+        <header class="section-head"><div><span class="kicker">РАБОЧЕЕ ПРОСТРАНСТВО</span><h1>Аккаунт</h1><p>Отдельные товары, ролики, настройки и GPT-контекст для каждого профиля</p></div><div class="account-head-actions"><button class="btn primary" id="addAccount">＋ Новый аккаунт</button><button class="btn ghost" id="logoutBtn">Выйти</button></div></header>
         <div class="account-layout">
           <section class="panel">
             <div class="panel-title"><div><span class="mini-icon">◎</span><h2>Мои аккаунты</h2><p>Нажми, чтобы переключить рабочее пространство</p></div></div>
@@ -367,6 +381,6 @@
     <div class="modal-card search-card"><button class="close" data-close="searchModal">×</button><input class="search-input" id="searchInput" placeholder="Найти товар, ролик, сценарий, кампанию…" autofocus><div id="searchResults" class="search-results"></div></div>
   </div>
 
-  <script src="/app.js?v=30"></script>
+  <script src="/app.js?v=31"></script>
 </body>
 </html>
