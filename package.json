@@ -1,6 +1,6 @@
 {
   "name": "content-factory",
-  "version": "2.6.28",
+  "version": "2.6.29",
   "private": true,
   "type": "module",
   "scripts": {
