@@ -616,32 +616,40 @@ function stageReportHtml(r,stage){
     '</div>';
   }
   else if(stage==="Storyboard"){
-    body=board.length?'<div class="storyboard-report">'+board.map((x,i)=>'<article class="storyboard-report-card">'+
-      '<div class="storyboard-report-head"><span class="storyboard-number">'+(i+1)+'</span><div class="storyboard-head-copy"><h3>'+esc(x.title||"Сцена")+'</h3><small>'+esc(x.duration||"")+'</small></div><button class="storyboard-scene-regen" '+(["queued","processing"].includes(r.storyboardSceneJobs?.[i+1]?.status)?'disabled':'')+' onclick="event.stopPropagation();regenerateStoryboardScene(\''+r.id+'\','+(i+1)+')">'+(["queued","processing"].includes(r.storyboardSceneJobs?.[i+1]?.status)?'⏳ Обновляется':'↻ Переделать сцену')+'</button></div>'+
-      '<div class="storyboard-meta">'+
-        '<div><small>Задача</small><p>'+esc(x.purpose||"—")+'</p></div>'+
-        '<div><small>Крупность</small><p>'+esc(x.framing||"—")+'</p></div>'+
-        '<div><small>Камера</small><p>'+esc(x.camera||"—")+'</p></div>'+
-        '<div><small>Ракурс / объектив</small><p>'+esc([x.angle,x.lens].filter(Boolean).join(" · ")||"—")+'</p></div>'+
-      '</div>'+
-      '<div class="storyboard-wide"><small>Что в кадре</small><p>'+esc(x.shot||"—")+'</p></div>'+
-      '<div class="storyboard-wide"><small>Действие</small><p>'+esc(x.action||"—")+'</p></div>'+
-      '<div class="storyboard-meta">'+
-        '<div><small>Локация</small><p>'+esc(x.environment||"—")+'</p></div>'+
-        '<div><small>Свет</small><p>'+esc(x.lighting||"—")+'</p></div>'+
-        '<div><small>Персонаж</small><p>'+esc(x.characters||"—")+'</p></div>'+
-        '<div><small>Товар</small><p>'+esc(x.product||"—")+'</p></div>'+
-      '</div>'+
-      '<div class="storyboard-frame-pair"><div><small>START FRAME</small><p>'+esc(x.startFrame||"—")+'</p></div><div><small>END FRAME</small><p>'+esc(x.endFrame||"—")+'</p></div></div>'+
-      '<div class="storyboard-wide"><small>Continuity</small><p>'+esc(x.continuity||"—")+'</p></div>'+
-      '<div class="storyboard-meta">'+
-        '<div><small>Диалог</small><p>'+esc(x.dialogue||"—")+'</p></div>'+
-        '<div><small>Озвучка</small><p>'+esc(x.voiceover||"—")+'</p></div>'+
-        '<div><small>Текст на экране</small><p>'+esc(x.onscreen||"—")+'</p></div>'+
-        '<div><small>Звук / переход</small><p>'+esc([x.sound,x.transition].filter(Boolean).join(" · ")||"—")+'</p></div>'+
-      '</div>'+
-      '<details class="storyboard-prompt"><summary>Prompt для видеомодели</summary><p>'+esc(x.promptEn||x.prompt||"—")+'</p><small>NEGATIVE</small><p>'+esc(x.negative||"—")+'</p></details>'+
-    '</article>').join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>';
+    body=board.length?'<div class="storyboard-report">'+board.map((x,i)=>{
+      const sceneNo=i+1;
+      const required=["title","duration","purpose","shot","framing","camera","lens","angle","environment","lighting","characters","product","action","startFrame","endFrame","continuity","sound","transition","negative","promptEn"];
+      const missing=required.filter(k=>!String(x?.[k]||"").trim());
+      const job=r.storyboardSceneJobs?.[sceneNo];
+      const busy=job?.status==="queued"||job?.status==="processing";
+      return '<article class="storyboard-report-card '+(missing.length?"storyboard-incomplete":"storyboard-complete")+'">'+
+        '<div class="storyboard-report-head"><span class="storyboard-number">'+sceneNo+'</span><div><h3>'+esc(x.title||"Сцена")+'</h3><small>'+esc(x.duration||"")+'</small></div><div class="storyboard-scene-tools"><span class="status '+(missing.length?"work":"done")+'">'+(missing.length?("Не заполнено: "+missing.length):"Заполнено")+'</span><button class="secondary storyboard-scene-regenerate" '+(busy?"disabled":"")+' onclick="regenerateStoryboardScene(\''+r.id+'\','+sceneNo+')">'+(busy?"⏳ Обновляется":"↻ Переделать сцену")+'</button></div></div>'+
+        '<div class="storyboard-meta">'+
+          '<div><small>Задача</small><p>'+esc(x.purpose||"—")+'</p></div>'+
+          '<div><small>Крупность</small><p>'+esc(x.framing||"—")+'</p></div>'+
+          '<div><small>Камера</small><p>'+esc(x.camera||"—")+'</p></div>'+
+          '<div><small>Ракурс / объектив</small><p>'+esc([x.angle,x.lens].filter(Boolean).join(" · ")||"—")+'</p></div>'+
+        '</div>'+
+        '<div class="storyboard-wide"><small>Что в кадре</small><p>'+esc(x.shot||"—")+'</p></div>'+
+        '<div class="storyboard-wide"><small>Действие</small><p>'+esc(x.action||"—")+'</p></div>'+
+        '<div class="storyboard-meta">'+
+          '<div class="'+(!x.environment?"storyboard-field-missing":"")+'"><small>Локация</small><p>'+esc(x.environment||"—")+'</p></div>'+
+          '<div class="'+(!x.lighting?"storyboard-field-missing":"")+'"><small>Свет</small><p>'+esc(x.lighting||"—")+'</p></div>'+
+          '<div class="'+(!x.characters?"storyboard-field-missing":"")+'"><small>Персонаж</small><p>'+esc(x.characters||"—")+'</p></div>'+
+          '<div class="'+(!x.product?"storyboard-field-missing":"")+'"><small>Товар</small><p>'+esc(x.product||"—")+'</p></div>'+
+        '</div>'+
+        '<div class="storyboard-frame-pair"><div class="'+(!x.startFrame?"storyboard-field-missing":"")+'"><small>START FRAME</small><p>'+esc(x.startFrame||"—")+'</p></div><div class="'+(!x.endFrame?"storyboard-field-missing":"")+'"><small>END FRAME</small><p>'+esc(x.endFrame||"—")+'</p></div></div>'+
+        '<div class="storyboard-wide"><small>Continuity</small><p>'+esc(x.continuity||"—")+'</p></div>'+
+        '<div class="storyboard-meta">'+
+          '<div><small>Диалог</small><p>'+esc(x.dialogue||"—")+'</p></div>'+
+          '<div><small>Озвучка</small><p>'+esc(x.voiceover||"—")+'</p></div>'+
+          '<div><small>Текст на экране</small><p>'+esc(x.onscreen||"—")+'</p></div>'+
+          '<div><small>Звук / переход</small><p>'+esc([x.sound,x.transition].filter(Boolean).join(" · ")||"—")+'</p></div>'+
+        '</div>'+
+        '<details class="storyboard-prompt"><summary>Prompt для видеомодели</summary><p>'+esc(x.promptEn||x.prompt||"—")+'</p><small>NEGATIVE</small><p>'+esc(x.negative||"—")+'</p></details>'+
+        (missing.length?'<div class="storyboard-missing-note">Нужно заполнить: '+missing.map(esc).join(", ")+'</div>':'')+
+      '</article>';
+    }).join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>';
   }
   else if(stage==="Превиз-кадры"){
     const frames=Array.isArray(r.previsFrames)?r.previsFrames:[];
@@ -681,6 +689,14 @@ function stageReportHtml(r,stage){
             :'';
   return '<section class="panel stage-report" id="stageReport"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(stage)+'</h2><p>'+(manual?'Ручной режим · этап ждёт подтверждения после готовности':'Автопилот · этапы проходят автоматически')+'</p></div><span class="status '+(stageDone(r,stage)?"done":"wait")+'">'+(stageDone(r,stage)?"Готово":"Не готово")+'</span></div>'+body+'<div class="stage-report-actions">'+nextAction+(canRegen?'<button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\''+stage+'\')">↻ Переделать этап</button>':'')+(r.status==="Ошибка"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">↻ Повторить этап</button>':r.status==="Остановлено"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">▶ Продолжить</button>':'<button class="danger-btn" onclick="runAction(\''+r.id+'\',\'stop\')">■ Остановить</button>')+'</div></section>';
 }
+window.regenerateStoryboardScene=async(runId,scene)=>{
+  const note=prompt("Что изменить только в сцене "+scene+"? Можно оставить пустым — AI сам заполнит и улучшит все технические поля.","");
+  if(note===null)return;
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"regenerate_storyboard_scene",scene,note})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){alert(data.detail||data.error||"Не удалось переделать сцену");return}
+  await syncFromServer();selectedRunId=runId;runStageOpen="Storyboard";renderRunDetail();
+};
 window.openStageDetail=(id,stage)=>{selectedRunId=id;runStageOpen=stage;renderRunDetail();setTimeout(()=>document.getElementById("stageReport")?.scrollIntoView({behavior:"smooth",block:"start"}),40)};
 window.selectIdeaOption=async(runId,optionIndex)=>{
   const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"select_idea_option",optionIndex})});
