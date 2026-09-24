@@ -737,7 +737,7 @@ function stageReportHtml(r,stage){
     const v=r.voiceoverResult;
     body=v?'<div class="artifact-script"><h3>Озвучка готова</h3><p>Модель: '+esc(v.model||v.provider||"")+'</p><p>Сцен с речью: '+((v.spokenScenes||[]).length)+'</p>'+(v.spokenScenes?.length?'<div class="stage-storyboard-list">'+v.spokenScenes.map(x=>'<div><b>Сцена '+x.scene+'</b><span>'+x.duration+' сек</span><p>'+esc(x.text||"")+'</p></div>').join("")+'</div>':'')+'</div>':'<div class="empty compact-empty">Озвучка ещё не готова.</div>';
   } else if(stage==="Монтаж"){
-    body=r.montageResult?.url?'<div class="generated-video-panel"><video controls playsinline preload="metadata" src="'+esc(r.montageResult.url)+'"></video><p class="artifact-note">Длительность: '+esc(r.montageResult.durationSeconds||"—")+' сек</p><div class="media-actions"><button class="btn primary" onclick="downloadMedia(\''+esc(r.montageResult.url)+'\',\'final-'+esc(r.id)+'.mp4\')">↓ Скачать готовое видео</button></div></div>':'<div class="empty compact-empty">Финальный монтаж ещё не готов.</div>';
+    body=r.montageResult?.url?'<div class="generated-video-panel"><video controls playsinline preload="metadata" src="'+esc(r.montageResult.url)+'"></video><p class="artifact-note">Длительность: '+esc(r.montageResult.durationSeconds||"—")+' сек</p><div class="media-actions"><button class="btn primary" onclick="downloadMedia(\''+esc(r.montageResult.url)+'\',\'final-'+esc(r.id)+'.mp4\')">↓ Скачать готовое видео</button><button class="tiny-btn danger-mini" onclick="deleteFinalVideo(\''+r.id+'\')">Удалить только финальное видео</button></div></div>':'<div class="empty compact-empty">Финальный монтаж ещё не готов.</div>';
   } else if(stage==="AI-проверка"){
     const q=r.qcResult;
     const dc=q?.directorCut||r.directorCut||null;
@@ -853,9 +853,9 @@ function renderRunDetail(){
   const acceptedScenes=Array.isArray(r.acceptedScenes)?r.acceptedScenes:[];
   const pendingScenes=Array.from({length:totalScenes},(_,i)=>i+1).filter(n=>!acceptedScenes.includes(n));
   const reviewPanel=(r.stage==="На проверке"&&r.status==="На проверке"&&generatedVideosReady&&!r.montageResult?.url)?'<section class="panel stage-report" id="sceneReviewPanel"><div class="panel-title"><div><span class="mini-icon">✓</span><h2>Проверка сцен</h2><p>Просмотри каждую сцену и прими или переделай</p></div><span class="status work">Принято '+acceptedScenes.length+'/'+totalScenes+'</span></div><div class="review-scene-list">'+Array.from({length:totalScenes},(_,i)=>{const n=i+1,url=sceneResultUrl(r,i),ok=acceptedScenes.includes(n);return '<article class="review-scene '+(ok?'accepted':'')+'"><div class="review-scene-head"><b>Сцена '+n+'</b><span class="status '+(ok?'done':'wait')+'">'+(ok?'Принята':'Нужно решение')+'</span></div>'+(url?'<video controls playsinline preload="metadata" src="'+esc(url)+'"></video><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(url)+'\',\'scene-'+n+'.mp4\')">↓ Скачать</button></div>':'<div class="empty compact-empty">Видео ещё нет</div>')+'<div class="review-scene-actions">'+(ok?'<button class="secondary" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button>':'<button class="btn primary" onclick="acceptScene(\''+r.id+'\','+n+',this)">✓ Принять сцену</button><button class="secondary" onclick="regenScene(\''+r.id+'\','+n+')">↻ Переделать</button>')+'</div></article>'}).join("")+'</div>'+(pendingScenes.length?'<div class="message">Осталось подтвердить сцены: '+pendingScenes.join(", ")+'</div>':'<div class="message">Все сцены подтверждены.</div>')+'</section>':'';
-  const finalReviewPanel=(r.status==="На проверке"&&r.montageResult?.url)?'<section class="panel final-review-panel" id="finalReviewPanel"><div class="panel-title"><div><span class="mini-icon">▶</span><h2>Финальная проверка ролика</h2><p>Сцены уже подтверждены, озвучка и монтаж готовы</p></div><span class="status '+(r.qcResult?.passed===false?'review':'done')+'">'+(r.qcResult?.passed===false?'Есть замечание AI':'AI-проверка пройдена')+'</span></div><video controls playsinline preload="metadata" src="'+esc(r.montageResult.url)+'"></video><div class="final-qc-summary"><b>AI-проверка</b><p>'+esc(r.qcResult?.summary||"Проверка завершена.")+'</p>'+(r.qcResult?.issues?.length?'<ul>'+r.qcResult.issues.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+'</div><div class="final-review-actions"><button class="secondary" onclick="downloadMedia(\''+esc(r.montageResult.url)+'\',\'final-'+esc(r.id)+'.mp4\')">↓ Скачать видео</button><button class="btn primary" onclick="markReady(\''+r.id+'\')">✓ Утвердить ролик</button><button class="secondary" onclick="document.getElementById(\'storyboardReview\')?.scrollIntoView({behavior:\'smooth\',block:\'start\'})">↻ Перейти к сценам для доработки</button></div></section>':'';
+  const finalReviewPanel=(r.status==="На проверке"&&r.montageResult?.url)?'<section class="panel final-review-panel" id="finalReviewPanel"><div class="panel-title"><div><span class="mini-icon">▶</span><h2>Финальная проверка ролика</h2><p>Сцены уже подтверждены, озвучка и монтаж готовы</p></div><span class="status '+(r.qcResult?.passed===false?'review':'done')+'">'+(r.qcResult?.passed===false?'Есть замечание AI':'AI-проверка пройдена')+'</span></div><video controls playsinline preload="metadata" src="'+esc(r.montageResult.url)+'"></video><div class="final-qc-summary"><b>AI-проверка</b><p>'+esc(r.qcResult?.summary||"Проверка завершена.")+'</p>'+(r.qcResult?.issues?.length?'<ul>'+r.qcResult.issues.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+'</div><div class="final-review-actions"><button class="secondary" onclick="downloadMedia(\''+esc(r.montageResult.url)+'\',\'final-'+esc(r.id)+'.mp4\')">↓ Скачать видео</button><button class="tiny-btn danger-mini" onclick="deleteFinalVideo(\''+r.id+'\')">Удалить финальное видео</button><button class="btn primary" onclick="markReady(\''+r.id+'\')">✓ Утвердить ролик</button><button class="secondary" onclick="document.getElementById(\'storyboardReview\')?.scrollIntoView({behavior:\'smooth\',block:\'start\'})">↻ Перейти к сценам для доработки</button></div></section>':'';
   const generatedUrl=r.montageResult?.url||r.generationResult?.urls?.[0]||null;
-  const generatedVideo=generatedUrl?'<section class="panel generated-video-panel"><div class="panel-title"><div><span class="mini-icon">▶</span><h2>'+(r.montageResult?.url?'Финальный ролик':'Полученное видео')+'</h2><p>'+(r.montageResult?.url?'Собранный монтаж с озвучкой':'Результат генерации сцены')+'</p></div><span class="status done">Получено</span></div><video controls playsinline preload="metadata" src="'+esc(generatedUrl)+'"></video><div class="media-actions"><button class="btn primary" onclick="downloadMedia(\''+esc(generatedUrl)+'\',\''+(r.montageResult?.url?'final-'+esc(r.id)+'.mp4':'generated-'+esc(r.id)+'.mp4')+'\')">↓ Скачать</button></div></section>':'';
+  const generatedVideo=generatedUrl?'<section class="panel generated-video-panel"><div class="panel-title"><div><span class="mini-icon">▶</span><h2>'+(r.montageResult?.url?'Финальный ролик':'Полученное видео')+'</h2><p>'+(r.montageResult?.url?'Собранный монтаж с озвучкой':'Результат генерации сцены')+'</p></div><span class="status done">Получено</span></div><video controls playsinline preload="metadata" src="'+esc(generatedUrl)+'"></video><div class="media-actions"><button class="btn primary" onclick="downloadMedia(\''+esc(generatedUrl)+'\',\''+(r.montageResult?.url?'final-'+esc(r.id)+'.mp4':'generated-'+esc(r.id)+'.mp4')+'\')">↓ Скачать</button>'+(r.montageResult?.url?'<button class="tiny-btn danger-mini" onclick="deleteFinalVideo(\''+r.id+'\')">Удалить финальное видео</button>':'')+'</div></section>':'';
   const stageReport=runStageOpen?stageReportHtml(r,runStageOpen):'';
   const runMode=r.mode==="manual"?"manual":"auto";
   const modeSwitch='<div class="run-mode-control"><span><b>Режим процесса</b><small>'+(runMode==="manual"?"Текущий шаг завершится и остановится на подтверждении":"Следующие этапы продолжатся автоматически")+'</small></span><div class="run-mode-buttons"><button class="'+(runMode==="manual"?"btn primary":"secondary")+'" '+(runMode==="manual"?"disabled":"")+' onclick="switchRunMode(\''+r.id+'\',\'manual\',this)">Ручной</button><button class="'+(runMode==="auto"?"btn primary":"secondary")+'" '+(runMode==="auto"?"disabled":"")+' onclick="switchRunMode(\''+r.id+'\',\'auto\',this)">Автопилот</button></div></div>';
@@ -919,25 +919,69 @@ window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.
 function renderScenes(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
   const archived=(Array.isArray(mediaLibrary)?mediaLibrary:[]).slice().reverse();
-  const photos=archived.filter(m=>m.kind!=="video");
-  const videos=archived.filter(m=>m.kind==="video");
+  const activePhotos=[],activeVideos=[];
+
+  if(r){
+    for(const f of (Array.isArray(r.previsFrames)?r.previsFrames:[])){
+      if(!f?.url)continue;
+      activePhotos.push({
+        id:'active-previs-'+String(f.id||f.scene+'-'+f.frame),
+        kind:'image',url:f.url,path:f.path||'',productName:pname(r),
+        sourceStage:'Текущий процесс · Превиз',scene:f.scene,frame:f.frame,frameId:f.id||'',
+        provider:f.provider||f.model||'',fileName:f.fileName||('previs-scene-'+f.scene+'-'+(f.frameType||f.frame)+'.png'),
+        active:true,activeType:'previs',runId:r.id
+      });
+    }
+    for(const [sceneNo,sr] of Object.entries(r.sceneResults||{})){
+      const u=Array.isArray(sr?.urls)?sr.urls[0]:'';
+      if(!u)continue;
+      activeVideos.push({
+        id:'active-scene-'+sceneNo,kind:'video',url:u,productName:pname(r),
+        sourceStage:'Текущий процесс · Видео-сцена',scene:Number(sceneNo),
+        provider:sr.routerProvider||sr.provider||sr.model||'',fileName:'scene-'+sceneNo+'.mp4',
+        active:true,activeType:'scene',runId:r.id
+      });
+    }
+    const finalUrl=r.montageResult?.url||r.finalMedia?.url||'';
+    if(finalUrl){
+      activeVideos.unshift({
+        id:'active-final-'+r.id,kind:'video',url:finalUrl,
+        productName:pname(r),sourceStage:'Текущий процесс · Финальный ролик',
+        provider:'Монтаж',fileName:'final-'+r.id+'.mp4',
+        active:true,activeType:'final',runId:r.id
+      });
+    }
+  }
+
+  const photos=[...activePhotos,...archived.filter(m=>m.kind!=="video")];
+  const videos=[...activeVideos,...archived.filter(m=>m.kind==="video")];
+
   const mediaCard=m=>{
     const title=[m.productName,m.sourceStage,m.scene?("сцена "+m.scene):""].filter(Boolean).join(" · ");
     const preview=m.kind==="video"
       ? '<video controls playsinline preload="metadata" src="'+esc(m.url||"")+'"></video>'
       : '<img src="'+esc(m.url||"")+'" alt="'+esc(title||"Медиа")+'">';
     const ext=m.kind==="video"?".mp4":".png";
-    return '<article class="archive-media-card"><div class="archive-media-preview">'+preview+'</div><div class="archive-media-copy"><b>'+esc(title||"Сохранённый файл")+'</b><small>'+esc(m.provider||m.model||"")+(m.archivedAt?' · сохранено '+esc(new Date(m.archivedAt).toLocaleString("ru-RU")):'')+'</small><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url||"")+'\',\''+esc(m.fileName||("media-"+m.id+ext))+'\')">↓ Скачать</button><button class="tiny-btn danger-mini" onclick="deleteLibraryMedia(\''+esc(m.id||"")+'\')">Удалить</button></div></div></article>';
+    let del='';
+    if(m.activeType==="previs") del='<button class="tiny-btn danger-mini" onclick="deletePrevisFrame(\''+esc(m.runId)+'\',\''+esc(m.frameId||"")+'\','+Number(m.scene||1)+','+Number(m.frame||1)+')">Удалить фото</button>';
+    else if(m.activeType==="scene") del='<button class="tiny-btn danger-mini" onclick="deleteSceneVideo(\''+esc(m.runId)+'\','+Number(m.scene||1)+')">Удалить видео</button>';
+    else if(m.activeType==="final") del='<button class="tiny-btn danger-mini" onclick="deleteFinalVideo(\''+esc(m.runId)+'\')">Удалить видео</button>';
+    else del='<button class="tiny-btn danger-mini" onclick="deleteLibraryMedia(\''+esc(m.id||"")+'\')">Удалить</button>';
+
+    return '<article class="archive-media-card '+(m.active?'active-media-card':'')+'"><div class="archive-media-preview">'+preview+'</div><div class="archive-media-copy"><b>'+esc(title||"Сохранённый файл")+'</b><small>'+(m.active?'<span class="chip">Текущий</span> ':'')+esc(m.provider||m.model||"")+(m.archivedAt?' · сохранено '+esc(new Date(m.archivedAt).toLocaleString("ru-RU")):'')+'</small><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url||"")+'\',\''+esc(m.fileName||("media-"+m.id+ext))+'\')">↓ Скачать</button>'+del+'</div></div></article>';
   };
+
   const section=(title,subtitle,items,icon)=>'<section class="panel media-library-panel"><div class="panel-title"><div><span class="mini-icon">'+icon+'</span><h2>'+title+'</h2><p>'+subtitle+'</p></div><span class="chip">'+items.length+' файлов</span></div>'+(items.length?'<div class="archive-media-grid">'+items.map(mediaCard).join("")+'</div>':'<div class="empty compact-empty">Пока пусто.</div>')+'</section>';
-  const mediaHtml=
-    '<div class="media-library-split">'+
-      section('Фото','Превизы, кадры и сохранённые изображения.',photos,'▧')+
-      section('Видео','Сцены, монтажи и готовые ролики.',videos,'▶')+
-    '</div>';
+
+  const mediaHtml='<div class="media-library-split">'+
+    section('Фото','Текущие превизы и архивные изображения. Любое фото удаляется отдельно.',photos,'▧')+
+    section('Видео','Видео-сцены, финальные ролики и архив. Любое видео удаляется отдельно.',videos,'▶')+
+  '</div>';
+
   const currentHtml=r
     ? '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(pname(r))+'</h2><p>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</p></div><button class="text-btn" onclick="openRun(\''+r.id+'\')">Открыть ролик ›</button></div><div class="storyboard">'+scenes(r)+'</div></section>'
     : '<div class="panel empty">Активных процессов нет. Сохранённые файлы остаются в медиатеке выше.</div>';
+
   $("#scenesWorkspace").innerHTML=mediaHtml+currentHtml;
 }
 window.deleteLibraryMedia=async id=>{
@@ -952,7 +996,14 @@ window.deleteSceneVideo=async(runId,scene)=>{
   const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_scene_video",scene})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){alert(data.detail||data.error||"Не удалось удалить видео сцены");return}
-  await syncFromServer();selectedRunId=runId;runStageOpen="Генерация";renderRunDetail();
+  await syncFromServer();selectedRunId=runId;runStageOpen="Генерация";renderRunDetail();renderScenes();
+};
+window.deleteFinalVideo=async runId=>{
+  if(!confirm("Удалить только финальное видео? Сцены, превизы, сценарий и процесс останутся."))return;
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_final_video"})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){alert(data.detail||data.error||"Не удалось удалить финальное видео");return}
+  await syncFromServer();selectedRunId=runId;runStageOpen="Монтаж";renderRunDetail();renderScenes();
 };
 let editingCharacterId=null;
 
