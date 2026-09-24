@@ -185,6 +185,70 @@ async function sessionUser(req){
   const user=registry.users.find(u=>u.id===session.uid);
   return user?{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login,createdAt:user.createdAt}:null;
 }
+async function applyOneTimeAuthMigration(){
+  const migrationId=String(process.env.AUTH_MIGRATION_ID||'').trim();
+  const userId=String(process.env.AUTH_MIGRATION_USER_ID||'').trim();
+  const email=normalizeEmail(process.env.AUTH_MIGRATION_EMAIL||'');
+  const legacyLogin=normalizeLogin(process.env.AUTH_MIGRATION_LEGACY_LOGIN||'');
+  const salt=String(process.env.AUTH_MIGRATION_SALT||'').trim();
+  const passwordHash=String(process.env.AUTH_MIGRATION_PASSWORD_HASH||'').trim();
+  if(!migrationId||!userId||!validEmail(email)||!/^[0-9a-f]{32}$/i.test(salt)||!/^[0-9a-f]{128}$/i.test(passwordHash))return {skipped:true};
+  const users=await ensureUsersRegistry();
+  const user=(users.users||[]).find(u=>u.id===userId);
+  if(!user)throw new Error('Auth migration user not found');
+  if(user.authMigrationId===migrationId)return {ok:true,alreadyApplied:true};
+  const duplicate=(users.users||[]).find(u=>u.id!==userId&&normalizeEmail(u.email||u.login)===email);
+  if(duplicate)throw new Error('Auth migration email already belongs to another user');
+  user.legacyLogin=user.legacyLogin||legacyLogin||normalizeLogin(user.login);
+  user.email=email;
+  user.login=email;
+  user.authType='email';
+  user.salt=salt;
+  user.passwordHash=passwordHash;
+  user.passwordUpdatedAt=new Date().toISOString();
+  user.authMigrationId=migrationId;
+  user.authMigrationAt=new Date().toISOString();
+  await writeUsersRegistry(users);
+  try{
+    const accounts=await ensureAccountsRegistry();
+    let touched=false;
+    for(const account of (accounts.accounts||[])){
+      if(account.ownerUserId===user.id){
+        account.email=email;
+        account.updatedAt=new Date().toISOString();
+        touched=true;
+      }
+    }
+    if(touched)await writeAccountsRegistry(accounts);
+  }catch(e){console.warn('[auth-migration-account] '+String(e?.message||e))}
+  console.log('[auth-migration] PASS id='+migrationId+' user='+userId);
+  return {ok:true};
+}
+async function runLocalAuthSelfTest(){
+  const email=normalizeLogin(process.env.AUTH_SELFTEST_EMAIL||'');
+  const password=String(process.env.AUTH_SELFTEST_PASSWORD||'');
+  if(!email||!password)return {skipped:true};
+  const base='http://127.0.0.1:'+port;
+  const loginRes=await fetch(base+'/api/auth/login',{
+    method:'POST',headers:{'content-type':'application/json','user-agent':'content-factory-auth-selftest'},
+    body:JSON.stringify({email,password})
+  });
+  const loginText=await loginRes.text();
+  let loginData={};try{loginData=loginText?JSON.parse(loginText):{}}catch{}
+  if(!loginRes.ok)throw new Error('login '+loginRes.status+' '+String(loginData?.code||loginData?.error||loginText).slice(0,300));
+  const rawCookie=String(loginRes.headers.get('set-cookie')||'');
+  const cookie=rawCookie.split(';')[0];
+  if(!cookie)throw new Error('login did not set session cookie');
+  const meRes=await fetch(base+'/api/auth/me',{headers:{cookie,'user-agent':'content-factory-auth-selftest'}});
+  const meData=await meRes.json().catch(()=>({}));
+  if(!meRes.ok||!meData?.user?.id)throw new Error('me '+meRes.status);
+  const accRes=await fetch(base+'/api/accounts',{headers:{cookie,'user-agent':'content-factory-auth-selftest'}});
+  const accData=await accRes.json().catch(()=>({}));
+  if(!accRes.ok||!Array.isArray(accData?.accounts)||!accData.accounts.length)throw new Error('accounts '+accRes.status+' count='+(accData?.accounts?.length||0));
+  console.log('[auth-selftest] PASS user='+meData.user.id+' accounts='+accData.accounts.length);
+  return {ok:true,userId:meData.user.id,accounts:accData.accounts.length};
+}
+
 async function userOwnsAccount(userId,accountId){
   if(!userId)return false;
   const registry=await ensureAccountsRegistry();
@@ -7458,7 +7522,11 @@ const server=http.createServer(async(req,res)=>{
       const identifier=normalizeLogin(body?.email||body?.login);
       const password=String(body?.password||'');
       const users=await ensureUsersRegistry();
-      let user=users.users.find(u=>normalizeLogin(u.email||u.login)===identifier||normalizeLogin(u.login)===identifier);
+      let user=users.users.find(u=>
+        normalizeLogin(u.email||u.login)===identifier||
+        normalizeLogin(u.login)===identifier||
+        normalizeLogin(u.legacyLogin||'')===identifier
+      );
       let migratedLegacy=false;
 
       // Safe one-time migration path for the original pre-email account:
@@ -8078,6 +8146,16 @@ const server=http.createServer(async(req,res)=>{
 
 server.listen(port,'0.0.0.0',async()=>{
   console.log(`Content Factory запущен на порту ${port}`);
+  try{
+    await applyOneTimeAuthMigration();
+  }catch(e){
+    console.error('[auth-migration] FAIL '+String(e?.message||e));
+  }
+  try{
+    await runLocalAuthSelfTest();
+  }catch(e){
+    console.error('[auth-selftest] FAIL '+String(e?.message||e));
+  }
   setTimeout(async()=>{
     try{
       await recoverSavedIdeaLibrary();
