@@ -283,7 +283,7 @@ window.makePrimaryMedia=(productId,mediaId)=>{const p=prod(productId);if(!p)retu
 window.deleteProductMedia=async(productId,mediaId)=>{const p=prod(productId);if(!p)return;const m=(p.media||[]).find(x=>x.id===mediaId);if(!m||!confirm("Удалить это фото?"))return;try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:m.path})})}catch{};const wasPrimary=!!m.isPrimary;p.media=(p.media||[]).filter(x=>x.id!==mediaId);if(wasPrimary&&p.media[0])p.media[0].isPrimary=true;p.productDNAFingerprint="";log("Удалено фото товара",p.name);persist();renderProductDetail()}
 async function deleteFactoryEntity(type,id,label="объект"){
   const messages={
-    run:"Удалить этот процесс из списка? Если он сейчас выполняется, дальнейшая генерация будет остановлена. Уже созданные фото и видео сохранятся в «Сцены и медиа» → «Медиатека».",
+    run:"Удалить этот процесс из списка? Если он сейчас выполняется, дальнейшая генерация будет остановлена. Уже созданные фото останутся в разделе «Фото», а видео — в разделе «Видео».",
     script:"Удалить этот сценарий из библиотеки?",
     campaign:"Удалить эту кампанию? Уже созданные ролики сохранятся.",
     character:"Удалить этого AI-аватара и его сохранённые фото?",
@@ -322,7 +322,7 @@ const a=runs.filter(r=>r.status==="Ошибка"||r.status==="На провер�
 const cnt={};ST.forEach(x=>cnt[x]=0);runs.forEach(r=>cnt[norm(r)]=(cnt[norm(r)]||0)+1);$("#pipelineOverview").innerHTML=ST.slice(0,10).map((x,i)=>'<button class="pipeline-node" onclick="go(\'production\')"><small>'+x+'</small><b>'+(cnt[x]||0)+'</b><em>'+(i<9?"Следующий этап →":"Финиш")+'</em></button>').join("");
 const at=runs.filter(r=>!["Готово","Запланировано","Опубликовано"].includes(r.status)).map(task).slice(-4).reverse();$("#backgroundMini").innerHTML=at.length?at.map(taskHtml).join(""):'<div class="empty">Фоновых задач пока нет.</div>';$("#bgBadge").textContent=at.length;
 $("#homeProducts").innerHTML=products.slice(0,3).map(pcard).join("")||'<div class="empty">Добавь первый товар</div>';$("#latestRuns").innerHTML=runs.length?runs.slice(-5).reverse().map(rrow).join(""):'<div class="empty">Пока нет роликов.</div>';
-const L=[["production","⌁","Производство","Конвейер"],["ideas","✦","Идеи","Создать и запустить"],["background","◷","Фоновые задачи","Все процессы"],["campaigns","◫","Кампании","Серии роликов"],["scripts","✎","Сценарии","Хуки и промты"],["scenes","▤","Сцены","Storyboard и версии"],["characters","◉","Персонажи","AI-блогеры"],["calendar","▦","Календарь","План публикаций"],["analytics","↗","Аналитика","Результаты"],["costs","₽","Расходы","Лимиты"],["journal","☷","Журнал","История"]];$("#sectionLinks").innerHTML=L.map(x=>'<button class="section-link" onclick="go(\''+x[0]+'\')"><b>'+x[1]+" "+x[2]+'</b><small>'+x[3]+'</small></button>').join("")
+const L=[["production","⌁","Производство","Конвейер"],["ideas","✦","Идеи","Создать и запустить"],["background","◷","Фоновые задачи","Все процессы"],["campaigns","◫","Кампании","Серии роликов"],["scripts","✎","Сценарии","Хуки и промты"],["photos","▧","Фото","Превизы и изображения"],["videos","▶","Видео","Сцены и готовые ролики"],["characters","◉","Персонажи","AI-блогеры"],["calendar","▦","Календарь","План публикаций"],["analytics","↗","Аналитика","Результаты"],["costs","₽","Расходы","Лимиты"],["journal","☷","Журнал","История"]];$("#sectionLinks").innerHTML=L.map(x=>'<button class="section-link" onclick="go(\''+x[0]+'\')"><b>'+x[1]+" "+x[2]+'</b><small>'+x[3]+'</small></button>').join("")
 }
 function ideaDetailsHtml(idea={}){
   const fields=[
@@ -917,47 +917,51 @@ function renderScripts(){$("#scriptsList").innerHTML=scripts.length?scripts.slic
 $("#addScript").onclick=()=>openM("scriptModal");$("#saveScript").onclick=()=>{const n=$("#scriptTitle").value.trim();if(!n)return;scripts.push({id:uid("s"),title:n,hook:$("#scriptHook").value.trim(),body:$("#scriptBody").value.trim(),cta:$("#scriptCta").value.trim(),used:0,created:now()});log("Сохранён сценарий",n);closeM("scriptModal");persist()};
 window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.used||0)+1;$("#brief").value=[s.hook,s.body,s.cta].filter(Boolean).join("\n");openCreate();persist()};
 function collectGeneratedMedia(){
-  const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
   const archived=(Array.isArray(mediaLibrary)?mediaLibrary:[]).slice().reverse();
   const activePhotos=[],activeVideos=[];
+  const seenPhoto=new Set(),seenVideo=new Set();
 
-  if(r){
+  for(const r of (Array.isArray(runs)?runs:[]).slice().reverse()){
     for(const f of (Array.isArray(r.previsFrames)?r.previsFrames:[])){
-      if(!f?.url)continue;
+      if(!f?.url||seenPhoto.has(String(f.url)))continue;
+      seenPhoto.add(String(f.url));
       activePhotos.push({
-        id:'active-previs-'+String(f.id||f.scene+'-'+f.frame),
+        id:'active-previs-'+String(r.id)+'-'+String(f.id||f.scene+'-'+f.frame),
         kind:'image',url:f.url,path:f.path||'',productName:pname(r),
-        sourceStage:'Текущий процесс · Превиз',scene:f.scene,frame:f.frame,frameId:f.id||'',
+        sourceStage:'Превиз',scene:f.scene,frame:f.frame,frameId:f.id||'',
         provider:f.provider||f.model||'',fileName:f.fileName||('previs-scene-'+f.scene+'-'+(f.frameType||f.frame)+'.png'),
         active:true,activeType:'previs',runId:r.id
       });
     }
     for(const [sceneNo,sr] of Object.entries(r.sceneResults||{})){
       for(const [idx,u] of (Array.isArray(sr?.urls)?sr.urls:[]).entries()){
-        if(!u)continue;
+        if(!u||seenVideo.has(String(u)))continue;
+        seenVideo.add(String(u));
         activeVideos.push({
-          id:'active-scene-'+sceneNo+'-'+idx,kind:'video',url:u,productName:pname(r),
-          sourceStage:'Текущий процесс · Видео-сцена',scene:Number(sceneNo),
+          id:'active-scene-'+String(r.id)+'-'+sceneNo+'-'+idx,kind:'video',url:u,productName:pname(r),
+          sourceStage:'Видео-сцена',scene:Number(sceneNo),videoIndex:idx,
           provider:sr.routerProvider||sr.provider||sr.model||'',fileName:'scene-'+sceneNo+(idx?'-'+(idx+1):'')+'.mp4',
           active:true,activeType:'scene',runId:r.id
         });
       }
     }
     const finalUrl=r.montageResult?.url||r.finalMedia?.url||'';
-    if(finalUrl){
+    if(finalUrl&&!seenVideo.has(String(finalUrl))){
+      seenVideo.add(String(finalUrl));
       activeVideos.unshift({
         id:'active-final-'+r.id,kind:'video',url:finalUrl,
-        productName:pname(r),sourceStage:'Текущий процесс · Финальный ролик',
+        productName:pname(r),sourceStage:'Финальный ролик',
         provider:'Монтаж',fileName:'final-'+r.id+'.mp4',
         active:true,activeType:'final',runId:r.id
       });
     }
   }
 
+  const archivedPhotos=archived.filter(m=>m.kind!=="video"&&!seenPhoto.has(String(m.url||'')));
+  const archivedVideos=archived.filter(m=>m.kind==="video"&&!seenVideo.has(String(m.url||'')));
   return {
-    run:r,
-    photos:[...activePhotos,...archived.filter(m=>m.kind!=="video")],
-    videos:[...activeVideos,...archived.filter(m=>m.kind==="video")]
+    photos:[...activePhotos,...archivedPhotos],
+    videos:[...activeVideos,...archivedVideos]
   };
 }
 
@@ -969,7 +973,7 @@ function generatedMediaCard(m){
   const ext=m.kind==="video"?".mp4":".png";
   let del='';
   if(m.activeType==="previs") del='<button class="tiny-btn danger-mini" onclick="deletePrevisFrame(\''+esc(m.runId)+'\',\''+esc(m.frameId||"")+'\','+Number(m.scene||1)+','+Number(m.frame||1)+')">Удалить фото</button>';
-  else if(m.activeType==="scene") del='<button class="tiny-btn danger-mini" onclick="deleteSceneVideo(\''+esc(m.runId)+'\','+Number(m.scene||1)+')">Удалить видео</button>';
+  else if(m.activeType==="scene") del='<button class="tiny-btn danger-mini" onclick="deleteSceneVideoItem(\''+esc(m.runId)+'\','+Number(m.scene||1)+','+Number(m.videoIndex||0)+')">Удалить видео</button>';
   else if(m.activeType==="final") del='<button class="tiny-btn danger-mini" onclick="deleteFinalVideo(\''+esc(m.runId)+'\')">Удалить видео</button>';
   else del='<button class="tiny-btn danger-mini" onclick="deleteLibraryMedia(\''+esc(m.id||"")+'\')">Удалить</button>';
 
@@ -1002,13 +1006,14 @@ window.deleteLibraryMedia=async id=>{
   if(!r.ok){alert(data.detail||data.error||"Не удалось удалить файл");return}
   await syncFromServer();renderMediaLibraries();
 };
-window.deleteSceneVideo=async(runId,scene)=>{
-  if(!confirm("Удалить только видео сцены "+scene+"? Превиз и остальные сцены останутся."))return;
-  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_scene_video",scene})});
+window.deleteSceneVideoItem=async(runId,scene,index=0)=>{
+  if(!confirm("Удалить только выбранное видео сцены "+scene+"? Остальные фото и видео останутся."))return;
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_scene_video_item",scene,index})});
   const data=await r.json().catch(()=>({}));
-  if(!r.ok){alert(data.detail||data.error||"Не удалось удалить видео сцены");return}
+  if(!r.ok){alert(data.detail||data.error||"Не удалось удалить выбранное видео");return}
   await syncFromServer();selectedRunId=runId;runStageOpen="Генерация";renderRunDetail();renderMediaLibraries();
 };
+window.deleteSceneVideo=(runId,scene)=>window.deleteSceneVideoItem(runId,scene,0);
 window.deleteFinalVideo=async runId=>{
   if(!confirm("Удалить только финальное видео? Сцены, превизы, сценарий и процесс останутся."))return;
   const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_final_video"})});
