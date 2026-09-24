@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.26';
+const APP_VERSION='2.6.27';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1938,6 +1938,20 @@ function avatarIdentityUrls(run,limit=1){
 function primaryIdentityUrls(run){
   return {product:productIdentityUrls(run,1)[0]||'',avatar:avatarIdentityUrls(run,1)[0]||''};
 }
+function paperTowelHolderLock(run,context=''){
+  const text=[
+    run?.productName,run?.product?.name,run?.productUtp,run?.product?.utp,
+    run?.productRules,run?.product?.rules,context
+  ].filter(Boolean).join(' ').toLowerCase();
+  if(!/держател|holder/.test(text) || !/бумаж|рулон|paper\s*towel|kitchen\s*roll|держатель\s+полотенец/.test(text))return '';
+  return [
+    'HOLDER ABSOLUTE LOCK: exact one-sided open-end paper-roll holder; do not mirror or redesign.',
+    'Source orientation: fixed base/support LEFT, permanently free loading end RIGHT.',
+    'The right end/cap is NOT removable: never unscrew, detach, hinge, split or remove the rod.',
+    'Load roll only through the free RIGHT end, sliding RIGHT→LEFT toward the base. Remove by sliding LEFT→RIGHT.',
+    'Never invent a spring spindle, second support, latch, detachable axle, extra stopper or different mount.'
+  ].join(' ');
+}
 function previsRefsForFrame(run,frame,done=[]){
   const urls=[];
   const lockProduct=previsFrameShowsProduct(frame,{});
@@ -1969,6 +1983,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     phaseRule,
     'Product: '+String(run.productName||''),
     'Product identity locks: '+String(run.productRules||run.product?.rules||''),
+    paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
     previsFrameShowsProduct(frame,{})
       ? 'CRITICAL PRODUCT LOCK: reference images 1-2 are authoritative SOURCE PRODUCT photos. Reproduce the exact holder geometry, proportions, arm/rod, end cap, support/base shape, thickness, color and visible construction. NEVER redesign, simplify, thicken, shorten, add brackets, add a box-shaped mount, invent a hinge, invent an end stop or copy geometry from a generated anchor. Generated frames are continuity references only.'
       : '',
@@ -2070,6 +2085,7 @@ async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[
     'Product: '+String(run.productName||''),
     'STRICT PRODUCT IDENTITY: preserve exact geometry, proportions, mounting parts, ends, material, color and texture from source product references.',
     'Product rules: '+String(run.productRules||run.product?.rules||''),
+    paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
     run.character?.name?('STRICT AVATAR IDENTITY: '+String(run.character.name)+'; '+String(run.character.look||'')+'; '+String(run.character.locks||'')):'',
     'Composition: '+String(frame.composition||''),
     'Framing: '+String(frame.framing||''),
@@ -2178,6 +2194,8 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'Композиция: '+String(frame.composition||''),
       'Локация: '+String(frame.environment||frame.location||''),
       'ОЖИДАНИЕ ТОВАРА В ЭТОМ КАДРЕ: '+(lockProduct?'держатель виден и ОБЯЗАН совпадать с исходными фото':'держатель может отсутствовать'),
+      paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
+      'CRITICAL HOLDER ACTION FAIL: для этого держателя свободный конец справа и он несъёмный; рулон надевается справа налево к основанию. Снятие/откручивание торца, загрузка со стороны основания, зеркальная конструкция, съёмная ось или дополнительная опора — FAIL.',
       'CRITICAL PRODUCT FAIL когда lockProduct=true и есть ЛЮБОЕ заметное изменение конструкции: другой кронштейн/основание, другой стержень/ось, придуманный торец или стопор, изменение толщины/длины/пропорций, лишняя коробка/шарнир/крепёж, иной цвет/материал, либо holder выглядит как другая модель.',
       "CRITICAL ACTION FAIL: START показывает уже завершённый результат, либо END почти не продвигает микро-действие относительно PREVIOUS GENERATED FRAME.",
       "Для END желательны минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Но изменение ракурса само по себе не обязательно, если само действие визуально продвинулось.",
@@ -2250,6 +2268,8 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'Начало: '+String(scene.startFrame||''),
       'Конец: '+String(scene.endFrame||''),
       'Continuity: '+String(scene.continuity||''),
+      paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' ')),
+      'CRITICAL HOLDER FAIL: если есть установка/снятие рулона, свободный правый конец остаётся несъёмным; установка идёт справа налево к основанию. Нельзя откручивать/снимать торец или ось, загружать со стороны основания или зеркалить конструкцию.',
       'CRITICAL FAIL только если: видимый товар заметно неправильной геометрии/конструкции; ролик показывает другое действие или обратную смысловую фазу; другой персонаж; серьёзные артефакты рук/товара.',
       'SOFT WARN, НЕ FAIL: рука движется немного в другом направлении, предмет расположен иначе, миска/реквизит частично обрезаны, небольшая разница в позе, кадрировании, траектории, крупности или композиции — если рекламный смысл и микро-действие читаются.',
       'Не требуй буквального покадрового совпадения с текстом storyboard. Storyboard задаёт смысл START→END и continuity, а не пиксельную хореографию.',
@@ -3010,6 +3030,7 @@ async function processRunGeneration(accountId,runId){
         'Вертикальный рекламный ролик 9:16. ОДНА утверждённая сцена, не меняй её смысл.',
         'Товар: '+String(run.productName||''),
         'Подтверждённые правила товара: '+String(run.productRules||run.product?.rules||''),
+        paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' ')),
         'FACT LOCK: не показывай и не заявляй неподтверждённый механизм, функцию или характеристику. Исходное фото товара — абсолютный геометрический identity-lock.',
         run.character?.name?('AI-аватар: '+run.character.name+'. '+String(run.character.look||'')+' '+String(run.character.locks||'')):'',
         'Сцена '+sceneNo+': '+String(scene.title||''),
