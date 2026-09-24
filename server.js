@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.20';
+const APP_VERSION='2.6.21';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -174,17 +174,28 @@ async function readStateRow(rowId){
 async function writeStateRow(rowId,data){
   if(!supabaseConfigured()) return {configured:false};
   const base=process.env.SUPABASE_URL.replace(/\/$/,'');
-  const updatedAt=new Date().toISOString();
-  const r=await fetch(base+'/rest/v1/app_state?on_conflict=id',{
-    method:'POST',
-    headers:supabaseHeaders({'prefer':'resolution=merge-duplicates,return=minimal'}),
-    body:JSON.stringify([{id:rowId,data,updated_at:updatedAt}])
-  });
-  if(!r.ok){
-    const detail=await r.text();
-    throw new Error('Supabase write failed: '+r.status+' '+detail);
+  let lastError=null;
+  for(let attempt=1;attempt<=3;attempt++){
+    const updatedAt=new Date().toISOString();
+    try{
+      const r=await fetch(base+'/rest/v1/app_state?on_conflict=id',{
+        method:'POST',
+        headers:supabaseHeaders({'prefer':'resolution=merge-duplicates,return=minimal'}),
+        body:JSON.stringify([{id:rowId,data,updated_at:updatedAt}])
+      });
+      if(r.ok)return {configured:true,updatedAt};
+      const detail=await r.text();
+      const retryable=r.status>=500||/57014|statement timeout|canceling statement/i.test(detail);
+      lastError=new Error('Supabase write failed: '+r.status+' '+detail);
+      if(!retryable||attempt===3)throw lastError;
+    }catch(e){
+      lastError=e;
+      const retryable=/57014|statement timeout|canceling statement|fetch failed|ECONNRESET|ETIMEDOUT/i.test(String(e?.message||e));
+      if(!retryable||attempt===3)throw e;
+    }
+    await new Promise(resolve=>setTimeout(resolve,attempt===1?500:1500));
   }
-  return {configured:true,updatedAt};
+  throw lastError||new Error('Supabase write failed');
 }
 
 async function deleteStateRow(rowId){
