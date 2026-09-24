@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.41';
+const APP_VERSION='2.6.42';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -4402,6 +4402,34 @@ async function runControlAction(body,accountId){
     await writeAppState(data,accountId);
     enqueueRunGeneration(accountId,run.id,'regenerate-scene');
     return run;
+  }
+  if(action==='delete_scene_video_item'){
+    const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
+    const index=Math.max(0,Math.min(50,Number(body?.index)||0));
+    run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
+    const old=run.sceneResults[scene];
+    if(!old)throw new Error('Видео сцены не найдено');
+    const urls=Array.isArray(old.urls)?old.urls.slice():[];
+    if(index>=urls.length)throw new Error('Выбранное видео не найдено');
+    const removedUrl=urls[index];
+    const persisted=Array.isArray(old.persistedMedia)?old.persistedMedia.slice():[];
+    const pm=persisted[index]||persisted.find(x=>String(x?.url||'')===String(removedUrl||''));
+    if(pm?.path)try{await callProductMedia({action:'delete',path:String(pm.path)})}catch(e){console.warn('[scene-video-item-delete] '+String(e?.message||e))}
+    urls.splice(index,1);
+    const nextPersisted=persisted.filter((x,i)=>i!==index&&String(x?.url||'')!==String(removedUrl||''));
+    if(urls.length){
+      run.sceneResults[scene]={...old,urls,persistedMedia:nextPersisted,updatedAt:new Date().toISOString()};
+    }else{
+      delete run.sceneResults[scene];
+      run.acceptedScenes=(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).filter(x=>Number(x)!==scene);
+    }
+    const allUrls=Object.keys(run.sceneResults).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
+    const completedScenes=Object.values(run.sceneResults).filter(x=>x?.ok&&x?.urls?.length).length;
+    run.generationResult={...(run.generationResult||{}),urls:allUrls,completedScenes,totalScenes:(run.storyboard||[]).length,completed:completedScenes>=(run.storyboard||[]).length};
+    run.voiceoverResult=null;run.montageResult=null;run.qcResult=null;run.postProductionRunning=false;run.backendGenerationRunning=false;
+    run.stage='Генерация';run.status='На проверке';run.awaitingApproval=true;run.progress=Math.min(65,Math.max(38,Number(run.progress)||38));run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Удалено выбранное видео',(run.productName||run.id)+' · сцена '+scene+' · файл '+(index+1));
+    await writeAppState(data,accountId);return run;
   }
   if(action==='delete_scene_video'){
     const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
