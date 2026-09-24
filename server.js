@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.11';
+const APP_VERSION='2.6.12';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1897,14 +1897,24 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   return {url:uploaded.media.url,path:uploaded.media.path||'',model:'gpt-image-2',references:referenceUrls};
 }
 const previsQueues=new Map();
+const queuedPrevisRuns=new Map();
 function enqueueRunPrevis(accountId,runId,label='previs'){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const key=account+'::'+String(runId);
-  const previous=previsQueues.get(key)||Promise.resolve();let next;
+  const runKey=account+'::'+String(runId);
+  if(queuedPrevisRuns.has(runKey))return queuedPrevisRuns.get(runKey);
+  // Serialize PREVIZ jobs per account. Every worker persists the whole app_state,
+  // so parallel runs could overwrite each other's status/frames with stale snapshots.
+  const queueKey=account;
+  const previous=previsQueues.get(queueKey)||Promise.resolve();let next;
   next=previous.catch(()=>{}).then(()=>processRunPrevis(account,runId))
     .catch(e=>{console.error('['+label+'] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
-    .finally(()=>{if(previsQueues.get(key)===next)previsQueues.delete(key)});
-  previsQueues.set(key,next);return next;
+    .finally(()=>{
+      queuedPrevisRuns.delete(runKey);
+      if(previsQueues.get(queueKey)===next)previsQueues.delete(queueKey);
+    });
+  previsQueues.set(queueKey,next);
+  queuedPrevisRuns.set(runKey,next);
+  return next;
 }
 async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[]){
   if(!higgsfieldConfigured())throw new Error('Higgsfield API is not configured');
