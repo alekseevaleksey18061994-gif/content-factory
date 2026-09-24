@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.40';
+const APP_VERSION='2.6.41';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
