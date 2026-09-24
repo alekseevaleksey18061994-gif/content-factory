@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.15';
+const APP_VERSION='2.6.16';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2339,19 +2339,46 @@ function previsSceneReferenceUrls(run,sceneNo){
 async function processAutoPipeline(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+  if(run.mode==='manual')return {ok:true,manual:true};
   try{
     if(!run.idea){
       const idea=await generateIdeaStage(run,accountId,run.variant||1);
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.idea=idea;syncRunIdeaLibrary(data,run);run.stage='Сценарий';run.progress=10;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.idea=idea;syncRunIdeaLibrary(data,run);run.progress=10;run.updatedAt=new Date().toISOString();
+      if(run.mode==='manual'){
+        run.stage='Идея';run.status='На проверке';run.awaitingApproval=true;
+        await writeAppState(data,accountId);
+        return {ok:true,manual:true,stage:'Идея'};
+      }
+      run.stage='Сценарий';run.status='В работе';run.awaitingApproval=false;
+      await writeAppState(data,accountId);
     }
     if(!run.script){
       const script=await generateScriptStage(run,accountId);
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.script=script;run.stage='Storyboard';run.progress=18;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.script=script;run.progress=18;run.updatedAt=new Date().toISOString();
+      if(run.mode==='manual'){
+        run.stage='Сценарий';run.status='На проверке';run.awaitingApproval=true;
+        await writeAppState(data,accountId);
+        return {ok:true,manual:true,stage:'Сценарий'};
+      }
+      run.stage='Storyboard';run.status='В работе';run.awaitingApproval=false;
+      await writeAppState(data,accountId);
     }
     if(!Array.isArray(run.storyboard)||!run.storyboard.length){
       const storyboard=await generateStoryboardStage(run,accountId);
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.storyboard=storyboard;run.sceneCount=storyboard.length;run.sceneVersions=Object.fromEntries(storyboard.map((_,i)=>[i+1,1]));run.stage='Превиз-кадры';run.progress=26;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.storyboard=storyboard;run.sceneCount=storyboard.length;run.sceneVersions=Object.fromEntries(storyboard.map((_,i)=>[i+1,1]));run.progress=26;run.updatedAt=new Date().toISOString();
+      if(run.mode==='manual'){
+        run.stage='Storyboard';run.status='На проверке';run.awaitingApproval=true;
+        await writeAppState(data,accountId);
+        return {ok:true,manual:true,stage:'Storyboard'};
+      }
+      run.stage='Превиз-кадры';run.status='В работе';run.awaitingApproval=false;
+      await writeAppState(data,accountId);
     }
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run?.mode==='manual')return {ok:true,manual:true,stage:run.stage};
     return await processRunPrevis(accountId,runId);
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
@@ -3152,6 +3179,7 @@ async function launchSavedIdea(accountId,savedIdeaId){
     modelMode:String(cfg.modelMode??source?.modelMode??'Авто — умный выбор'),
     budget:Number(cfg.budget??source?.budget)||500,maxAttempts:Number(cfg.maxAttempts??source?.maxAttempts)||3,
     id,accountId,batchId:factoryId('batch'),mode:'manual',variant:null,
+    modeUpdatedAt:new Date().toISOString(),modeUpdatedBy:'saved-idea-launch',
     productId:String(product.id||saved.productId||''),productName:String(product.name||saved.productName||'Товар'),
     productUtp:String(product.utp||''),productRules:String(product.rules||''),
     media,product:{
@@ -3299,11 +3327,18 @@ async function processStageTask(accountId,runId,task,note='',jobId=''){
       run.progress=26;
       appendFactoryJournal(data,'Storyboard готов',(run.productName||run.id)+' · '+result.length+' сцен');
     }
-    run.status='На проверке';run.stage=stageTaskName(task);run.awaitingApproval=true;run.error='';
     run.backgroundTask={...(run.backgroundTask||{}),status:'done',finishedAt:new Date().toISOString()};
-    run.updatedAt=new Date().toISOString();
+    run.error='';run.updatedAt=new Date().toISOString();
+    if(run.mode==='manual'){
+      run.status='На проверке';run.stage=stageTaskName(task);run.awaitingApproval=true;
+      await writeAppState(data,accountId);
+      return {ok:true,stage:run.stage};
+    }
+    run.status='В работе';run.awaitingApproval=false;
+    run.stage=task==='idea'?'Сценарий':task==='script'?'Storyboard':'Превиз-кадры';
     await writeAppState(data,accountId);
-    return {ok:true,stage:run.stage};
+    enqueueAutoPipeline(accountId,run.id);
+    return {ok:true,stage:run.stage,autopilot:true};
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     if(run&&(!run.backgroundTask?.id||run.backgroundTask.id===activeJobId)){
@@ -3348,6 +3383,7 @@ async function createBatchRuns(payload,accountId){
     const jobId=factoryId('job');
     const run={
       id,...basePayload,accountId,batchId,variant:count>1?i:null,
+      modeUpdatedAt:payload.created||new Date().toISOString(),modeUpdatedBy:'launch',
       status:'В работе',stage:'Идея',progress:3,attempt:1,awaitingApproval:false,
       backgroundTask:payload.mode==='manual'?{id:jobId,type:'idea',status:'queued',queuedAt:new Date().toISOString()}:null,
       sceneCount:0,sceneVersions:{},acceptedScenes:[],
@@ -3401,6 +3437,75 @@ async function runControlAction(body,accountId){
   const action=String(body?.action||'');
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run)throw new Error('Ролик не найден');
+  if(action==='set_mode'){
+    const nextMode=String(body?.mode||'').toLowerCase()==='manual'?'manual':'auto';
+    const previousMode=run.mode==='manual'?'manual':'auto';
+    if(previousMode===nextMode)return run;
+    const changedAt=new Date().toISOString();
+    run.mode=nextMode;
+    run.modeUpdatedAt=changedAt;
+    run.modeUpdatedBy='user';
+    run.updatedAt=changedAt;
+    appendFactoryJournal(
+      data,
+      'Режим процесса изменён',
+      (run.productName||run.id)+' · '+(previousMode==='manual'?'Ручной':'Автопилот')+' → '+(nextMode==='manual'?'Ручной':'Автопилот')
+    );
+
+    // Switching to Manual never kills the current worker. The worker finishes its
+    // current atomic stage and then sees run.mode === 'manual' and stops for approval.
+    if(nextMode==='manual'){
+      await writeAppState(data,accountId);
+      return run;
+    }
+
+    // Switching to Auto preserves every artifact and continues from the furthest
+    // completed point. Stopped/error runs only store the new mode; Resume remains explicit.
+    if(run.paused||run.status==='Остановлено'||run.status==='Ошибка'){
+      await writeAppState(data,accountId);
+      return run;
+    }
+
+    run.awaitingApproval=false;
+    run.status='В работе';
+    run.error='';
+
+    // Final manual review -> apply the same finish policy as autopilot.
+    if(run.montageResult?.url&&run.qcResult){
+      if(run.qcResult?.passed===false){
+        run.stage='AI-проверка';run.status='Ошибка';run.progress=Math.max(92,Number(run.progress)||0);
+        run.error='Финальный QC не пройден: '+String((run.qcResult?.issues||[]).join('; ')||run.qcResult?.summary||'качество ниже порога');
+      }else{
+        run.stage='Готово';run.status='Готово';run.progress=100;
+      }
+      await writeAppState(data,accountId);
+      return run;
+    }
+
+    // Manual scene review -> accept all generated scenes and continue to post-production.
+    if(run.generationResult?.completed){
+      const total=Math.max(0,Number(run.generationResult?.totalScenes)||0);
+      run.acceptedScenes=Array.from({length:total},(_,i)=>i+1);
+      run.stage='Озвучка';run.progress=Math.max(74,Number(run.progress)||0);run.postProductionRunning=false;
+      await writeAppState(data,accountId);
+      enqueuePostProduction(accountId,run.id,'mode-switch-auto-post-production');
+      return run;
+    }
+
+    // Completed previz waiting for approval -> start video without rebuilding previz.
+    if(run.previsResult?.completed){
+      run.stage='Генерация';run.progress=Math.max(38,Number(run.progress)||0);
+      await writeAppState(data,accountId);
+      dispatchExistingRun(accountId,run).catch(e=>console.error('[mode-switch-generation] '+run.id+' '+String(e?.message||e)));
+      return run;
+    }
+
+    // Idea/script/storyboard or an active atomic job: queue autopilot behind the
+    // current per-account worker. Dedupe prevents a second copy of the same job.
+    await writeAppState(data,accountId);
+    enqueueAutoPipeline(accountId,run.id);
+    return run;
+  }
   if(action==='stop'){
     run.status='Остановлено';run.paused=true;run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Производство остановлено',run.productName||run.id);await writeAppState(data,accountId);return run;
