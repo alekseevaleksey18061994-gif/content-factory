@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.5.1';
+const APP_VERSION='2.6.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -448,6 +448,34 @@ async function recordExpense(accountId,entry={}){
 async function costRates(accountId){
   const state=await readAppState(sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID));
   return state?.data?.settings?.costRates||{};
+}
+
+function higgsfieldUsageUsd(model,usage={}){
+  const m=String(model||'').toLowerCase();
+  const seconds=Math.max(0,Number(usage.duration||usage.seconds)||0);
+  const jobs=Math.max(1,Number(usage.jobs)||1);
+  // Current working estimates used only when the provider response does not expose USD.
+  // Nano Banana Pro 2K ≈ 2 credits/image ≈ $0.10 at the 20 credits/$1 reference rate.
+  if(/nano[-_ ]?banana[-_ ]?pro/.test(m))return 0.10*jobs;
+  // Seedance 2.0 720p estimate: 27 credits for 6 sec = 4.5 credits/sec.
+  if(/seedance[-_. /]?2(?:\.0)?/.test(m)&&seconds>0)return (4.5*seconds*jobs)/20;
+  // Conservative generic fallback for Higgsfield image jobs only.
+  if(String(usage.kind||'').toLowerCase()==='image')return 0.10*jobs;
+  return 0;
+}
+function runwayCreditsPerSecond(model){
+  const m=String(model||'gen4.5').toLowerCase();
+  if(m.includes('gen4_turbo'))return 5;
+  if(m.includes('gen4.5'))return 12;
+  if(m.includes('veo3.1_fast'))return 10;
+  if(m.includes('veo3.1'))return 20;
+  if(m.includes('wan3'))return 10;
+  if(m.includes('seedance2_5'))return 30;
+  if(m.includes('hailuo3'))return 15;
+  return 12;
+}
+function runwayUsageUsd(model,seconds){
+  return (runwayCreditsPerSecond(model)*Math.max(0,Number(seconds)||0))*0.01;
 }
 
 function openAIUsageCost(model,usage={}){
@@ -1892,12 +1920,12 @@ async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[
   if(!uploaded?.media?.url)throw new Error('Не удалось сохранить кадр Nano Banana Pro');
   const rates=await costRates(accountId).catch(()=>({}));
   const rub=Number(rates.higgsfieldRubPerGeneration)||0;
+  const usage={resolution:String(process.env.HIGGSFIELD_PREVIS_RESOLUTION||'2k'),aspectRatio:'9:16',references:referenceUrls.length,kind:'image',jobs:1,estimatedCredits:2};
   await recordExpense(accountId,{
     provider:'Higgsfield',category:'previs-image',
     description:'Nano Banana Pro · превиз сцены '+frame.scene+' · '+frame.frame,
-    amountRub:rub,model:'Nano Banana Pro',
-    usage:{resolution:String(process.env.HIGGSFIELD_PREVIS_RESOLUTION||'2k'),aspectRatio:'9:16',references:referenceUrls.length},
-    source:'auto'
+    amountRub:rub,amountUsd:rub>0?0:higgsfieldUsageUsd('nano-banana-pro',usage),model:'Nano Banana Pro',
+    usage,source:'auto-estimated'
   }).catch(()=>{});
   return {
     url:uploaded.media.url,path:uploaded.media.path||'',
@@ -4333,10 +4361,13 @@ async function generateHiggsfieldScene(body){
 
   const hfAccount=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
   const hfRates=await costRates(hfAccount).catch(()=>({}));
-  const hfRub=(Number(hfRates.higgsfieldRubPerGeneration)||0)*Math.max(1,jobs.length||1);
+  const hfJobs=Math.max(1,jobs.length||1);
+  const hfRub=(Number(hfRates.higgsfieldRubPerGeneration)||0)*hfJobs;
+  const hfUsage={jobs:hfJobs,duration,estimatedCredits:/seedance[-_. /]?2(?:\.0)?/i.test(String(model||''))?4.5*duration*hfJobs:null};
   await recordExpense(hfAccount,{
     provider:'Higgsfield',category:'generation',description:'Генерация видео',amountRub:hfRub,
-    usage:{jobs:Math.max(1,jobs.length||1),duration},model,source:'auto'
+    amountUsd:hfRub>0?0:higgsfieldUsageUsd(model,hfUsage),
+    usage:hfUsage,model,source:hfRub>0?'auto':'auto-estimated'
   }).catch(()=>{});
 
   return {
@@ -4388,9 +4419,11 @@ async function generateRunwayScene(body){
     const rwAccount=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
     const rwRates=await costRates(rwAccount).catch(()=>({}));
     const rwRub=(Number(rwRates.runwayRubPerSecond)||0)*duration;
+    const rwUsd=rwRub>0?0:runwayUsageUsd(model,duration);
     await recordExpense(rwAccount,{
-      provider:'Runway',category:'generation',description:'Генерация видео',amountRub:rwRub,
-      usage:{seconds:duration},model:String(body?.model||process.env.RUNWAY_MODEL||'gen4.5'),source:'auto'
+      provider:'Runway',category:'generation',description:'Генерация видео',amountRub:rwRub,amountUsd:rwUsd,
+      usage:{seconds:duration,credits:runwayCreditsPerSecond(model)*duration,usdPerCredit:0.01},
+      model,source:rwRub>0?'auto':'auto-priced'
     }).catch(()=>{});
     return {
       ok:true,
