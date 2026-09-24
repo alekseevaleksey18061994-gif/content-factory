@@ -361,10 +361,16 @@ $("#generateIdeaBtn")?.addEventListener("click",async()=>{
     await syncFromServer();selectedRunId=data.run?.id||selectedRunId;status.textContent="Идея готова.";
   }catch(e){status.textContent=String(e?.message||e)}finally{btn.disabled=false}
 });
+function storyboardCompleteUi(r){
+  const required=["title","duration","purpose","shot","framing","camera","lens","angle","environment","lighting","characters","product","action","startFrame","endFrame","continuity","sound","transition","negative","promptEn"];
+  const board=Array.isArray(r?.storyboard)?r.storyboard:[];
+  const expected=Array.isArray(r?.script?.scenes)?r.script.scenes.length:board.length;
+  return !!(board.length&&board.length===expected&&board.every(s=>required.every(k=>String(s?.[k]||"").trim())));
+}
 function productionStageDone(r,k){
   if(k==="Идея")return !!r.idea;
   if(k==="Сценарий")return !!r.script;
-  if(k==="Storyboard")return Array.isArray(r.storyboard)&&r.storyboard.length>0;
+  if(k==="Storyboard")return storyboardCompleteUi(r);
   if(k==="Превиз-кадры"){const total=Number(r.previsPlan?.totalFrames)||((r.storyboard||[]).length*3);const ready=(r.previsFrames||[]).filter(x=>x?.url).length;return !!(r.previsResult?.completed&&total&&ready>=total)}
   if(k==="Генерация"){const total=Number(r.generationResult?.totalScenes||r.sceneCount||0);const ready=(r.generationResult?.urls||[]).filter(Boolean).length;return !!(r.generationResult?.completed&&total&&ready>=total)}
   if(k==="Озвучка")return !!r.voiceoverResult;
@@ -518,7 +524,7 @@ window.openFinalReview=id=>{selectedRunId=id;runStageOpen="";renderRunDetail();g
 function stageDone(r,stage){
   if(stage==="Идея")return !!r.idea;
   if(stage==="Сценарий")return !!r.script;
-  if(stage==="Storyboard")return Array.isArray(r.storyboard)&&r.storyboard.length>0;
+  if(stage==="Storyboard")return storyboardCompleteUi(r);
   if(stage==="Превиз-кадры"){const total=Number(r.previsPlan?.totalFrames)||((r.storyboard||[]).length*3);const ready=(r.previsFrames||[]).filter(x=>x?.url).length;return !!(r.previsResult?.completed&&total&&ready>=total)}
   if(stage==="Генерация"){const total=Number(r.generationResult?.totalScenes||r.sceneCount||0);const ready=(r.generationResult?.urls||[]).filter(Boolean).length;return !!(r.generationResult?.completed&&total&&ready>=total)}
   if(stage==="Озвучка")return !!r.voiceoverResult;
@@ -641,9 +647,9 @@ function stageReportHtml(r,stage){
         '<div class="storyboard-frame-pair"><div class="'+(!x.startFrame?"storyboard-field-missing":"")+'"><small>START FRAME</small><p>'+esc(x.startFrame||"—")+'</p></div><div class="'+(!x.endFrame?"storyboard-field-missing":"")+'"><small>END FRAME</small><p>'+esc(x.endFrame||"—")+'</p></div></div>'+
         '<div class="storyboard-wide"><small>Continuity</small><p>'+esc(x.continuity||"—")+'</p></div>'+
         '<div class="storyboard-meta">'+
-          '<div><small>Диалог</small><p>'+esc(x.dialogue||"—")+'</p></div>'+
-          '<div><small>Озвучка</small><p>'+esc(x.voiceover||"—")+'</p></div>'+
-          '<div><small>Текст на экране</small><p>'+esc(x.onscreen||"—")+'</p></div>'+
+          '<div><small>Диалог</small><p>'+esc(x.dialogue||"Не предусмотрено сценарием")+'</p></div>'+
+          '<div><small>Озвучка</small><p>'+esc(x.voiceover||"Не предусмотрено сценарием")+'</p></div>'+
+          '<div><small>Текст на экране</small><p>'+esc(x.onscreen||"Не предусмотрено сценарием")+'</p></div>'+
           '<div><small>Звук / переход</small><p>'+esc([x.sound,x.transition].filter(Boolean).join(" · ")||"—")+'</p></div>'+
         '</div>'+
         '<details class="storyboard-prompt"><summary>Prompt для видеомодели</summary><p>'+esc(x.promptEn||x.prompt||"—")+'</p><small>NEGATIVE</small><p>'+esc(x.negative||"—")+'</p></details>'+
