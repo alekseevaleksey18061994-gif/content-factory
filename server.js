@@ -4693,7 +4693,9 @@ async function recoverPendingPrevisAndAutopilot(){
           const pending=run.status==='В работе'||['queued','processing'].includes(String(run.backgroundTask?.status||''));
           if(pending){
             let task='';
-            if(!run.idea)task='idea';
+            const queuedType=String(run.backgroundTask?.type||'');
+            if(['idea','script','storyboard'].includes(queuedType)&&['queued','processing'].includes(String(run.backgroundTask?.status||'')))task=queuedType;
+            else if(!run.idea)task='idea';
             else if(!run.script&&['Сценарий','Storyboard'].includes(stage))task='script';
             else if(run.script&&(!Array.isArray(run.storyboard)||!run.storyboard.length)&&stage==='Storyboard')task='storyboard';
             if(task){
@@ -4707,6 +4709,17 @@ async function recoverPendingPrevisAndAutopilot(){
               continue;
             }
           }
+        }
+        const pendingStoryboardScenes=Object.entries(run.storyboardSceneJobs||{})
+          .filter(([,job])=>['queued','processing'].includes(String(job?.status||'')))
+          .map(([scene])=>Number(scene)).filter(Number.isFinite);
+        if(run.mode==='manual'&&pendingStoryboardScenes.length){
+          for(const scene of pendingStoryboardScenes){
+            run.storyboardSceneJobs[scene]={...(run.storyboardSceneJobs[scene]||{}),status:'queued',recovered:true,queuedAt:new Date().toISOString()};
+            await writeAppState(data,accountId);
+            enqueueStoryboardSceneTask(accountId,run.id,scene,String(run.storyboardSceneJobs[scene]?.note||'Автовосстановление после перезапуска'));
+          }
+          continue;
         }
         if(run.mode==='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&(run.previsRunning===true||run.status==='В работе')){
           run.previsRunning=false;run.status='В работе';run.stage='Превиз-кадры';run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
