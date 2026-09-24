@@ -13,7 +13,7 @@ const starter=[
 let activeAccountId=load("cf_active_account","main"),accounts=[];
 const accountLocalKey=key=>activeAccountId==="main"?key:key+"__"+activeAccountId;
 const chatLocalKey=()=>activeAccountId==="main"?"cf_chat_history":"cf_chat_history__"+activeAccountId;
-let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),savedIdeas=load(accountLocalKey("cf_saved_ideas"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
+let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),savedIdeas=load(accountLocalKey("cf_saved_ideas"),[]),mediaLibrary=load(accountLocalKey("cf_media_library"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
 let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto",editingProductId=null;
 const ST=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];
 const prod=id=>products.find(x=>x.id===id),camp=id=>campaigns.find(x=>x.id===id);
@@ -28,6 +28,7 @@ function saveLocalState(){
   save(accountLocalKey("cf_campaigns"),campaigns);
   save(accountLocalKey("cf_scripts"),scripts);
   save(accountLocalKey("cf_saved_ideas"),savedIdeas);
+  save(accountLocalKey("cf_media_library"),mediaLibrary.slice(-10000));
   save(accountLocalKey("cf_characters"),characters);
   save(accountLocalKey("cf_journal"),journal.slice(-500));
   save(accountLocalKey("cf_expenses"),expenses.slice(-3000));
@@ -35,7 +36,7 @@ function saveLocalState(){
   save(accountLocalKey("cf_settings"),settings);
 }
 function stateSnapshot(){
-  return {version:1,products,runs,campaigns,scripts,savedIdeas,characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),videoAnalyses:videoAnalyses.slice(-100),settings};
+  return {version:1,products,runs,campaigns,scripts,savedIdeas,mediaLibrary:mediaLibrary.slice(-10000),characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),videoAnalyses:videoAnalyses.slice(-100),settings};
 }
 let syncTimer=null;
 let localMutationDepth=0;
@@ -62,6 +63,7 @@ async function syncFromServer(){
       campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
       scripts=Array.isArray(data.scripts)?data.scripts:[];
       savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
+      mediaLibrary=Array.isArray(data.mediaLibrary)?data.mediaLibrary:[];
       characters=Array.isArray(data.characters)?data.characters:[];
       journal=Array.isArray(data.journal)?data.journal:[];
       expenses=Array.isArray(data.expenses)?data.expenses:[];
@@ -281,7 +283,7 @@ window.makePrimaryMedia=(productId,mediaId)=>{const p=prod(productId);if(!p)retu
 window.deleteProductMedia=async(productId,mediaId)=>{const p=prod(productId);if(!p)return;const m=(p.media||[]).find(x=>x.id===mediaId);if(!m||!confirm("Удалить это фото?"))return;try{await fetch("/api/media/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,path:m.path})})}catch{};const wasPrimary=!!m.isPrimary;p.media=(p.media||[]).filter(x=>x.id!==mediaId);if(wasPrimary&&p.media[0])p.media[0].isPrimary=true;log("Удалено фото товара",p.name);persist();renderProductDetail()}
 async function deleteFactoryEntity(type,id,label="объект"){
   const messages={
-    run:"Удалить этот процесс/ролик целиком? Если он сейчас выполняется, дальнейшая генерация будет остановлена.",
+    run:"Удалить этот процесс из списка? Если он сейчас выполняется, дальнейшая генерация будет остановлена. Уже созданные фото и видео сохранятся в «Сцены и медиа» → «Медиатека».",
     script:"Удалить этот сценарий из библиотеки?",
     campaign:"Удалить эту кампанию? Уже созданные ролики сохранятся.",
     character:"Удалить этого AI-аватара и его сохранённые фото?",
@@ -883,7 +885,24 @@ window.markReady=async id=>{try{await runServerAction({runId:id,action:"approve_
 function renderScripts(){$("#scriptsList").innerHTML=scripts.length?scripts.slice().reverse().map(s=>'<article class="library-item"><div><h3>'+esc(s.title)+'</h3><p><b>Хук:</b> '+esc(s.hook||"—")+"\n"+esc(s.body||"")+"\n<b>CTA:</b> "+esc(s.cta||"—")+'</p><div class="library-meta"><span class="chip">Использован: '+(s.used||0)+' раз</span></div></div><div class="library-actions"><button class="secondary" onclick="useScript(\''+s.id+'\')">Использовать</button><button class="danger-btn" onclick="deleteScript(\''+s.id+'\')">Удалить</button></div></article>').join(""):'<div class="empty">Сценариев пока нет.</div>';const P=[["UGC-хук","Разговорное начало от лица покупателя"],["Проблема → решение","Боль → демонстрация → результат → CTA"],["Демонстрация","Максимум продукта в кадре"]];$("#promptLibrary").innerHTML=P.map((p,i)=>'<div class="prompt-card"><b>'+p[0]+'</b><small>'+p[1]+'</small><div class="dup-meter"><strong>Защита от повторов: включена</strong><div class="progress"><i style="width:'+(18+i*7)+'%"></i></div></div></div>').join("")}
 $("#addScript").onclick=()=>openM("scriptModal");$("#saveScript").onclick=()=>{const n=$("#scriptTitle").value.trim();if(!n)return;scripts.push({id:uid("s"),title:n,hook:$("#scriptHook").value.trim(),body:$("#scriptBody").value.trim(),cta:$("#scriptCta").value.trim(),used:0,created:now()});log("Сохранён сценарий",n);closeM("scriptModal");persist()};
 window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.used||0)+1;$("#brief").value=[s.hook,s.body,s.cta].filter(Boolean).join("\n");openCreate();persist()};
-function renderScenes(){const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);$("#scenesWorkspace").innerHTML=r?'<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(pname(r))+'</h2><p>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</p></div><button class="text-btn" onclick="openRun(\''+r.id+'\')">Открыть ролик ›</button></div><div class="storyboard">'+scenes(r)+'</div></section>':'<div class="panel empty">Создай ролик — здесь появится storyboard.</div>'}
+function renderScenes(){
+  const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
+  const archived=(Array.isArray(mediaLibrary)?mediaLibrary:[]).slice().reverse();
+  const mediaHtml=archived.length
+    ? '<section class="panel media-library-panel"><div class="panel-title"><div><span class="mini-icon">▣</span><h2>Медиатека</h2><p>Фото и видео из удалённых процессов сохраняются здесь.</p></div><span class="chip">'+archived.length+' файлов</span></div><div class="archive-media-grid">'+archived.map(m=>{
+        const title=[m.productName,m.sourceStage,m.scene?('сцена '+m.scene):''].filter(Boolean).join(' · ');
+        const preview=m.kind==="video"
+          ? '<video controls playsinline preload="metadata" src="'+esc(m.url||"")+'"></video>'
+          : '<img src="'+esc(m.url||"")+'" alt="'+esc(title||"Медиа")+'">';
+        const ext=m.kind==="video"?'.mp4':'.png';
+        return '<article class="archive-media-card"><div class="archive-media-preview">'+preview+'</div><div class="archive-media-copy"><b>'+esc(title||"Сохранённый файл")+'</b><small>'+esc(m.provider||m.model||"")+(m.archivedAt?' · сохранено '+esc(new Date(m.archivedAt).toLocaleString("ru-RU")):'')+'</small><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url||"")+'\',\''+esc(m.fileName||("media-"+m.id+ext))+'\')">↓ Скачать</button></div></div></article>';
+      }).join("")+'</div></section>'
+    : '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▣</span><h2>Медиатека</h2><p>После удаления процесса его готовые фото и видео будут сохраняться здесь.</p></div></div><div class="empty compact-empty">Пока пусто.</div></section>';
+  const currentHtml=r
+    ? '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(pname(r))+'</h2><p>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</p></div><button class="text-btn" onclick="openRun(\''+r.id+'\')">Открыть ролик ›</button></div><div class="storyboard">'+scenes(r)+'</div></section>'
+    : '<div class="panel empty">Активных процессов нет. Сохранённые файлы остаются в медиатеке выше.</div>';
+  $("#scenesWorkspace").innerHTML=mediaHtml+currentHtml;
+}
 let editingCharacterId=null;
 
 function renderCharacterExistingMedia(){
