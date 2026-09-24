@@ -994,27 +994,27 @@ function renderMediaSection(targetId,type){
 }
 function renderPhotos(){renderMediaSection("photosWorkspace","photos")}
 function renderVideos(){renderMediaSection("videosWorkspace","videos")}
-function renderScenes(){renderPhotos();renderVideos()}
+function renderMediaLibraries(){renderPhotos();renderVideos()}
 window.deleteLibraryMedia=async id=>{
   if(!id||!confirm("Удалить только этот файл из медиатеки? Остальные фото и видео останутся."))return;
   const r=await fetch("/api/entities/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,type:"media",id,confirmed:true})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){alert(data.detail||data.error||"Не удалось удалить файл");return}
-  await syncFromServer();renderScenes();
+  await syncFromServer();renderMediaLibraries();
 };
 window.deleteSceneVideo=async(runId,scene)=>{
   if(!confirm("Удалить только видео сцены "+scene+"? Превиз и остальные сцены останутся."))return;
   const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_scene_video",scene})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){alert(data.detail||data.error||"Не удалось удалить видео сцены");return}
-  await syncFromServer();selectedRunId=runId;runStageOpen="Генерация";renderRunDetail();renderScenes();
+  await syncFromServer();selectedRunId=runId;runStageOpen="Генерация";renderRunDetail();renderMediaLibraries();
 };
 window.deleteFinalVideo=async runId=>{
   if(!confirm("Удалить только финальное видео? Сцены, превизы, сценарий и процесс останутся."))return;
   const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_final_video"})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){alert(data.detail||data.error||"Не удалось удалить финальное видео");return}
-  await syncFromServer();selectedRunId=runId;runStageOpen="Монтаж";renderRunDetail();renderScenes();
+  await syncFromServer();selectedRunId=runId;runStageOpen="Монтаж";renderRunDetail();renderMediaLibraries();
 };
 let editingCharacterId=null;
 
@@ -1839,7 +1839,7 @@ $("#launch").onclick=async()=>{
     $("#launchMsg").textContent=String(e?.message||e);
   }finally{$("#launch").disabled=false}
 };
-function renderAll(){opts();renderDashboard();renderProduction();renderIdeas();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderScenes();renderCharacters();renderVideoLab();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();renderAccounts();refreshChatStatus();renderConnections()}
+function renderAll(){opts();renderDashboard();renderProduction();renderIdeas();renderBackground();renderProducts();renderProductDetail();renderCampaigns();renderRuns();renderRunDetail();renderScripts();renderMediaLibraries();renderCharacters();renderVideoLab();renderPublish();renderCalendar();renderAnalytics();renderCosts();renderJournal();renderChat();renderAccounts();refreshChatStatus();renderConnections()}
 if("serviceWorker" in navigator){
   navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{});
 }
