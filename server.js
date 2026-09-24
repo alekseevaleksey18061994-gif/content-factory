@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.28';
+const APP_VERSION='2.6.29';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -733,6 +733,8 @@ function normalizeIdeaStage(raw,payload={}){
     payoff:String(src.payoff||'').slice(0,3000),
     ctaDirection:String(src.ctaDirection||'').slice(0,2000),
     production:String(src.production||src.productionComplexity||'').slice(0,1200),
+    formatPattern:String(src.formatPattern||'').slice(0,500),
+    hookLab:src.hookLab&&typeof src.hookLab==='object'?src.hookLab:null,
     alternatives:alts.slice(0,5).map(x=>({
       title:String(x?.title||'').slice(0,240),
       audience:String(x?.audience||'').slice(0,2000),
@@ -751,6 +753,18 @@ function normalizeIdeaStage(raw,payload={}){
     }))
   };
 }
+function productDNAFromPayload(payload={}){
+  const dna=payload?.productDNA || payload?.product?.productDNA || payload?.product?.dna || null;
+  return dna&&typeof dna==='object'?dna:null;
+}
+function productDNAText(payload={}){
+  const dna=productDNAFromPayload(payload);
+  if(!dna)return '';
+  return [
+    'PRODUCT DNA — extracted from original source photos and explicit product facts. Treat as hard factual constraints:',
+    JSON.stringify(dna)
+  ].join(' ');
+}
 function universalProductIdentityLock(payload={}){
   return [
     'GLOBAL SOURCE PRODUCT IDENTITY LOCK — applies to EVERY product and EVERY generation stage.',
@@ -761,27 +775,152 @@ function universalProductIdentityLock(payload={}){
     'Do not copy product geometry from AI-generated previz or previous generated frames when it conflicts with the ORIGINAL source photos. Generated frames are continuity/composition references only; source photos always win for product identity.',
     'Camera angle, lighting, perspective, occlusion, hand position and scene context may change, but the physical product model must remain the same.',
     'If an action cannot be shown without changing the real product construction, change the ACTION/SHOT — never change the product.',
-    'Any visible product geometry drift is a critical QC failure and must be regenerated before the pipeline continues.'
-  ].join(' ');
+    'Any visible product geometry drift is a critical QC failure and must be regenerated before the pipeline continues.',
+    productDNAText(payload)
+  ].filter(Boolean).join(' ');
+}
+function productMediaFingerprint(product={}){
+  const media=(Array.isArray(product.media)?product.media:[])
+    .map(m=>String(m?.url||m?.path||m?.id||'')).filter(Boolean).sort();
+  return media.join('|');
+}
+async function analyzeProductDNA(product,accountId){
+  const refs=(Array.isArray(product?.media)?product.media:[])
+    .map(m=>m?.url).filter(u=>/^https:\/\//i.test(String(u||''))).slice(0,6);
+  if(!refs.length)return {
+    status:'no-source-photos',
+    summary:'Нет исходных фото для визуального Product DNA.',
+    geometry:'unknown',components:[],materials:[],colors:[],markings:[],usageMechanics:[],
+    removableParts:[],fixedParts:[],prohibitedChanges:['Не менять внешний вид товара без подтверждения исходными фото.'],
+    unknowns:['Визуальные детали не определены без исходных фото.']
+  };
+  if(!openaiConfigured())return {
+    status:'pending-openai',
+    summary:'Product DNA будет уточнён при доступном OpenAI vision.',
+    geometry:'use source photos exactly',components:[],materials:[],colors:[],markings:[],usageMechanics:[],
+    removableParts:[],fixedParts:[],prohibitedChanges:['Исходные фото — абсолютный эталон товара.'],
+    unknowns:['Автоматический визуальный разбор временно недоступен.']
+  };
+  const schema={
+    type:'object',additionalProperties:false,
+    required:['summary','geometry','components','materials','colors','markings','usageMechanics','removableParts','fixedParts','prohibitedChanges','unknowns'],
+    properties:{
+      summary:{type:'string'},geometry:{type:'string'},
+      components:{type:'array',items:{type:'string'},maxItems:30},
+      materials:{type:'array',items:{type:'string'},maxItems:20},
+      colors:{type:'array',items:{type:'string'},maxItems:20},
+      markings:{type:'array',items:{type:'string'},maxItems:20},
+      usageMechanics:{type:'array',items:{type:'string'},maxItems:30},
+      removableParts:{type:'array',items:{type:'string'},maxItems:30},
+      fixedParts:{type:'array',items:{type:'string'},maxItems:30},
+      prohibitedChanges:{type:'array',items:{type:'string'},maxItems:40},
+      unknowns:{type:'array',items:{type:'string'},maxItems:30}
+    }
+  };
+  const prompt=[
+    'ROLE: forensic product identity analyst for AI image/video generation.',
+    'Analyze ONLY what is visually confirmed by ORIGINAL source product photos plus explicit text facts below.',
+    'Product: '+String(product?.name||''),
+    'Category: '+String(product?.category||''),
+    'UTP: '+String(product?.utp||''),
+    'Explicit rules: '+String(product?.rules||''),
+    'Create a PRODUCT DNA that prevents model drift in future image/video generation.',
+    'Describe geometry, visible components, fixed vs removable parts, materials/colors/markings, and only usage mechanics clearly proven by photos/text.',
+    'NEVER infer hidden mechanisms. If uncertain, put it in unknowns.',
+    'prohibitedChanges must list concrete visual/model changes that future generators must not make.',
+    'Return JSON only.'
+  ].join('\n');
+  const input=[{role:'user',content:[
+    {type:'input_text',text:prompt},
+    ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'high'}))
+  ]}];
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({
+      model,input,reasoning:{effort:'medium'},max_output_tokens:3000,
+      text:{format:{type:'json_schema',name:'product_dna',strict:true,schema}}
+    })
+  });
+  const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+  if(!r.ok)throw new Error(data?.error?.message||('Product DNA error '+r.status));
+  const parsed=safeAnalysisJson(openAIText(data))||{};
+  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{
+    provider:'OpenAI',category:'product-dna',description:'Product DNA · '+String(product?.name||'товар'),
+    amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
+  }).catch(()=>{});
+  return {...parsed,status:'ready',sourcePhotos:refs.length,generatedAt:new Date().toISOString()};
+}
+async function ensureProductDNA(data,product,accountId){
+  if(!product)return null;
+  const fingerprint=productMediaFingerprint(product);
+  if(product.productDNA && product.productDNAFingerprint===fingerprint)return product.productDNA;
+  try{
+    const dna=await analyzeProductDNA(product,accountId);
+    product.productDNA=dna;
+    product.productDNAFingerprint=fingerprint;
+    product.productDNAUpdatedAt=new Date().toISOString();
+    product.updatedAt=product.productDNAUpdatedAt;
+    return dna;
+  }catch(e){
+    console.error('[product-dna] '+String(product?.id||product?.name||'')+' '+String(e?.message||e));
+    product.productDNA=product.productDNA||{
+      status:'fallback',
+      summary:'Использовать исходные фото как абсолютный визуальный эталон.',
+      prohibitedChanges:['Не менять форму, геометрию, пропорции, детали, цвет, материал и конструкцию товара.'],
+      unknowns:['Автоматический Product DNA временно не обновлён.']
+    };
+    product.productDNAFingerprint=fingerprint;
+    return product.productDNA;
+  }
 }
 
 async function recentIdeaContext(accountId,productId){
   try{
     const state=await readAppState(accountId);
     const data=state?.data||{};
-    const recent=(Array.isArray(data.runs)?data.runs:[])
+    const allRuns=Array.isArray(data.runs)?data.runs:[];
+    const recent=allRuns
       .filter(r=>r?.idea && (!productId||r.productId===productId))
-      .slice(-12)
-      .map(r=>({title:r.idea?.title||'',hook:r.idea?.hook||'',concept:r.idea?.concept||''}));
+      .slice(-16)
+      .map(r=>({
+        title:r.idea?.title||'',hook:r.idea?.hook||'',concept:r.idea?.concept||'',
+        mechanic:r.idea?.mechanic||'',formatPattern:r.idea?.formatPattern||''
+      }));
     const analyses=(Array.isArray(data.videoAnalyses)?data.videoAnalyses:[])
-      .slice(-5)
+      .slice(-12)
       .map(v=>({
         title:String(v?.title||v?.name||'').slice(0,200),
-        summary:String(v?.summary||v?.analysis?.summary||v?.result?.summary||'').slice(0,1200),
-        hooks:Array.isArray(v?.hooks)?v.hooks.slice(0,5):[]
+        summary:String(v?.summary||v?.analysis?.summary||v?.result?.summary||'').slice(0,1600),
+        hooks:Array.isArray(v?.hooks)?v.hooks.slice(0,8):[],
+        patterns:Array.isArray(v?.patterns)?v.patterns.slice(0,8):[],
+        scenes:Array.isArray(v?.scenes)?v.scenes.slice(0,8):[]
       }));
-    return {recent,analyses};
-  }catch{return {recent:[],analyses:[]}}
+    const performanceRuns=allRuns
+      .filter(r=>(!productId||r.productId===productId)&&r?.idea&&r?.metrics&&typeof r.metrics==='object')
+      .map(r=>{
+        const m=r.metrics||{};
+        const views=Number(m.views)||0;
+        const retention=Number(m.retention??m.averageRetention??m.completionRate)||0;
+        const rewatch=Number(m.rewatchRate??m.rewatches)||0;
+        const clicks=Number(m.clicks)||0;
+        const ctr=Number(m.ctr)||0;
+        const sales=Number(m.sales)||0;
+        const signal=(retention*4)+(rewatch*2)+(ctr*3)+Math.log10(Math.max(1,views))*2+Math.min(10,sales);
+        return {
+          title:String(r.idea?.title||''),hook:String(r.idea?.hook||''),mechanic:String(r.idea?.mechanic||''),
+          formatPattern:String(r.idea?.formatPattern||''),views,retention,rewatch,ctr,clicks,sales,signal
+        };
+      }).sort((a,b)=>b.signal-a.signal);
+    const performance={
+      winners:performanceRuns.slice(0,5).map(({signal,...x})=>x),
+      weaker:performanceRuns.length>5?performanceRuns.slice(-3).map(({signal,...x})=>x):[],
+      sampleSize:performanceRuns.length
+    };
+    return {recent,analyses,performance};
+  }catch{return {recent:[],analyses:[],performance:{winners:[],weaker:[],sampleSize:0}}}
 }
 async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
@@ -810,7 +949,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     required:['candidates'],
     properties:{
       candidates:{
-        type:'array',minItems:10,maxItems:10,
+        type:'array',minItems:20,maxItems:20,
         items:{
           type:'object',additionalProperties:false,
           required:['title','formatPattern','hook','concept','mechanic','payoff'],
@@ -897,7 +1036,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
     ]}];
     const controller=new AbortController();
-    const timeoutMs=name==='idea_candidates'?65000:75000;
+    const timeoutMs=name==='idea_candidates'?85000:75000;
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     let r;
     try{
@@ -906,7 +1045,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         signal:controller.signal,
         headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
         body:JSON.stringify({
-          model,input,reasoning:{effort:'medium'},max_output_tokens:name==='idea_candidates'?4200:4800,
+          model,input,reasoning:{effort:'medium'},max_output_tokens:name==='idea_candidates'?7000:4800,
           text:{format:{type:'json_schema',name,strict:true,schema}}
         })
       });
@@ -919,7 +1058,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
     const priced=openAIUsageCost(data?.model||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{
-      provider:'OpenAI',category:'idea',description:name==='idea_candidates'?'10 TikTok-концепций идеи':'TikTok Creative Critic идеи',
+      provider:'OpenAI',category:'idea',description:name==='idea_candidates'?'20 TikTok-концепций идеи':name==='hook_lab'?'Hook Lab · 5 хуков':'TikTok Creative Critic идеи',
       amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
     }).catch(()=>{});
     const parsed=safeAnalysisJson(openAIText(data));
@@ -940,15 +1079,16 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     payload.character?.name?('Привязанный AI-аватар: '+String(payload.character.name)+'. Возраст/образ: '+String(payload.character.age||'')+'. Внешность: '+String(payload.character.look||'')+'. Манера речи: '+String(payload.character.voice||'')+'. Темы: '+String(payload.character.topics||'')+'. Locks: '+String(payload.character.locks||'')):'',
     'Недавние идеи, которые нельзя повторять: '+JSON.stringify(ctx.recent),
     'Паттерны из анализов конкурентов, если есть: '+JSON.stringify(ctx.analyses),
+    'LEARNING LOOP — реальные результаты опубликованных роликов этого товара, если есть. Усиливай подтверждённые механики, но не копируй сюжет; слабые паттерны не повторяй: '+JSON.stringify(ctx.performance),
     feedback?('Комментарий пользователя к переделке: '+feedback):''
   ].filter(Boolean).join('\n');
 
   const generatorPrompt=[
     'ROLE: senior TikTok creative director + performance UGC director. Ты придумываешь не «рекламный ролик», а нативное короткое видео, которое должно остановить скролл и удержать зрителя.',
-    'Сгенерируй РОВНО 10 принципиально разных концепций. Различаться должна МЕХАНИКА просмотра и причина досмотреть, а не только формулировка.',
+    'Сгенерируй РОВНО 20 принципиально разных концепций. Различаться должна МЕХАНИКА просмотра и причина досмотреть, а не только формулировка.',
     context,
     '',
-    '10 РАЗНЫХ FORMAT PATTERNS — используй каждый максимум один раз и укажи его в formatPattern:',
+    '20 FORMAT PATTERNS — используй каждый максимум один раз и укажи его в formatPattern:',
     '1) relatable fail / бытовой микро-провал;',
     '2) visual test / challenge / проверка в кадре;',
     '3) POV / личное признание / наблюдение;',
@@ -958,7 +1098,17 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '7) A/B comparison с дополнительным поворотом, а не простое до/после;',
     '8) mini-story с 2–3 эскалациями;',
     '9) pattern interrupt / неожиданное действие или смена ожидания;',
-    '10) loop/reveal — финал естественно возвращает к первому кадру или переосмысливает его.',
+    '10) loop/reveal — финал естественно возвращает к первому кадру или переосмысливает его;',
+    '11) wrong-way / сначала намеренно неправильное бытовое действие → исправление;',
+    '12) micro-experiment / маленький визуальный эксперимент с измеримым результатом без выдуманных цифр;',
+    '13) split-decision / герой выбирает между двумя способами и быстро понимает разницу;',
+    '14) silent visual comedy / понятный без слов микро-гэг вокруг бытовой боли;',
+    '15) one-take discovery / ощущение случайного открытия в одном непрерывном действии;',
+    '16) objection-first / начать с сомнения и доказать его действием;',
+    '17) reverse reveal / показать результат первым, затем коротко раскрыть как к нему пришли;',
+    '18) constraint challenge / решить задачу с ограничением по времени/пространству без фальшивых таймеров;',
+    '19) tactile ASMR / визуально-тактильное действие и звук как основной retention;',
+    '20) reaction-payoff / короткая естественная реакция после неожиданно наглядного результата.'
     '',
     'VIRAL-FIRST ПРАВИЛА:',
     '1. ПЕРВЫЙ КАДР 0–1 сек должен быть понятен без звука и останавливать палец: конкретное действие, ошибка, странность, конфликт, резкое следствие или визуальный вопрос. Никаких заставок, общего плана кухни, логотипа и «девушка стоит с товаром».',
@@ -991,17 +1141,17 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Не повторяй одну и ту же механику под разными названиями.'
   ].join('\n');
 
-  await markIdeaProgress(4,'Генерирую 10 разных механик');
+  await markIdeaProgress(4,'Генерирую 20 разных механик');
   const candidateData=await callIdeaAI({
     prompt:generatorPrompt,schema:candidateSchema,name:'idea_candidates',images:refs
   });
   const candidates=Array.isArray(candidateData?.candidates)?candidateData.candidates:[];
-  if(candidates.length!==10)throw new Error('Генератор идеи вернул не 10 концепций');
+  if(candidates.length!==20)throw new Error('Генератор идеи вернул не 20 концепций');
   await markIdeaProgress(5,'Creative Critic выбирает и усиливает лучшую');
 
   const criticBase=[
     'ROLE: TikTok Creative Critic + retention editor. Ты отбираешь идею так, будто решаешь, переживёт ли она первые секунды в реальной ленте.',
-    'Сначала безжалостно отсей слабые и рекламные варианты из 10 кандидатов. Затем возьми сильные элементы 2–3 лучших и собери ОДНУ финальную концепцию. Не обязан сохранять победителя как есть.',
+    'Сначала безжалостно отсей слабые и рекламные варианты из 20 кандидатов. Затем возьми сильные элементы 2–3 лучших и собери ОДНУ финальную концепцию. Не обязан сохранять победителя как есть.',
     'ВНУТРИ ОДНОГО ОТВЕТА проведи ДВЕ независимые проверки финала: (1) TikTok retention editor — хук, curiosity gap, темп, shareability; (2) AI-production director — FACT LOCK, естественность героя, разнообразие proof и генерируемость. После обеих проверок молча исправь найденные слабости и только затем верни результат.',
     context,
     '',
@@ -1120,9 +1270,56 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   if(finalFailed.length){
     throw new Error('Идея не прошла Creative Critic: '+finalFailed.join(', ')+' ниже 8/10');
   }
-  await markIdeaProgress(8,'Идея готова');
+
+  await markIdeaProgress(7.5,'Hook Lab: тестирую 5 разных первых 3 секунд');
+  const hookLabSchema={
+    type:'object',additionalProperties:false,required:['variants','selectedIndex','selectionReason'],
+    properties:{
+      variants:{
+        type:'array',minItems:5,maxItems:5,
+        items:{
+          type:'object',additionalProperties:false,
+          required:['type','firstFrame','action','line','audio','openLoop','why'],
+          properties:{
+            type:{type:'string'},firstFrame:{type:'string'},action:{type:'string'},
+            line:{type:'string'},audio:{type:'string'},openLoop:{type:'string'},why:{type:'string'}
+          }
+        }
+      },
+      selectedIndex:{type:'integer',minimum:1,maximum:5},
+      selectionReason:{type:'string'}
+    }
+  };
+  const hookPrompt=[
+    'ROLE: Hook Lab director for TikTok/Reels/Shorts.',
+    context,
+    'Approved concept: '+JSON.stringify(idea),
+    'Create EXACTLY 5 radically different first-3-second executions for the SAME approved concept.',
+    'Each must start with a different visual mechanism, not just different wording.',
+    'Use these five families once each: visual fail/conflict; unexpected action; result-first/reverse reveal; POV/reaction; tactile/satisfying detail.',
+    'The first frame must stop scroll without sound. Spoken line, if any, max 3–8 natural words.',
+    'No logos, intro cards, generic product holding, fake comments, fake numbers or ad-copy language.',
+    'Respect Product DNA and source-product identity lock. If a hook requires changing the real product, change the hook instead.',
+    'Choose selectedIndex for the hook most likely to create curiosity while remaining easy to generate accurately.',
+    'Return JSON only.'
+  ].join('\n');
+  try{
+    const hookLab=await callIdeaAI({prompt:hookPrompt,schema:hookLabSchema,name:'hook_lab',images:refs});
+    const variants=Array.isArray(hookLab?.variants)?hookLab.variants:[];
+    const selectedIndex=Math.max(1,Math.min(5,Number(hookLab?.selectedIndex)||1));
+    idea.hookLab={variants,selectedIndex,selectionReason:String(hookLab?.selectionReason||''),generatedAt:new Date().toISOString()};
+    const selectedHook=variants[selectedIndex-1];
+    if(selectedHook){
+      idea.hook=[selectedHook.firstFrame,selectedHook.line].filter(Boolean).join(' · ').slice(0,2000);
+      idea.first3Seconds=[selectedHook.firstFrame,selectedHook.action,selectedHook.line,selectedHook.audio,selectedHook.openLoop].filter(Boolean).join(' | ').slice(0,3000);
+    }
+  }catch(e){
+    idea.hookLab={variants:[],selectedIndex:1,selectionReason:'Hook Lab временно недоступен: '+String(e?.message||e),generatedAt:new Date().toISOString()};
+  }
+
+  await markIdeaProgress(8,'Идея и Hook Lab готовы');
   idea.creativeProcess={
-    generatedCandidates:10,
+    generatedCandidates:20,
     critic:true,
     criticPasses:failed().length||heuristicIssues.length?2:1,
     refined:true,
@@ -3013,12 +3210,100 @@ function providerCreditError(error){
 
 function videoProviderMode(run){
   const mode=String(run?.modelMode||'').toLowerCase();
-  if(mode.includes('только higgsfield'))return 'higgsfield-only';
+  if(mode.includes('только higgsfield')||mode.includes('только seedance'))return 'higgsfield-only';
   if(mode.includes('только runway'))return 'runway-only';
-  // Higgsfield currently returns low-credit errors for video. Prefer the connected
-  // Runway backend by default instead of burning one failed Higgsfield request per scene.
-  if(process.env.RUNWAYML_API_SECRET)return 'runway-only';
-  return 'higgsfield-only';
+  return 'auto';
+}
+function manualSceneProvider(run,sceneNo){
+  const raw=String(run?.sceneModels?.[sceneNo]||'').trim().toLowerCase();
+  if(!raw||raw==='авто'||raw==='auto')return '';
+  if(raw.includes('runway'))return 'runway';
+  if(raw.includes('seedance')||raw.includes('higgsfield'))return 'seedance';
+  return '';
+}
+function heuristicSceneRoute(scene={}){
+  const text=[scene.title,scene.shot,scene.action,scene.startFrame,scene.endFrame,scene.product,scene.productRole,scene.environment,scene.promptEn,scene.prompt]
+    .filter(Boolean).join(' ').toLowerCase();
+  let score=0;
+  const reasons=[];
+  const add=(rx,n,label)=>{if(rx.test(text)){score+=n;reasons.push(label)}};
+  add(/рук|кист|пальц|hand|grip|держит|бер[её]т|встав|надев|сним|устанав|закреп|откруч|нажим|тян|вращ|скольз/,3,'точное взаимодействие рук с товаром');
+  add(/несколько|две|два|three|multiple|одновременно|переклад|перемещ/,2,'несколько объектов/действий');
+  add(/крупн|макро|detail|close[- ]?up|торец|креп|механ|детал/,2,'крупный план конструкции');
+  add(/вода|жидк|ль[её]т|сып|ткан|деформ|сгиб|натяг|скруч|физик/,2,'сложная физика/материал');
+  add(/аватар|девуш|мужчин|геро.{0,20}(товар|держ|использ)/,1,'герой и товар одновременно');
+  add(/камера.{0,30}(обход|orbit|вращ)|tracking|динамичн/,1,'сложное движение камеры');
+  if(score>=4)return {provider:'seedance',complexity:'complex',risk:score>=7?'high':'medium',reason:reasons.join('; ')||'сложная сцена'};
+  return {provider:'runway',complexity:'simple',risk:score>=2?'medium':'low',reason:reasons.join('; ')||'простое движение/камера'};
+}
+async function buildSceneRouting(run,accountId){
+  const board=Array.isArray(run?.storyboard)?run.storyboard:[];
+  const forced=videoProviderMode(run);
+  const fallback=Object.fromEntries(board.map((scene,i)=>{
+    const sceneNo=i+1;
+    const manual=manualSceneProvider(run,sceneNo);
+    const base=heuristicSceneRoute(scene);
+    const provider=manual||(forced==='runway-only'?'runway':forced==='higgsfield-only'?'seedance':base.provider);
+    return [sceneNo,{scene:sceneNo,provider,complexity:base.complexity,risk:base.risk,reason:manual?'Ручной выбор модели':forced!=='auto'?'Принудительный режим запуска':base.reason,source:manual?'manual':forced!=='auto'?'run-mode':'heuristic'}];
+  }));
+  if(!openaiConfigured()||forced!=='auto')return fallback;
+  const unresolved=board.map((scene,i)=>({scene:i+1,...scene})).filter(x=>!manualSceneProvider(run,x.scene));
+  if(!unresolved.length)return fallback;
+  const schema={
+    type:'object',additionalProperties:false,required:['routes'],
+    properties:{routes:{type:'array',minItems:unresolved.length,maxItems:unresolved.length,items:{
+      type:'object',additionalProperties:false,required:['scene','provider','complexity','risk','reason'],
+      properties:{
+        scene:{type:'integer',minimum:1,maximum:20},
+        provider:{type:'string',enum:['runway','seedance']},
+        complexity:{type:'string',enum:['simple','complex']},
+        risk:{type:'string',enum:['low','medium','high']},
+        reason:{type:'string'}
+      }
+    }}}
+  };
+  const prompt=[
+    'ROLE: AI video scene router.',
+    'Choose the production model separately for every storyboard scene.',
+    'RUNWAY = default for SIMPLE scenes: camera motion, talking/holding product, beauty shots, simple object motion, low product-geometry risk.',
+    'SEEDANCE 2.0 reference-to-video = COMPLEX scenes: hands physically manipulate product; install/remove/load/attach actions; multiple objects; complex physics; macro product geometry; simultaneous avatar+product motion; strict START→END mechanics; high identity risk.',
+    'Goal: use Runway whenever it can reliably do the scene, but route risky interaction scenes to Seedance before spending attempts.',
+    'Product source photos/Product DNA are absolute identity truth.',
+    universalProductIdentityLock(run),
+    'Storyboard: '+JSON.stringify(unresolved.map(x=>({
+      scene:x.scene,title:x.title,shot:x.shot,action:x.action,startFrame:x.startFrame,endFrame:x.endFrame,
+      product:x.product,productRole:x.productRole,camera:x.camera,framing:x.framing,environment:x.environment
+    }))),
+    'Return one route per scene, in scene order.'
+  ].join('\n');
+  try{
+    const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+    const r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',
+      headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({
+        model,input:[{role:'user',content:[{type:'input_text',text:prompt}]}],
+        reasoning:{effort:'low'},max_output_tokens:2200,
+        text:{format:{type:'json_schema',name:'scene_router',strict:true,schema}}
+      })
+    });
+    const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+    if(!r.ok)throw new Error(data?.error?.message||('Scene router error '+r.status));
+    const parsed=safeAnalysisJson(openAIText(data))||{};
+    for(const route of (Array.isArray(parsed.routes)?parsed.routes:[])){
+      const n=Number(route?.scene);
+      if(!fallback[n]||manualSceneProvider(run,n))continue;
+      fallback[n]={...fallback[n],...route,scene:n,source:'ai-router'};
+    }
+    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+    if(priced.amountUsd>0)await recordExpense(accountId,{
+      provider:'OpenAI',category:'scene-router',description:'AI Scene Router · '+String(run.productName||run.id),
+      amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
+    }).catch(()=>{});
+  }catch(e){
+    console.warn('[scene-router] '+String(run?.id||'')+' '+String(e?.message||e));
+  }
+  return fallback;
 }
 
 async function processRunGeneration(accountId,runId){
@@ -3038,6 +3323,12 @@ async function processRunGeneration(accountId,runId){
   const board=Array.isArray(run.storyboard)&&run.storyboard.length?run.storyboard:[planSceneDefaults(0,1)];
   const total=board.length;
   try{
+    if(!run.sceneRouting||Object.keys(run.sceneRouting||{}).length!==board.length){
+      run.sceneRouting=await buildSceneRouting(run,accountId);
+      run.sceneRoutingUpdatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'AI Scene Router',(run.productName||run.id)+' · '+Object.values(run.sceneRouting).map(x=>'S'+x.scene+'→'+(x.provider==='seedance'?'Seedance':'Runway')).join(', '));
+      await writeAppState(data,accountId);
+    }
     for(let i=0;i<board.length;i++){
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       if(!run||run.paused||run.status==='Остановлено'){
@@ -3071,43 +3362,50 @@ async function processRunGeneration(accountId,runId){
         'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
       ].filter(Boolean).join('\n').slice(0,1000);
       let result=null,lastError=null,sceneQc=null,qcCorrection='',creditBlock=null;
+      const route=(run.sceneRouting&&run.sceneRouting[sceneNo])||heuristicSceneRoute(scene);
       const providerMode=videoProviderMode(run);
+      let preferred=manualSceneProvider(run,sceneNo)||(providerMode==='runway-only'?'runway':providerMode==='higgsfield-only'?'seedance':String(route?.provider||'runway'));
+      let escalatedFrom='';
       const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
+      const generateByProvider=async(provider,attemptPrompt)=>{
+        if(provider==='seedance'){
+          return await generateHiggsfieldScene({
+            accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
+            aspectRatio:'9:16',resolution:'720p',generateAudio:true,
+            model:'bytedance/seedance-2.0/reference-to-video'
+          });
+        }
+        if(!process.env.RUNWAYML_API_SECRET)throw new Error('Runway API is not configured');
+        return await generateRunwayScene({
+          accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
+        });
+      };
       for(let attempt=1;attempt<=maxAttempts;attempt++){
         let candidate=null;
         const attemptPrompt=(prompt+(qcCorrection?'\nQC CORRECTION FOR THIS RETRY: '+qcCorrection:'')).slice(0,950);
-        if(providerMode!=='runway-only'){
+        const order=preferred==='seedance'?['seedance','runway']:['runway','seedance'];
+        for(const provider of order){
+          if(provider==='seedance'&&!higgsfieldConfigured())continue;
+          if(provider==='runway'&&!process.env.RUNWAYML_API_SECRET)continue;
           try{
-            candidate=await generateHiggsfieldScene({
-              accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
-              aspectRatio:'9:16',resolution:'720p',generateAudio:true
-            });
-            if(!(candidate?.ok&&candidate?.urls?.length)){
-              lastError=new Error('Higgsfield не вернул готовое видео'+(candidate?.status?' · статус '+candidate.status:''));
-              candidate=null;
+            candidate=await generateByProvider(provider,attemptPrompt);
+            if(candidate?.ok&&candidate?.urls?.length){
+              candidate.routerProvider=provider;
+              candidate.routerReason=String(route?.reason||'');
+              candidate.escalatedFrom=escalatedFrom;
+              break;
             }
+            candidate=null;
           }catch(e){
             lastError=e;
-            if(providerCreditError(e))creditBlock={provider:'Higgsfield',message:String(e?.message||e)};
-            console.error('[higgsfield-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
+            console.error('['+provider+'-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
+            if(providerCreditError(e))creditBlock={provider:provider==='seedance'?'Higgsfield/Seedance':'Runway',message:String(e?.message||e)};
           }
         }
-        if(creditBlock)break;
-        if(!candidate&&providerMode!=='higgsfield-only'&&process.env.RUNWAYML_API_SECRET){
-          try{
-            candidate=await generateRunwayScene({
-              accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
-            });
-            if(candidate?.ok&&candidate?.urls?.length)candidate.fallbackFrom=providerMode==='runway-only'?'':'higgsfield';
-            else candidate=null;
-          }catch(re){
-            lastError=new Error((lastError?String(lastError.message)+'; ':'')+'Runway: '+String(re?.message||re));
-            if(providerCreditError(re))creditBlock={provider:'Runway',message:String(re?.message||re)};
-            console.error('[runway-fallback] '+runId+' scene '+sceneNo+' '+String(re?.message||re));
-          }
+        if(!candidate){
+          if(creditBlock&&attempt>=maxAttempts)break;
+          continue;
         }
-        if(creditBlock)break;
-        if(!candidate)continue;
         try{
           sceneQc=await runGeneratedSceneQc(run,scene,sceneNo,candidate.urls[0],accountId);
         }catch(e){
@@ -3116,6 +3414,12 @@ async function processRunGeneration(accountId,runId){
         if(sceneQc.passed!==false){result=candidate;break}
         qcCorrection=((sceneQc.issues||[]).join('; ')||sceneQc.summary||'Исправь критическое несоответствие действию/товару').slice(0,1400);
         lastError=new Error('AI-QC сцены: '+qcCorrection);
+        if((candidate.routerProvider||preferred)==='runway'&&providerMode==='auto'&&!manualSceneProvider(run,sceneNo)){
+          escalatedFrom='runway';
+          preferred='seedance';
+          if(run.sceneRouting?.[sceneNo])run.sceneRouting[sceneNo]={...run.sceneRouting[sceneNo],provider:'seedance',complexity:'complex',risk:'high',source:'qc-escalation',escalatedFrom:'runway',reason:'Runway не прошёл AI-QC: '+qcCorrection.slice(0,500)};
+          appendFactoryJournal(data,'Эскалация сцены в Seedance',(run.productName||run.id)+' · сцена '+sceneNo+' · Runway → Seedance после QC');
+        }
         console.warn('[scene-qc-retry] '+runId+' scene '+sceneNo+' attempt '+attempt+' '+String(lastError.message));
       }
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
@@ -3124,7 +3428,7 @@ async function processRunGeneration(accountId,runId){
       if(result?.ok&&result?.urls?.length){
         const persisted=await persistRunVideoUrls(accountId,run.id,result.urls,'scene-'+sceneNo).catch(e=>({urls:result.urls,media:[],failed:[{error:String(e?.message||e)}]}));
         const savedUrls=persisted.urls?.length?persisted.urls:result.urls;
-        run.sceneResults[sceneNo]={ok:true,urls:savedUrls,persistedMedia:persisted.media||[],storageWarnings:persisted.failed||[],provider:result.provider,model:result.model,requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,completedAt:new Date().toISOString()};
+        run.sceneResults[sceneNo]={ok:true,urls:savedUrls,persistedMedia:persisted.media||[],storageWarnings:persisted.failed||[],provider:result.provider,model:result.model,routerProvider:result.routerProvider||'',routerReason:result.routerReason||'',escalatedFrom:result.escalatedFrom||'',requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,completedAt:new Date().toISOString()};
         appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total+(sceneQc?.score?' · QC '+sceneQc.score+'/10':'')+(persisted.failed?.length?' · резервная копия: частично':' · сохранена в медиатеке'));
       }else{
         const err=creditBlock
@@ -3214,6 +3518,8 @@ function buildIdeaOptions(run){
       payoff:String(src?.payoff||(primary?base.payoff:'')||'').slice(0,3000),
       ctaDirection:String(src?.ctaDirection||(primary?base.ctaDirection:'')||'').slice(0,2000),
       production:String(src?.production||(primary?base.production:'')||'').slice(0,1600),
+      formatPattern:String(src?.formatPattern||(primary?base.formatPattern:'')||'').slice(0,500),
+      hookLab:primary&&base.hookLab&&typeof base.hookLab==='object'?base.hookLab:null,
       quality:src?.quality&&typeof src.quality==='object'?src.quality:{}
     };
     const missing=required.filter(k=>!String(optionIdea[k]||'').trim());
@@ -3243,6 +3549,7 @@ function syncRunIdeaLibrary(data,run){
       category:String(run.product?.category||''),
       utp:String(run.productUtp||run.product?.utp||''),
       rules:String(run.productRules||run.product?.rules||''),
+      productDNA:run.productDNA||run.product?.productDNA||null,
       defaultCharacterId:run.product?.defaultCharacterId||null,
       media:(Array.isArray(run.media)?run.media:(run.product?.media||[])).map(m=>({
         id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary
@@ -3502,14 +3809,15 @@ async function createBatchRuns(payload,accountId){
   data.runs=Array.isArray(data.runs)?data.runs:[];
   const product=findProductInState(data,payload.productId||payload.productName);
   if(!product)throw new Error('Товар не найден');
+  await ensureProductDNA(data,product,accountId);
   const resolvedCharacter=resolveProductCharacter(data,product,payload);
   const character=characterSnapshot(resolvedCharacter);
   const productMedia=(Array.isArray(product.media)?product.media:[]).map(m=>({id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary})).filter(m=>m.url);
   const basePayload={
     ...payload,
-    productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',
+    productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',productDNA:product.productDNA||null,
     media:productMedia,
-    product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',media:productMedia,defaultCharacterId:product.defaultCharacterId||null},
+    product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',productDNA:product.productDNA||null,media:productMedia,defaultCharacterId:product.defaultCharacterId||null},
     characterId:character?.id||null,character,avatarReferences:character?.media||[],
     characterSource:character?(String(payload.characterId||payload.character?.id||'')?'launch-selection':'product-default'):'none'
   };
@@ -3545,12 +3853,13 @@ async function createIdeaDraft(body,accountId){
   const data=state?.data||blankFactoryState();
   const product=findProductInState(data,body.productId||body.product);
   if(!product)throw new Error('Товар не найден');
+  await ensureProductDNA(data,product,accountId);
   const resolvedCharacter=resolveProductCharacter(data,product,{});
   const character=characterSnapshot(resolvedCharacter);
   const productMedia=(product.media||[]);
   const payload={
-    accountId,productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',
-    media:productMedia,product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',media:productMedia,defaultCharacterId:product.defaultCharacterId||null},
+    accountId,productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',productDNA:product.productDNA||null,
+    media:productMedia,product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',productDNA:product.productDNA||null,media:productMedia,defaultCharacterId:product.defaultCharacterId||null},
     characterId:character?.id||null,character,avatarReferences:character?.media||[],characterSource:character?'product-default':'none',
     brief:String(body.brief||''),style:String(body.style||'UGC'),duration:String(body.duration||'30 сек'),
     format:'9:16',mode:'manual',modelMode:'Авто — умный выбор',budget:Number(body.budget)||500,maxAttempts:3,
@@ -3851,6 +4160,7 @@ async function runControlAction(body,accountId){
     const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
     run.sceneModels=run.sceneModels&&typeof run.sceneModels==='object'?run.sceneModels:{};
     run.sceneModels[scene]=String(body?.model||'Авто').slice(0,120);
+    run.sceneRouting=null;
     run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Сменена модель сцены',(run.productName||run.id)+' · сцена '+scene+' → '+run.sceneModels[scene]);
     await writeAppState(data,accountId);return run;
