@@ -1235,11 +1235,6 @@ if($("#chatForm"))$("#chatForm").onsubmit=e=>{
   const input=$("#chatInput");
   sendChatMessage(input?.value,input);
 };
-if($("#mobileChatDock"))$("#mobileChatDock").onsubmit=e=>{
-  e.preventDefault();
-  const input=$("#mobileChatInput");
-  sendChatMessage(input?.value,input);
-};
 $("#mobileChatDockOpen")?.addEventListener("click",()=>go("assistant"));
 if($("#clearChat"))$("#clearChat").onclick=async()=>{
   chatHistory=[];
