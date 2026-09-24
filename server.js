@@ -884,7 +884,7 @@ function openAIStageModel(stage='balanced'){
   const cheap=process.env.OPENAI_CHEAP_MODEL||'gpt-5.6-luna';
   const balanced=process.env.OPENAI_BALANCED_MODEL||'gpt-5.6-terra';
   const quality=process.env.OPENAI_QUALITY_MODEL||'gpt-5.6-sol';
-  if(/candidate|shortlist|hook|audio|previs-qc|scene-qc|chat|light/.test(s))return cheap;
+  if(/candidate|shortlist|hook|audio|previs-qc|scene-qc|chat|light|scene-router|previs-image/.test(s))return cheap;
   if(/final-qc|director-cut|quality-final/.test(s))return quality;
   return balanced;
 }
@@ -1289,7 +1289,7 @@ async function ensureContinuityBible(run,accountId){
     const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
     if(!r.ok)throw new Error(data?.error?.message||('Continuity Bible error '+r.status));
     const parsed=safeAnalysisJson(openAIText(data))||{};
-    const priced=openAIUsageCost(data?.model||modelOverride||model,data?.usage||{});
+    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'continuity',description:'Continuity Engine · continuity bible',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
     run.continuityBible={...fallback,...parsed,version:'v1',provider:'OpenAI',generatedAt:new Date().toISOString()};
   }catch(e){
@@ -3169,11 +3169,11 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'Верни ТОЛЬКО JSON:',
     '{"previsPlan":{"totalScenes":'+board.length+',"totalFrames":'+(board.length*2)+',"logic":"","cinemaBible":{"cameraSystem":"","lensPackage":"","lightingBible":"","colorBible":"","motionBible":"","textureBible":"","continuityRules":[],"shotVarietyRules":[]},"frames":[{"id":"s1f1","scene":1,"frame":1,"frameType":"start","timecode":"","durationHint":"0.8s","goal":"","storyFunction":"","continuityRole":"","composition":"","framing":"","cameraAngle":"","cameraPosition":"","lensFeel":"","cameraMotion":"","depth":"","focus":"","location":"","environment":"","lighting":"","mood":"","colorMood":"","avatarInFrame":false,"avatarDescription":"","expression":"","pose":"","action":"","productInFrame":true,"productRole":"","productPlacement":"","productVisibility":"","productConsistency":"","dialogue":"","voiceover":"","onscreenText":"","soundCue":"","previousAnchor":"","nextIntent":"","continuityNotes":"","referenceMode":"identity-led","identityRefs":[],"anchorFrames":[],"continuityFrames":[],"imagePromptRu":"","imagePromptEn":"","negativePrompt":"","qualityNotes":""}]}}'
   ].filter(Boolean).join('\n');
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('previs-plan');
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-    body:JSON.stringify({model,input:master,reasoning:{effort:'medium'},max_output_tokens:12000})
+    body:JSON.stringify({model,input:master,reasoning:{effort:'low'},max_output_tokens:9000})
   });
   const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
   if(!r.ok)throw new Error(data?.error?.message||('OpenAI previs plan error '+r.status));
@@ -3290,7 +3290,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     referenceContent.push({type:'input_image',image_url:url,detail:isProduct?'high':'low'});
   }
   const input=[{role:'user',content:[{type:'input_text',text:prompt},...referenceContent]}];
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('previs-image');
   const imageModel=frame?.hookLab?'gpt-image-2.5-flare':'gpt-image-2.5-sunburst';
   const imageSize='1152x2048';
   const imageQuality=frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'xhigh':'high');
@@ -4634,7 +4634,7 @@ async function buildSceneRouting(run,accountId){
     'Return one route per scene, in scene order.'
   ].join('\n');
   try{
-    const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+    const model=openAIStageModel('scene-router');
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -6368,7 +6368,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
     body:JSON.stringify({
-      model:process.env.OPENAI_MODEL||'gpt-6-astra',
+      model:openAIStageModel('chat'),
       input,
       tools:factoryTools,
       tool_choice:'auto',
@@ -6407,7 +6407,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
       body:JSON.stringify({
-        model:process.env.OPENAI_MODEL||'gpt-6-astra',
+        model:openAIStageModel('chat'),
         previous_response_id:data.id,
         input:outputs,
         tools:factoryTools,
@@ -6422,7 +6422,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     addUsage(data.usage);
   }
 
-  const usedModel=data?.model||process.env.OPENAI_MODEL||'gpt-6-astra';
+  const usedModel=data?.model||openAIStageModel('chat');
   const priced=openAIUsageCost(usedModel,usageTotal);
   if(priced.amountUsd>0){
     await recordExpense(accountId,{
@@ -6444,7 +6444,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     actions,
     images,
     responseId:data?.id||null,
-    model:data?.model||process.env.OPENAI_MODEL||'gpt-6-astra'
+    model:data?.model||openAIStageModel('chat')
   };
 }
 
@@ -7166,14 +7166,14 @@ async function analyzeReferenceMaterial(opts){
     extraImages.push({type:'input_text',text:'TARGET AI AVATAR REFERENCE — use ONLY for the improved adaptation.'});
     extraImages.push({type:'input_image',image_url:am.url,detail:'high'});
   }
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('analysis');
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
     body:JSON.stringify({
       model,
       input:[{role:'user',content:[{type:'input_text',text:prompt},...(opts.imageParts||[]),...extraImages]}],
-      reasoning:{effort:'high'},max_output_tokens:14000,
+      reasoning:{effort:'medium'},max_output_tokens:10000,
       text:{format:{type:'json_schema',name:'forensic_video_analysis',strict:true,schema:videoAnalysisJsonSchema()}}
     })
   });
