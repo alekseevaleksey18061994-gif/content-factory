@@ -5791,9 +5791,19 @@ async function saveVideoAnalysisResult(opts,analysis,provider,extra={}){
     productId:product?.id||'',productName:product?.name||'',
     avatarId:avatar?.id||'',avatarName:avatar?.name||'',
     transcript:String(opts.transcript||'').slice(0,50000),
-    transcriptStatus:String(opts.transcriptStatus||'').slice(0,80),
+    timedTranscript:String(opts.timedTranscript||'').slice(0,70000),
+    transcriptStatus:String(opts.transcriptStatus||opts.transcription?.status||'').slice(0,80),
     transcriptError:String(opts.transcriptError||'').slice(0,1000),
+    transcription:opts.transcription&&typeof opts.transcription==='object'?{
+      status:String(opts.transcription.status||''),model:String(opts.transcription.model||''),fallback:String(opts.transcription.fallback||'').slice(0,1000),
+      segments:Array.isArray(opts.transcription.segments)?opts.transcription.segments.slice(0,200):[]
+    }:null,
     audioPresent:Boolean(opts.audioPresent),
+    shotMap:Array.isArray(opts.shotMap)?opts.shotMap.slice(0,30):[],
+    keyframes:Array.isArray(opts.keyframes)?opts.keyframes.slice(0,40).map(x=>({
+      shot:Number(x?.shot)||0,phase:String(x?.phase||''),time:Number(x?.time)||0,url:String(x?.url||'').slice(0,2000),
+      storagePath:String(x?.storagePath||'').slice(0,2000),fileName:String(x?.fileName||'').slice(0,240)
+    })):[],
     frameSamples:Array.isArray(opts.frameSamples)?opts.frameSamples.slice(0,30).map(x=>({index:Number(x.index)||0,timeSec:Number(x.timeSec)||0,url:String(x.url||'').slice(0,2000),path:String(x.path||'').slice(0,2000)})):[],
     analysis,
     provider:String(provider||''),
