@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.30';
+const APP_VERSION='2.6.31';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -5312,6 +5312,143 @@ async function extractVideoEvidence(filePath){
   }catch{}
   return {duration,dir,frames,audioPath:hasAudio?audioPath:null};
 }
+function openAIQuotaError(error){
+  const msg=String(error?.message||error||'').toLowerCase();
+  return /no credits remaining|insufficient_quota|insufficient quota|billing|quota|credit balance|out of credits/.test(msg);
+}
+function humanVideoAnalysisError(error){
+  const msg=String(error?.message||error||'');
+  if(openAIQuotaError(error))return 'На OpenAI API закончился баланс. Автоматически пробую резервный разбор через Descript.';
+  if(/401|invalid api key|incorrect api key|unauthorized/i.test(msg))return 'OpenAI API ключ недействителен. Автоматически пробую резервный разбор через Descript.';
+  if(/429|rate limit/i.test(msg))return 'OpenAI временно ограничил запросы. Автоматически пробую резервный разбор через Descript.';
+  return msg;
+}
+async function waitDescriptJob(jobId,timeoutMs=240000){
+  const started=Date.now();
+  while(Date.now()-started<timeoutMs){
+    const job=await descriptRequest('/jobs/'+encodeURIComponent(jobId));
+    if(String(job?.job_state||'').toLowerCase()==='stopped'){
+      if(String(job?.result?.status||'').toLowerCase()!=='success'){
+        throw new Error('Descript job failed: '+String(job?.result?.error||job?.result?.message||job?.result?.status||'unknown'));
+      }
+      return job;
+    }
+    if(String(job?.job_state||'').toLowerCase()==='cancelled')throw new Error('Descript job cancelled');
+    await new Promise(r=>setTimeout(r,2500));
+  }
+  throw new Error('Descript превысил время ожидания');
+}
+function videoAnalysisPrompt({sourceName='',sourceType='video',product=null,avatar=null,metadata={},transcript=''}) {
+  return [
+    'Проанализируй короткое рекламное видео как performance creative director.',
+    'Ничего в проекте не редактируй. Нужен только аналитический ответ.',
+    'Верни ТОЛЬКО валидный JSON без markdown с полями summary, hook, scenes, editing, whyWorks, weaknesses, adaptation.',
+    'scenes — массив исходных сцен: duration, shot, action, dialogueOrVoice, retentionMechanic.',
+    'adaptation — НОВАЯ самостоятельная адаптация под наш товар и AI-аватара: concept, hook, scenes, cta.',
+    'Каждая adaptation.scenes: duration, shot, avatarAction, productAction, voiceover, onscreen.',
+    'Не копируй чужие точные реплики, брендинг, музыку или уникальную постановку. Переноси только общие механики удержания, темп, структуру и типы кадров.',
+    'Отдельно выяви: scroll-stop первых 1–3 секунд, open loop, смену beats, proof/twist, payoff, монтажный темп, звуковую механику.',
+    'Источник: '+String(sourceType)+'. Название: '+String(sourceName||'без названия')+'.',
+    'Метаданные: '+JSON.stringify(metadata||{}),
+    transcript?('Транскрипт: '+String(transcript).slice(0,30000)):'',
+    'Наш товар: '+(product?JSON.stringify({name:product.name,category:product.category,utp:product.utp,rules:product.rules,productDNA:product.productDNA||null}):'не выбран')+'.',
+    'Наш AI-аватар: '+(avatar?JSON.stringify({name:avatar.name,age:avatar.age,look:avatar.look,voice:avatar.voice,topics:avatar.topics,locks:avatar.locks}):'не выбран')+'.',
+    'Если данных недостаточно, не выдумывай — пометь ограничение в weaknesses.'
+  ].filter(Boolean).join('\n');
+}
+async function saveVideoAnalysisResult(opts,analysis,provider,extra={}){
+  const accountId=opts.accountId;
+  const state=await readAppState(accountId);
+  const data=state?.data||blankFactoryState();
+  data.videoAnalyses=Array.isArray(data.videoAnalyses)?data.videoAnalyses:[];
+  const product=findProductInState(data,opts.productId)||null;
+  const avatar=findCharacterInState(data,opts.avatarId)||null;
+  const item={
+    id:factoryId('va'),
+    sourceType:String(opts.sourceType||'video'),
+    sourceName:String(opts.sourceName||'Видео').slice(0,240),
+    sourceUrl:String(opts.sourceUrl||'').slice(0,2000),
+    productId:product?.id||'',productName:product?.name||'',
+    avatarId:avatar?.id||'',avatarName:avatar?.name||'',
+    transcript:String(opts.transcript||'').slice(0,50000),
+    analysis,
+    provider:String(provider||''),
+    fallbackFrom:String(extra.fallbackFrom||''),
+    providerNote:String(extra.providerNote||''),
+    descriptProjectUrl:String(extra.descriptProjectUrl||''),
+    createdAt:new Date().toISOString()
+  };
+  data.videoAnalyses.push(item);
+  data.videoAnalyses=data.videoAnalyses.slice(-100);
+  appendFactoryJournal(data,'Разобрано видео',item.sourceName+' · '+String(provider||'AI'));
+  await writeAppState(data,accountId);
+  return item;
+}
+async function analyzeTranscriptWithDescript(opts){
+  if(!process.env.DESCRIPT_API_TOKEN)throw new Error('Descript API не подключён');
+  const state=await readAppState(opts.accountId),data=state?.data||blankFactoryState();
+  const product=findProductInState(data,opts.productId)||null;
+  const avatar=findCharacterInState(data,opts.avatarId)||null;
+  const created=await descriptRequest('/jobs/agent',{
+    method:'POST',
+    body:{
+      project_name:'Content Factory analysis '+Date.now(),
+      prompt:videoAnalysisPrompt({...opts,product,avatar})
+    }
+  });
+  if(!created?.job_id)throw new Error('Descript не вернул job_id');
+  const done=await waitDescriptJob(created.job_id,240000);
+  const raw=String(done?.result?.agent_response||'').trim();
+  const analysis=safeAnalysisJson(raw);
+  return await saveVideoAnalysisResult(opts,analysis,'Descript',{
+    fallbackFrom:'OpenAI',
+    providerNote:'Резервный анализ через Descript Agent',
+    descriptProjectUrl:done?.project_url||created?.project_url||''
+  });
+}
+async function analyzeUploadedVideoWithDescript(filePath,opts){
+  if(!process.env.DESCRIPT_API_TOKEN)throw new Error('Descript API не подключён');
+  const stat=fs.statSync(filePath);
+  const mediaKey='source'+(path.extname(opts.sourceName||filePath)||'.mp4');
+  const mimeType=String(opts.mimeType||'video/mp4');
+  const importJob=await descriptRequest('/jobs/import/project_media',{
+    method:'POST',
+    body:{
+      project_name:'Content Factory competitor '+Date.now(),
+      add_media:{[mediaKey]:{content_type:mimeType,file_size:stat.size}},
+      add_compositions:[{name:'Source',clips:[{media:mediaKey}],width:1080,height:1920,fps:30}]
+    }
+  });
+  if(!importJob?.job_id)throw new Error('Descript import не вернул job_id');
+  const uploadUrl=importJob?.upload_urls?.[mediaKey]?.upload_url;
+  if(!uploadUrl)throw new Error('Descript не вернул URL для загрузки видео');
+  const put=await fetch(uploadUrl,{
+    method:'PUT',
+    headers:{'content-type':'application/octet-stream'},
+    body:fs.readFileSync(filePath)
+  });
+  if(!put.ok)throw new Error('Descript upload error '+put.status);
+  const imported=await waitDescriptJob(importJob.job_id,300000);
+  const projectId=imported?.project_id||importJob?.project_id;
+  if(!projectId)throw new Error('Descript не вернул project_id');
+  const state=await readAppState(opts.accountId),data=state?.data||blankFactoryState();
+  const product=findProductInState(data,opts.productId)||null;
+  const avatar=findCharacterInState(data,opts.avatarId)||null;
+  const agentJob=await descriptRequest('/jobs/agent',{
+    method:'POST',
+    body:{project_id:projectId,prompt:videoAnalysisPrompt({...opts,product,avatar,transcript:''})}
+  });
+  if(!agentJob?.job_id)throw new Error('Descript Agent не вернул job_id');
+  const done=await waitDescriptJob(agentJob.job_id,300000);
+  const raw=String(done?.result?.agent_response||'').trim();
+  const analysis=safeAnalysisJson(raw);
+  return await saveVideoAnalysisResult(opts,analysis,'Descript',{
+    fallbackFrom:'OpenAI',
+    providerNote:'OpenAI недоступен; видео разобрано резервно через Descript',
+    descriptProjectUrl:done?.project_url||imported?.project_url||importJob?.project_url||''
+  });
+}
+
 async function transcribeAudio(audioPath){
   if(!audioPath||!fs.existsSync(audioPath))return '';
   const stat=fs.statSync(audioPath);
@@ -5356,26 +5493,15 @@ async function analyzeReferenceMaterial(opts){
   });
   const raw=await r.text();
   let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
-  if(!r.ok)throw new Error(response?.error?.message||('OpenAI analysis error '+r.status));
+  if(!r.ok){
+    const err=new Error(response?.error?.message||('OpenAI analysis error '+r.status));
+    err.status=r.status;err.code=response?.error?.code||'';
+    throw err;
+  }
   const analysis=safeAnalysisJson(openAIText(response));
   const priced=openAIUsageCost(model,response?.usage||{});
-  const item={
-    id:factoryId('va'),
-    sourceType:String(opts.sourceType||'video'),
-    sourceName:String(opts.sourceName||'Видео').slice(0,240),
-    sourceUrl:String(opts.sourceUrl||'').slice(0,2000),
-    productId:product?.id||'',productName:product?.name||'',
-    avatarId:avatar?.id||'',avatarName:avatar?.name||'',
-    transcript:String(opts.transcript||'').slice(0,50000),
-    analysis,
-    createdAt:new Date().toISOString()
-  };
-  data.videoAnalyses.push(item);
-  data.videoAnalyses=data.videoAnalyses.slice(-100);
-  appendFactoryJournal(data,'Разобрано видео',item.sourceName);
-  await writeAppState(data,accountId);
   if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'analysis',description:'Разбор видео',amountUsd:priced.amountUsd,model,usage:priced.details,source:'auto'}).catch(()=>{});
-  return item;
+  return await saveVideoAnalysisResult(opts,analysis,'OpenAI',{providerNote:'Основной анализ по кадрам и транскрипту'});
 }
 async function streamRequestToFile(req,filePath,maxBytes=150*1024*1024){
   const out=fs.createWriteStream(filePath,{flags:'wx'});
@@ -5406,7 +5532,7 @@ async function analyzeUploadedVideo(req,url){
     await streamRequestToFile(req,filePath);
     evidence=await extractVideoEvidence(filePath);
     const transcript=await transcribeAudio(evidence.audioPath).catch(()=> '');
-    return await analyzeReferenceMaterial({
+    const opts={
       accountId,
       sourceType:'upload',
       sourceName:fileName,
@@ -5414,8 +5540,19 @@ async function analyzeUploadedVideo(req,url){
       imageParts:evidence.frames,
       productId:url.searchParams.get('productId')||'',
       avatarId:url.searchParams.get('avatarId')||'',
-      metadata:{durationSeconds:Math.round(evidence.duration),frames:evidence.frames.length}
-    });
+      metadata:{durationSeconds:Math.round(evidence.duration),frames:evidence.frames.length},
+      mimeType:String(req.headers['content-type']||'video/mp4').split(';')[0]
+    };
+    try{
+      return await analyzeReferenceMaterial(opts);
+    }catch(e){
+      console.warn('[video-analysis-openai] '+humanVideoAnalysisError(e));
+      try{
+        return await analyzeUploadedVideoWithDescript(filePath,opts);
+      }catch(de){
+        throw new Error('Разбор не выполнен. OpenAI: '+humanVideoAnalysisError(e)+' Descript: '+String(de?.message||de));
+      }
+    }
   }finally{
     try{fs.unlinkSync(filePath)}catch{}
     if(evidence?.dir)try{fs.rmSync(evidence.dir,{recursive:true,force:true})}catch{}
@@ -5435,7 +5572,7 @@ async function analyzeYoutubeUrl(body,req){
   try{transcriptRows=await fetchTranscript(videoUrl)}catch{}
   const transcript=(transcriptRows||[]).slice(0,1500).map(x=>'['+hhmmss((Number(x.offset)||0)/1000)+'] '+String(x.text||'')).join('\n');
   const imageParts=meta.thumbnail_url?[{type:'input_image',image_url:meta.thumbnail_url,detail:'low'}]:[];
-  return analyzeReferenceMaterial({
+  const opts={
     accountId,
     sourceType:'youtube',
     sourceName:meta.title||videoUrl,
@@ -5445,7 +5582,18 @@ async function analyzeYoutubeUrl(body,req){
     productId:body?.productId||'',
     avatarId:body?.avatarId||'',
     metadata:{author:meta.author_name||'',transcriptAvailable:!!transcript,analysisDepth:transcript?'transcript+thumbnail':'thumbnail+metadata'}
-  });
+  };
+  try{
+    return await analyzeReferenceMaterial(opts);
+  }catch(e){
+    console.warn('[youtube-analysis-openai] '+humanVideoAnalysisError(e));
+    if(!transcript)throw new Error('Не удалось разобрать YouTube: OpenAI недоступен, а субтитры у видео не получены.');
+    try{
+      return await analyzeTranscriptWithDescript(opts);
+    }catch(de){
+      throw new Error('Разбор YouTube не выполнен. OpenAI: '+humanVideoAnalysisError(e)+' Descript: '+String(de?.message||de));
+    }
+  }
 }
 
 async function applyGenerationCallback(body){
@@ -6310,7 +6458,7 @@ const server=http.createServer(async(req,res)=>{
       const item=await analyzeUploadedVideo(req,url);
       return json(res,200,{ok:true,item});
     }catch(e){
-      return json(res,502,{ok:false,error:'Не удалось разобрать видео',detail:String(e?.message||e)});
+      return json(res,502,{ok:false,error:'Не удалось разобрать видео',detail:String(e?.message||e),code:openAIQuotaError(e)?'OPENAI_CREDITS_EXHAUSTED':'VIDEO_ANALYSIS_FAILED'});
     }
   }
 
@@ -6320,7 +6468,7 @@ const server=http.createServer(async(req,res)=>{
       const item=await analyzeYoutubeUrl(body,req);
       return json(res,200,{ok:true,item});
     }catch(e){
-      return json(res,502,{ok:false,error:'Не удалось разобрать YouTube-видео',detail:String(e?.message||e)});
+      return json(res,502,{ok:false,error:'Не удалось разобрать YouTube-видео',detail:String(e?.message||e),code:openAIQuotaError(e)?'OPENAI_CREDITS_EXHAUSTED':'VIDEO_ANALYSIS_FAILED'});
     }
   }
 
