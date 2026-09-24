@@ -7458,8 +7458,43 @@ const server=http.createServer(async(req,res)=>{
       const identifier=normalizeLogin(body?.email||body?.login);
       const password=String(body?.password||'');
       const users=await ensureUsersRegistry();
-      const user=users.users.find(u=>normalizeLogin(u.email||u.login)===identifier||normalizeLogin(u.login)===identifier);
-      if(!user) return json(res,401,{ok:false,error:'Неверная почта или пароль.'});
+      let user=users.users.find(u=>normalizeLogin(u.email||u.login)===identifier||normalizeLogin(u.login)===identifier);
+      let migratedLegacy=false;
+
+      // Safe one-time migration path for the original pre-email account:
+      // if the entered email is not yet indexed but there is exactly one legacy user,
+      // only claim it after the submitted password cryptographically matches that user's existing hash.
+      if(!user&&validEmail(identifier)&&users.users.length===1){
+        const candidate=users.users[0];
+        try{
+          const actual=Buffer.from(hashPassword(password,candidate.salt),'hex');
+          const expected=Buffer.from(String(candidate.passwordHash||''),'hex');
+          if(actual.length===expected.length&&timingSafeEqual(actual,expected)){
+            user=candidate;
+            user.email=identifier;
+            user.login=identifier;
+            user.authType='email';
+            user.emailLinkedAt=new Date().toISOString();
+            migratedLegacy=true;
+            await writeUsersRegistry(users);
+            try{
+              const accounts=await ensureAccountsRegistry();
+              let touched=false;
+              for(const account of (accounts.accounts||[])){
+                if(account.ownerUserId===user.id){
+                  account.email=identifier;
+                  account.updatedAt=new Date().toISOString();
+                  touched=true;
+                }
+              }
+              if(touched)await writeAccountsRegistry(accounts);
+            }catch(e){console.warn('[auth-login-account-sync] '+String(e?.message||e))}
+          }
+        }catch{}
+      }
+
+      if(!user) return json(res,401,{ok:false,error:'Неверная почта или пароль.',code:'AUTH_USER_NOT_FOUND'});
+
       let passwordOk=false;
       try{
         const actual=Buffer.from(hashPassword(password,user.salt),'hex');
@@ -7479,13 +7514,21 @@ const server=http.createServer(async(req,res)=>{
           }
         }catch{}
       }
+
       if(!passwordOk){
-        console.warn('[auth-login] password mismatch for '+identifier);
-        return json(res,401,{ok:false,error:'Неверная почта или пароль.'});
+        console.warn('[auth-login] credentials rejected · userFound=true · passwordHashPresent='+Boolean(user.passwordHash));
+        return json(res,401,{ok:false,error:'Неверная почта или пароль.',code:'AUTH_PASSWORD_MISMATCH'});
       }
+
+      if(validEmail(identifier)&&(normalizeEmail(user.email)!==identifier||normalizeLogin(user.login)!==identifier)){
+        user.email=identifier;user.login=identifier;user.authType='email';user.emailLinkedAt=new Date().toISOString();
+        await writeUsersRegistry(users);
+      }
+
       setSessionCookie(res,makeSessionToken(user.id));
-      return json(res,200,{ok:true,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
+      return json(res,200,{ok:true,migratedLegacy,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
     }catch(e){
+      console.warn('[auth-login-error] '+String(e?.message||e));
       return json(res,502,{ok:false,error:'Не удалось войти.',detail:String(e?.message||e)});
     }
   }
