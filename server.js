@@ -2553,7 +2553,9 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'SOFT WARN, НЕ FAIL: рука движется немного в другом направлении, предмет расположен иначе, миска/реквизит частично обрезаны, небольшая разница в позе, кадрировании, траектории, крупности или композиции — если рекламный смысл и микро-действие читаются.',
       'Не требуй буквального покадрового совпадения с текстом storyboard. Storyboard задаёт смысл START→END и continuity, а не пиксельную хореографию.',
       'Среда должна выглядеть естественно и достаточно живо для рекламного ролика, но без случайного визуального мусора.',
-      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
+      'CINEMA QUALITY: отдельно оцени cameraNaturalness, lightingPhysics, motionPhysics, materialRealism и cinematicComposition. Это не critical само по себе, но должно снижать score и давать точные issues для улучшения следующего дубля.',
+      'Cinema Bible: '+JSON.stringify(run.previsPlan?.cinemaBible||{}),
+      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","lightingPhysics":"ok|warn|fail","motionPhysics":"ok|warn|fail","materialRealism":"ok|warn|fail","cinematicComposition":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},...(evidence?.frames||[]).slice(0,8)];
     if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
@@ -3271,10 +3273,14 @@ async function processSpecificPostStage(accountId,runId,stage){
   }
 }
 
+function cinemaBibleText(run){
+  const b=run?.previsPlan?.cinemaBible;
+  if(!b||typeof b!=='object')return '';
+  return [b.cameraSystem,b.lensPackage,b.lightingBible,b.colorBible,b.motionBible,b.textureBible].filter(Boolean).join(' | ').slice(0,1800);
+}
 function positiveProductMotionLock(run,scene={}){
   const parts=[
-    'The physical product keeps exactly the same visible shape, proportions, construction, material and color as the approved start frame for the entire shot.',
-    productDNAText(run)
+    'The physical product remains the exact same physical model throughout the shot: same visible geometry, proportions, construction, material and color.'
   ];
   const holder=paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' '));
   if(holder)parts.push('For this holder, the base stays fixed on the left, the continuous free loading side stays on the right, and a paper roll moves from right to left toward the base during installation.');
@@ -3298,6 +3304,7 @@ function buildRunwayMotionPrompt(run,scene,qcCorrection=''){
     end?('The motion resolves clearly into this end state: '+end+'.'):'',
     environment?('The surrounding scene reacts naturally to the action in '+environment+'.'):'',
     motionStyle,
+    run?.previsPlan?.cinemaBible?.motionBible?('Motion character: '+cleanMotionText(run.previsPlan.cinemaBible.motionBible)+'.'):'',
     'Body, hand and object movement has believable weight, contact, friction and inertia.',
     positiveProductMotionLock(run,scene),
     qcCorrection?('Correction for this take: '+cleanMotionText(qcCorrection)+'.'):''
@@ -3313,6 +3320,7 @@ function buildSeedanceMotionPrompt(run,scene,qcCorrection=''){
     'FRAMING: '+cleanMotionText(scene.framing||''),
     'LIGHTING: '+cleanMotionText(scene.lighting||'motivated practical light with physically believable shadows and falloff'),
     'ENVIRONMENT: '+cleanMotionText(scene.environment||''),
+    cinemaBibleText(run)?('CINEMA BIBLE: '+cinemaBibleText(run)):'',
     'PHYSICS: realistic weight transfer, contact, inertia, friction and material response. Hands interact with the object using plausible grip and pressure.',
     positiveProductMotionLock(run,scene),
     'The first frame and last frame are hard visual anchors; create a physically plausible transition between them.',
