@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.27';
+const APP_VERSION='2.6.28';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -751,6 +751,20 @@ function normalizeIdeaStage(raw,payload={}){
     }))
   };
 }
+function universalProductIdentityLock(payload={}){
+  return [
+    'GLOBAL SOURCE PRODUCT IDENTITY LOCK — applies to EVERY product and EVERY generation stage.',
+    'The uploaded ORIGINAL product photos are the single authoritative source of truth for the physical product.',
+    'Never redesign, beautify, simplify, stylize, mirror, substitute, merge, reinterpret or improve the product itself.',
+    'Preserve exactly the same silhouette, geometry, proportions, dimensions as visually observable, number and placement of parts, openings, edges, caps, buttons, fasteners, supports, mounts, seams, textures, materials, colors, transparency, labels/markings and visible construction.',
+    'Do not invent hidden mechanisms, removable parts, hinges, caps, supports, attachments, controls, accessories or functions that are not clearly confirmed by the source photos or explicit product rules.',
+    'Do not copy product geometry from AI-generated previz or previous generated frames when it conflicts with the ORIGINAL source photos. Generated frames are continuity/composition references only; source photos always win for product identity.',
+    'Camera angle, lighting, perspective, occlusion, hand position and scene context may change, but the physical product model must remain the same.',
+    'If an action cannot be shown without changing the real product construction, change the ACTION/SHOT — never change the product.',
+    'Any visible product geometry drift is a critical QC failure and must be regenerated before the pipeline continues.'
+  ].join(' ');
+}
+
 async function recentIdeaContext(accountId,productId){
   try{
     const state=await readAppState(accountId);
@@ -918,6 +932,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Категория: '+String(payload.product?.category||payload.category||''),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Правила товара: '+String(payload.productRules||payload.product?.rules||''),
+    universalProductIdentityLock(payload),
     'Формат: 9:16',
     'Длительность: '+String(payload.duration||'30 сек'),
     'Стиль: '+String(payload.style||'UGC'),
@@ -1313,6 +1328,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     'Категория: '+String(payload.product?.category||payload.category||''),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Факты/ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
+    universalProductIdentityLock(payload),
     'Длительность: '+String(payload.duration||'30 сек'),
     'Формат: вертикальный 9:16',
     'Стиль: '+String(payload.style||'UGC'),
@@ -1640,6 +1656,7 @@ function storyboardContext(payload,script,idea,feedback=''){
     'startFrame = точный план первого превиз-кадра сцены: исходное состояние, начало микро-действия, конкретная композиция, поза, положение рук/товара и камера.',
     'endFrame = точный план второго превиз-кадра сцены: действие заметно продвинулось или завершилось; это не дубль START.',
     'START и END должны отличаться с первого взгляда минимум по 2 признакам из: фаза действия, положение рук/тела, положение товара, крупность, угол камеры, взаимодействие с окружением.',
+    universalProductIdentityLock(payload),
     'При этом сохраняй continuity: тот же персонаж, одежда, реальный товар и его геометрия, локация, свет и направление действия.',
     'Между соседними сценами разнообразь киноязык: wide/medium/close-up/detail, front/3/4/side; не повторяй одну и ту же композицию без сюжетной причины.',
     'endFrame одной сцены должен логично готовить startFrame следующей сцены.',
@@ -1983,6 +2000,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     phaseRule,
     'Product: '+String(run.productName||''),
     'Product identity locks: '+String(run.productRules||run.product?.rules||''),
+    universalProductIdentityLock(run),
     paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
     previsFrameShowsProduct(frame,{})
       ? 'CRITICAL PRODUCT LOCK: reference images 1-2 are authoritative SOURCE PRODUCT photos. Reproduce the exact holder geometry, proportions, arm/rod, end cap, support/base shape, thickness, color and visible construction. NEVER redesign, simplify, thicken, shorten, add brackets, add a box-shaped mount, invent a hinge, invent an end stop or copy geometry from a generated anchor. Generated frames are continuity references only.'
@@ -2085,6 +2103,7 @@ async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[
     'Product: '+String(run.productName||''),
     'STRICT PRODUCT IDENTITY: preserve exact geometry, proportions, mounting parts, ends, material, color and texture from source product references.',
     'Product rules: '+String(run.productRules||run.product?.rules||''),
+    universalProductIdentityLock(run),
     paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
     run.character?.name?('STRICT AVATAR IDENTITY: '+String(run.character.name)+'; '+String(run.character.look||'')+'; '+String(run.character.locks||'')):'',
     'Composition: '+String(frame.composition||''),
@@ -2193,7 +2212,8 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'Задача/действие: '+String(frame.action||frame.goal||''),
       'Композиция: '+String(frame.composition||''),
       'Локация: '+String(frame.environment||frame.location||''),
-      'ОЖИДАНИЕ ТОВАРА В ЭТОМ КАДРЕ: '+(lockProduct?'держатель виден и ОБЯЗАН совпадать с исходными фото':'держатель может отсутствовать'),
+      'ОЖИДАНИЕ ТОВАРА В ЭТОМ КАДРЕ: '+(lockProduct?'товар виден и ОБЯЗАН совпадать с исходными фото':'товар может отсутствовать'),
+      universalProductIdentityLock(run),
       paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
       'CRITICAL HOLDER ACTION FAIL: для этого держателя свободный конец справа и он несъёмный; рулон надевается справа налево к основанию. Снятие/откручивание торца, загрузка со стороны основания, зеркальная конструкция, съёмная ось или дополнительная опора — FAIL.',
       'CRITICAL PRODUCT FAIL когда lockProduct=true и есть ЛЮБОЕ заметное изменение конструкции: другой кронштейн/основание, другой стержень/ось, придуманный торец или стопор, изменение толщины/длины/пропорций, лишняя коробка/шарнир/крепёж, иной цвет/материал, либо holder выглядит как другая модель.',
@@ -2268,6 +2288,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'Начало: '+String(scene.startFrame||''),
       'Конец: '+String(scene.endFrame||''),
       'Continuity: '+String(scene.continuity||''),
+      universalProductIdentityLock(run),
       paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' ')),
       'CRITICAL HOLDER FAIL: если есть установка/снятие рулона, свободный правый конец остаётся несъёмным; установка идёт справа налево к основанию. Нельзя откручивать/снимать торец или ось, загружать со стороны основания или зеркалить конструкцию.',
       'CRITICAL FAIL только если: видимый товар заметно неправильной геометрии/конструкции; ролик показывает другое действие или обратную смысловую фазу; другой персонаж; серьёзные артефакты рук/товара.',
@@ -2803,9 +2824,10 @@ async function runFinalQc(run,finalPath,accountId){
       'Проверяй только видимое. Сравни финал с утверждённой идеей, сценарием, storyboard, исходным товаром и continuity.',
       'Товар: '+String(run.productName||''),
       'Правила товара: '+String(run.productRules||run.product?.rules||''),
+      universalProductIdentityLock(run),
       'Идея: '+JSON.stringify(run.idea||{}),
       'Сценарий: '+JSON.stringify(run.script||{}),
-      'CRITICAL FAIL: другой/деформированный товар, потеря ключевого действия или payoff, грубая смена персонажа/локации, серьёзные артефакты, пропущенная/дублированная сцена, неправильный формат.',
+      'CRITICAL FAIL: любое заметное изменение исходного товара — геометрии, пропорций, количества/расположения деталей, креплений, торцов, материала, цвета или конструкции; также потеря ключевого действия/payoff, грубая смена персонажа/локации, серьёзные артефакты, пропущенная/дублированная сцена, неправильный формат.',
       'Оцени также живость окружения, монтажную связность, понятность проблемы→решения, естественность рекламы и соответствие 9:16.',
       'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},...(evidence.frames||[]).slice(0,8)];
@@ -3030,6 +3052,7 @@ async function processRunGeneration(accountId,runId){
         'Вертикальный рекламный ролик 9:16. ОДНА утверждённая сцена, не меняй её смысл.',
         'Товар: '+String(run.productName||''),
         'Подтверждённые правила товара: '+String(run.productRules||run.product?.rules||''),
+        universalProductIdentityLock(run),
         paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' ')),
         'FACT LOCK: не показывай и не заявляй неподтверждённый механизм, функцию или характеристику. Исходное фото товара — абсолютный геометрический identity-lock.',
         run.character?.name?('AI-аватар: '+run.character.name+'. '+String(run.character.look||'')+' '+String(run.character.locks||'')):'',
