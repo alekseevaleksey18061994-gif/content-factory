@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.0.3';
+const APP_VERSION='2.1.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -472,30 +472,24 @@ async function dispatchFactoryStart(payload){
   if(!webhook && !generationWebhook){
     return {ok:false,code:'workflow_not_connected',error:'n8n workflow не подключён'};
   }
-  const results={archive:null,generation:null};
-  if(webhook){
-    try{
-      const r=await fetch(webhook,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
-      const text=await r.text();
-      let data; try{data=JSON.parse(text)}catch{data={message:text}}
-      results.archive={ok:r.ok,status:r.status,data};
-    }catch(e){
-      results.archive={ok:false,status:0,error:String(e?.message||e)};
+  const taskId=factoryId('dispatch');
+  Promise.resolve().then(async()=>{
+    const results={archive:null,generation:null};
+    if(webhook){
+      try{
+        const r=await fetch(webhook,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...payload,backgroundTaskId:taskId})});
+        results.archive={ok:r.ok,status:r.status};
+      }catch(e){results.archive={ok:false,status:0,error:String(e?.message||e)}}
     }
-  }
-  if(generationWebhook){
-    try{
-      const r=await fetch(generationWebhook,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
-      const text=await r.text();
-      let data; try{data=JSON.parse(text)}catch{data={message:text}}
-      results.generation={ok:r.ok,status:r.status,data};
-    }catch(e){
-      results.generation={ok:false,status:0,error:String(e?.message||e)};
+    if(generationWebhook){
+      try{
+        const r=await fetch(generationWebhook,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...payload,backgroundTaskId:taskId})});
+        results.generation={ok:r.ok,status:r.status};
+      }catch(e){results.generation={ok:false,status:0,error:String(e?.message||e)}}
     }
-  }
-  const branches=[results.archive,results.generation].filter(Boolean);
-  const primaryOk=branches.length>0 && branches.every(x=>x.ok);
-  return {ok:primaryOk,data:results};
+    console.log('[dispatch-background] '+taskId+' '+JSON.stringify(results));
+  }).catch(e=>console.error('[dispatch-background] '+taskId+' '+String(e?.message||e)));
+  return {ok:true,accepted:true,taskId,data:{archive:webhook?{status:'queued'}:null,generation:generationWebhook?{status:'queued'}:null}};
 }
 
 function planSceneDefaults(i,count=5){
@@ -1696,9 +1690,12 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
 }
 const previsQueues=new Map();
 function enqueueRunPrevis(accountId,runId,label='previs'){
-  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const key=account+'::'+String(runId);
   const previous=previsQueues.get(key)||Promise.resolve();let next;
-  next=previous.catch(()=>{}).then(()=>processRunPrevis(key,runId)).catch(e=>{console.error('['+label+'] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}}).finally(()=>{if(previsQueues.get(key)===next)previsQueues.delete(key)});
+  next=previous.catch(()=>{}).then(()=>processRunPrevis(account,runId))
+    .catch(e=>{console.error('['+label+'] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
+    .finally(()=>{if(previsQueues.get(key)===next)previsQueues.delete(key)});
   previsQueues.set(key,next);return next;
 }
 async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[]){
@@ -2053,9 +2050,12 @@ async function processAutoPipeline(accountId,runId){
 }
 const autoPipelineQueues=new Map();
 function enqueueAutoPipeline(accountId,runId){
-  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const key=account+'::'+String(runId);
   const previous=autoPipelineQueues.get(key)||Promise.resolve();let next;
-  next=previous.catch(()=>{}).then(()=>processAutoPipeline(key,runId)).finally(()=>{if(autoPipelineQueues.get(key)===next)autoPipelineQueues.delete(key)});
+  next=previous.catch(()=>{}).then(()=>processAutoPipeline(account,runId))
+    .catch(e=>{console.error('[autopilot-background] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
+    .finally(()=>{if(autoPipelineQueues.get(key)===next)autoPipelineQueues.delete(key)});
   autoPipelineQueues.set(key,next);return next;
 }
 
@@ -2189,10 +2189,11 @@ function sceneDurationSeconds(scene){
 }
 const generationQueues=new Map();
 function enqueueRunGeneration(accountId,runId,label='backend-generation'){
-  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const key=account+'::'+String(runId);
   const previous=generationQueues.get(key)||Promise.resolve();
   let next;
-  next=previous.catch(()=>{}).then(()=>processRunGeneration(key,runId)).catch(e=>{
+  next=previous.catch(()=>{}).then(()=>processRunGeneration(account,runId)).catch(e=>{
     console.error('['+label+'] '+runId+' '+String(e?.message||e));
     return {ok:false,error:String(e?.message||e)};
   }).finally(()=>{
@@ -2203,10 +2204,11 @@ function enqueueRunGeneration(accountId,runId,label='backend-generation'){
 }
 const postProductionQueues=new Map();
 function enqueuePostProduction(accountId,runId,label='post-production'){
-  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const key=account+'::'+String(runId);
   const previous=postProductionQueues.get(key)||Promise.resolve();
   let next;
-  next=previous.catch(()=>{}).then(()=>processRunPostProduction(key,runId)).catch(e=>{
+  next=previous.catch(()=>{}).then(()=>processRunPostProduction(account,runId)).catch(e=>{
     console.error('['+label+'] '+runId+' '+String(e?.message||e));
     return {ok:false,error:String(e?.message||e)};
   }).finally(()=>{
@@ -3434,74 +3436,50 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
     if(count>3 && args.confirmed!==true){
       return {ok:false,requires_confirmation:true,message:'Запуск '+count+' роликов может потратить заметный бюджет. Нужно отдельное подтверждение пользователя.'};
     }
-    const batchId=factoryId('batch');
-    const style=String(args.style||'UGC').slice(0,120);
-    const duration=String(args.duration||'30 сек').slice(0,80);
-    const budget=clampNumber(args.budget,0,1000000,500);
-    const maxAttempts=Math.round(clampNumber(args.maxAttempts,1,10,data.settings.budgetAttempts||3));
-    const media=(product.media||[]).map(m=>({id:m.id,url:m.url,path:m.path,isPrimary:!!m.isPrimary}));
     const payload={
       action:'create_batch',
       accountId,
-      batchId,
+      batchId:factoryId('batch'),
       productId:product.id,
       productName:product.name,
-      productUtp:product.utp||'',
-      productRules:product.rules||'',
-      media,
-      product:{id:product.id,name:product.name,utp:product.utp||'',rules:product.rules||'',media},
       brief:String(args.brief||'').slice(0,12000),
-      style,
-      duration,
-      count:count+' вариантов',
+      style:String(args.style||'UGC').slice(0,120),
+      duration:String(args.duration||'30 сек').slice(0,80),
+      count:String(count),
       variantCount:count,
       format:'9:16',
       platforms:[],
       mode:data.settings.mode||'auto',
       modelMode:String(args.modelMode||'Авто — умный выбор').slice(0,120),
-      budget,
-      maxAttempts,
+      budget:clampNumber(args.budget,0,1000000,500),
+      maxAttempts:Math.round(clampNumber(args.maxAttempts,1,10,data.settings.budgetAttempts||3)),
       created:new Date().toISOString()
     };
-    const dispatched=await dispatchFactoryStart(payload);
-    if(!dispatched.ok) return {ok:false,error:'Не удалось передать запуск в n8n',detail:dispatched};
-    for(let i=1;i<=count;i++){
-      data.runs.push({
-        id:factoryId('r'),
-        ...payload,
-        variant:count>1?i:null,
-        status:'В работе',
-        stage:'Сценарий',
-        progress:8,
-        attempt:1,
-        sceneCount:5,
-        sceneVersions:{1:1,2:1,3:1,4:1,5:1},
-        acceptedScenes:[]
-      });
-    }
-    appendFactoryJournal(data,'ChatGPT запустил производство',product.name+' · '+count+' ролик(а/ов) · '+style);
-    await writeAppState(data,accountId);
-    return {ok:true,batchId,count,product:product.name,style,duration,budget,dispatch:dispatched.data};
+    const created=await createBatchRuns(payload,accountId);
+    return {
+      ok:true,accepted:true,background:true,
+      batchId:created.batchId,count:created.runs.length,product:product.name,
+      runs:created.runs.map(r=>({id:r.id,status:r.status,stage:r.stage,progress:r.progress}))
+    };
   }
 
   if(name==='retry_failed_runs'){
     const product=args.product?findProductInState(data,args.product):null;
-    let changed=0;
-    for(const run of data.runs){
-      if(run.status!=='Ошибка') continue;
-      if(product && run.productId!==product.id) continue;
-      run.status='В работе';
-      run.stage='Сценарий';
-      run.progress=Math.min(Number(run.progress)||0,12);
-      run.attempt=(Number(run.attempt)||1)+1;
-      run.updatedAt=new Date().toISOString();
-      changed++;
+    const retryIds=data.runs.filter(run=>run.status==='Ошибка' && (!product||run.productId===product.id)).map(run=>run.id);
+    for(const id of retryIds){
+      const run=findRunById(data,id);
+      if(!run)continue;
+      run.status='В работе';run.paused=false;run.error='';run.attempt=(Number(run.attempt)||1)+1;run.updatedAt=new Date().toISOString();
     }
-    if(changed){
-      appendFactoryJournal(data,'ChatGPT перезапустил ошибки','Запусков: '+changed);
+    if(retryIds.length){
+      appendFactoryJournal(data,'ChatGPT перезапустил ошибки','Запусков: '+retryIds.length+' · в фоне');
       await writeAppState(data,accountId);
+      for(const id of retryIds){
+        runControlAction({runId:id,action:'resume',note:'Фоновый повтор ошибочного этапа'},accountId)
+          .catch(e=>console.error('[retry-failed-background] '+id+' '+String(e?.message||e)));
+      }
     }
-    return {ok:true,retried:changed};
+    return {ok:true,accepted:true,background:true,retried:retryIds.length,runIds:retryIds};
   }
 
   if(name==='approve_run'){
