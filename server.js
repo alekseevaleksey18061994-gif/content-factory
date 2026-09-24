@@ -881,6 +881,7 @@ async function ensureProductDNA(data,product,accountId){
 
 
 function clampScore100(value,fallback=null){
+  if(value===null||value===undefined||value==='')return fallback;
   const n=Number(value);
   if(!Number.isFinite(n))return fallback;
   return Math.max(0,Math.min(100,Math.round(n)));
@@ -1093,15 +1094,16 @@ function updateQualityGate(run){
   const finalIdentity=Number(run?.qcResult?.productIdentityScore);
   const identityPool=[...previsScores,...sceneScores,...(Number.isFinite(finalIdentity)?[finalIdentity]:[])];
   const productIdentity=identityPool.length?Math.min(...identityPool):null;
+  const finalContinuity=clampScore100(run?.qcResult?.continuityScore,null);
   const continuityCandidates=[
-    Number(run?.directorPreflight?.continuityScore),
-    ...Object.values(run?.sceneResults||{}).map(x=>Number(x?.qc?.continuityScore)).filter(Number.isFinite),
-    Number(run?.qcResult?.continuityScore)
-  ].filter(Number.isFinite);
-  const continuity=continuityCandidates.length?Math.min(...continuityCandidates):null;
-  const directorPreflight=clampScore100(run?.directorPreflight?.score,null);
+    clampScore100(run?.directorPreflight?.continuityScore,null),
+    ...Object.values(run?.sceneResults||{}).map(x=>clampScore100(x?.qc?.continuityScore,null)).filter(x=>x!=null)
+  ].filter(x=>x!=null);
+  const continuity=finalContinuity!=null?finalContinuity:(continuityCandidates.length?Math.min(...continuityCandidates):null);
+  const finalDirectorScore=Number.isFinite(Number(run?.qcResult?.score))?clampScore100(Number(run.qcResult.score)*10,null):null;
+  const directorPreflight=finalDirectorScore!=null?Math.max(clampScore100(run?.directorPreflight?.score,0),finalDirectorScore):clampScore100(run?.directorPreflight?.score,null);
   const audio=clampScore100(run?.audioDirector?.analysis?.score??run?.audioDirector?.score,null);
-  const directorCut=clampScore100(Number.isFinite(Number(run?.qcResult?.directorCut?.score))?Number(run.qcResult.directorCut.score)*10:(Number.isFinite(Number(run?.qcResult?.score))?Number(run.qcResult.score)*10:null),null);
+  const directorCut=clampScore100(Number.isFinite(Number(run?.qcResult?.directorCut?.score))?Number(run.qcResult.directorCut.score)*10:finalDirectorScore,null);
   const systems=[
     {key:'productIdentity',label:'Product Identity',score:productIdentity,threshold:94},
     {key:'continuity',label:'Continuity Engine',score:continuity,threshold:88},
@@ -3081,8 +3083,29 @@ async function processRunPrevis(accountId,runId){
       }
       updateQualityGate(run);
       appendFactoryJournal(data,'Director AI · preflight',(run.productName||run.id)+' · '+(preflight.score??'—')+'/100 · product '+(preflight.productReadinessScore??'—')+'/100');
-      if(preflight.critical===true||Number(preflight.productReadinessScore)<90){
-        throw new Error('Director AI остановил видео до исправления превиза: '+String(preflight.summary||'product/continuity readiness ниже безопасного порога'));
+      const preflightPass=Number(run.directorPreflightPass)||0;
+      if(preflight.passed===false&&preflightPass<1&&preflight.sceneNotes?.length){
+        const repairScenes=[...new Set(preflight.sceneNotes.filter(x=>['medium','high','critical'].includes(String(x.severity))).map(x=>Number(x.scene)).filter(n=>n>0))].slice(0,2);
+        if(repairScenes.length){
+          run.directorPreflightPass=preflightPass+1;
+          for(const sceneNo of repairScenes){
+            const note=preflight.sceneNotes.find(x=>Number(x.scene)===sceneNo)||{};
+            for(const spec of (run.previsPlan?.frames||[])){
+              if(Number(spec?.scene)===sceneNo)spec.qualityNotes=[String(spec.qualityNotes||''),'DIRECTOR PREFLIGHT REPAIR: '+String(note.fix||note.issue||'improve continuity and shot clarity')].filter(Boolean).join('\n').slice(0,3500);
+            }
+            const doomed=(run.previsFrames||[]).filter(x=>Number(x?.scene)===sceneNo);
+            for(const f of doomed)if(f?.path)try{await callProductMedia({action:'delete',path:String(f.path)})}catch{}
+            run.previsFrames=(run.previsFrames||[]).filter(x=>Number(x?.scene)!==sceneNo);
+          }
+          run.previsResult={...(run.previsResult||{}),completed:false,totalFrames:(run.previsFrames||[]).filter(x=>x?.url).length};
+          run.directorPreflight={...run.directorPreflight,status:'repairing',repairScenes};
+          appendFactoryJournal(data,'Director AI · автодокрутка превиза',(run.productName||run.id)+' · сцены '+repairScenes.join(', '));
+          await writeAppState(data,accountId);
+          return await processRunPrevis(accountId,runId);
+        }
+      }
+      if(preflight.passed===false||preflight.critical===true||Number(preflight.productReadinessScore)<90){
+        throw new Error('Director AI остановил видео: превиз не прошёл режиссёрский Quality Gate после автодокрутки. '+String(preflight.summary||'readiness ниже порога'));
       }
       await writeAppState(data,accountId);
     }
@@ -3671,13 +3694,14 @@ async function processRunPostProduction(accountId,runId){
     if(run.mode==='manual'){
       run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;
       appendFactoryJournal(data,'Финальный ролик готов к проверке',(run.productName||run.id)+' · '+String(qc?.summary||''));
-    }else if(qc?.passed===false){
+    }else if(qc?.passed===false||run.qualityGate?.passed===false){
       run.stage='AI-проверка';run.status='Ошибка';run.awaitingApproval=false;run.progress=92;
-      run.error='Финальный QC не пройден: '+String((qc?.issues||[]).join('; ')||qc?.summary||'качество ниже порога');
-      appendFactoryJournal(data,'Финальный QC не пройден',(run.productName||run.id)+' · '+run.error);
+      const weak=(run.qualityGate?.systems||[]).filter(x=>x.status!=='green').map(x=>x.label+' '+(x.score??'—')+'%').join(', ');
+      run.error='Финальный Quality Gate не пройден: '+String((qc?.issues||[]).join('; ')||weak||qc?.summary||'качество ниже порога');
+      appendFactoryJournal(data,'Финальный Quality Gate не пройден',(run.productName||run.id)+' · '+run.error);
     }else{
       run.stage='Готово';run.status='Готово';run.awaitingApproval=false;run.progress=100;
-      appendFactoryJournal(data,'Автопилот завершил ролик',(run.productName||run.id)+' · '+String(qc?.summary||''));
+      appendFactoryJournal(data,'Автопилот завершил ролик',(run.productName||run.id)+' · 5/5 Quality Gate зелёные · '+String(qc?.summary||''));
     }
     await writeAppState(data,accountId);
     return {ok:true,run};
@@ -4052,11 +4076,12 @@ async function processRunGeneration(accountId,runId){
       const targetQcScore=sceneNo===1?9.2:(String(route?.risk||'').toLowerCase()==='high'?9.0:String(route?.risk||'').toLowerCase()==='medium'?8.8:8.6);
       const generateByProvider=async(provider,providerPrompt)=>{
         if(provider==='seedance'){
+          const highIdentityRisk=String(route?.risk||'').toLowerCase()==='high'||['high','critical'].includes(String(directorNote?.severity||'').toLowerCase());
           return await generateHiggsfieldScene({
             accountId,prompt:providerPrompt,referenceMedia:refs,
-            startImageUrl:refs[0]||'',endImageUrl:refs[1]||'',useKeyframes:true,
+            startImageUrl:refs[0]||'',endImageUrl:refs[1]||'',useKeyframes:!highIdentityRisk,useMultiReference:highIdentityRisk,
             duration:sceneDurationSeconds(scene),aspectRatio:'9:16',resolution:'720p',bitrateMode:'high',generateAudio:true,
-            model:'bytedance/seedance-2.5/image-to-video'
+            model:highIdentityRisk?'bytedance/seedance-2.5/reference-to-video':'bytedance/seedance-2.5/image-to-video'
           });
         }
         if(!process.env.RUNWAYML_API_SECRET)throw new Error('Runway API is not configured');
@@ -5818,10 +5843,11 @@ async function generateHiggsfieldScene(body){
     maxPollTime:360000
   });
 
-  const useKeyframes=body?.useKeyframes!==false&&Boolean(startImageUrl);
+  const useMultiReference=body?.useMultiReference===true&&refs.length>1;
+  const useKeyframes=!useMultiReference&&body?.useKeyframes!==false&&Boolean(startImageUrl);
   const model=String(
     body?.model ||
-    (useKeyframes ? 'bytedance/seedance-2.5/image-to-video' : (refs.length ? 'bytedance/seedance-2.5/reference-to-video' : 'bytedance/seedance-2.5/text-to-video'))
+    (useMultiReference ? 'bytedance/seedance-2.5/reference-to-video' : useKeyframes ? 'bytedance/seedance-2.5/image-to-video' : (refs.length ? 'bytedance/seedance-2.5/reference-to-video' : 'bytedance/seedance-2.5/text-to-video'))
   );
 
   const input={
@@ -5837,7 +5863,7 @@ async function generateHiggsfieldScene(body){
     if(endImageUrl&&endImageUrl!==startImageUrl)input.end_image_url=endImageUrl;
   }else{
     input.aspect_ratio=aspectRatio;
-    if(refs.length) input.image_urls=refs;
+    if(refs.length) input.image_urls=refs.slice(0,14);
   }
 
   const result=await client.subscribe(model,{input,withPolling:true});

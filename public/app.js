@@ -855,7 +855,18 @@ function renderRunDetail(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
   if(!r){$("#runDetailBody").innerHTML='<div class="empty">Нет ролика.</div>';return}
   const rd=readiness(r),rs=rd.reduce((sum,x)=>sum+x[1],0),rt=rd.reduce((sum,x)=>sum+x[2],0);
-  const qc=["Товар соответствует эталону","Нет визуальных артефактов","Текст без ошибок","Safe-зоны соблюдены","Звук присутствует","Субтитры синхронны","CTA присутствует"];
+  const q=r.qcResult||null;
+  const qchecks=q?.checks||{};
+  const audioOk=Number(r.audioDirector?.analysis?.score)>=90;
+  const qc=[
+    ["Товар соответствует эталону",q?((Number(q.productIdentityScore)>=95&&String(qchecks.productConsistency||"").toLowerCase()==="ok")?"ok":"fail"):"pending"],
+    ["Нет визуальных артефактов",q?(String(qchecks.visualArtifacts||"").toLowerCase()==="ok"?"ok":"fail"):"pending"],
+    ["Сценарий / текст соответствует",q?(String(qchecks.scriptCompliance||"").toLowerCase()==="ok"?"ok":"fail"):"pending"],
+    ["Формат 9:16 соблюдён",q?(String(qchecks.verticalFormat||"").toLowerCase()==="ok"?"ok":"fail"):"pending"],
+    ["Звук нормализован",r.audioDirector?.analysis?(audioOk?"ok":"fail"):"pending"],
+    ["Continuity сохранён",q?(Number(q.continuityScore)>=85?"ok":"fail"):"pending"],
+    ["Payoff / CTA читается",q?(String(qchecks.payoff||"").toLowerCase()==="ok"?"ok":"fail"):"pending"]
+  ];
   const currentIndex=Math.max(0,ST.indexOf(r.stage));
   const stageHtml=ST.map((st,i)=>{
     const done=stageDone(r,st),current=st===r.stage&&!done,status=done?"Готово":current?"В процессе":"Ожидает",cls=done?"done":current?"work":"wait";
@@ -863,7 +874,7 @@ function renderRunDetail(){
     return '<div class="stage-row"><button class="stage stage-click '+(current?"progress":done?"done-stage":"pending")+'" onclick="openStageDetail(\''+r.id+'\',\''+st+'\')"><span class="stage-num">'+(i+1)+'</span><span><b>'+st+'</b><small>'+(done?"Есть результат":current?"Сейчас выполняется":"Ожидает")+'</small></span><span class="status '+cls+'">'+status+'</span></button>'+(regen?'<button class="stage-regen-btn" title="Переделать только этап '+esc(st)+'" onclick="event.stopPropagation();runAction(\''+r.id+'\',\'regenerate\',\''+st+'\')">↻ <span>Переделать</span></button>':'')+'</div>';
   }).join("");
   const readyHtml=rd.map(x=>'<div class="ready-line"><span><b>'+x[0]+'</b><small>'+(x[1]===x[2]?"Готово":"Нет результата")+'</small></span><span class="ready-count">'+x[1]+' из '+x[2]+'</span></div>').join("");
-  const qcHtml=qc.map(t=>'<div class="qc-row"><span>'+t+'</span><b class="'+(r.qcResult?"qc-ok":"qc-wait")+'">'+(r.qcResult?"✓ Пройдено":"Ожидает")+'</b></div>').join("");
+  const qcHtml=qc.map(([label,state])=>'<div class="qc-row"><span>'+esc(label)+'</span><b class="'+(state==="ok"?"qc-ok":"qc-wait")+'">'+(state==="ok"?"✓ Пройдено":state==="fail"?"Нужно исправить":"Ожидает")+'</b></div>').join("");
   const editParts=["Хук","Сцена 2","Сцена 3","Голос","Музыка","Субтитры","CTA","Цветокоррекция"];
   const edits=editParts.map(x=>'<button class="edit-option" data-edit-part="'+x+'">'+x+'</button>').join("");
   const totalScenes=Number(r.generationResult?.totalScenes||r.sceneCount||0);
