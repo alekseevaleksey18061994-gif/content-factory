@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.5.0';
+const APP_VERSION='2.5.1';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2023,8 +2023,11 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
 async function processRunPrevis(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
-  if(run.previsRunning)return {ok:true,alreadyRunning:true};
-  run.previsRunning=true;run.stage='Превиз-кадры';run.status='В работе';run.awaitingApproval=false;run.progress=Math.max(28,Number(run.progress)||0);run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
+  if(run.previsResult?.completed)return {ok:true,alreadyCompleted:true};
+  // previsRunning is persisted only as UI/status metadata. It must never be used as
+  // a process lock because a Railway restart can leave it stuck at true forever.
+  run.previsRunning=true;run.previsStartedAt=new Date().toISOString();run.previsHeartbeatAt=run.previsStartedAt;
+  run.stage='Превиз-кадры';run.status='В работе';run.awaitingApproval=false;run.progress=Math.max(28,Number(run.progress)||0);run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
   await writeAppState(data,accountId);
   try{
     let plan=run.previsPlan&&Array.isArray(run.previsPlan.frames)?run.previsPlan:await generatePrevisPlan(run,accountId);
@@ -2073,7 +2076,8 @@ async function processRunPrevis(accountId,runId){
       run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
       run.previsFrames.push({...spec,...img,qc,generatedAt:new Date().toISOString()});
       run.progress=Math.min(36,28+Math.round((run.previsFrames.filter(x=>x?.url).length/Math.max(1,plan.frames.length))*8));
-      run.updatedAt=new Date().toISOString();
+      run.previsHeartbeatAt=new Date().toISOString();
+      run.updatedAt=run.previsHeartbeatAt;
       appendFactoryJournal(
         data,'Превиз-кадр готов',
         (run.productName||run.id)+' · сцена '+spec.scene+' · кадр '+spec.frame+
@@ -2087,7 +2091,7 @@ async function processRunPrevis(accountId,runId){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     const expected=Number(plan.totalFrames)||plan.frames.length;
     const ready=(run.previsFrames||[]).filter(x=>x?.url).length;
-    run.previsRunning=false;
+    run.previsRunning=false;run.previsStartedAt=null;run.previsHeartbeatAt=new Date().toISOString();
     run.previsResult={
       completed:Boolean(expected&&ready>=expected),
       totalFrames:ready,totalScenes:plan.totalScenes,
@@ -2118,7 +2122,7 @@ async function processRunPrevis(accountId,runId){
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     if(run){
-      run.previsRunning=false;run.status='Ошибка';run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.error='Превиз: '+run.previsError;run.updatedAt=new Date().toISOString();
+      run.previsRunning=false;run.previsStartedAt=null;run.previsHeartbeatAt=new Date().toISOString();run.status='Ошибка';run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.error='Превиз: '+run.previsError;run.updatedAt=run.previsHeartbeatAt;
       appendFactoryJournal(data,'Ошибка превиза',(run.productName||run.id)+' · '+run.previsError);
       await writeAppState(data,accountId);
     }
@@ -3427,6 +3431,7 @@ async function runControlAction(body,accountId){
       if(!Array.isArray(run.storyboard)||!run.storyboard.length)throw new Error('Storyboard ещё не готов');
       const sbCheck=storyboardStageComplete(run.storyboard,(run.script?.scenes||[]).length);
       if(!sbCheck.ok)throw new Error('Storyboard заполнен не полностью: '+sbCheck.missing.map(x=>'сцена '+x.scene+' — '+x.fields.join(', ')).join('; '));
+      run.previsRunning=false;run.previsStartedAt=null;run.previsHeartbeatAt=null;
       run.status='В работе';run.stage='Превиз-кадры';run.progress=28;run.awaitingApproval=false;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Запущен превиз',(run.productName||run.id)+' · фоновая генерация');
       await writeAppState(data,accountId);
