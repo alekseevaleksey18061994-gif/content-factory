@@ -683,13 +683,21 @@ function stageReportHtml(r,stage){
   } else body='<div class="empty compact-empty">Этот этап ещё не выполнен.</div>';
   const canRegen=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация","Озвучка","Монтаж","AI-проверка"].includes(stage);
   const manual=r.mode==="manual";
+  const storyboardBusy=stage==="Storyboard"&&(
+    (r.backgroundTask?.type==="storyboard"&&["queued","processing"].includes(String(r.backgroundTask?.status||""))) ||
+    Object.values(r.storyboardSceneJobs||{}).some(j=>["queued","processing"].includes(String(j?.status||"")))
+  );
   const nextAction=!manual?''
     :stage==="Идея"
       ?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">✓ Утвердить идею → Сценарий</button>'
       :stage==="Сценарий"
         ?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">✓ Утвердить сценарий → Storyboard</button>'
         :stage==="Storyboard"
-          ?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">✓ Утвердить Storyboard → Превиз</button>'
+          ?(r.stage==="Превиз-кадры"||r.previsRunning
+            ?'<button class="btn primary" disabled>⏳ Превиз уже запущен</button>'
+            :storyboardBusy
+              ?'<button class="btn primary" disabled>⏳ Storyboard ещё обновляется</button>'
+              :'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\',this)">✓ Утвердить Storyboard → Превиз</button>')
           :stage==="Превиз-кадры"&&r.previsResult?.completed
             ?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">✓ Утвердить превиз → Генерация видео</button>'
             :'';
@@ -737,12 +745,30 @@ window.regenerateStoryboardScene=async(runId,scene)=>{
   await syncFromServer();selectedRunId=runId;runStageOpen="Storyboard";renderRunDetail();
   go("runDetail",{skipChatSync:true});
 };
-window.runAction=async(id,action,stage="")=>{
+window.runAction=async(id,action,stage="",button=null)=>{
   let note="";
   if(action==="regenerate"){const v=prompt("Что изменить в этапе «"+stage+"»?","");if(v===null)return;note=v}
-  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId:id,action,stage,note})});
-  const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Ошибка");return}
-  await syncFromServer();selectedRunId=id;if(action==="advance_stage")runStageOpen=data.run?.stage||runs.find(x=>x.id===id)?.stage||"";renderRunDetail();if(action==="start"||action==="resume"||action==="advance_stage")go("runDetail");
+  const btn=button&&button.tagName?button:null;
+  const oldText=btn?.textContent||"";
+  if(btn){btn.disabled=true;btn.textContent=action==="advance_stage"?"⏳ Запускаю следующий этап…":"⏳ Запускаю…"}
+  try{
+    const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId:id,action,stage,note})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(data.detail||data.error||"Ошибка");
+    if(data.run&&action==="advance_stage"){
+      const pos=runs.findIndex(x=>x.id===id);
+      if(pos>=0)runs[pos]={...runs[pos],...data.run};
+      runStageOpen=data.run.stage||runStageOpen;
+    }
+    await syncFromServer();
+    selectedRunId=id;
+    if(action==="advance_stage")runStageOpen=data.run?.stage||runs.find(x=>x.id===id)?.stage||runStageOpen||"";
+    renderRunDetail();
+    if(action==="start"||action==="resume"||action==="advance_stage")go("runDetail");
+  }catch(e){
+    alert(String(e?.message||e));
+    if(btn){btn.disabled=false;btn.textContent=oldText}
+  }
 };
 function renderRunDetail(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
@@ -1540,7 +1566,14 @@ $("#logoutBtn")?.addEventListener("click",async()=>{
   try{await fetch("/api/auth/logout",{method:"POST"})}catch{}
   location.reload();
 });
+async function refreshAppVersion(){
+  try{
+    const s=await (await fetch("/api/health?ts="+Date.now(),{cache:"no-store"})).json();
+    if($("#appVersion")&&s?.version)$("#appVersion").textContent="v"+String(s.version)+(s.build&&s.build!=="dev"?" · "+String(s.build):"");
+  }catch{}
+}
 async function bootAuthenticatedApp(){
+  refreshAppVersion();
   try{
     const r=await fetch("/api/auth/me",{cache:"no-store"});
     if(!r.ok){$("#authGate")?.classList.add("show");return}
