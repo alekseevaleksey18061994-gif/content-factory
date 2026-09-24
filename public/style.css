@@ -2110,3 +2110,13 @@ html,body{
 .hook-preview img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block}
 .hook-preview .tiny-btn{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}
 .idea-alt-list article.selected{outline:1px solid rgba(110,255,167,.55)}
+
+/* Video forensic analysis */
+.analysis-detail{margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02)}
+.analysis-detail summary{cursor:pointer;font-weight:700}
+.analysis-detail>p{white-space:pre-wrap;line-height:1.55}
+.analysis-warning{margin:12px 0;padding:10px 12px;border-radius:12px;background:rgba(255,174,0,.08);border:1px solid rgba(255,174,0,.22)}
+.analysis-frame-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;margin-top:10px}
+.analysis-frame-grid figure{margin:0;position:relative;border-radius:10px;overflow:hidden;background:#0b0d0c}
+.analysis-frame-grid img{display:block;width:100%;aspect-ratio:9/16;object-fit:cover}
+.analysis-frame-grid figcaption{position:absolute;left:5px;bottom:5px;padding:2px 5px;border-radius:6px;background:rgba(0,0,0,.68);font-size:10px}
