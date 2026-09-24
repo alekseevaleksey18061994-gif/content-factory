@@ -650,7 +650,7 @@ function stageReportHtml(r,stage){
     '</div>';
   }
   else if(stage==="Storyboard"){
-    body=board.length?'<div class="storyboard-report">'+board.map((x,i)=>{
+    body=(board.length?'<div class="stage-inline-note"><b>План раскадровки: 2 кадра на сцену</b><p>START = начало действия, END = заметно продвинутый или завершённый момент. Эти два кадра задаются здесь и затем используются этапом превиза.</p></div>':'')+(board.length?'<div class="storyboard-report">'+board.map((x,i)=>{
       const sceneNo=i+1;
       const required=["title","duration","purpose","shot","framing","camera","lens","angle","environment","lighting","characters","product","action","startFrame","endFrame","continuity","sound","transition","negative","promptEn"];
       const missing=required.filter(k=>!String(x?.[k]||"").trim());
@@ -683,7 +683,7 @@ function stageReportHtml(r,stage){
         '<details class="storyboard-prompt"><summary>Prompt для видеомодели</summary><p>'+esc(x.promptEn||x.prompt||"—")+'</p><small>NEGATIVE</small><p>'+esc(x.negative||"—")+'</p></details>'+
         (missing.length?'<div class="storyboard-missing-note">Нужно заполнить: '+missing.map(esc).join(", ")+'</div>':'')+
       '</article>';
-    }).join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>';
+    }).join("")+'</div>':'<div class="empty compact-empty">Storyboard ещё не создан.</div>');
   }
   else if(stage==="Превиз-кадры"){
     const frames=Array.isArray(r.previsFrames)?r.previsFrames:[];
