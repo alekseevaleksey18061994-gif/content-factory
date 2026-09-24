@@ -7469,6 +7469,37 @@ async function recoverPendingBackendGenerations(){
   }catch(e){console.error('[backend-generation-recovery] scan '+String(e?.message||e))}
 }
 
+async function recoverPendingAutoPipelines(){
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+      const ids=[];
+      for(const run of (data.runs||[])){
+        if(!run||run.mode==='manual'||run.paused||run.status!=='В работе')continue;
+        const stage=String(run.stage||'');
+        const needsIdea=!run.idea;
+        const needsScript=!!run.idea&&!run.script;
+        const needsStoryboard=!!run.script&&(!Array.isArray(run.storyboard)||!run.storyboard.length);
+        if(
+          (stage==='Идея'&&needsIdea) ||
+          (stage==='Сценарий'&&(needsIdea||needsScript)) ||
+          (stage==='Storyboard'&&(needsIdea||needsScript||needsStoryboard))
+        ){
+          ids.push(String(run.id));
+          run.backgroundTask={...(run.backgroundTask||{}),step:'Восстановление после перезапуска',heartbeatAt:new Date().toISOString()};
+          run.updatedAt=new Date().toISOString();
+        }
+      }
+      if(!ids.length)continue;
+      await writeAppState(data,accountId);
+      for(const runId of ids)enqueueAutoPipeline(accountId,runId);
+      console.log('[autopilot-recovery] queued '+accountId+' '+ids.join(','));
+    }
+  }catch(e){console.error('[autopilot-recovery] '+String(e?.message||e))}
+}
+
 async function recoverLegacyPlaceholderRuns(){
   try{
     const registry=await ensureAccountsRegistry();
@@ -8782,6 +8813,11 @@ server.listen(port,'0.0.0.0',async()=>{
       await recoverLegacyPlaceholderRuns();
     }catch(e){
       console.error('[startup-recovery] legacy '+String(e?.message||e));
+    }
+    try{
+      await recoverPendingAutoPipelines();
+    }catch(e){
+      console.error('[startup-recovery] autopilot '+String(e?.message||e));
     }
     try{
       await recoverPendingPrevisAndAutopilot();
