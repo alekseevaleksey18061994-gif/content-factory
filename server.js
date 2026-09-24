@@ -882,8 +882,8 @@ function runwayUsageUsd(model,seconds){
 function openAIStageModel(stage='balanced'){
   const s=String(stage||'').toLowerCase();
   const cheap=process.env.OPENAI_CHEAP_MODEL||'gpt-5.6-luna';
-  const balanced=process.env.OPENAI_BALANCED_MODEL||'gpt-5.6-terra';
-  const quality=process.env.OPENAI_QUALITY_MODEL||'gpt-5.6-sol';
+  const balanced=process.env.OPENAI_BALANCED_MODEL||process.env.OPENAI_MODEL||'gpt-6-astra';
+  const quality=process.env.OPENAI_QUALITY_MODEL||process.env.OPENAI_MODEL||'gpt-6-astra';
   if(/candidate|shortlist|hook|audio|previs-qc|scene-qc|chat|light|scene-router|previs-image/.test(s))return cheap;
   if(/final-qc|director-cut|quality-final/.test(s))return quality;
   return balanced;
@@ -1895,11 +1895,11 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Верни 1 финальную усиленную идею + 4 действительно разные полностью заполненные альтернативы + честные оценки quality.'
   ].join('\n');
 
-  async function criticPass(prompt){
+  async function criticPass(prompt,{modelOverride='',maxTokens=4600}={}){
     async function invoke(name,body,timeoutMs){
       return await callIdeaAI({
         prompt:body,schema:finalSchema,name,images:[],
-        effort:'low',maxTokens:6200,timeoutMs
+        effort:'low',maxTokens,timeoutMs,modelOverride
       });
     }
     let out;
@@ -2001,16 +2001,17 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     return issues;
   }
 
-  // Up to two focused repair passes. Before each pass use the strongest of selected + alternatives,
-  // so a good alternative can save the run without paying for unnecessary regeneration.
+  // Golden-middle policy: self-scored 7/10 vs 8/10 is not worth another expensive Astra pass.
+  // Repair only hard production risks, once, on the cheap model.
   let repairPassesUsed=0;
   for(let repairAttempt=1;repairAttempt<=1;repairAttempt++){
 
     const failedNow=criticalFailures(idea);
     const heuristicIssues=currentHeuristicIssues();
-    if(!failedNow.length&&!heuristicIssues.length)break;
+    const severeKeys=['productNecessity','generatability'].filter(k=>Number(idea?.quality?.[k]||0)<7);
+    if(!severeKeys.length&&!heuristicIssues.length)break;
     repairPassesUsed=repairAttempt;
-    await markIdeaProgress(7,'Докручиваю слабые места · попытка '+repairAttempt+'/2');
+    await markIdeaProgress(7,'Точечно исправляю критический риск · 1 попытка');
     const repairPrompt=[
       'ROLE: senior TikTok Creative Critic + AI production director.',
       context,
@@ -2022,17 +2023,18 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       'You may change the mechanism substantially if needed. Preserve FACT LOCK, source-product identity and the approved avatar.',
       'Return one complete selected idea plus 4 complete, genuinely different alternatives with honest quality scores. Do not lower scores artificially; actually fix the concept.'
     ].filter(Boolean).join('\n');
-    idea=promoteBestCriticalOption(await criticPass(repairPrompt));
+    idea=promoteBestCriticalOption(await criticPass(repairPrompt,{
+      modelOverride:openAIStageModel('candidate'),
+      maxTokens:3800
+    }));
     await saveIdeaCheckpoint({criticIdea:idea,repairPassesUsed});
   }
 
   const finalFailed=criticalFailures(idea);
   const finalHeuristics=currentHeuristicIssues();
-  if(finalFailed.length||finalHeuristics.length){
-    throw new Error('Идея не прошла Creative Critic после 1 автодокрутки: '+[...finalFailed,...finalHeuristics].join(', '));
-  }
+  idea.qualityWarnings=[...finalFailed,...finalHeuristics].slice(0,12);
 
-  await markIdeaProgress(7.5,'Hook Lab: тестирую 5 разных первых 3 секунд');
+  await markIdeaProgress(7.5,'Hook Lab: тестирую 5 текстовых хуков');
   const hookLabSchema={
     type:'object',additionalProperties:false,required:['variants','selectedIndex','selectionReason'],
     properties:{
@@ -2065,45 +2067,20 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Return JSON only.'
   ].join('\n');
   try{
-    const hookLab=await callIdeaAI({prompt:hookPrompt,schema:hookLabSchema,name:'hook_lab',images:refs,effort:'low',maxTokens:2600,timeoutMs:90000});
+    let hookLab=ideaCheckpoint?.hookLab&&typeof ideaCheckpoint.hookLab==='object'
+      ? ideaCheckpoint.hookLab
+      : null;
+    if(!hookLab){
+      hookLab=await callIdeaAI({prompt:hookPrompt,schema:hookLabSchema,name:'hook_lab',images:refs,effort:'low',maxTokens:2200,timeoutMs:90000});
+      await saveIdeaCheckpoint({hookLab});
+    }
     const variants=Array.isArray(hookLab?.variants)?hookLab.variants:[];
     const selectedIndex=Math.max(1,Math.min(5,Number(hookLab?.selectedIndex)||1));
-    idea.hookLab={variants,selectedIndex,selectionReason:String(hookLab?.selectionReason||''),generatedAt:new Date().toISOString()};
-    const hookPreviewRefs=[...productRefs.slice(0,2),avatarRefs[0]].filter(Boolean);
-    async function renderHookPreview(i){
-      const h=variants[i]||{};
-      try{
-        const frame={
-          scene:0,frame:i+1,frameType:'start',hookLab:true,productInFrame:true,
-          action:String(h.action||''),composition:String(h.firstFrame||''),
-          framing:'vertical 9:16 scroll-stop close/medium composition',
-          environment:'natural believable environment for the approved concept',
-          lighting:'realistic social-video lighting',
-          avatarInFrame:Boolean(payload.character),
-          avatarDescription:payload.character?String(payload.character.look||payload.character.name||''):'',
-          productPlacement:'Product must remain the exact source product while supporting the hook action.',
-          continuityNotes:'Hook Lab preview only; preserve exact product/avatar identity.',
-          imagePromptEn:[
-            'TikTok/Reels first-frame scroll stopper.',
-            'Visual hook type: '+String(h.type||''),
-            'First frame: '+String(h.firstFrame||''),
-            'Action beginning: '+String(h.action||''),
-            'Open loop: '+String(h.openLoop||''),
-            'Natural UGC, immediately readable without sound.'
-          ].join(' ')
-        };
-        const preview=await generateOpenAIPrevisImage(accountId,payload,frame,hookPreviewRefs);
-        h.previewUrl=preview?.url||'';
-        h.previewPath=preview?.path||'';
-        h.previewModel=preview?.model||'gpt-image-2';
-      }catch(e){
-        h.previewError=String(e?.message||e).slice(0,500);
-      }
-    }
-    if(variants.length){
-      await renderHookPreview(selectedIndex-1);
-    }
-    idea.hookLab.variants=variants;
+    idea.hookLab={
+      variants,selectedIndex,selectionReason:String(hookLab?.selectionReason||''),
+      previewDeferred:true,
+      generatedAt:new Date().toISOString()
+    };
     const selectedHook=variants[selectedIndex-1];
     if(selectedHook){
       idea.hook=[selectedHook.firstFrame,selectedHook.line].filter(Boolean).join(' · ').slice(0,2000);
@@ -2120,7 +2097,9 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     critic:true,
     criticPasses:1+repairPassesUsed,
     refined:repairPassesUsed>0,
-    criticalThreshold:8,
+    criticalThreshold:7,
+    costMode:'golden-middle-v1',
+    hookPreviewDeferred:true,
     autoPromotion:true,
     evaluatedAt:new Date().toISOString()
   };
