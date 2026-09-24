@@ -2135,3 +2135,9 @@ html,body{
 .active-media-card{outline:1px solid rgba(108,255,169,.28);background:rgba(108,255,169,.025)}
 .active-media-card .archive-media-copy small .chip{margin-right:6px}
 .media-library-panel .media-actions{display:flex;gap:7px;flex-wrap:wrap}
+
+.media-type-tabs{display:flex;gap:10px;align-items:center;margin:0 0 14px}
+.media-type-tabs button{display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.035);color:inherit;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
+.media-type-tabs button span{opacity:.62;font-size:12px}
+.media-type-tabs button.active{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22)}
+@media (max-width:640px){.media-type-tabs{display:grid;grid-template-columns:1fr 1fr}.media-type-tabs button{justify-content:center}}
