@@ -2142,6 +2142,7 @@ function mergeClientStateWithServer(existingData={},incomingData={}){
   // Production runs are server-authoritative. Client snapshots must never roll
   // backend stage/progress/results/errors backwards.
   out.runs=Array.isArray(existingData.runs)?existingData.runs:[];
+  out.savedIdeas=Array.isArray(existingData.savedIdeas)?existingData.savedIdeas:[];
   out.expenses=mergeByIdPreserveExisting(existingData.expenses,incomingData.expenses,3000);
   out.journal=mergeByIdPreserveExisting(existingData.journal,incomingData.journal,500);
   out.scripts=mergeByIdPreserveExisting(existingData.scripts,incomingData.scripts,2000);
