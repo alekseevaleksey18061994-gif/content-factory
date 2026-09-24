@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.22';
+const APP_VERSION='2.6.23';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1746,6 +1746,18 @@ async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
   return scene;
 }
 
+function previsFrameShowsProduct(frame={},scene={}){
+  if(frame?.productInFrame===true)return true;
+  const visual=[
+    frame?.composition,frame?.framing,frame?.action,frame?.environment,frame?.location,
+    frame?.productRole,frame?.productPlacement,frame?.productVisibility,
+    scene?.startFrame,scene?.endFrame,scene?.action,scene?.product,scene?.environment
+  ].filter(Boolean).join(' ').toLowerCase();
+  const mentionsHolder=/держател|paper\s*towel\s*holder|towel\s*holder|holder\b/.test(visual);
+  const explicitlyAbsent=/держател[^.]{0,80}(полностью\s+)?не\s+виден|holder[^.]{0,80}not\s+visible|без\s+держателя|no\s+holder/.test(visual);
+  return mentionsHolder&&!explicitlyAbsent;
+}
+
 function normalizePrevisPlan(raw,payload={}){
   const board=Array.isArray(payload.storyboard)?payload.storyboard:[];
   const src=raw&&typeof raw==='object'?(raw.previsPlan||raw):{};
@@ -1798,7 +1810,7 @@ function normalizePrevisPlan(raw,payload={}){
             ? ('START STATE — отчётливое начало микро-действия, до результата. '+String(scene.startFrame||x.action||scene.action||''))
             : ('END STATE — микро-действие заметно продвинулось или завершено; результат визуально отличается от START. '+String(scene.endFrame||x.action||scene.action||''))
         ).slice(0,3500),
-        productInFrame:Boolean(x.productInFrame ?? false),
+        productInFrame:previsFrameShowsProduct(x,scene),
         productRole:String(x.productRole||scene.product||'').slice(0,2200),
         productPlacement:String(x.productPlacement||'').slice(0,1200),
         productVisibility:String(x.productVisibility||'').slice(0,1000),
@@ -1856,7 +1868,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     '- приоритет: generated anchorFrames > continuityFrames > source identityRefs;',
     '- reference frame задаёт continuity, но НЕ разрешает копировать ту же позу и композицию;',
     '- первый кадр первой сцены может быть identity-led; далее преимущественно anchor-led;',
-    '- productInFrame=true ТОЛЬКО если сам держатель реально виден в этом конкретном START/END кадре. Если кадр показывает проблему с рулоном ДО появления держателя, ставь false. Не ставь true только потому, что у сцены заполнено поле product;',
+    '- productInFrame=true ВСЕГДА, когда сам держатель виден хотя бы частично: крупно, сбоку, в фоне, перекрыт рукой/рулоном или занимает небольшую часть кадра. false разрешён только когда держатель полностью отсутствует из видимой области кадра;',
     '- если персонаж впервые появляется позднее, разрешено один раз подключить его source identity reference для фиксации лица.',
     '',
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
@@ -1892,27 +1904,42 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
   if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-plan',description:'План START/END превиз-кадров',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
   return normalizePrevisPlan(safeAnalysisJson(openAIText(data)),payload);
 }
-function primaryIdentityUrls(run){
+function productIdentityUrls(run,limit=3){
   const productMedia=Array.isArray(run.media)?run.media:(Array.isArray(run.product?.media)?run.product.media:[]);
+  const urls=productMedia
+    .filter(x=>/^https:\/\//i.test(String(x?.url||'')))
+    .sort((a,b)=>Number(!!b?.isPrimary)-Number(!!a?.isPrimary))
+    .map(x=>String(x.url));
+  return [...new Set(urls)].slice(0,Math.max(1,limit));
+}
+function avatarIdentityUrls(run,limit=1){
   const avatarMedia=Array.isArray(run.avatarReferences)?run.avatarReferences:(Array.isArray(run.character?.media)?run.character.media:[]);
-  const product=productMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||'')))||productMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
-  const avatar=avatarMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||'')))||avatarMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
-  return {product:product?.url||'',avatar:avatar?.url||''};
+  const urls=avatarMedia
+    .filter(x=>/^https:\/\//i.test(String(x?.url||'')))
+    .sort((a,b)=>Number(!!b?.isPrimary)-Number(!!a?.isPrimary))
+    .map(x=>String(x.url));
+  return [...new Set(urls)].slice(0,Math.max(1,limit));
+}
+function primaryIdentityUrls(run){
+  return {product:productIdentityUrls(run,1)[0]||'',avatar:avatarIdentityUrls(run,1)[0]||''};
 }
 function previsRefsForFrame(run,frame,done=[]){
   const urls=[];
+  const lockProduct=previsFrameShowsProduct(frame,{});
+  const productRefs=lockProduct?productIdentityUrls(run,2):[];
+  urls.push(...productRefs);
+
   const byId=new Map(done.filter(x=>x?.url).map(x=>[String(x.id),x.url]));
   for(const id of [...(frame.anchorFrames||[]),...(frame.continuityFrames||[])]){
-    if(byId.get(String(id)))urls.push(byId.get(String(id)));
+    const u=byId.get(String(id));if(u)urls.push(u);
   }
-  if(!urls.length&&done.length)urls.push(done[done.length-1]?.url);
   if(frame.frame===1&&frame.scene>1){
     const prevScene=done.filter(x=>Number(x.scene)===Number(frame.scene)-1&&x.url).slice(-1)[0];
-    if(prevScene?.url)urls.unshift(prevScene.url);
+    if(prevScene?.url)urls.push(prevScene.url);
   }
-  const identity=primaryIdentityUrls(run);
-  if(frame.productInFrame&&identity.product)urls.push(identity.product);
-  if(frame.avatarInFrame&&identity.avatar)urls.push(identity.avatar);
+  if(urls.length===productRefs.length&&done.length)urls.push(done[done.length-1]?.url);
+
+  if(frame.avatarInFrame)urls.push(...avatarIdentityUrls(run,1));
   return [...new Set(urls.filter(Boolean))].slice(0,4);
 }
 async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
@@ -1927,6 +1954,9 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     phaseRule,
     'Product: '+String(run.productName||''),
     'Product identity locks: '+String(run.productRules||run.product?.rules||''),
+    previsFrameShowsProduct(frame,{})
+      ? 'CRITICAL PRODUCT LOCK: reference images 1-2 are authoritative SOURCE PRODUCT photos. Reproduce the exact holder geometry, proportions, arm/rod, end cap, support/base shape, thickness, color and visible construction. NEVER redesign, simplify, thicken, shorten, add brackets, add a box-shaped mount, invent a hinge, invent an end stop or copy geometry from a generated anchor. Generated frames are continuity references only.'
+      : '',
     run.character?.name?('Avatar identity locks: '+String(run.character.name)+'; '+String(run.character.look||'')+'; '+String(run.character.locks||'')):'',
     'Composition: '+String(frame.composition||''),
     'Framing: '+String(frame.framing||''),
@@ -2108,6 +2138,8 @@ async function generatePrevisImage(accountId,run,frame,referenceUrls=[],provider
 async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   if(!openaiConfigured())return {passed:null,score:null,summary:'OpenAI QC недоступен',issues:[]};
   const identity=primaryIdentityUrls(run);
+  const productRefs=productIdentityUrls(run,2);
+  const lockProduct=previsFrameShowsProduct(frame,{});
   const content=[
     {type:'input_text',text:[
       'ROLE: строгий QC-контролёр рекламного PREVIZ-кадра.',
@@ -2118,8 +2150,8 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'Задача/действие: '+String(frame.action||frame.goal||''),
       'Композиция: '+String(frame.composition||''),
       'Локация: '+String(frame.environment||frame.location||''),
-      'ОЖИДАНИЕ ТОВАРА В ЭТОМ КАДРЕ: '+(frame.productInFrame?'товар должен быть виден':'товар может НЕ быть виден; отсутствие товара само по себе НЕ является ошибкой'),
-      'CRITICAL PRODUCT FAIL только когда frame.productInFrame=true И видимый товар заметно отличается от SOURCE PRODUCT IMAGE по геометрии, пропорциям, крепёжным элементам, цвету или материалу.',
+      'ОЖИДАНИЕ ТОВАРА В ЭТОМ КАДРЕ: '+(lockProduct?'держатель виден и ОБЯЗАН совпадать с исходными фото':'держатель может отсутствовать'),
+      'CRITICAL PRODUCT FAIL когда lockProduct=true и есть ЛЮБОЕ заметное изменение конструкции: другой кронштейн/основание, другой стержень/ось, придуманный торец или стопор, изменение толщины/длины/пропорций, лишняя коробка/шарнир/крепёж, иной цвет/материал, либо holder выглядит как другая модель.',
       "CRITICAL ACTION FAIL: START показывает уже завершённый результат, либо END почти не продвигает микро-действие относительно PREVIOUS GENERATED FRAME.",
       "Для END желательны минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Но изменение ракурса само по себе не обязательно, если само действие визуально продвинулось.",
       'SOFT DIFFERENCES — только WARN, не FAIL: точная позиция предметов на несколько сантиметров, частичное перекрытие/неперекрытие товара телом, небольшая разница крупности, ракурса, позы, композиции, декора или расположения героя, если смысл действия сохранён.',
@@ -2131,9 +2163,9 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
     {type:'input_text',text:'CANDIDATE PREVIZ:'},
     {type:'input_image',image_url:imageUrl,detail:'low'}
   ];
-  if(frame.productInFrame&&identity.product){
-    content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY — главный эталон формы товара:'});
-    content.push({type:'input_image',image_url:identity.product,detail:'high'});
+  if(lockProduct&&productRefs.length){
+    content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY — AUTHORITATIVE geometry references. Candidate must depict the same physical product model:'});
+    for(const url of productRefs)content.push({type:'input_image',image_url:url,detail:'high'});
   }
   if(frame.avatarInFrame&&identity.avatar){
     content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'});
@@ -2155,7 +2187,7 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-qc',description:'QC превиз-кадра '+frame.scene+'.'+frame.frame,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
   const score=Number(parsed.score);
   const checks=parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{};
-  const productFail=frame.productInFrame===true&&String(checks.product||'').toLowerCase()==='fail';
+  const productFail=lockProduct&&String(checks.product||'').toLowerCase()==='fail';
   const actionFail=String(checks.actionPhase||'').toLowerCase()==='fail';
   const avatarFail=frame.avatarInFrame===true&&String(checks.avatar||'').toLowerCase()==='fail';
   const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
@@ -2262,7 +2294,7 @@ async function processRunPrevis(accountId,runId){
         const correction=lastQcError
           ? ('Previous candidate failed QC. Correct ALL of these issues in the new image: '+lastQcError)
           : '';
-        const attemptSpec={...spec,qualityNotes:[String(spec.qualityNotes||''),correction].filter(Boolean).join('\n').slice(0,3500)};
+        const attemptSpec={...spec,productInFrame:previsFrameShowsProduct(spec,{}),qualityNotes:[String(spec.qualityNotes||''),correction].filter(Boolean).join('\n').slice(0,3500)};
         const refs=previsRefsForFrame(run,attemptSpec,run.previsFrames);
         try{
           img=await generatePrevisImage(accountId,run,attemptSpec,refs,provider);
