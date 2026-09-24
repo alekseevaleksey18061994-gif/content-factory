@@ -3425,6 +3425,8 @@ async function runControlAction(body,accountId){
     if(current==='Storyboard'){
       if(!run.script)throw new Error('Нельзя запускать превиз: сценарий отсутствует');
       if(!Array.isArray(run.storyboard)||!run.storyboard.length)throw new Error('Storyboard ещё не готов');
+      const sbCheck=storyboardStageComplete(run.storyboard,(run.script?.scenes||[]).length);
+      if(!sbCheck.ok)throw new Error('Storyboard заполнен не полностью: '+sbCheck.missing.map(x=>'сцена '+x.scene+' — '+x.fields.join(', ')).join('; '));
       run.status='В работе';run.stage='Превиз-кадры';run.progress=28;run.awaitingApproval=false;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Запущен превиз',(run.productName||run.id)+' · фоновая генерация');
       await writeAppState(data,accountId);
