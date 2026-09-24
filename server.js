@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.17';
+const APP_VERSION='2.6.18';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1962,17 +1962,25 @@ const accountBackgroundQueues=new Map();
 const accountBackgroundJobs=new Map();
 function enqueueAccountBackground(accountId,jobKey,worker,label='background'){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const dedupeKey=account+'::'+String(jobKey);
+  const rawKey=String(jobKey||'background');
+  const dedupeKey=account+'::'+rawKey;
   if(accountBackgroundJobs.has(dedupeKey))return accountBackgroundJobs.get(dedupeKey);
-  const previous=accountBackgroundQueues.get(account)||Promise.resolve();
+
+  // Serialize only work belonging to the SAME run. Different runs may execute in
+  // parallel because writeAppState now performs conflict-safe newest-by-id merging.
+  // jobKey format is <task>:<runId>[:detail].
+  const parts=rawKey.split(':');
+  const runScope=parts.length>1&&parts[1]?parts[1]:rawKey;
+  const queueKey=account+'::run::'+runScope;
+  const previous=accountBackgroundQueues.get(queueKey)||Promise.resolve();
   let next;
   next=previous.catch(()=>{}).then(worker)
-    .catch(e=>{console.error('['+label+'] '+String(jobKey)+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
+    .catch(e=>{console.error('['+label+'] '+rawKey+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
     .finally(()=>{
       accountBackgroundJobs.delete(dedupeKey);
-      if(accountBackgroundQueues.get(account)===next)accountBackgroundQueues.delete(account);
+      if(accountBackgroundQueues.get(queueKey)===next)accountBackgroundQueues.delete(queueKey);
     });
-  accountBackgroundQueues.set(account,next);
+  accountBackgroundQueues.set(queueKey,next);
   accountBackgroundJobs.set(dedupeKey,next);
   return next;
 }
