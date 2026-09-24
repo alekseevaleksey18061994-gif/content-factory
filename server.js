@@ -5993,10 +5993,16 @@ async function analyzeReferenceMaterial(opts){
     metadata:opts.metadata||{},transcript:opts.transcript||'',timedTranscript:opts.timedTranscript||'',shotMap:opts.shotMap||[]
   });
   const extraImages=[];
-  const pm=(product?.media||[]).find(m=>m.isPrimary)||(product?.media||[])[0];
-  if(pm?.url)extraImages.push({type:'input_image',image_url:pm.url,detail:'low'});
+  const productMedia=(Array.isArray(product?.media)?product.media:[]).filter(m=>/^https:\/\//i.test(String(m?.url||''))).sort((a,b)=>Number(!!b?.isPrimary)-Number(!!a?.isPrimary)).slice(0,3);
+  if(productMedia.length){
+    extraImages.push({type:'input_text',text:'TARGET PRODUCT REFERENCES — use ONLY for the improved adaptation, NEVER as evidence of what appears in the source video.'});
+    for(const m of productMedia)extraImages.push({type:'input_image',image_url:m.url,detail:'high'});
+  }
   const am=(avatar?.media||[]).find(m=>m.isPrimary)||(avatar?.media||[])[0];
-  if(am?.url)extraImages.push({type:'input_image',image_url:am.url,detail:'low'});
+  if(am?.url){
+    extraImages.push({type:'input_text',text:'TARGET AI AVATAR REFERENCE — use ONLY for the improved adaptation.'});
+    extraImages.push({type:'input_image',image_url:am.url,detail:'high'});
+  }
   const model=process.env.OPENAI_MODEL||'gpt-6-astra';
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
