@@ -916,6 +916,8 @@ window.markReady=async id=>{try{await runServerAction({runId:id,action:"approve_
 function renderScripts(){$("#scriptsList").innerHTML=scripts.length?scripts.slice().reverse().map(s=>'<article class="library-item"><div><h3>'+esc(s.title)+'</h3><p><b>Хук:</b> '+esc(s.hook||"—")+"\n"+esc(s.body||"")+"\n<b>CTA:</b> "+esc(s.cta||"—")+'</p><div class="library-meta"><span class="chip">Использован: '+(s.used||0)+' раз</span></div></div><div class="library-actions"><button class="secondary" onclick="useScript(\''+s.id+'\')">Использовать</button><button class="danger-btn" onclick="deleteScript(\''+s.id+'\')">Удалить</button></div></article>').join(""):'<div class="empty">Сценариев пока нет.</div>';const P=[["UGC-хук","Разговорное начало от лица покупателя"],["Проблема → решение","Боль → демонстрация → результат → CTA"],["Демонстрация","Максимум продукта в кадре"]];$("#promptLibrary").innerHTML=P.map((p,i)=>'<div class="prompt-card"><b>'+p[0]+'</b><small>'+p[1]+'</small><div class="dup-meter"><strong>Защита от повторов: включена</strong><div class="progress"><i style="width:'+(18+i*7)+'%"></i></div></div></div>').join("")}
 $("#addScript").onclick=()=>openM("scriptModal");$("#saveScript").onclick=()=>{const n=$("#scriptTitle").value.trim();if(!n)return;scripts.push({id:uid("s"),title:n,hook:$("#scriptHook").value.trim(),body:$("#scriptBody").value.trim(),cta:$("#scriptCta").value.trim(),used:0,created:now()});log("Сохранён сценарий",n);closeM("scriptModal");persist()};
 window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.used||0)+1;$("#brief").value=[s.hook,s.body,s.cta].filter(Boolean).join("\n");openCreate();persist()};
+let mediaLibraryView=localStorage.getItem('cf_media_view')||'photos';
+window.setMediaLibraryView=view=>{mediaLibraryView=view==='videos'?'videos':'photos';localStorage.setItem('cf_media_view',mediaLibraryView);renderScenes()};
 function renderScenes(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
   const archived=(Array.isArray(mediaLibrary)?mediaLibrary:[]).slice().reverse();
@@ -973,9 +975,10 @@ function renderScenes(){
 
   const section=(title,subtitle,items,icon)=>'<section class="panel media-library-panel"><div class="panel-title"><div><span class="mini-icon">'+icon+'</span><h2>'+title+'</h2><p>'+subtitle+'</p></div><span class="chip">'+items.length+' файлов</span></div>'+(items.length?'<div class="archive-media-grid">'+items.map(mediaCard).join("")+'</div>':'<div class="empty compact-empty">Пока пусто.</div>')+'</section>';
 
-  const mediaHtml='<div class="media-library-split">'+
-    section('Фото','Текущие превизы и архивные изображения. Любое фото удаляется отдельно.',photos,'▧')+
-    section('Видео','Видео-сцены, финальные ролики и архив. Любое видео удаляется отдельно.',videos,'▶')+
+  const tabs='<div class="media-type-tabs"><button class="'+(mediaLibraryView==='photos'?'active':'')+'" onclick="setMediaLibraryView(\'photos\')">▧ Фото <span>'+photos.length+'</span></button><button class="'+(mediaLibraryView==='videos'?'active':'')+'" onclick="setMediaLibraryView(\'videos\')">▶ Видео <span>'+videos.length+'</span></button></div>';
+  const mediaHtml='<div class="media-library-split">'+tabs+(mediaLibraryView==='videos'
+    ? section('Видео','Видео-сцены, финальные ролики и архив. Каждое видео скачивается и удаляется отдельно.',videos,'▶')
+    : section('Фото','Превиз-кадры и архивные изображения. Каждое фото скачивается и удаляется отдельно.',photos,'▧'))+
   '</div>';
 
   const currentHtml=r
