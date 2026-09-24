@@ -671,17 +671,33 @@ function stageReportHtml(r,stage){
           '<div><small>Крупность</small><p>'+esc(x.framing||"—")+'</p></div>'+
           '<div><small>Камера</small><p>'+esc(x.camera||"—")+'</p></div>'+
           '<div><small>Ракурс / объектив</small><p>'+esc([x.angle,x.lens].filter(Boolean).join(" · ")||"—")+'</p></div>'+
+          '<div><small>Высота камеры</small><p>'+esc(x.cameraHeight||"—")+'</p></div>'+
+          '<div><small>Фокус / глубина</small><p>'+esc([x.focus,x.depth].filter(Boolean).join(" · ")||"—")+'</p></div>'+
+          '<div><small>Тайминг движения</small><p>'+esc(x.motionTiming||"—")+'</p></div>'+
         '</div>'+
         '<div class="storyboard-wide"><small>Что в кадре</small><p>'+esc(x.shot||"—")+'</p></div>'+
         '<div class="storyboard-wide"><small>Действие</small><p>'+esc(x.action||"—")+'</p></div>'+
+        '<div class="storyboard-wide"><small>SET DESIGN / интерьер</small><p>'+esc(x.setDesign||"—")+'</p></div>'+
+        '<div class="storyboard-meta">'+
+          '<div><small>Передний план</small><p>'+esc(x.foreground||"—")+'</p></div>'+
+          '<div><small>Средний план</small><p>'+esc(x.midground||"—")+'</p></div>'+
+          '<div><small>Фон</small><p>'+esc(x.background||"—")+'</p></div>'+
+          '<div><small>Props</small><p>'+esc(x.props||"—")+'</p></div>'+
+          '<div><small>Материалы</small><p>'+esc(x.materials||"—")+'</p></div>'+
+          '<div><small>Палитра</small><p>'+esc(x.colorPalette||"—")+'</p></div>'+
+        '</div>'+
         '<div class="storyboard-meta">'+
           '<div class="'+(!x.environment?"storyboard-field-missing":"")+'"><small>Локация</small><p>'+esc(x.environment||"—")+'</p></div>'+
           '<div class="'+(!x.lighting?"storyboard-field-missing":"")+'"><small>Свет</small><p>'+esc(x.lighting||"—")+'</p></div>'+
+          '<div><small>Practical lights</small><p>'+esc(x.practicalLights||"—")+'</p></div>'+
           '<div class="'+(!x.characters?"storyboard-field-missing":"")+'"><small>Персонаж</small><p>'+esc(x.characters||"—")+'</p></div>'+
+          '<div><small>Игра героя</small><p>'+esc(x.performance||"—")+'</p></div>'+
+          '<div><small>Blocking</small><p>'+esc(x.blocking||"—")+'</p></div>'+
           '<div class="'+(!x.product?"storyboard-field-missing":"")+'"><small>Товар</small><p>'+esc(x.product||"—")+'</p></div>'+
         '</div>'+
         '<div class="storyboard-frame-pair"><div class="'+(!x.startFrame?"storyboard-field-missing":"")+'"><small>START FRAME</small><p>'+esc(x.startFrame||"—")+'</p></div><div class="'+(!x.endFrame?"storyboard-field-missing":"")+'"><small>END FRAME</small><p>'+esc(x.endFrame||"—")+'</p></div></div>'+
         '<div class="storyboard-wide"><small>Continuity</small><p>'+esc(x.continuity||"—")+'</p></div>'+
+        '<div class="storyboard-meta"><div><small>Retention mechanic</small><p>'+esc(x.retentionMechanic||"—")+'</p></div><div><small>Pattern interrupt</small><p>'+esc(x.patternInterrupt||"—")+'</p></div><div><small>Micro-payoff</small><p>'+esc(x.microPayoff||"—")+'</p></div><div><small>Sound design</small><p>'+esc(x.soundDesign||"—")+'</p></div><div><small>Editor note</small><p>'+esc(x.editorNote||"—")+'</p></div></div>'+
         '<div class="storyboard-meta">'+
           '<div><small>Диалог</small><p>'+esc(x.dialogue||"Не предусмотрено сценарием")+'</p></div>'+
           '<div><small>Озвучка</small><p>'+esc(x.voiceover||"Не предусмотрено сценарием")+'</p></div>'+
