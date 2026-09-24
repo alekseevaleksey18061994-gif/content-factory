@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.19';
+const APP_VERSION='2.6.20';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -5147,7 +5147,8 @@ async function recoverPendingBackendGenerations(){
       for(const run of (data.runs||[])){
         const hasPlan=!!run?.idea&&!!run?.script&&Array.isArray(run?.storyboard)&&run.storyboard.length>0;
         const complete=!!run?.generationResult?.completed;
-        if(run&&hasPlan&&!complete&&!run.paused&&['В работе','Ошибка'].includes(run.status)&&run.stage==='Генерация'){
+        const creditBlocked=providerCreditError(run?.generationError||run?.error||'');
+        if(run&&hasPlan&&!complete&&!run.paused&&['В работе','Ошибка'].includes(run.status)&&run.stage==='Генерация'&&!creditBlocked){
           ids.push(String(run.id));
           run.backendGenerationRunning=false;
           run.status='В работе';
