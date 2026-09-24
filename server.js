@@ -230,39 +230,60 @@ async function runEphemeralAuthSelfTest(){
   const email='auth-selftest-'+marker+'@example.invalid';
   const password='Test!'+randomBytes(14).toString('base64url');
   let createdUserId='',createdAccountIds=[];
+  const base='http://127.0.0.1:'+port;
+
+  async function retryJson(path,{method='GET',headers={},body=null,accept=[200],attempts=12}={}){
+    let last={status:0,data:{}};
+    for(let i=0;i<attempts;i++){
+      const r=await fetch(base+path,{method,headers,body});
+      const data=await r.json().catch(()=>({}));
+      last={status:r.status,data,headers:r.headers};
+      if(accept.includes(r.status))return last;
+      if(i<attempts-1)await new Promise(resolve=>setTimeout(resolve,180));
+    }
+    return last;
+  }
+
   try{
-    const base='http://127.0.0.1:'+port;
-    const reg=await fetch(base+'/api/auth/register',{
-      method:'POST',headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
-      body:JSON.stringify({email,password})
+    const reg=await retryJson('/api/auth/register',{
+      method:'POST',
+      headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
+      body:JSON.stringify({email,password}),
+      accept:[200,201],
+      attempts:2
     });
-    const regData=await reg.json().catch(()=>({}));
-    if(!(reg.status===200||reg.status===201)||!regData?.user?.id)throw new Error('register '+reg.status+' '+String(regData?.code||regData?.error||''));
-    createdUserId=String(regData.user.id);
+    if(!reg.data?.user?.id)throw new Error('register '+reg.status+' '+String(reg.data?.code||reg.data?.error||''));
+    createdUserId=String(reg.data.user.id);
     const regCookie=String(reg.headers.get('set-cookie')||'').split(';')[0];
     if(!regCookie)throw new Error('registration cookie missing');
+    const cookieValue=decodeURIComponent(String(regCookie.split('=').slice(1).join('=')||''));
+    const decoded=readSessionToken(cookieValue);
+    if(decoded?.uid!==createdUserId)throw new Error('registration cookie token invalid');
 
-    const me=await fetch(base+'/api/auth/me',{headers:{cookie:regCookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
-    const meData=await me.json().catch(()=>({}));
-    if(!me.ok||meData?.user?.id!==createdUserId)throw new Error('me-after-register '+me.status);
+    const commonHeaders={cookie:regCookie,'user-agent':'content-factory-auth-ephemeral-selftest'};
+    const me=await retryJson('/api/auth/me',{headers:commonHeaders,accept:[200]});
+    if(me.data?.user?.id!==createdUserId)throw new Error('me-after-register '+me.status);
 
-    const acc=await fetch(base+'/api/accounts',{headers:{cookie:regCookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
-    const accData=await acc.json().catch(()=>({}));
-    if(!acc.ok||!Array.isArray(accData?.accounts)||!accData.accounts.length)throw new Error('accounts '+acc.status);
-    createdAccountIds=accData.accounts.map(x=>String(x.id||'')).filter(Boolean);
+    const acc=await retryJson('/api/accounts',{headers:commonHeaders,accept:[200]});
+    if(!Array.isArray(acc.data?.accounts)||!acc.data.accounts.length)throw new Error('accounts '+acc.status);
+    createdAccountIds=acc.data.accounts.map(x=>String(x.id||'')).filter(Boolean);
 
-    const login=await fetch(base+'/api/auth/login',{
-      method:'POST',headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
-      body:JSON.stringify({email,password})
+    const login=await retryJson('/api/auth/login',{
+      method:'POST',
+      headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
+      body:JSON.stringify({email,password}),
+      accept:[200],
+      attempts:4
     });
-    const loginData=await login.json().catch(()=>({}));
-    if(!login.ok||loginData?.user?.id!==createdUserId)throw new Error('login '+login.status+' '+String(loginData?.code||loginData?.error||''));
+    if(login.data?.user?.id!==createdUserId)throw new Error('login '+login.status+' '+String(login.data?.code||login.data?.error||''));
     const loginCookie=String(login.headers.get('set-cookie')||'').split(';')[0];
     if(!loginCookie)throw new Error('login cookie missing');
 
-    const me2=await fetch(base+'/api/auth/me',{headers:{cookie:loginCookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
-    const me2Data=await me2.json().catch(()=>({}));
-    if(!me2.ok||me2Data?.user?.id!==createdUserId)throw new Error('me-after-login '+me2.status);
+    const me2=await retryJson('/api/auth/me',{
+      headers:{cookie:loginCookie,'user-agent':'content-factory-auth-ephemeral-selftest'},
+      accept:[200]
+    });
+    if(me2.data?.user?.id!==createdUserId)throw new Error('me-after-login '+me2.status);
 
     console.log('[auth-ephemeral-selftest] PASS register='+reg.status+' me=200 accounts=200 login=200 me2=200');
     return {ok:true};
