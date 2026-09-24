@@ -3174,7 +3174,10 @@ async function runFinalQc(run,finalPath,accountId){
       'CRITICAL FAIL: любое заметное изменение исходного товара — геометрии, пропорций, количества/расположения деталей, креплений, торцов, материала, цвета или конструкции; также потеря ключевого действия/payoff, грубая смена персонажа/локации, серьёзные артефакты, пропущенная/дублированная сцена, неправильный формат.',
       'Оцени также живость окружения, монтажную связность, понятность проблемы→решения, естественность рекламы и соответствие 9:16.',
       'CINEMA QC: оцени физическую мотивированность света, естественность camera movement, отсутствие стерильно-плавающей камеры, правдоподобный вес/контакт движений, разнообразие крупностей и углов, цветовую/световую continuity между соседними сценами. Эти пункты дают WARN/снижают score, но становятся critical только если реально ломают сцену.',
-      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail","lightingPhysics":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","motionPhysics":"ok|warn|fail","shotVariety":"ok|warn|fail","colorContinuity":"ok|warn|fail"},"issues":[""]}'
+      'DIRECTOR CUT: смотри ролик как режиссёр после первого монтажа. Если 1–2 конкретные сцены заметно тянут ролик вниз по удержанию/динамике/киношности, укажи их номера для пересъёмки. Не отправляй сцену на пересъёмку ради мелочи. Для каждой такой сцены дай точную постановочную правку и preferredProvider runway|seedance. Также дай монтажные замечания, которые не требуют пересъёмки.',
+      'Storyboard для нумерации сцен: '+JSON.stringify(run.storyboard||[]),
+      'Scene QC map: '+JSON.stringify(Object.fromEntries(Object.entries(run.sceneResults||{}).map(([k,v])=>[k,{score:v?.qc?.score,checks:v?.qc?.checks,issues:v?.qc?.issues,provider:v?.routerProvider||v?.provider}]))),
+      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail","lightingPhysics":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","motionPhysics":"ok|warn|fail","shotVariety":"ok|warn|fail","colorContinuity":"ok|warn|fail"},"issues":[""],"directorCut":{"score":10,"reshootScenes":[1],"sceneNotes":[{"scene":1,"issue":"","fix":"","preferredProvider":"runway|seedance"}],"montageActions":[""],"reason":""}}'
     ].join('\n')},...(evidence.frames||[]).slice(0,8)];
     if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
@@ -3196,6 +3199,13 @@ async function runFinalQc(run,finalPath,accountId){
       summary:String(parsed?.summary||'AI-проверка завершена.').slice(0,3000),
       checks:parsed?.checks&&typeof parsed.checks==='object'?parsed.checks:{},
       issues:Array.isArray(parsed?.issues)?parsed.issues.map(x=>String(x)).slice(0,20):[],
+      directorCut:parsed?.directorCut&&typeof parsed.directorCut==='object'?{
+        score:Number.isFinite(Number(parsed.directorCut.score))?Number(parsed.directorCut.score):null,
+        reshootScenes:Array.isArray(parsed.directorCut.reshootScenes)?[...new Set(parsed.directorCut.reshootScenes.map(Number).filter(n=>Number.isInteger(n)&&n>0))].slice(0,2):[],
+        sceneNotes:Array.isArray(parsed.directorCut.sceneNotes)?parsed.directorCut.sceneNotes.slice(0,4).map(x=>({scene:Number(x?.scene)||0,issue:String(x?.issue||'').slice(0,1200),fix:String(x?.fix||'').slice(0,1800),preferredProvider:/seedance/i.test(String(x?.preferredProvider||''))?'seedance':'runway'})):[],
+        montageActions:Array.isArray(parsed.directorCut.montageActions)?parsed.directorCut.montageActions.map(String).slice(0,8):[],
+        reason:String(parsed.directorCut.reason||'').slice(0,2000)
+      }:{score:null,reshootScenes:[],sceneNotes:[],montageActions:[],reason:''},
       durationSeconds:Math.round(evidence.duration||0),
       model:response?.model||model
     };
@@ -3245,6 +3255,49 @@ async function processRunPostProduction(accountId,runId){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     run.qcResult={...qc,completedAt:new Date().toISOString()};
     run.postProductionRunning=false;run.error='';run.updatedAt=new Date().toISOString();
+
+    const dc=qc?.directorCut&&typeof qc.directorCut==='object'?qc.directorCut:{reshootScenes:[]};
+    const dcPass=Number(run.directorCut?.pass)||0;
+    const dcScenes=(Array.isArray(dc.reshootScenes)?dc.reshootScenes:[])
+      .map(Number).filter(n=>Number.isInteger(n)&&n>=1&&n<=(run.storyboard||[]).length).slice(0,2);
+    const finalScore=Number(qc?.score);
+    if(run.mode!=='manual'&&dcPass<1&&dcScenes.length&&(!Number.isFinite(finalScore)||finalScore<9.3)){
+      run.sceneVersions=run.sceneVersions&&typeof run.sceneVersions==='object'?run.sceneVersions:{};
+      const noteMap=new Map((Array.isArray(dc.sceneNotes)?dc.sceneNotes:[]).map(x=>[Number(x?.scene),x]));
+      for(const sceneNo of dcScenes){
+        const old=run.sceneResults?.[sceneNo];
+        if(old){
+          run.sceneVersions[sceneNo]=Array.isArray(run.sceneVersions[sceneNo])?run.sceneVersions[sceneNo]:[];
+          run.sceneVersions[sceneNo].push({...old,archivedAt:new Date().toISOString(),reason:'director-cut'});
+          run.sceneVersions[sceneNo]=run.sceneVersions[sceneNo].slice(-5);
+        }
+        if(run.sceneResults)delete run.sceneResults[sceneNo];
+        const note=noteMap.get(sceneNo)||{};
+        if(run.storyboard?.[sceneNo-1])run.storyboard[sceneNo-1].directorCutNotes=[note.issue,note.fix].filter(Boolean).join(' | ').slice(0,2600);
+        if(run.sceneRouting?.[sceneNo]){
+          const preferred=note.preferredProvider==='seedance'?'seedance':'runway';
+          run.sceneRouting[sceneNo]={...run.sceneRouting[sceneNo],provider:preferred,source:'director-cut',reason:'Director Cut: '+String(note.fix||note.issue||dc.reason||'улучшить слабую сцену').slice(0,700)};
+        }
+      }
+      run.directorCut={
+        pass:dcPass+1,status:'reshooting',score:Number.isFinite(Number(dc.score))?Number(dc.score):null,
+        reshootScenes:dcScenes,sceneNotes:dc.sceneNotes||[],montageActions:dc.montageActions||[],reason:dc.reason||'',
+        requestedAt:new Date().toISOString()
+      };
+      const remaining=Object.values(run.sceneResults||{}).filter(x=>x?.ok&&x?.urls?.length&&x?.qc?.passed!==false).length;
+      run.generationResult={provider:'mixed',urls:Object.keys(run.sceneResults||{}).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]),completedScenes:remaining,totalScenes:(run.storyboard||[]).length,completed:false};
+      run.acceptedScenes=[];
+      run.montageResult=null;run.qcResult=null;
+      run.backendGenerationRunning=false;run.postProductionRunning=false;
+      run.stage='Director Cut · пересъёмка';run.status='В работе';run.progress=42;run.awaitingApproval=false;
+      appendFactoryJournal(data,'Director Cut отправил сцены на пересъёмку',(run.productName||run.id)+' · сцены '+dcScenes.join(', ')+' · '+String(dc.reason||'улучшение удержания/киношности'));
+      await writeAppState(data,accountId);
+      enqueueRunGeneration(accountId,run.id,'director-cut-reshoot');
+      return {ok:true,directorCut:true,reshootScenes:dcScenes};
+    }
+    if(run.directorCut?.status==='reshooting'){
+      run.directorCut={...run.directorCut,status:'completed',completedAt:new Date().toISOString(),finalScore:Number.isFinite(finalScore)?finalScore:null};
+    }
     if(run.mode==='manual'){
       run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;
       appendFactoryJournal(data,'Финальный ролик готов к проверке',(run.productName||run.id)+' · '+String(qc?.summary||''));
@@ -3385,6 +3438,7 @@ function buildRunwayMotionPrompt(run,scene,qcCorrection=''){
     run?.previsPlan?.cinemaBible?.motionBible?('Motion character: '+cleanMotionText(run.previsPlan.cinemaBible.motionBible)+'.'):'',
     'Body, hand and object movement has believable weight, contact, friction and inertia.',
     positiveProductMotionLock(run,scene),
+    scene?.directorCutNotes?('Director cut correction: '+cleanMotionText(scene.directorCutNotes)+'.'):'',
     qcCorrection?('Correction for this take: '+cleanMotionText(qcCorrection)+'.'):''
   ].filter(Boolean).join(' ').slice(0,900);
 }
@@ -3402,6 +3456,7 @@ function buildSeedanceMotionPrompt(run,scene,qcCorrection=''){
     'PHYSICS: realistic weight transfer, contact, inertia, friction and material response. Hands interact with the object using plausible grip and pressure.',
     positiveProductMotionLock(run,scene),
     'The first frame and last frame are hard visual anchors; create a physically plausible transition between them.',
+    scene?.directorCutNotes?('DIRECTOR CUT CORRECTION: '+cleanMotionText(scene.directorCutNotes)):'',
     qcCorrection?('RETRY CORRECTION: '+cleanMotionText(qcCorrection)):''
   ].filter(Boolean).join('\n').slice(0,1800);
 }
