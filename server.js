@@ -659,12 +659,12 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     required:['candidates'],
     properties:{
       candidates:{
-        type:'array',minItems:8,maxItems:8,
+        type:'array',minItems:10,maxItems:10,
         items:{
           type:'object',additionalProperties:false,
-          required:['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'],
+          required:['title','formatPattern','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'],
           properties:{
-            title:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
+            title:{type:'string'},formatPattern:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
             concept:{type:'string'},mechanic:{type:'string'},angle:{type:'string'},productRole:{type:'string'},
             retention:{type:'string'},payoff:{type:'string'},ctaDirection:{type:'string'},production:{type:'string'},why:{type:'string'}
           }
@@ -696,10 +696,16 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       },
       quality:{
         type:'object',additionalProperties:false,
-        required:['hook','retention','productNecessity','visualClarity','originality','avatarFit','generatability','payoff','factualSafety','conversionPotential','overall'],
+        required:['hook','scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','loopPotential','productNecessity','visualClarity','originality','avatarFit','generatability','payoff','factualSafety','conversionPotential','overall'],
         properties:{
           hook:{type:'integer',minimum:1,maximum:10},
+          scrollStop:{type:'integer',minimum:1,maximum:10},
+          curiosityGap:{type:'integer',minimum:1,maximum:10},
           retention:{type:'integer',minimum:1,maximum:10},
+          pacing:{type:'integer',minimum:1,maximum:10},
+          nativeTikTok:{type:'integer',minimum:1,maximum:10},
+          dialogueNaturalness:{type:'integer',minimum:1,maximum:10},
+          loopPotential:{type:'integer',minimum:1,maximum:10},
           productNecessity:{type:'integer',minimum:1,maximum:10},
           visualClarity:{type:'integer',minimum:1,maximum:10},
           originality:{type:'integer',minimum:1,maximum:10},
@@ -723,7 +729,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
       body:JSON.stringify({
-        model,input,reasoning:{effort:'medium'},max_output_tokens:name==='idea_candidates'?6500:5000,
+        model,input,reasoning:{effort:name==='idea_critic'?'high':'medium'},max_output_tokens:name==='idea_candidates'?7800:6000,
         text:{format:{type:'json_schema',name,strict:true,schema}}
       })
     });
@@ -732,7 +738,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
     const priced=openAIUsageCost(data?.model||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{
-      provider:'OpenAI',category:'idea',description:name==='idea_candidates'?'8 концепций идеи':'Creative Critic идеи',
+      provider:'OpenAI',category:'idea',description:name==='idea_candidates'?'10 TikTok-концепций идеи':'TikTok Creative Critic идеи',
       amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
     }).catch(()=>{});
     const parsed=safeAnalysisJson(openAIText(data));
@@ -756,65 +762,121 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   ].filter(Boolean).join('\n');
 
   const generatorPrompt=[
-    'ROLE: senior creative director performance-рекламы TikTok/Reels/Shorts.',
-    'Сгенерируй РОВНО 8 принципиально разных рекламных МЕХАНИК для этого товара. Различаться должна именно механика, а не формулировка.',
+    'ROLE: senior TikTok creative director + performance UGC director. Ты придумываешь не «рекламный ролик», а нативное короткое видео, которое должно остановить скролл и удержать зрителя.',
+    'Сгенерируй РОВНО 10 принципиально разных концепций. Различаться должна МЕХАНИКА просмотра и причина досмотреть, а не только формулировка.',
     context,
     '',
-    'ЖЁСТКИЕ ПРАВИЛА:',
-    '1. Хук — визуальное событие в первые 1–2 секунды: конфликт, неудобство, тест, неожиданность, контраст, POV, мини-провал или сильное действие. Не начинай с общего плана, логотипа или человека, просто держащего товар.',
-    '2. Не раскрывай готовое решение в первую секунду без причины. Сначала проблема/интрига, затем reveal или доказательство. Исключение — осознанный формат сравнения до/после.',
-    '3. Механика и сюжет — разные вещи. mechanic описывает рекламный приём; concept — конкретную историю.',
-    '4. Нельзя строить примитивную цепочку проблема → товар → конец. Обязателен второй beat: попытка, тест, доказательство, контраст или микро-поворот перед payoff.',
-    '5. Товар обязан быть НЕОБХОДИМ для действия. Если его можно убрать из идеи и сюжет почти не изменится — идея слабая.',
-    '6. Финал — сильный ВИЗУАЛЬНЫЙ payoff результата использования. CTA вторичен.',
-    '7. Не сужай аудиторию без подтверждения товаром/брифом.',
-    '8. Запрещена банальная маркетплейс-реклама: ведущий держит товар, перечисляет преимущества, улыбается.',
-    '9. Идея должна быть реально разбиваема на 3–8 сцен и 15–20 превиз-кадров без невозможной физики, толп и сложного текста.',
-    '10. FACT LOCK: не придумывай способ крепления, размеры, материал, прочность и другие невидимые свойства, если они не указаны в УТП/правилах/брифе. По фото подтверждается только внешний вид.',
-    '11. Если есть привязанный аватар и человек нужен в сюжете — используй именно его и подстраивай механику под его образ.',
-    '12. Каждая из 8 концепций должна быть достаточно сильной, чтобы её можно было реально снять/сгенерировать как рекламу.',
+    '10 РАЗНЫХ FORMAT PATTERNS — используй каждый максимум один раз и укажи его в formatPattern:',
+    '1) relatable fail / бытовой микро-провал;',
+    '2) visual test / challenge / проверка в кадре;',
+    '3) POV / личное признание / наблюдение;',
+    '4) ответ на сомнение или типичный вопрос зрителя;',
+    '5) open loop / загадка «что сейчас изменится?»;',
+    '6) satisfying transformation / визуально приятное преобразование;',
+    '7) A/B comparison с дополнительным поворотом, а не простое до/после;',
+    '8) mini-story с 2–3 эскалациями;',
+    '9) pattern interrupt / неожиданное действие или смена ожидания;',
+    '10) loop/reveal — финал естественно возвращает к первому кадру или переосмысливает его.',
     '',
-    'Для каждой концепции заполни все поля подробно, без пустых значений.'
+    'VIRAL-FIRST ПРАВИЛА:',
+    '1. ПЕРВЫЙ КАДР 0–1 сек должен быть понятен без звука и останавливать палец: конкретное действие, ошибка, странность, конфликт, резкое следствие или визуальный вопрос. Никаких заставок, общего плана кухни, логотипа и «девушка стоит с товаром».',
+    '2. К 2–3 секунде зритель должен понимать проблему/интригу, но ещё не знать весь ответ. Создай curiosity gap.',
+    '3. Если есть первая реплика, она короткая и разговорная — обычно до 5–8 слов. Запрещён рекламный язык типа «Проверим этот удобный товар», «Идеальное решение», «Незаменимая вещь», «Наконец-то порядок».',
+    '4. Каждые 2–4 секунды нужен новый beat: новое действие, реакция, ракурс, доказательство, микро-поворот или новая информация. Для 30 секунд — ориентир 7–10 осмысленных beats, а не растягивание одного теста.',
+    '5. Обязательная структура удержания: SCROLL STOP → OPEN LOOP → ESCALATION → PRODUCT ACTION → PROOF → SECOND PROOF/TWIST → VISUAL PAYOFF. Можно менять порядок, но нельзя выкидывать удержание и доказательство.',
+    '6. Не делай примитивное «проблема → показали товар → конец». После первого решения обязательно нужен второй proof/beat или неожиданный payoff.',
+    '7. Товар должен физически участвовать в результате. Если товар можно убрать и ролик почти не изменится — концепцию считай провальной.',
+    '8. Один ролик = одна главная мысль. Не перечисляй 5 преимуществ. Доказательство важнее обещания.',
+    '9. Нативность TikTok: живая бытовая ситуация, близкие планы, руки/реакции, телефонная динамика, jump-cut или match action — только когда это помогает истории. Не превращай всё в стерильную студийную рекламу.',
+    '10. Герой ведёт себя как реальный человек, а не телеведущий. Реплики звучат как бытовая речь. Лучше реакция/действие, чем объяснение того, что зритель уже видит.',
+    '11. Не используй фальшивый кликбейт, выдуманные отзывы, fake comments, «вы не поверите», ложные скидки, опасные тесты и неподтверждённые обещания.',
+    '12. Финальный payoff должен быть визуальным. CTA максимум короткий и после результата. Если уместно — сделай естественный loop, чтобы финальный кадр подталкивал пересмотреть начало.',
+    '13. AUDIO PLAN: звук начинается осознанно с первых 0–2 секунд — реплика, естественный бытовой звук или SFX. Не планируй случайные длинные участки полной тишины. Ролик при этом обязан работать и без звука.',
+    '14. FACT LOCK: не придумывай способ крепления, размеры, материал, прочность и другие свойства, если их нет в УТП/правилах/брифе. Фото подтверждает внешний вид, а не скрытые характеристики.',
+    '15. Если к товару привязан AI-аватар — используй именно его, когда нужен человек. Сохраняй внешность, голос и характер; не заменяй случайной моделью.',
+    '16. Концепция должна быть реально генерируема покадрово: без невозможной физики, толпы, сложных рук, чрезмерных проливов/разрушений и длинного читаемого текста.',
+    '17. Используй анализы конкурентов только как источник ПАТТЕРНОВ удержания. Не копируй чужой сюжет, формулировки и визуальную последовательность.',
+    '18. Недавние идеи для этого товара не повторяй. Если механика уже использовалась — придумай другую причину досмотреть.',
+    '',
+    'ПОЛЯ:',
+    '- hook и first3Seconds должны описывать конкретный первый кадр/действие, а не маркетинговую фразу;',
+    '- mechanic = почему человек продолжает смотреть;',
+    '- retention = какие новые beats удерживают каждые несколько секунд;',
+    '- payoff = что зритель ВИДИТ в конце;',
+    '- production = краткий темп ролика по времени + план звука/речи;',
+    '- why = 2–4 предложения: почему это нативно для TikTok и почему товар необходим.',
+    '',
+    'Для каждой из 10 концепций заполни все поля. Не повторяй одну и ту же механику под разными названиями.'
   ].join('\n');
 
   const candidateData=await callIdeaAI({
     prompt:generatorPrompt,schema:candidateSchema,name:'idea_candidates',images:refs
   });
   const candidates=Array.isArray(candidateData?.candidates)?candidateData.candidates:[];
-  if(candidates.length!==8)throw new Error('Генератор идеи вернул не 8 концепций');
+  if(candidates.length!==10)throw new Error('Генератор идеи вернул не 10 концепций');
 
   const criticBase=[
-    'ROLE: Creative Critic — строгий рекламный креативный директор.',
-    'Твоя задача: НЕ просто выбрать концепцию. Сначала критически сравни 8 кандидатов, затем УСИЛЬ 2 лучших и собери одну финальную идею.',
+    'ROLE: TikTok Creative Critic + retention editor. Ты отбираешь идею так, будто решаешь, переживёт ли она первые секунды в реальной ленте.',
+    'Сначала безжалостно отсей слабые и рекламные варианты из 10 кандидатов. Затем возьми сильные элементы 2–3 лучших и собери ОДНУ финальную концепцию. Не обязан сохранять победителя как есть.',
     context,
     '',
     'КАНДИДАТЫ:',
     JSON.stringify(candidates),
     '',
-    'ОЦЕНИВАЙ финальную усиленную идею по 10 критериям 1–10:',
-    'hook, retention, productNecessity, visualClarity, originality, avatarFit, generatability, payoff, factualSafety, conversionPotential.',
+    'ОЦЕНИВАЙ финальную усиленную идею по шкале 1–10:',
+    'hook, scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, loopPotential, productNecessity, visualClarity, originality, avatarFit, generatability, payoff, factualSafety, conversionPotential, overall.',
     '',
-    'КРИТИЧНЫЕ ПОРОГИ: hook, retention, productNecessity, originality и generatability должны быть >= 8.',
-    'Если выбранная исходная концепция не проходит порог — НЕ возвращай её как есть: перепиши хук, механику, второй beat, payoff и структуру до прохождения порога.',
+    'КАЛИБРОВКА ОЦЕНОК:',
+    '- 9–10 ставь только если качество реально исключительное; не завышай оценки, чтобы пройти фильтр;',
+    '- если первый кадр похож на обычную рекламу — scrollStop максимум 6;',
+    '- если реплика звучит как копирайтинг/презентация — dialogueNaturalness максимум 6;',
+    '- если 30 секунд держатся на одном действии — pacing/retention максимум 6;',
+    '- если ролик можно понять как «показали товар и перечислили плюсы» — nativeTikTok максимум 5;',
+    '- если товар можно заменить любым похожим предметом без потери сюжета — productNecessity максимум 6.',
     '',
-    'ПРОВЕРКА БАНАЛЬНОСТИ:',
-    '- штрафуй идеи, похожие на «девушка показывает товар и рассказывает»;',
-    '- штрафуй обычное проблема → товар → конец без теста/доказательства/поворота;',
-    '- штрафуй пустую красивую постановку без действия;',
-    '- повышай ценность визуального доказательства, теста, POV, match-cut, до/после, мини-конфликта, реального бытового момента.',
+    'КРИТИЧЕСКИЙ ПОРОГ >=8:',
+    'scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, productNecessity, originality и generatability.',
+    '',
+    'АНТИСКУКА — ФИНАЛ НЕ ПРОХОДИТ, ЕСЛИ:',
+    '- первые 1–2 сек можно вырезать без потери ролика;',
+    '- первая реплика универсальна и могла бы рекламировать любой товар;',
+    '- товар раскрывается как «вот наш продукт», а не через действие;',
+    '- после reveal ничего нового не происходит;',
+    '- нет второго proof/twist;',
+    '- герой объясняет словами то, что уже видно;',
+    '- ролик выглядит как карточка маркетплейса, перенесённая в видео;',
+    '- есть длинный статичный beauty-shot вместо события;',
+    '- финал — только CTA/логотип без визуального результата.',
+    '',
+    'ТАЙМИНГ ДЛЯ 25–35 СЕК:',
+    '- 0–1 сек: scroll stop;',
+    '- 1–3 сек: вопрос/проблема/open loop;',
+    '- 3–8 сек: эскалация и первый reveal/action;',
+    '- 8–18 сек: доказательство + новый beat;',
+    '- 18–25 сек: второй proof/twist или усиление результата;',
+    '- последние секунды: visual payoff + короткий CTA/loop.',
+    'Если длительность другая — масштабируй структуру пропорционально.',
+    '',
+    'АУДИО:',
+    '- не допускай случайного «голос только в середине»;',
+    '- первые 0–2 сек имеют осмысленный звук/реплику/SFX или намеренную визуальную тишину;',
+    '- далее звук/атмосфера/речь имеют непрерывную драматургическую логику;',
+    '- реплики короткие, бытовые, без дикторской канцелярщины.',
     '',
     'ФИНАЛЬНАЯ ИДЕЯ ОБЯЗАТЕЛЬНО:',
-    '- сильное визуальное событие в первые 1–2 сек;',
-    '- не раскрывает всё решение слишком рано;',
-    '- имеет понятную central mechanic;',
-    '- содержит второй beat перед payoff;',
-    '- товар незаменим для сюжета;',
-    '- заканчивается визуальным результатом, а не просто CTA;',
-    '- использует привязанного аватара органично;',
-    '- не содержит неподтверждённых свойств товара;',
-    '- реально генерируема по сценам и превизам.',
+    '- выглядит как TikTok/Reels-контент, а не классическая реклама;',
+    '- имеет конкретный scroll-stop кадр;',
+    '- создаёт curiosity gap;',
+    '- меняет beat каждые несколько секунд;',
+    '- имеет минимум два визуальных доказательства/поворота;',
+    '- использует товар как необходимую часть действия;',
+    '- органично использует привязанного аватара;',
+    '- сохраняет FACT LOCK и внешний вид товара;',
+    '- реально генерируема нейросетями с устойчивой continuity;',
+    '- заканчивается сильным визуальным payoff; loop желателен, но не должен быть натянут.',
     '',
-    'Верни 1 финальную усиленную идею + 4 действительно разные альтернативы + оценки quality.'
+    'В поле why кратко объясни, почему зритель не свайпнет и почему досмотрит. Не пересказывай весь процесс выбора.',
+    'Верни 1 финальную усиленную идею + 4 действительно разные альтернативы + честные оценки quality.'
   ].join('\n');
 
   async function criticPass(prompt){
@@ -827,7 +889,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   }
 
   let idea=await criticPass(criticBase);
-  const criticalKeys=['hook','retention','productNecessity','originality','generatability'];
+  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','productNecessity','originality','generatability'];
   const failed=()=>criticalKeys.filter(k=>Number(idea?.quality?.[k]||0)<8);
 
   if(failed().length){
@@ -847,7 +909,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     throw new Error('Идея не прошла Creative Critic: '+finalFailed.join(', ')+' ниже 8/10');
   }
   idea.creativeProcess={
-    generatedCandidates:8,
+    generatedCandidates:10,
     critic:true,
     refined:true,
     criticalThreshold:8,
