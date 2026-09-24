@@ -952,7 +952,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,3);
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[])
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,2);
-  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
+  const refs=[...productRefs.slice(0,4),...avatarRefs.slice(0,2)].filter(Boolean);
   const model=process.env.OPENAI_MODEL||'gpt-6-astra';
   async function markIdeaProgress(progress,step){
     if(!payload?.id)return;
@@ -1460,7 +1460,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
   const ctx=await recentIdeaContext(accountId,payload.productId||payload.product?.id);
   const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
-  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
+  const refs=[...productRefs.slice(0,4),...avatarRefs.slice(0,2)].filter(Boolean);
   const model=process.env.OPENAI_MODEL||'gpt-6-astra';
   async function markScriptProgress(progress,step){
     if(!payload?.id)return;
@@ -2001,7 +2001,7 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
   if(!scriptScenes.length)throw new Error('Сначала нужен утверждённый сценарий');
   const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
-  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
+  const refs=[...productRefs.slice(0,4),...avatarRefs.slice(0,2)].filter(Boolean);
   const sceneSchema=storyboardSceneJsonSchema();
   const chunkSize=3;
   const board=[];
@@ -2073,7 +2073,7 @@ async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
   const next=index<board.length-1?board[index+1]:null;
   const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
-  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
+  const refs=[...productRefs.slice(0,4),...avatarRefs.slice(0,2)].filter(Boolean);
   const schema={
     type:'object',additionalProperties:false,required:['scene'],
     properties:{scene:storyboardSceneJsonSchema()}
@@ -3484,34 +3484,64 @@ function positiveProductMotionLock(run,scene={}){
   if(holder)parts.push('For this holder, the base stays fixed on the left, the continuous free loading side stays on the right, and a paper roll moves from right to left toward the base during installation.');
   return parts.filter(Boolean).join(' ');
 }
+function compactVideoProductLock(run,scene={}){
+  const dna=productDNAFromPayload(run)||{};
+  const rules=cleanMotionText(run?.productRules||run?.product?.rules||'');
+  const summary=cleanMotionText(dna?.summary||dna?.geometry||'');
+  const prohibited=Array.isArray(dna?.prohibitedChanges)
+    ? dna.prohibitedChanges.slice(0,4).map(cleanMotionText).filter(Boolean).join('; ')
+    : '';
+  const holder=paperTowelHolderLock(run,[scene?.action,scene?.startFrame,scene?.endFrame,scene?.shot].filter(Boolean).join(' '));
+  return [
+    'PRODUCT IDENTITY — HIGHEST PRIORITY: keep the exact same real product model in every frame; same silhouette, geometry, proportions, part count/placement, ends, openings, mounts, material, texture, markings and color. Never morph, mirror, detach, add, remove or redesign any part.',
+    rules?('Explicit rules: '+rules):'',
+    summary?('Product DNA: '+summary):'',
+    prohibited?('Forbidden changes: '+prohibited):'',
+    holder
+  ].filter(Boolean).join(' ').slice(0,560);
+}
 function cleanMotionText(value=''){
   return String(value||'').replace(/\s+/g,' ').trim();
 }
 function buildRunwayMotionPrompt(run,scene,qcCorrection=''){
   const camera=cleanMotionText(scene.camera||scene.cameraMotion||scene.shot||'');
+  const start=cleanMotionText(scene.startFrame||scene.shot||'');
   const action=cleanMotionText(scene.action||'');
   const end=cleanMotionText(scene.endFrame||'');
   const environment=cleanMotionText(scene.environment||'');
+  const lighting=cleanMotionText(scene.lighting||'');
+  const avatar=run?.character?.name
+    ? cleanMotionText([run.character.name,run.character.look,run.character.locks].filter(Boolean).join('; '))
+    : '';
+  const productLock=compactVideoProductLock(run,scene);
   const motionStyle=/ugc|натив|phone|handheld/i.test(String(run.style||'')+' '+String(scene.shot||''))
     ? 'Natural handheld camera with subtle human micro-drift and believable inertia.'
     : 'Controlled cinematic camera motion with natural acceleration and deceleration.';
   return [
     'Continuous seamless single shot.',
-    camera?('Camera movement: '+camera+'.'):'Camera remains intentionally composed with only subtle natural drift.',
-    action?('The subject performs one clear physical action: '+action+'.'):'',
-    end?('The motion resolves clearly into this end state: '+end+'.'):'',
-    environment?('The surrounding scene reacts naturally to the action in '+environment+'.'):'',
+    productLock,
+    start?('START state: '+start+'.'):'',
+    action?('One clear physical action: '+action+'.'):'',
+    end?('END state: '+end+'.'):'',
+    camera?('Camera: '+camera+'.'):'',
+    lighting?('Lighting: '+lighting+'.'):'',
+    environment?('Environment: '+environment+'.'):'',
+    avatar?('Same avatar identity: '+avatar+'.'):'',
     motionStyle,
-    run?.previsPlan?.cinemaBible?.motionBible?('Motion character: '+cleanMotionText(run.previsPlan.cinemaBible.motionBible)+'.'):'',
-    'Body, hand and object movement has believable weight, contact, friction and inertia.',
-    positiveProductMotionLock(run,scene),
-    scene?.directorCutNotes?('Director cut correction: '+cleanMotionText(scene.directorCutNotes)+'.'):'',
-    qcCorrection?('Correction for this take: '+cleanMotionText(qcCorrection)+'.'):''
-  ].filter(Boolean).join(' ').slice(0,900);
+    'Believable weight, contact, friction and inertia. No random text, no new product parts, no geometry drift.',
+    scene?.directorCutNotes?('Director correction: '+cleanMotionText(scene.directorCutNotes)+'.'):'',
+    qcCorrection?('Retry correction: '+cleanMotionText(qcCorrection)+'.'):''
+  ].filter(Boolean).join(' ').slice(0,945);
 }
+
 function buildSeedanceMotionPrompt(run,scene,qcCorrection=''){
+  const avatar=run?.character?.name
+    ? cleanMotionText([run.character.name,run.character.look,run.character.locks].filter(Boolean).join('; '))
+    : '';
   return [
     'ONE continuous cinematic shot. Preserve temporal continuity from START to END.',
+    compactVideoProductLock(run,scene),
+    'IDENTITY PRIORITY: if a generated keyframe contains any product drift, keep the scene composition/action but correct the physical product to the Product DNA and explicit product rules.',
     'START: '+cleanMotionText(scene.startFrame||scene.shot||''),
     'ACTION: '+cleanMotionText(scene.action||''),
     'END: '+cleanMotionText(scene.endFrame||''),
@@ -3519,13 +3549,14 @@ function buildSeedanceMotionPrompt(run,scene,qcCorrection=''){
     'FRAMING: '+cleanMotionText(scene.framing||''),
     'LIGHTING: '+cleanMotionText(scene.lighting||'motivated practical light with physically believable shadows and falloff'),
     'ENVIRONMENT: '+cleanMotionText(scene.environment||''),
+    avatar?('AVATAR IDENTITY: '+avatar):'',
     cinemaBibleText(run)?('CINEMA BIBLE: '+cinemaBibleText(run)):'',
-    'PHYSICS: realistic weight transfer, contact, inertia, friction and material response. Hands interact with the object using plausible grip and pressure.',
+    'PHYSICS: realistic weight transfer, contact, inertia, friction and material response. Hands use plausible grip and pressure.',
     positiveProductMotionLock(run,scene),
-    'The first frame and last frame are hard visual anchors; create a physically plausible transition between them.',
+    'The first and last keyframes are composition/action anchors, not permission to alter the real product.',
     scene?.directorCutNotes?('DIRECTOR CUT CORRECTION: '+cleanMotionText(scene.directorCutNotes)):'',
     qcCorrection?('RETRY CORRECTION: '+cleanMotionText(qcCorrection)):''
-  ].filter(Boolean).join('\n').slice(0,1800);
+  ].filter(Boolean).join('\n').slice(0,2200);
 }
 
 function providerCreditError(error){
