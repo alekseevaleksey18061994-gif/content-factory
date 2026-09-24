@@ -2130,3 +2130,8 @@ html,body{
 .director-cut-scenes p{margin:6px 0}
 .director-cut-scenes small{display:block;opacity:.78}
 @media(max-width:900px){.media-library-split{grid-template-columns:1fr}}
+
+/* Active media v2.6.37 */
+.active-media-card{outline:1px solid rgba(108,255,169,.28);background:rgba(108,255,169,.025)}
+.active-media-card .archive-media-copy small .chip{margin-right:6px}
+.media-library-panel .media-actions{display:flex;gap:7px;flex-wrap:wrap}
