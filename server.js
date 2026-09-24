@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='1.6.2';
+const APP_VERSION='1.7.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -651,135 +651,208 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[])
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,2);
   const refs=[...productRefs,...avatarRefs].slice(0,5);
-  const master=[
-    'ROLE: Ты senior creative director и performance-креатор коротких вертикальных видео для TikTok, Reels и YouTube Shorts.',
-    'ЗАДАЧА: придумать не просто тему, а сильную КРЕАТИВНУЮ МЕХАНИКУ ролика, которую хочется досмотреть и которая органично продаёт товар.',
-    '',
-    'КОНТЕКСТ ТОВАРА',
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+
+  const candidateSchema={
+    type:'object',
+    additionalProperties:false,
+    required:['candidates'],
+    properties:{
+      candidates:{
+        type:'array',minItems:8,maxItems:8,
+        items:{
+          type:'object',additionalProperties:false,
+          required:['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'],
+          properties:{
+            title:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
+            concept:{type:'string'},mechanic:{type:'string'},angle:{type:'string'},productRole:{type:'string'},
+            retention:{type:'string'},payoff:{type:'string'},ctaDirection:{type:'string'},production:{type:'string'},why:{type:'string'}
+          }
+        }
+      }
+    }
+  };
+  const finalSchema={
+    type:'object',
+    additionalProperties:false,
+    required:['selected','alternatives','quality'],
+    properties:{
+      selected:{
+        type:'object',additionalProperties:false,
+        required:['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'],
+        properties:{
+          title:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
+          concept:{type:'string'},mechanic:{type:'string'},angle:{type:'string'},productRole:{type:'string'},
+          retention:{type:'string'},payoff:{type:'string'},ctaDirection:{type:'string'},production:{type:'string'},why:{type:'string'}
+        }
+      },
+      alternatives:{
+        type:'array',minItems:4,maxItems:4,
+        items:{
+          type:'object',additionalProperties:false,
+          required:['title','hook','concept','angle'],
+          properties:{title:{type:'string'},hook:{type:'string'},concept:{type:'string'},angle:{type:'string'}}
+        }
+      },
+      quality:{
+        type:'object',additionalProperties:false,
+        required:['hook','retention','productNecessity','visualClarity','originality','avatarFit','generatability','payoff','factualSafety','conversionPotential','overall'],
+        properties:{
+          hook:{type:'integer',minimum:1,maximum:10},
+          retention:{type:'integer',minimum:1,maximum:10},
+          productNecessity:{type:'integer',minimum:1,maximum:10},
+          visualClarity:{type:'integer',minimum:1,maximum:10},
+          originality:{type:'integer',minimum:1,maximum:10},
+          avatarFit:{type:'integer',minimum:1,maximum:10},
+          generatability:{type:'integer',minimum:1,maximum:10},
+          payoff:{type:'integer',minimum:1,maximum:10},
+          factualSafety:{type:'integer',minimum:1,maximum:10},
+          conversionPotential:{type:'integer',minimum:1,maximum:10},
+          overall:{type:'integer',minimum:1,maximum:10}
+        }
+      }
+    }
+  };
+
+  async function callIdeaAI({prompt,schema,name,images=[]}){
+    const input=[{role:'user',content:[
+      {type:'input_text',text:prompt},
+      ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
+    ]}];
+    const r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',
+      headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({
+        model,input,reasoning:{effort:'medium'},max_output_tokens:name==='idea_candidates'?6500:5000,
+        text:{format:{type:'json_schema',name,strict:true,schema}}
+      })
+    });
+    const txt=await r.text();
+    let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
+    if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
+    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+    if(priced.amountUsd>0)await recordExpense(accountId,{
+      provider:'OpenAI',category:'idea',description:name==='idea_candidates'?'8 концепций идеи':'Creative Critic идеи',
+      amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
+    }).catch(()=>{});
+    const parsed=safeAnalysisJson(openAIText(data));
+    if(!parsed||typeof parsed!=='object')throw new Error('AI вернул некорректную структуру идеи');
+    return parsed;
+  }
+
+  const context=[
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
     'Категория: '+String(payload.product?.category||payload.category||''),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
-    'Правила/ограничения: '+String(payload.productRules||payload.product?.rules||''),
-    'FACT LOCK: любые невидимые свойства товара (способ крепления, прочность, материал, размеры, мощность, водостойкость, эффект и т.п.) разрешено упоминать ТОЛЬКО если они прямо записаны в УТП, правилах или брифе пользователя. По фото можно брать только визуально наблюдаемые форму, цвет, пропорции и детали. Если факт не подтверждён — не использовать его в идее.',
+    'Правила товара: '+String(payload.productRules||payload.product?.rules||''),
     'Формат: 9:16',
     'Длительность: '+String(payload.duration||'30 сек'),
-    'Желаемый стиль: '+String(payload.style||'UGC'),
-    'Бриф пользователя: '+String(payload.brief||''),
-    payload.character?.name?('ПРИВЯЗАННЫЙ AI-АВАТАР: '+String(payload.character.name)+'. Возраст/образ: '+String(payload.character.age||'')+'. Внешность: '+String(payload.character.look||'')+'. Манера речи: '+String(payload.character.voice||'')+'. Темы/роль: '+String(payload.character.topics||'')+'. Locks: '+String(payload.character.locks||'')):'',
-    payload.character?.name?'AVATAR LOCK: если в идее есть человек, используй именно этого привязанного аватара. Идея должна быть органична его образу, манере речи и тематике. Не подменяй его случайным ведущим.':'',
-    'Вариант запуска: '+variant,
-    feedback?('Комментарий пользователя к переделке: '+feedback):'',
-    '',
-    'ЦЕЛЬ ИДЕИ',
-    '1) В первые 1–2 секунды должно быть понятно, почему не хочется свайпнуть.',
-    '2) Идея должна работать ВИЗУАЛЬНО даже без звука; товар или интрига вокруг товара появляются максимально рано.',
-    '3) Товар — часть действия и механики ролика, а не реквизит в руке.',
-    '4) Нужен один сильный центральный приём: тест, неожиданность, проблема→решение, POV, мини-история, визуальное сравнение, эксперимент, демонстрация, экспертный разбор или другая понятная механика.',
-    '5) Идея должна быть реально генерируемой нейросетями по отдельным сценам. Не предлагай сложные толпы, невозможную физику, мелкий текст в кадре или десятки объектов.',
-    '6) Не придумывай характеристики, которых нет в данных товара. Не делай медицинских, гарантированных или недоказанных обещаний.',
-    '7) Не делай банальную рекламу вида «красивая девушка держит товар, улыбается и рассказывает преимущества», если в этом нет отдельного сильного приёма.',
-    '8) Не начинай с логотипа, упаковки на столе или общего плана ванной/комнаты без действия.',
-    '9) Если есть анализы конкурентов, бери из них только ПАТТЕРНЫ удержания, структуру и приёмы. Не копируй чужие тексты, персонажей, шутки, сюжет или брендинг.',
-    '10) Избегай повторения уже использованных нами идей.',
-    '',
-    'ПРОЦЕСС МЫШЛЕНИЯ',
-    'Сначала придумай 8 принципиально разных концепций. Они должны отличаться не формулировкой, а механикой.',
-    'Мысленно оцени каждую по пяти критериям: удержание первых секунд, органичность товара, визуальная понятность, оригинальность, простота/стоимость производства.',
-    'Отбрось слабые, шаблонные и слишком дорогие. Выбери одну лучшую для текущего товара.',
-    'Не показывай внутренние оценки и рассуждения.',
-    '',
-    'ОСНОВНАЯ ИДЕЯ ДОЛЖНА СОДЕРЖАТЬ',
-    '- title: короткое рабочее название;',
-    '- audience: кому это должно зацепить;',
-    '- hook: сама идея хука, а не готовый сценарий;',
-    '- first3Seconds: буквально что зритель увидит в первые 3 секунды;',
-    '- concept: что происходит в ролике от начала до результата в 3–6 предложениях;',
-    '- mechanic: центральная механика/приём;',
-    '- angle: угол подачи;',
-    '- productRole: как именно товар участвует в действии;',
-    '- retention: что удерживает зрителя до конца;',
-    '- payoff: какой визуальный/сюжетный результат получает зритель;',
-    '- ctaDirection: естественное направление CTA без рекламного клише;',
-    '- production: low / medium / high + коротко почему;',
-    '- why: почему эта идея должна сработать именно для этого товара.',
-    '',
-    'АЛЬТЕРНАТИВЫ',
-    'Верни ещё 4 действительно разные запасные идеи — каждая с title, hook, concept, angle.',
-    '',
-    'ПРОВЕРКА ПЕРЕД ОТВЕТОМ',
-    '- Можно ли понять хук без звука?',
-    '- Есть ли причина смотреть после 3-й секунды?',
-    '- Товар действительно нужен для сюжета?',
-    '- Не выглядит ли это как обычная реклама маркетплейса?',
-    '- Можно ли разбить идею на 3–8 генерируемых сцен?',
-    '- Не повторяет ли она прошлые идеи?',
-    '',
-    'Недавние наши идеи (НЕ ПОВТОРЯТЬ): '+JSON.stringify(ctx.recent),
-    'Разборы конкурентов/референсных видео, если были (ТОЛЬКО КАК ПАТТЕРНЫ): '+JSON.stringify(ctx.analyses),
-    '',
-    'Верни ТОЛЬКО валидный JSON без markdown:',
-    '{"selected":{"title":"","audience":"","hook":"","first3Seconds":"","concept":"","mechanic":"","angle":"","productRole":"","retention":"","payoff":"","ctaDirection":"","production":"","why":""},"alternatives":[{"title":"","hook":"","concept":"","angle":""}]}'
+    'Стиль: '+String(payload.style||'UGC'),
+    'Бриф: '+String(payload.brief||''),
+    payload.character?.name?('Привязанный AI-аватар: '+String(payload.character.name)+'. Возраст/образ: '+String(payload.character.age||'')+'. Внешность: '+String(payload.character.look||'')+'. Манера речи: '+String(payload.character.voice||'')+'. Темы: '+String(payload.character.topics||'')+'. Locks: '+String(payload.character.locks||'')):'',
+    'Недавние идеи, которые нельзя повторять: '+JSON.stringify(ctx.recent),
+    'Паттерны из анализов конкурентов, если есть: '+JSON.stringify(ctx.analyses),
+    feedback?('Комментарий пользователя к переделке: '+feedback):''
   ].filter(Boolean).join('\n');
-  const input=[{role:'user',content:[
-    {type:'input_text',text:master},
-    ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
-  ]}];
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
-  const r=await fetch('https://api.openai.com/v1/responses',{
-    method:'POST',
-    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-    body:JSON.stringify({
-      model,input,
-      reasoning:{effort:'medium'},
-      max_output_tokens:3200,
-      text:{format:{
-        type:'json_schema',
-        name:'content_factory_idea',
-        strict:true,
-        schema:{
-          type:'object',
-          additionalProperties:false,
-          required:['selected','alternatives'],
-          properties:{
-            selected:{
-              type:'object',
-              additionalProperties:false,
-              required:['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'],
-              properties:{
-                title:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
-                concept:{type:'string'},mechanic:{type:'string'},angle:{type:'string'},productRole:{type:'string'},
-                retention:{type:'string'},payoff:{type:'string'},ctaDirection:{type:'string'},production:{type:'string'},why:{type:'string'}
-              }
-            },
-            alternatives:{
-              type:'array',
-              minItems:4,
-              maxItems:4,
-              items:{
-                type:'object',
-                additionalProperties:false,
-                required:['title','hook','concept','angle'],
-                properties:{title:{type:'string'},hook:{type:'string'},concept:{type:'string'},angle:{type:'string'}}
-              }
-            }
-          }
-        }
-      }}
-    })
+
+  const generatorPrompt=[
+    'ROLE: senior creative director performance-рекламы TikTok/Reels/Shorts.',
+    'Сгенерируй РОВНО 8 принципиально разных рекламных МЕХАНИК для этого товара. Различаться должна именно механика, а не формулировка.',
+    context,
+    '',
+    'ЖЁСТКИЕ ПРАВИЛА:',
+    '1. Хук — визуальное событие в первые 1–2 секунды: конфликт, неудобство, тест, неожиданность, контраст, POV, мини-провал или сильное действие. Не начинай с общего плана, логотипа или человека, просто держащего товар.',
+    '2. Не раскрывай готовое решение в первую секунду без причины. Сначала проблема/интрига, затем reveal или доказательство. Исключение — осознанный формат сравнения до/после.',
+    '3. Механика и сюжет — разные вещи. mechanic описывает рекламный приём; concept — конкретную историю.',
+    '4. Нельзя строить примитивную цепочку проблема → товар → конец. Обязателен второй beat: попытка, тест, доказательство, контраст или микро-поворот перед payoff.',
+    '5. Товар обязан быть НЕОБХОДИМ для действия. Если его можно убрать из идеи и сюжет почти не изменится — идея слабая.',
+    '6. Финал — сильный ВИЗУАЛЬНЫЙ payoff результата использования. CTA вторичен.',
+    '7. Не сужай аудиторию без подтверждения товаром/брифом.',
+    '8. Запрещена банальная маркетплейс-реклама: ведущий держит товар, перечисляет преимущества, улыбается.',
+    '9. Идея должна быть реально разбиваема на 3–8 сцен и 15–20 превиз-кадров без невозможной физики, толп и сложного текста.',
+    '10. FACT LOCK: не придумывай способ крепления, размеры, материал, прочность и другие невидимые свойства, если они не указаны в УТП/правилах/брифе. По фото подтверждается только внешний вид.',
+    '11. Если есть привязанный аватар и человек нужен в сюжете — используй именно его и подстраивай механику под его образ.',
+    '12. Каждая из 8 концепций должна быть достаточно сильной, чтобы её можно было реально снять/сгенерировать как рекламу.',
+    '',
+    'Для каждой концепции заполни все поля подробно, без пустых значений.'
+  ].join('\n');
+
+  const candidateData=await callIdeaAI({
+    prompt:generatorPrompt,schema:candidateSchema,name:'idea_candidates',images:refs
   });
-  const txt=await r.text();
-  let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
-  if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
-  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
-  if(priced.amountUsd>0)await recordExpense(accountId,{
-    provider:'OpenAI',category:'idea',description:'Генерация креативной идеи ролика',
-    amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
-  }).catch(()=>{});
-  const idea=normalizeIdeaStage(safeAnalysisJson(openAIText(data)),payload);
-  const check=ideaStageComplete(idea);
-  if(!check.ok){
-    throw new Error('AI вернул неполную идею: '+(check.missing.length?('пустые поля '+check.missing.join(', ')):'')+(check.badAlt?' · альтернатив должно быть 4 и все поля должны быть заполнены':''));
+  const candidates=Array.isArray(candidateData?.candidates)?candidateData.candidates:[];
+  if(candidates.length!==8)throw new Error('Генератор идеи вернул не 8 концепций');
+
+  const criticBase=[
+    'ROLE: Creative Critic — строгий рекламный креативный директор.',
+    'Твоя задача: НЕ просто выбрать концепцию. Сначала критически сравни 8 кандидатов, затем УСИЛЬ 2 лучших и собери одну финальную идею.',
+    context,
+    '',
+    'КАНДИДАТЫ:',
+    JSON.stringify(candidates),
+    '',
+    'ОЦЕНИВАЙ финальную усиленную идею по 10 критериям 1–10:',
+    'hook, retention, productNecessity, visualClarity, originality, avatarFit, generatability, payoff, factualSafety, conversionPotential.',
+    '',
+    'КРИТИЧНЫЕ ПОРОГИ: hook, retention, productNecessity, originality и generatability должны быть >= 8.',
+    'Если выбранная исходная концепция не проходит порог — НЕ возвращай её как есть: перепиши хук, механику, второй beat, payoff и структуру до прохождения порога.',
+    '',
+    'ПРОВЕРКА БАНАЛЬНОСТИ:',
+    '- штрафуй идеи, похожие на «девушка показывает товар и рассказывает»;',
+    '- штрафуй обычное проблема → товар → конец без теста/доказательства/поворота;',
+    '- штрафуй пустую красивую постановку без действия;',
+    '- повышай ценность визуального доказательства, теста, POV, match-cut, до/после, мини-конфликта, реального бытового момента.',
+    '',
+    'ФИНАЛЬНАЯ ИДЕЯ ОБЯЗАТЕЛЬНО:',
+    '- сильное визуальное событие в первые 1–2 сек;',
+    '- не раскрывает всё решение слишком рано;',
+    '- имеет понятную central mechanic;',
+    '- содержит второй beat перед payoff;',
+    '- товар незаменим для сюжета;',
+    '- заканчивается визуальным результатом, а не просто CTA;',
+    '- использует привязанного аватара органично;',
+    '- не содержит неподтверждённых свойств товара;',
+    '- реально генерируема по сценам и превизам.',
+    '',
+    'Верни 1 финальную усиленную идею + 4 действительно разные альтернативы + оценки quality.'
+  ].join('\n');
+
+  async function criticPass(prompt){
+    const out=await callIdeaAI({prompt,schema:finalSchema,name:'idea_critic',images:[]});
+    const idea=normalizeIdeaStage(out,payload);
+    idea.quality=out.quality||{};
+    const complete=ideaStageComplete(idea);
+    if(!complete.ok)throw new Error('Creative Critic вернул неполную идею');
+    return idea;
   }
+
+  let idea=await criticPass(criticBase);
+  const criticalKeys=['hook','retention','productNecessity','originality','generatability'];
+  const failed=()=>criticalKeys.filter(k=>Number(idea?.quality?.[k]||0)<8);
+
+  if(failed().length){
+    const repairPrompt=[
+      criticBase,
+      '',
+      'ПРЕДЫДУЩАЯ ФИНАЛЬНАЯ ВЕРСИЯ НЕ ПРОШЛА ПОРОГ:',
+      JSON.stringify({selected:idea,quality:idea.quality}),
+      'Проваленные критичные критерии: '+failed().join(', ')+'.',
+      'Сделай ОДНУ более сильную переработку. Не косметическую. Измени визуальный хук, central mechanic, второй beat или payoff настолько, насколько нужно, чтобы каждый критичный критерий был >=8, сохраняя factual safety и генерируемость.'
+    ].join('\n');
+    idea=await criticPass(repairPrompt);
+  }
+
+  const finalFailed=failed();
+  if(finalFailed.length){
+    throw new Error('Идея не прошла Creative Critic: '+finalFailed.join(', ')+' ниже 8/10');
+  }
+  idea.creativeProcess={
+    generatedCandidates:8,
+    critic:true,
+    refined:true,
+    criticalThreshold:8,
+    evaluatedAt:new Date().toISOString()
+  };
   return idea;
 }
 
