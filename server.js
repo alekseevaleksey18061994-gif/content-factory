@@ -92,7 +92,6 @@ async function supabaseAuthRequest(pathname,{method='POST',body=null,accessToken
   const key=process.env.SUPABASE_PUBLISHABLE_KEY;
   const headers={apikey:key,'content-type':'application/json'};
   if(accessToken)headers.authorization='Bearer '+accessToken;
-  else headers.authorization='Bearer '+key;
   const r=await fetch(supabaseAuthBase()+pathname,{
     method,headers,body:body==null?undefined:JSON.stringify(body)
   });
@@ -115,6 +114,7 @@ async function ensureSupabaseEmailUser(email,password=null){
     if(e?.status===400||e?.status===422||msg.includes('already')||msg.includes('registered')){
       return {ok:true,userId:'',created:false};
     }
+    console.warn('[supabase-auth] '+String(e?.status||'')+' '+String(e?.message||e));
     throw e;
   }
 }
@@ -7411,15 +7411,18 @@ const server=http.createServer(async(req,res)=>{
       if(!validEmail(email)) return json(res,400,{ok:false,error:'Укажи корректную почту.'});
       if(password.length<8) return json(res,400,{ok:false,error:'Пароль должен быть не короче 8 символов.'});
       const users=await ensureUsersRegistry();
-      if(users.users.some(u=>normalizeEmail(u.email||u.login)===email)) return json(res,409,{ok:false,error:'Аккаунт с этой почтой уже зарегистрирован.'});
+      if(users.users.some(u=>normalizeEmail(u.email||u.login)===email)) return json(res,409,{ok:false,error:'Аккаунт с этой почтой уже существует. Перейди во «Вход» → «Забыли пароль?».'});
 
-      const auth=await ensureSupabaseEmailUser(email,password);
+      let auth={ok:false,userId:'',created:false};
+      let authBootstrapError='';
+      try{auth=await ensureSupabaseEmailUser(email,password)}
+      catch(e){authBootstrapError=String(e?.message||e).slice(0,500)}
       const salt=randomBytes(16).toString('hex');
       const displayName=email.split('@')[0]||'Пользователь';
       const user={
         id:'usr_'+randomBytes(10).toString('hex'),
         login:email,email,displayName,salt,passwordHash:hashPassword(password,salt),
-        supabaseUserId:auth?.userId||'',authType:'email',createdAt:new Date().toISOString()
+        supabaseUserId:auth?.userId||'',authType:'email',authBootstrapError,createdAt:new Date().toISOString()
       };
       const isFirst=users.users.length===0;
       users.users.push(user);
@@ -7443,7 +7446,7 @@ const server=http.createServer(async(req,res)=>{
       }
       await writeAccountsRegistry(accounts);
       setSessionCookie(res,makeSessionToken(user.id));
-      return json(res,201,{ok:true,user:{id:user.id,login:user.login,email:user.email,displayName:user.displayName}});
+      return json(res,201,{ok:true,user:{id:user.id,login:user.login,email:user.email,displayName:user.displayName},emailRecoveryReady:!authBootstrapError});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось зарегистрироваться по почте.',detail:String(e?.message||e)});
     }
