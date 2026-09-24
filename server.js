@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.36';
+const APP_VERSION='2.6.37';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2681,7 +2681,8 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
     if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'scene-qc',description:'QC видео-сцены '+sceneNo,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
     const score=Number(parsed.score);
     const checks=parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{};
-    const productFail=String(checks.product||'').toLowerCase()==='fail';
+    const productStatus=String(checks.product||'').toLowerCase();
+    const productFail=sourceProducts.length>0&&productStatus!=='ok';
     const avatarFail=String(checks.avatar||'').toLowerCase()==='fail';
     const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
     const storyFail=String(checks.storyAction||'').toLowerCase()==='fail';
@@ -3223,11 +3224,13 @@ async function runFinalQc(run,finalPath,accountId){
     const priced=openAIUsageCost(response?.model||model,response?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'qc',description:'AI-проверка финального ролика',amountUsd:priced.amountUsd,model:response?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
     const score=Number(parsed.score);
+    const finalChecks=parsed?.checks&&typeof parsed.checks==='object'?parsed.checks:{};
+    const productIdentityOk=!sourceProducts.length||String(finalChecks.productConsistency||'').toLowerCase()==='ok';
     return {
-      passed:parsed?.passed!==false&&(!Number.isFinite(score)||score>=8),
+      passed:productIdentityOk&&parsed?.passed!==false&&(!Number.isFinite(score)||score>=8),
       score:Number.isFinite(score)?score:null,
       summary:String(parsed?.summary||'AI-проверка завершена.').slice(0,3000),
-      checks:parsed?.checks&&typeof parsed.checks==='object'?parsed.checks:{},
+      checks:finalChecks,
       issues:Array.isArray(parsed?.issues)?parsed.issues.map(x=>String(x)).slice(0,20):[],
       directorCut:parsed?.directorCut&&typeof parsed.directorCut==='object'?{
         score:Number.isFinite(Number(parsed.directorCut.score))?Number(parsed.directorCut.score):null,
@@ -3441,7 +3444,8 @@ function cinemaBibleText(run){
 }
 function positiveProductMotionLock(run,scene={}){
   const parts=[
-    'The physical product remains the exact same physical model throughout the shot: same visible geometry, proportions, construction, material and color.'
+    'The physical product remains the exact same physical model throughout the shot: same visible geometry, proportions, construction, material, color, texture, markings and number/placement of every visible part.',
+    productDNAText(run).slice(0,1800)
   ];
   const holder=paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' '));
   if(holder)parts.push('For this holder, the base stays fixed on the left, the continuous free loading side stays on the right, and a paper roll moves from right to left toward the base during installation.');
@@ -3601,6 +3605,12 @@ async function processRunGeneration(accountId,runId){
   const expectedPrevis=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*2);
   const readyPrevis=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).length;
   if(!run.previsResult?.completed||!expectedPrevis||readyPrevis<expectedPrevis)return {ok:false,error:'Нельзя запускать видео: превиз готов не полностью ('+readyPrevis+'/'+expectedPrevis+')'};
+  const productVisibleFrames=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url&&previsFrameShowsProduct(x,{}));
+  const productIdentityProblems=productVisibleFrames.filter(x=>x?.qc?.passed===false||String(x?.qc?.checks?.product||'').toLowerCase()!=='ok');
+  if(productIdentityProblems.length){
+    const bad=productIdentityProblems.map(x=>'сцена '+x.scene+' '+String(x.frameType||('кадр '+x.frame))).join(', ');
+    return {ok:false,error:'Product Identity Gate остановил видео: исходный товар не подтверждён в превизе — '+bad+'. Сначала переделай эти кадры.'};
+  }
   run.backendGenerationRunning=true;
   run.backendGenerationStartedAt=new Date().toISOString();
   run.stage='Генерация';run.status='В работе';run.progress=Math.max(38,Number(run.progress)||0);
@@ -4369,6 +4379,22 @@ async function runControlAction(body,accountId){
     run.stage='Генерация';run.status='На проверке';run.awaitingApproval=true;run.progress=Math.min(65,Math.max(38,Number(run.progress)||38));run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Удалено видео сцены',(run.productName||run.id)+' · сцена '+scene);
     await writeAppState(data,accountId);return run;
+  }
+  if(action==='delete_final_video'){
+    const paths=new Set();
+    for(const x of [run.montageResult,run.finalMedia]){
+      if(x?.path)paths.add(String(x.path));
+    }
+    for(const objectPath of paths){
+      try{await callProductMedia({action:'delete',path:objectPath})}catch(e){console.warn('[final-video-delete] '+String(e?.message||e))}
+    }
+    run.montageResult=null;run.finalMedia=null;run.qcResult=null;run.postProductionRunning=false;
+    run.status='На проверке';run.stage='Монтаж';run.awaitingApproval=true;
+    run.progress=Math.min(82,Math.max(74,Number(run.progress)||74));
+    run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Удалён только финальный ролик',run.productName||run.id);
+    await writeAppState(data,accountId);
+    return run;
   }
   if(action==='delete_previs_frame'){
     const frameId=String(body?.frameId||'');
