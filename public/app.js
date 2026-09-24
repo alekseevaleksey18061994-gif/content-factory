@@ -678,6 +678,13 @@ function stageReportHtml(r,stage){
         '</div>'+
         '<div class="storyboard-wide"><small>Что в кадре</small><p>'+esc(x.shot||"—")+'</p></div>'+
         '<div class="storyboard-wide"><small>Действие</small><p>'+esc(x.action||"—")+'</p></div>'+
+        '<div class="storyboard-meta"><div><small>Высота камеры</small><p>'+esc(x.cameraHeight||"—")+'</p></div><div><small>Фокус</small><p>'+esc(x.focus||"—")+'</p></div><div><small>Глубина</small><p>'+esc(x.depth||"—")+'</p></div><div><small>Motion timing</small><p>'+esc(x.motionTiming||"—")+'</p></div></div>'+
+        '<div class="storyboard-wide"><small>Set design</small><p>'+esc(x.setDesign||"—")+'</p></div>'+
+        '<div class="storyboard-meta"><div><small>Foreground</small><p>'+esc(x.foreground||"—")+'</p></div><div><small>Midground</small><p>'+esc(x.midground||"—")+'</p></div><div><small>Background</small><p>'+esc(x.background||"—")+'</p></div><div><small>Props</small><p>'+esc(x.props||"—")+'</p></div></div>'+
+        '<div class="storyboard-meta"><div><small>Материалы</small><p>'+esc(x.materials||"—")+'</p></div><div><small>Палитра</small><p>'+esc(x.colorPalette||"—")+'</p></div><div><small>Практикал-свет</small><p>'+esc(x.practicalLights||"—")+'</p></div><div><small>Blocking</small><p>'+esc(x.blocking||"—")+'</p></div></div>'+
+        '<div class="storyboard-wide"><small>Performance</small><p>'+esc(x.performance||"—")+'</p></div>'+
+        '<div class="storyboard-meta"><div><small>Retention</small><p>'+esc(x.retentionMechanic||"—")+'</p></div><div><small>Pattern interrupt</small><p>'+esc(x.patternInterrupt||"—")+'</p></div><div><small>Micro-payoff</small><p>'+esc(x.microPayoff||"—")+'</p></div><div><small>Sound design</small><p>'+esc(x.soundDesign||"—")+'</p></div></div>'+
+        '<div class="storyboard-wide"><small>Editor note</small><p>'+esc(x.editorNote||"—")+'</p></div>'+
         '<div class="storyboard-wide"><small>SET DESIGN / интерьер</small><p>'+esc(x.setDesign||"—")+'</p></div>'+
         '<div class="storyboard-meta">'+
           '<div><small>Передний план</small><p>'+esc(x.foreground||"—")+'</p></div>'+
@@ -724,8 +731,8 @@ function stageReportHtml(r,stage){
     body='<div class="previs-head"><div><b>'+ready+' / '+total+' кадров</b><p>По 2 кадра на сцену: START → END. END должен заметно развивать действие, а не повторять START. Меняем фазу действия, позу/руки, положение товара и при необходимости крупность или угол камеры, сохраняя continuity.</p></div><span class="status '+(r.previsResult?.completed&&ready>=total?'done':'work')+'">'+(r.previsResult?.completed&&ready>=total?'Готово':'Нужно '+Math.max(0,total-ready)+' кадр.')+'</span></div>'+
       (slots.length?'<div class="previs-scenes">'+grouped.map(scene=>'<section class="previs-scene"><div class="previs-scene-title"><b>Сцена '+scene+'</b><small>'+slots.filter(x=>Number(x.scene)===scene&&x.url).length+' / '+slots.filter(x=>Number(x.scene)===scene).length+' кадров</small></div><div class="previs-grid">'+slots.filter(x=>Number(x.scene)===scene).sort((a,b)=>String(a.frameType||"")==="start"?-1:String(b.frameType||"")==="start"?1:0).map(x=>'<article class="previs-card"><div class="previs-image">'+(x.url?'<img src="'+esc(x.url)+'" alt="Превиз сцены '+scene+'">':'<div class="empty compact-empty">Кадр удалён / не создан</div>')+'</div><div class="previs-card-copy"><b>'+esc((x.frameType||"frame").toUpperCase())+' · '+(String(x.frameType||"").toLowerCase()==="start"?'начало сцены':'конец сцены')+'</b><small>'+esc(x.timecode||"")+(x.source==="user-upload"?' · ТВОЙ КАДР':'')+'</small><small>'+(x.source==="user-upload"?'Источник: твой кадр':'Генератор: '+esc(x.provider||x.model||"—")+(x.fallbackFrom?' · fallback из '+esc(x.fallbackFrom):''))+(x.qc?.score?' · QC '+esc(x.qc.score)+'/10':'')+'</small><p>'+esc(x.goal||x.action||"")+'</p><div class="previs-ref-mode">'+esc(x.referenceMode||"anchor-led")+'</div><div class="media-actions">'+(x.url?'<button class="tiny-btn" onclick="downloadMedia(\''+esc(x.url)+'\',\'previs-scene-'+scene+'-'+esc(x.frameType||"frame")+'.png\')">↓ Скачать</button><button class="tiny-btn" onclick="replacePrevisFrame(\''+r.id+'\',\''+esc(x.id||"")+'\','+scene+','+Number(x.frame||1)+')">↑ Заменить своим</button><button class="tiny-btn danger-mini" onclick="deletePrevisFrame(\''+r.id+'\',\''+esc(x.id||"")+'\','+scene+','+Number(x.frame||1)+')">Удалить</button>':'<button class="btn primary" onclick="replacePrevisFrame(\''+r.id+'\',\''+esc(x.id||"")+'\','+scene+','+Number(x.frame||1)+')">＋ Загрузить свой кадр</button>')+'</div><details><summary>Cinematic prompt</summary><p>'+esc(x.imagePromptEn||x.imagePromptRu||"—")+'</p><small>Continuity</small><p>'+esc(x.continuityNotes||"—")+'</p></details></div></article>').join("")+'</div></section>').join("")+'</div>':'<div class="empty compact-empty">'+esc(r.previsError||"Кадры ещё не сгенерированы.")+'</div>');
   } else if(stage==="Генерация"){
-    const urls=r.generationResult?.urls||[];
-    body=urls.length?'<div class="generated-grid">'+urls.map((u,i)=>'<div class="generated-video-panel"><video controls playsinline preload="metadata" src="'+esc(u)+'"></video><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(u)+'\',\'scene-'+(i+1)+'.mp4\')">↓ Скачать видео</button></div></div>').join("")+'</div>':'<div class="empty compact-empty">'+esc(r.generationError||r.error||"Видео ещё не получено. Можно повторить этап.")+'</div>';
+    const sceneEntries=Object.entries(r.sceneResults||{}).sort((a,b)=>Number(a[0])-Number(b[0])).filter(([,v])=>v?.ok&&v?.urls?.length);
+    body=sceneEntries.length?'<div class="generated-grid">'+sceneEntries.map(([sceneNo,v])=>{const u=v.urls[0];return '<div class="generated-video-panel"><video controls playsinline preload="metadata" src="'+esc(u)+'"></video><p class="artifact-note"><b>Сцена '+esc(sceneNo)+'</b>'+(v.routerProvider?' · '+esc(v.routerProvider):'')+(v.qc?.score?' · QC '+esc(v.qc.score)+'/10':'')+'</p><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(u)+'\',\'scene-'+esc(sceneNo)+'.mp4\')">↓ Скачать видео</button><button class="tiny-btn danger-mini" onclick="deleteSceneVideo(\''+r.id+'\','+Number(sceneNo)+')">Удалить только это видео</button></div></div>'}).join("")+'</div>':'<div class="empty compact-empty">'+esc(r.generationError||r.error||"Видео ещё не получено. Можно повторить этап.")+'</div>';
   } else if(stage==="Озвучка"){
     const v=r.voiceoverResult;
     body=v?'<div class="artifact-script"><h3>Озвучка готова</h3><p>Модель: '+esc(v.model||v.provider||"")+'</p><p>Сцен с речью: '+((v.spokenScenes||[]).length)+'</p>'+(v.spokenScenes?.length?'<div class="stage-storyboard-list">'+v.spokenScenes.map(x=>'<div><b>Сцена '+x.scene+'</b><span>'+x.duration+' сек</span><p>'+esc(x.text||"")+'</p></div>').join("")+'</div>':'')+'</div>':'<div class="empty compact-empty">Озвучка ещё не готова.</div>';
@@ -734,7 +741,7 @@ function stageReportHtml(r,stage){
   } else if(stage==="AI-проверка"){
     const q=r.qcResult;
     const dc=q?.directorCut||r.directorCut||null;
-    body=q?'<div class="artifact-script"><h3>'+(q.passed===false?'Есть замечания':'Проверка завершена')+'</h3><p>'+esc(q.summary||"")+'</p>'+(q.score!=null?'<p><b>QC:</b> '+esc(q.score)+'/10</p>':'')+(q.issues?.length?'<ul>'+q.issues.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+(dc?'<div class="script-rule-box"><small>DIRECTOR CUT</small><p>'+esc(dc.reason||("Оценка режиссуры: "+(dc.score??"—")))+'</p>'+(dc.reshootScenes?.length?'<p><b>Пересъёмка:</b> сцены '+dc.reshootScenes.map(esc).join(", ")+'</p>':'')+(dc.montageActions?.length?'<ul>'+dc.montageActions.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+'</div>':'')+'</div>':'<div class="empty compact-empty">AI-проверка ещё не завершена.</div>';
+    body=q?'<div class="artifact-script"><h3>'+(q.passed===false?'Есть замечания':'Проверка завершена')+'</h3><p>'+esc(q.summary||"")+'</p>'+(q.score!=null?'<p><b>QC:</b> '+esc(q.score)+'/10</p>':'')+(q.issues?.length?'<ul>'+q.issues.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+(dc?'<div class="script-rule-box"><small>DIRECTOR CUT</small><p>'+esc(dc.reason||("Оценка режиссуры: "+(dc.score??"—")))+'</p>'+(dc.reshootScenes?.length?'<p><b>Пересъёмка:</b> сцены '+dc.reshootScenes.map(esc).join(", ")+'</p>':'')+(dc.sceneNotes?.length?'<div class="director-cut-scenes">'+dc.sceneNotes.map(x=>'<div><b>Сцена '+esc(x.scene||"")+'</b><p>'+esc(x.issue||"")+'</p><small>'+esc(x.fix||"")+(x.preferredProvider?' · '+esc(x.preferredProvider):'')+'</small></div>').join("")+'</div>':'')+(dc.montageActions?.length?'<ul>'+dc.montageActions.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+'</div>':'')+'</div>':'<div class="empty compact-empty">AI-проверка ещё не завершена.</div>';
   } else body='<div class="empty compact-empty">Этот этап ещё не выполнен.</div>';
   const canRegen=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация","Озвучка","Монтаж","AI-проверка"].includes(stage);
   const manual=r.mode==="manual";
@@ -912,21 +919,41 @@ window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.
 function renderScenes(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
   const archived=(Array.isArray(mediaLibrary)?mediaLibrary:[]).slice().reverse();
-  const mediaHtml=archived.length
-    ? '<section class="panel media-library-panel"><div class="panel-title"><div><span class="mini-icon">▣</span><h2>Медиатека</h2><p>Фото и видео из удалённых процессов сохраняются здесь.</p></div><span class="chip">'+archived.length+' файлов</span></div><div class="archive-media-grid">'+archived.map(m=>{
-        const title=[m.productName,m.sourceStage,m.scene?('сцена '+m.scene):''].filter(Boolean).join(' · ');
-        const preview=m.kind==="video"
-          ? '<video controls playsinline preload="metadata" src="'+esc(m.url||"")+'"></video>'
-          : '<img src="'+esc(m.url||"")+'" alt="'+esc(title||"Медиа")+'">';
-        const ext=m.kind==="video"?'.mp4':'.png';
-        return '<article class="archive-media-card"><div class="archive-media-preview">'+preview+'</div><div class="archive-media-copy"><b>'+esc(title||"Сохранённый файл")+'</b><small>'+esc(m.provider||m.model||"")+(m.archivedAt?' · сохранено '+esc(new Date(m.archivedAt).toLocaleString("ru-RU")):'')+'</small><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url||"")+'\',\''+esc(m.fileName||("media-"+m.id+ext))+'\')">↓ Скачать</button></div></div></article>';
-      }).join("")+'</div></section>'
-    : '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▣</span><h2>Медиатека</h2><p>После удаления процесса его готовые фото и видео будут сохраняться здесь.</p></div></div><div class="empty compact-empty">Пока пусто.</div></section>';
+  const photos=archived.filter(m=>m.kind!=="video");
+  const videos=archived.filter(m=>m.kind==="video");
+  const mediaCard=m=>{
+    const title=[m.productName,m.sourceStage,m.scene?("сцена "+m.scene):""].filter(Boolean).join(" · ");
+    const preview=m.kind==="video"
+      ? '<video controls playsinline preload="metadata" src="'+esc(m.url||"")+'"></video>'
+      : '<img src="'+esc(m.url||"")+'" alt="'+esc(title||"Медиа")+'">';
+    const ext=m.kind==="video"?".mp4":".png";
+    return '<article class="archive-media-card"><div class="archive-media-preview">'+preview+'</div><div class="archive-media-copy"><b>'+esc(title||"Сохранённый файл")+'</b><small>'+esc(m.provider||m.model||"")+(m.archivedAt?' · сохранено '+esc(new Date(m.archivedAt).toLocaleString("ru-RU")):'')+'</small><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url||"")+'\',\''+esc(m.fileName||("media-"+m.id+ext))+'\')">↓ Скачать</button><button class="tiny-btn danger-mini" onclick="deleteLibraryMedia(\''+esc(m.id||"")+'\')">Удалить</button></div></div></article>';
+  };
+  const section=(title,subtitle,items,icon)=>'<section class="panel media-library-panel"><div class="panel-title"><div><span class="mini-icon">'+icon+'</span><h2>'+title+'</h2><p>'+subtitle+'</p></div><span class="chip">'+items.length+' файлов</span></div>'+(items.length?'<div class="archive-media-grid">'+items.map(mediaCard).join("")+'</div>':'<div class="empty compact-empty">Пока пусто.</div>')+'</section>';
+  const mediaHtml=
+    '<div class="media-library-split">'+
+      section('Фото','Превизы, кадры и сохранённые изображения.',photos,'▧')+
+      section('Видео','Сцены, монтажи и готовые ролики.',videos,'▶')+
+    '</div>';
   const currentHtml=r
     ? '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(pname(r))+'</h2><p>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</p></div><button class="text-btn" onclick="openRun(\''+r.id+'\')">Открыть ролик ›</button></div><div class="storyboard">'+scenes(r)+'</div></section>'
     : '<div class="panel empty">Активных процессов нет. Сохранённые файлы остаются в медиатеке выше.</div>';
   $("#scenesWorkspace").innerHTML=mediaHtml+currentHtml;
 }
+window.deleteLibraryMedia=async id=>{
+  if(!id||!confirm("Удалить только этот файл из медиатеки? Остальные фото и видео останутся."))return;
+  const r=await fetch("/api/entities/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,type:"media",id,confirmed:true})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){alert(data.detail||data.error||"Не удалось удалить файл");return}
+  await syncFromServer();renderScenes();
+};
+window.deleteSceneVideo=async(runId,scene)=>{
+  if(!confirm("Удалить только видео сцены "+scene+"? Превиз и остальные сцены останутся."))return;
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"delete_scene_video",scene})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){alert(data.detail||data.error||"Не удалось удалить видео сцены");return}
+  await syncFromServer();selectedRunId=runId;runStageOpen="Генерация";renderRunDetail();
+};
 let editingCharacterId=null;
 
 function renderCharacterExistingMedia(){
