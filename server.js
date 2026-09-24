@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.13';
+const APP_VERSION='2.6.14';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1896,25 +1896,28 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   await recordExpense(accountId,{provider:'OpenAI',category:'previs-image',description:'Превиз-кадр сцены '+frame.scene+' · '+frame.frame,amountUsd,model:'gpt-image-2',usage:{size:'1024x1536',quality:'low',references:referenceUrls.length},source:'auto'}).catch(()=>{});
   return {url:uploaded.media.url,path:uploaded.media.path||'',model:'gpt-image-2',references:referenceUrls};
 }
-const previsQueues=new Map();
-const queuedPrevisRuns=new Map();
+const accountBackgroundQueues=new Map();
+const accountBackgroundJobs=new Map();
+function enqueueAccountBackground(accountId,jobKey,worker,label='background'){
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const dedupeKey=account+'::'+String(jobKey);
+  if(accountBackgroundJobs.has(dedupeKey))return accountBackgroundJobs.get(dedupeKey);
+  const previous=accountBackgroundQueues.get(account)||Promise.resolve();
+  let next;
+  next=previous.catch(()=>{}).then(worker)
+    .catch(e=>{console.error('['+label+'] '+String(jobKey)+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
+    .finally(()=>{
+      accountBackgroundJobs.delete(dedupeKey);
+      if(accountBackgroundQueues.get(account)===next)accountBackgroundQueues.delete(account);
+    });
+  accountBackgroundQueues.set(account,next);
+  accountBackgroundJobs.set(dedupeKey,next);
+  return next;
+}
+
 function enqueueRunPrevis(accountId,runId,label='previs'){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const runKey=account+'::'+String(runId);
-  if(queuedPrevisRuns.has(runKey))return queuedPrevisRuns.get(runKey);
-  // Serialize PREVIZ jobs per account. Every worker persists the whole app_state,
-  // so parallel runs could overwrite each other's status/frames with stale snapshots.
-  const queueKey=account;
-  const previous=previsQueues.get(queueKey)||Promise.resolve();let next;
-  next=previous.catch(()=>{}).then(()=>processRunPrevis(account,runId))
-    .catch(e=>{console.error('['+label+'] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
-    .finally(()=>{
-      queuedPrevisRuns.delete(runKey);
-      if(previsQueues.get(queueKey)===next)previsQueues.delete(queueKey);
-    });
-  previsQueues.set(queueKey,next);
-  queuedPrevisRuns.set(runKey,next);
-  return next;
+  return enqueueAccountBackground(account,'previs:'+String(runId),()=>processRunPrevis(account,runId),label);
 }
 async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[]){
   if(!higgsfieldConfigured())throw new Error('Higgsfield API is not configured');
@@ -2294,15 +2297,9 @@ async function processAutoPipeline(accountId,runId){
     return {ok:false,error:String(e?.message||e)};
   }
 }
-const autoPipelineQueues=new Map();
 function enqueueAutoPipeline(accountId,runId){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const key=account+'::'+String(runId);
-  const previous=autoPipelineQueues.get(key)||Promise.resolve();let next;
-  next=previous.catch(()=>{}).then(()=>processAutoPipeline(account,runId))
-    .catch(e=>{console.error('[autopilot-background] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
-    .finally(()=>{if(autoPipelineQueues.get(key)===next)autoPipelineQueues.delete(key)});
-  autoPipelineQueues.set(key,next);return next;
+  return enqueueAccountBackground(account,'autopilot:'+String(runId),()=>processAutoPipeline(account,runId),'autopilot-background');
 }
 
 async function buildRunPlan(payload,accountId,variant=1,feedback=''){
@@ -2434,40 +2431,13 @@ function sceneDurationSeconds(scene){
   }
   return 5;
 }
-const generationQueues=new Map();
-const queuedGenerationRuns=new Map();
 function enqueueRunGeneration(accountId,runId,label='backend-generation'){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const runKey=account+'::'+String(runId);
-  if(queuedGenerationRuns.has(runKey))return queuedGenerationRuns.get(runKey);
-  const queueKey=account;
-  const previous=generationQueues.get(queueKey)||Promise.resolve();
-  let next;
-  next=previous.catch(()=>{}).then(()=>processRunGeneration(account,runId)).catch(e=>{
-    console.error('['+label+'] '+runId+' '+String(e?.message||e));
-    return {ok:false,error:String(e?.message||e)};
-  }).finally(()=>{
-    queuedGenerationRuns.delete(runKey);
-    if(generationQueues.get(queueKey)===next)generationQueues.delete(queueKey);
-  });
-  generationQueues.set(queueKey,next);
-  queuedGenerationRuns.set(runKey,next);
-  return next;
+  return enqueueAccountBackground(account,'generation:'+String(runId),()=>processRunGeneration(account,runId),label);
 }
-const postProductionQueues=new Map();
 function enqueuePostProduction(accountId,runId,label='post-production'){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const key=account+'::'+String(runId);
-  const previous=postProductionQueues.get(key)||Promise.resolve();
-  let next;
-  next=previous.catch(()=>{}).then(()=>processRunPostProduction(account,runId)).catch(e=>{
-    console.error('['+label+'] '+runId+' '+String(e?.message||e));
-    return {ok:false,error:String(e?.message||e)};
-  }).finally(()=>{
-    if(postProductionQueues.get(key)===next)postProductionQueues.delete(key);
-  });
-  postProductionQueues.set(key,next);
-  return next;
+  return enqueueAccountBackground(account,'post-production:'+String(runId),()=>processRunPostProduction(account,runId),label);
 }
 async function fileHasAudio(filePath){
   try{
@@ -2744,17 +2714,9 @@ async function processRunPostProduction(accountId,runId){
   }
 }
 
-const postStageQueues=new Map();
 function enqueueSpecificPostStage(accountId,runId,stage){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const key=account+'::'+String(runId)+'::'+String(stage);
-  const previous=postStageQueues.get(key)||Promise.resolve();
-  let next;
-  next=previous.catch(()=>{}).then(()=>processSpecificPostStage(account,runId,stage))
-    .catch(e=>{console.error('[post-stage] '+runId+' '+stage+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
-    .finally(()=>{if(postStageQueues.get(key)===next)postStageQueues.delete(key)});
-  postStageQueues.set(key,next);
-  return next;
+  return enqueueAccountBackground(account,'post-stage:'+String(runId)+':'+String(stage),()=>processSpecificPostStage(account,runId,stage),'post-stage');
 }
 async function processSpecificPostStage(accountId,runId,stage){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
@@ -2853,7 +2815,7 @@ async function processRunGeneration(accountId,runId){
   run.backendGenerationStartedAt=new Date().toISOString();
   run.stage='Генерация';run.status='В работе';run.progress=Math.max(38,Number(run.progress)||0);
   run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
-  run.generationError='';
+  run.error='';run.generationError='';
   await writeAppState(data,accountId);
 
   const board=Array.isArray(run.storyboard)&&run.storyboard.length?run.storyboard:[planSceneDefaults(0,1)];
@@ -2987,8 +2949,8 @@ async function processRunGeneration(accountId,runId){
 async function dispatchExistingRun(accountId,run){
   const payload={...run,action:'create_batch',accountId,batchId:run.batchId,runId:run.id,runIds:[run.id]};
   enqueueRunGeneration(accountId,run.id,'backend-generation');
-  notifyN8nArchive(payload).then(async archive=>{
-    try{
+  notifyN8nArchive(payload).then(archive=>{
+    enqueueAccountBackground(accountId,'archive:'+String(run.id),async()=>{
       const state=await readAppState(accountId);
       const data=state?.data||blankFactoryState();
       const current=findRunById(data,run.id);
@@ -2997,7 +2959,8 @@ async function dispatchExistingRun(accountId,run){
         current.updatedAt=new Date().toISOString();
         await writeAppState(data,accountId);
       }
-    }catch(e){console.error('[archive-background] '+run.id+' '+String(e?.message||e))}
+      return {ok:true};
+    },'archive-background');
   }).catch(e=>console.error('[archive-background] '+run.id+' '+String(e?.message||e)));
   return {ok:true,data:{archive:{ok:true,status:'background'},generation:{ok:true,status:'backend-direct'}}};
 }
@@ -3211,7 +3174,7 @@ function enqueueStoryboardSceneTask(accountId,runId,sceneNo,note=''){
   return next;
 }
 
-const stageTaskQueues=new Map();
+
 function stageTaskName(task){
   return task==='idea'?'Идея':task==='script'?'Сценарий':task==='storyboard'?'Storyboard':String(task||'Этап');
 }
@@ -3301,14 +3264,8 @@ async function processStageTask(accountId,runId,task,note='',jobId=''){
   }
 }
 function enqueueStageTask(accountId,runId,task,note='',jobId=''){
-  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID)+'::'+String(runId);
-  const previous=stageTaskQueues.get(key)||Promise.resolve();
-  let next;
-  next=previous.catch(()=>{}).then(()=>processStageTask(sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID),runId,task,note,jobId))
-    .catch(e=>{console.error('[stage-queue] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
-    .finally(()=>{if(stageTaskQueues.get(key)===next)stageTaskQueues.delete(key)});
-  stageTaskQueues.set(key,next);
-  return next;
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  return enqueueAccountBackground(account,'stage:'+String(runId)+':'+String(task),()=>processStageTask(account,runId,task,note,jobId),'stage-queue');
 }
 
 async function createBatchRuns(payload,accountId){
