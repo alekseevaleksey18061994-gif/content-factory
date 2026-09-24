@@ -1046,7 +1046,7 @@ function renderVideoLab(){
   const list=$("#videoAnalysisList");if(!list)return;
   list.innerHTML=videoAnalyses.length?videoAnalyses.slice().reverse().map(v=>{
     const a=v.analysis||{},adapt=a.adaptation||{},scenes=Array.isArray(adapt.scenes)?adapt.scenes:[];
-    return '<article class="video-analysis-card"><div class="video-analysis-head"><div><span class="chip">'+esc(v.sourceType==="youtube"?"YouTube":"Загрузка")+'</span><h3>'+esc(v.sourceName||"Видео")+'</h3><p>'+esc((v.productName?"Товар: "+v.productName:"")+(v.avatarName?" · Аватар: "+v.avatarName:""))+'</p></div><div class="catalog-actions"><button class="secondary" onclick="saveAnalysisAsScript(\''+v.id+'\')">Сохранить сценарий</button><button class="danger-btn" onclick="deleteVideoAnalysis(\''+v.id+'\')">Удалить</button></div></div>'+
+    return '<article class="video-analysis-card"><div class="video-analysis-head"><div><span class="chip">'+esc(v.sourceType==="youtube"?"YouTube":"Загрузка")+'</span>'+(v.provider?'<span class="chip">AI: '+esc(v.provider)+'</span>':'')+'<h3>'+esc(v.sourceName||"Видео")+'</h3><p>'+esc((v.productName?"Товар: "+v.productName:"")+(v.avatarName?" · Аватар: "+v.avatarName:"")+(v.providerNote?" · "+v.providerNote:""))+'</p></div><div class="catalog-actions"><button class="secondary" onclick="saveAnalysisAsScript(\''+v.id+'\')">Сохранить сценарий</button><button class="danger-btn" onclick="deleteVideoAnalysis(\''+v.id+'\')">Удалить</button></div></div>'+
       '<div class="analysis-columns"><div><small>Что происходит</small><p>'+esc(a.summary||"—")+'</p><b>Хук</b><p>'+esc(a.hook||"—")+'</p></div><div><small>Наша адаптация</small><p>'+esc(adapt.concept||"—")+'</p><b>Новый хук</b><p>'+esc(adapt.hook||"—")+'</p></div></div>'+
       '<div class="analysis-scenes">'+scenes.slice(0,8).map((s,i)=>'<div><span>'+(i+1)+'</span><p><b>'+esc(s.duration||"Сцена")+'</b> '+esc(s.shot||"")+'<br>'+esc(s.voiceover||s.onscreen||"")+'</p></div>').join("")+'</div></article>'
   }).join(""):'<div class="empty">Разборов пока нет.</div>';
@@ -1061,7 +1061,7 @@ $("#analyzeVideoFile")?.addEventListener("click",async()=>{
     const data=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(data.detail||data.error||"Ошибка анализа");
     await syncFromServer();go("videoLab");status.textContent="Готово.";
-  }catch(e){status.textContent=String(e?.message||e)}finally{btn.disabled=false}
+  }catch(e){const m=String(e?.message||e);status.textContent=/no credits remaining|insufficient_quota|баланс/i.test(m)?"OpenAI API без баланса, а резервный Descript тоже не смог завершить разбор. Проверь кредиты API.":m}finally{btn.disabled=false}
 });
 $("#analyzeYoutube")?.addEventListener("click",async()=>{
   const url=$("#youtubeAnalysisUrl")?.value.trim(),status=$("#youtubeStatus"),btn=$("#analyzeYoutube");
@@ -1072,7 +1072,7 @@ $("#analyzeYoutube")?.addEventListener("click",async()=>{
     const data=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(data.detail||data.error||"Ошибка анализа");
     await syncFromServer();go("videoLab");status.textContent="Готово.";
-  }catch(e){status.textContent=String(e?.message||e)}finally{btn.disabled=false}
+  }catch(e){const m=String(e?.message||e);status.textContent=/no credits remaining|insufficient_quota|баланс/i.test(m)?"OpenAI API без баланса, а резервный Descript тоже не смог завершить разбор. Проверь кредиты API.":m}finally{btn.disabled=false}
 });
 window.saveAnalysisAsScript=id=>{
   const v=videoAnalyses.find(x=>x.id===id);if(!v)return;
