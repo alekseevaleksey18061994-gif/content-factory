@@ -2528,6 +2528,94 @@ async function processRunPostProduction(accountId,runId){
   }
 }
 
+const postStageQueues=new Map();
+function enqueueSpecificPostStage(accountId,runId,stage){
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const key=account+'::'+String(runId)+'::'+String(stage);
+  const previous=postStageQueues.get(key)||Promise.resolve();
+  let next;
+  next=previous.catch(()=>{}).then(()=>processSpecificPostStage(account,runId,stage))
+    .catch(e=>{console.error('[post-stage] '+runId+' '+stage+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
+    .finally(()=>{if(postStageQueues.get(key)===next)postStageQueues.delete(key)});
+  postStageQueues.set(key,next);
+  return next;
+}
+async function processSpecificPostStage(accountId,runId,stage){
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+  if(run.postProductionRunning)return {ok:true,alreadyRunning:true};
+  const total=Number(run.generationResult?.totalScenes||0);
+  const generatedUrls=Array.isArray(run.generationResult?.urls)?run.generationResult.urls.filter(Boolean):[];
+  const accepted=new Set((Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).map(Number).filter(n=>n>=1&&n<=total));
+  if(!run.generationResult?.completed||!total||generatedUrls.length<total)throw new Error('Видео-сцены ещё не сгенерированы полностью');
+  if(accepted.size<total)throw new Error('Не все видео-сцены подтверждены');
+  const dir=fs.mkdtempSync('/tmp/cf-post-stage-');
+  try{
+    run.postProductionRunning=true;run.status='В работе';run.stage=stage;run.awaitingApproval=false;run.error='';
+    run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Переделывается этап',(run.productName||run.id)+' · '+stage);
+    await writeAppState(data,accountId);
+
+    let voicePath=null;
+    if(stage==='Озвучка'||stage==='Монтаж'){
+      const voice=await createRunVoiceover(run,dir);
+      voicePath=voice.path;
+      if(stage==='Озвучка'){
+        state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+        run.voiceoverResult={ok:true,provider:voice.provider,model:voice.model,voice:voice.voice,voiceStyle:voice.instructions,soundDesign:'scene-audio + continuous room tone + narration',spokenScenes:voice.spoken,completedAt:new Date().toISOString()};
+        run.montageResult=null;run.qcResult=null;run.progress=80;run.updatedAt=new Date().toISOString();
+        appendFactoryJournal(data,'Озвучка переделана',(run.productName||run.id)+' · '+voice.spoken.length+' сцен');
+        await writeAppState(data,accountId);
+      }
+    }
+
+    if(stage==='Озвучка'||stage==='Монтаж'){
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.stage='Монтаж';run.status='В работе';run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+      const finalPath=await assembleRunVideo(run,dir,voicePath);
+      const media=await uploadRunMedia(accountId,runId,finalPath,'final-'+runId+'.mp4','video/mp4');
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.montageResult={ok:true,url:media?.url||'',path:media?.path||'',fileName:media?.fileName||('final-'+runId+'.mp4'),durationSeconds:Math.round(await probeDuration(finalPath)),completedAt:new Date().toISOString()};
+      run.qcResult=null;run.stage='AI-проверка';run.progress=88;run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Монтаж переделан',run.productName||run.id);await writeAppState(data,accountId);
+
+      const qc=await runFinalQc(run,finalPath,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.qcResult={...qc,completedAt:new Date().toISOString()};
+      run.postProductionRunning=false;run.error='';run.updatedAt=new Date().toISOString();
+      run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;
+      appendFactoryJournal(data,'Зависимые этапы обновлены',(run.productName||run.id)+' · '+stage+' → монтаж → AI-проверка');
+      await writeAppState(data,accountId);
+      return {ok:true,run};
+    }
+
+    if(stage==='AI-проверка'){
+      if(!run.montageResult?.url)throw new Error('Сначала нужен готовый монтаж');
+      const finalPath=path.join(dir,'final.mp4');
+      await downloadUrlFile(run.montageResult.url,finalPath);
+      const qc=await runFinalQc(run,finalPath,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.qcResult={...qc,completedAt:new Date().toISOString()};
+      run.postProductionRunning=false;run.error='';run.updatedAt=new Date().toISOString();
+      run.stage='На проверке';run.status='На проверке';run.awaitingApproval=true;run.progress=95;
+      appendFactoryJournal(data,'AI-проверка переделана',(run.productName||run.id)+' · '+String(qc?.summary||''));
+      await writeAppState(data,accountId);
+      return {ok:true,run};
+    }
+    throw new Error('Неизвестный этап постобработки');
+  }catch(e){
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run){
+      run.postProductionRunning=false;run.status='Ошибка';run.stage=stage;run.error=stage+': '+String(e?.message||e);run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Ошибка переделки этапа',(run.productName||run.id)+' · '+run.error);
+      await writeAppState(data,accountId);
+    }
+    return {ok:false,error:String(e?.message||e)};
+  }finally{
+    try{fs.rmSync(dir,{recursive:true,force:true})}catch{}
+  }
+}
+
 function videoProviderMode(run){
   const mode=String(run?.modelMode||'').toLowerCase();
   if(mode.includes('только runway'))return 'runway-only';
@@ -3262,9 +3350,33 @@ async function runControlAction(body,accountId){
       return run;
     }
     if(stage==='Генерация'){
-      run.status='В работе';run.stage='Генерация';run.progress=Math.max(38,Number(run.progress)||0);run.attempt=(Number(run.attempt)||0)+1;run.awaitingApproval=false;
+      run.sceneResults={};run.generationResult=null;run.acceptedScenes=[];
+      run.voiceoverResult=null;run.montageResult=null;run.qcResult=null;run.postProductionRunning=false;
+      run.status='В работе';run.stage='Генерация';run.progress=38;run.attempt=(Number(run.attempt)||0)+1;run.awaitingApproval=false;run.error='';run.generationError='';
       await writeAppState(data,accountId);
       dispatchExistingRun(accountId,run).catch(e=>console.error('[regen-generation] '+run.id+' '+String(e?.message||e)));
+      return run;
+    }
+    if(stage==='Озвучка'){
+      run.voiceoverResult=null;run.montageResult=null;run.qcResult=null;run.postProductionRunning=false;
+      run.status='В работе';run.stage='Озвучка';run.progress=74;run.awaitingApproval=false;run.error='';
+      await writeAppState(data,accountId);
+      enqueueSpecificPostStage(accountId,run.id,'Озвучка');
+      return run;
+    }
+    if(stage==='Монтаж'){
+      run.montageResult=null;run.qcResult=null;run.postProductionRunning=false;
+      run.status='В работе';run.stage='Монтаж';run.progress=80;run.awaitingApproval=false;run.error='';
+      await writeAppState(data,accountId);
+      enqueueSpecificPostStage(accountId,run.id,'Монтаж');
+      return run;
+    }
+    if(stage==='AI-проверка'){
+      if(!run.montageResult?.url)throw new Error('Сначала нужен готовый монтаж');
+      run.qcResult=null;run.postProductionRunning=false;
+      run.status='В работе';run.stage='AI-проверка';run.progress=88;run.awaitingApproval=false;run.error='';
+      await writeAppState(data,accountId);
+      enqueueSpecificPostStage(accountId,run.id,'AI-проверка');
       return run;
     }
     throw new Error('Переделка этапа «'+stage+'» не поддерживается');
@@ -5220,9 +5332,22 @@ const server=http.createServer(async(req,res)=>{
       const body=await readBody(req);
       const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
       if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
-      if(body?.action!=='launch_saved')return json(res,400,{ok:false,error:'Неизвестное действие идеи'});
-      const run=await launchSavedIdea(accountId,String(body?.ideaId||''));
-      return json(res,201,{ok:true,run});
+      if(body?.action==='launch_saved'){
+        const run=await launchSavedIdea(accountId,String(body?.ideaId||''));
+        return json(res,201,{ok:true,run});
+      }
+      if(body?.action==='delete_saved'){
+        const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+        data.savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
+        const ideaId=String(body?.ideaId||'');
+        const before=data.savedIdeas.length;
+        data.savedIdeas=data.savedIdeas.filter(x=>String(x?.id)!==ideaId);
+        if(data.savedIdeas.length===before)return json(res,404,{ok:false,error:'Сохранённая идея не найдена'});
+        appendFactoryJournal(data,'Удалена идея из библиотеки',ideaId);
+        await writeAppState(data,accountId);
+        return json(res,200,{ok:true,deleted:ideaId});
+      }
+      return json(res,400,{ok:false,error:'Неизвестное действие идеи'});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось запустить сохранённую идею',detail:String(e?.message||e)});
     }
