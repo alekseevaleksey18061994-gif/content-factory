@@ -2104,3 +2104,9 @@ html,body{
 .archive-media-copy small{color:var(--muted);font-size:11px;line-height:1.35}
 .archive-media-copy .media-actions{margin-top:2px}
 @media(max-width:700px){.archive-media-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.archive-media-copy{padding:10px}.archive-media-copy b{font-size:12px}}
+
+/* Hook Lab previews */
+.hook-preview{position:relative;width:132px;max-width:100%;margin:0 0 10px;border-radius:12px;overflow:hidden;background:#0b0d0c}
+.hook-preview img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block}
+.hook-preview .tiny-btn{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.72);backdrop-filter:blur(8px)}
+.idea-alt-list article.selected{outline:1px solid rgba(110,255,167,.55)}
