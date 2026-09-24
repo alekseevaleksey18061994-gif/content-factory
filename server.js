@@ -879,13 +879,24 @@ function runwayUsageUsd(model,seconds){
   return (runwayCreditsPerSecond(model)*Math.max(0,Number(seconds)||0))*0.01;
 }
 
+function openAIStageModel(stage='balanced'){
+  const s=String(stage||'').toLowerCase();
+  const cheap=process.env.OPENAI_CHEAP_MODEL||'gpt-5.6-luna';
+  const balanced=process.env.OPENAI_BALANCED_MODEL||'gpt-5.6-terra';
+  const quality=process.env.OPENAI_QUALITY_MODEL||'gpt-5.6-sol';
+  if(/candidate|shortlist|hook|audio|previs-qc|scene-qc|chat|light/.test(s))return cheap;
+  if(/final-qc|director-cut|quality-final/.test(s))return quality;
+  return balanced;
+}
 function openAIUsageCost(model,usage={}){
-  const name=String(model||'gpt-6-astra').toLowerCase();
-  let inputRate=0.20,cachedRate=0.02,outputRate=1.20;
-  if(name.includes('gpt-6-astra')){inputRate=10;cachedRate=1;outputRate=50}
-  else if(name.includes('gpt-6-sol')){inputRate=2;cachedRate=.2;outputRate=10}
+  const name=String(model||'gpt-5.6-terra').toLowerCase();
+  let inputRate=2,cachedRate=.2,outputRate=12;
+  if(name.includes('gpt-6-astra')){inputRate=5;cachedRate=.5;outputRate=25}
+  else if(name.includes('gpt-6-sol')){inputRate=1;cachedRate=.1;outputRate=5}
+  else if(name.includes('gpt-6-luna')){inputRate=.05;cachedRate=.005;outputRate=.25}
+  else if(name.includes('gpt-5.6-sol')){inputRate=4;cachedRate=.4;outputRate=20}
   else if(name.includes('gpt-5.6-terra')){inputRate=2;cachedRate=.2;outputRate=12}
-  else if(name.includes('gpt-6-astra')){inputRate=4;cachedRate=.4;outputRate=20}
+  else if(name.includes('gpt-5.6-luna')){inputRate=.2;cachedRate=.02;outputRate=1.2}
   const input=Number(usage.input_tokens)||0;
   const output=Number(usage.output_tokens)||0;
   const cached=Number(usage.input_tokens_details?.cached_tokens)||0;
@@ -1149,7 +1160,7 @@ async function analyzeProductDNA(product,accountId){
     {type:'input_text',text:prompt},
     ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'high'}))
   ]}];
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('product-dna');
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -1269,7 +1280,7 @@ async function ensureContinuityBible(run,accountId){
     'Return JSON only.'
   ].filter(Boolean).join('\n').slice(0,18000);
   try{
-    const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+    const model=openAIStageModel('continuity');
     const content=[{type:'input_text',text:prompt},...refs.map((url,i)=>({type:'input_image',image_url:url,detail:i<2?'high':'low'}))];
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -1278,7 +1289,7 @@ async function ensureContinuityBible(run,accountId){
     const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
     if(!r.ok)throw new Error(data?.error?.message||('Continuity Bible error '+r.status));
     const parsed=safeAnalysisJson(openAIText(data))||{};
-    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+    const priced=openAIUsageCost(data?.model||modelOverride||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'continuity',description:'Continuity Engine · continuity bible',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
     run.continuityBible={...fallback,...parsed,version:'v1',provider:'OpenAI',generatedAt:new Date().toISOString()};
   }catch(e){
@@ -1307,7 +1318,7 @@ async function runDirectorPreflight(run,accountId){
   for(const [i,f] of frames.entries())content.push({type:'input_text',text:'PREVIZ '+(i+1)+' · scene '+f.scene+' '+String(f.frameType||'')+':'},{type:'input_image',image_url:f.url,detail:'low'});
   for(const [i,u] of productRefs.entries())content.push({type:'input_text',text:'SOURCE PRODUCT '+(i+1)+':'},{type:'input_image',image_url:u,detail:'high'});
   if(avatar)content.push({type:'input_text',text:'SOURCE AVATAR:'},{type:'input_image',image_url:avatar,detail:'low'});
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('director-preflight');
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
     body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'medium'},max_output_tokens:2800})
@@ -1364,7 +1375,7 @@ async function ensureAudioDirectorPlan(run,accountId){
     'Return JSON only.'
   ].join('\n');
   try{
-    const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+    const model=openAIStageModel('audio');
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
       body:JSON.stringify({model,input:prompt,reasoning:{effort:'low'},max_output_tokens:3200,text:{format:{type:'json_schema',name:'audio_director_plan',strict:true,schema}}})
@@ -1504,7 +1515,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[])
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,2);
   const refs=[...productRefs.slice(0,4),...avatarRefs.slice(0,2)].filter(Boolean);
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('idea-final');
   async function markIdeaProgress(progress,step){
     if(!payload?.id)return;
     try{
@@ -1621,7 +1632,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     }
   };
 
-  async function callIdeaAI({prompt,schema,name,images=[],effort='medium',maxTokens=4800,timeoutMs=90000}){
+  async function callIdeaAI({prompt,schema,name,images=[],effort='medium',maxTokens=4800,timeoutMs=90000,modelOverride=''}){
     const input=[{role:'user',content:[
       {type:'input_text',text:prompt},
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
@@ -1635,7 +1646,12 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         signal:controller.signal,
         headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
         body:JSON.stringify({
-          model,input,reasoning:{effort},max_output_tokens:maxTokens,
+          model:modelOverride||(
+            name.startsWith('idea_candidates')||name==='idea_shortlist'||name==='hook_lab'
+              ? openAIStageModel(name)
+              : openAIStageModel('idea-final')
+          ),
+          input,reasoning:{effort},max_output_tokens:maxTokens,
           text:{format:{type:'json_schema',name,strict:true,schema}}
         })
       });
@@ -1649,7 +1665,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     const priced=openAIUsageCost(data?.model||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{
       provider:'OpenAI',category:'idea',description:name.startsWith('idea_candidates')?'TikTok-концепции идеи · партия 10':name==='idea_shortlist'?'Creative Critic · shortlist 5/20':name==='hook_lab'?'Hook Lab · 5 хуков':'TikTok Creative Critic идеи',
-      amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
+      amountUsd:priced.amountUsd,model:data?.model||modelOverride||model,usage:priced.details,source:'auto'
     }).catch(()=>{});
     const parsed=safeAnalysisJson(openAIText(data));
     if(!parsed||typeof parsed!=='object')throw new Error('AI вернул некорректную структуру идеи');
@@ -1983,7 +1999,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   // Up to two focused repair passes. Before each pass use the strongest of selected + alternatives,
   // so a good alternative can save the run without paying for unnecessary regeneration.
   let repairPassesUsed=0;
-  for(let repairAttempt=1;repairAttempt<=2;repairAttempt++){
+  for(let repairAttempt=1;repairAttempt<=1;repairAttempt++){
 
     const failedNow=criticalFailures(idea);
     const heuristicIssues=currentHeuristicIssues();
@@ -2008,7 +2024,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   const finalFailed=criticalFailures(idea);
   const finalHeuristics=currentHeuristicIssues();
   if(finalFailed.length||finalHeuristics.length){
-    throw new Error('Идея не прошла Creative Critic после 2 автодокруток: '+[...finalFailed,...finalHeuristics].join(', '));
+    throw new Error('Идея не прошла Creative Critic после 1 автодокрутки: '+[...finalFailed,...finalHeuristics].join(', '));
   }
 
   await markIdeaProgress(7.5,'Hook Lab: тестирую 5 разных первых 3 секунд');
@@ -2079,8 +2095,8 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         h.previewError=String(e?.message||e).slice(0,500);
       }
     }
-    for(let i=0;i<variants.length;i+=2){
-      await Promise.all([i,i+1].filter(n=>n<variants.length).map(renderHookPreview));
+    if(variants.length){
+      await renderHookPreview(selectedIndex-1);
     }
     idea.hookLab.variants=variants;
     const selectedHook=variants[selectedIndex-1];
@@ -2195,7 +2211,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
   const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const refs=[...productRefs.slice(0,4),...avatarRefs.slice(0,2)].filter(Boolean);
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('script');
   async function markScriptProgress(progress,step){
     if(!payload?.id)return;
     try{
@@ -2439,7 +2455,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     complete=scriptStageComplete(script);
   }
   if(!complete.ok){
-    draftData=await callScriptAIResilient({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
+    draftData=await callScriptAIResilient({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'medium'});
     script=normalizeScriptStage(draftData,payload);
     complete=scriptStageComplete(script);
     if(complete.ok)await saveScriptCheckpoint({draft:script});
@@ -2470,24 +2486,14 @@ async function generateScriptStage(payload,accountId,feedback=''){
 
   const reviewRoles=[
     {
-      name:'retention',
-      role:'Ты TikTok retention editor. Ищи места, где зритель свайпнет: слабый первый кадр, отсутствие curiosity gap, длинные сцены без нового beat, раннее раскрытие всего решения, повторяющиеся доказательства, затянутый CTA.',
-      focus:'Перепиши исполнение так, чтобы каждые 2–4 секунды происходило новое осмысленное событие. Для 25–35 сек должны ощущаться 7–10 beats. Запрещай три одинаковых proof-жеста с разным реквизитом: минимум два доказательства должны отличаться физически и визуально. Не меняй утверждённую идею.'
+      name:'retention_viral',
+      role:'Ты одновременно TikTok retention editor и performance creative strategist. Ищи слабый scroll-stop, потерю curiosity gap, длинные beats, повторяющиеся proofs, линейную рекламу, слабые pattern interrupts и недостаток micro-payoff.',
+      focus:'Перепиши исполнение так, чтобы каждые 2–4 секунды происходило новое осмысленное событие; соседние сцены визуально контрастировали; минимум два доказательства отличались физически и визуально. Не меняй утверждённую идею.'
     },
     {
-      name:'native_audio',
-      role:'Ты UGC dialogue director и sound editor. Ищи рекламные формулировки, дикторский тон, дублирование картинки словами, неестественные реплики, тишину в начале, голос только в середине и перегруженные субтитры.',
-      focus:'Сделай речь бытовой и короткой, звук драматургически непрерывным, а onscreen-текст минимальным. Удали мета-фразы «сейчас покажу/проверю/повторю» и всё, что просто проговаривает видимое действие. Видео должно работать без звука, но со звуком становиться лучше.'
-    },
-    {
-      name:'viral_mechanics',
-      role:'Ты performance creative strategist по TikTok/Reels/Shorts. Ищи линейную рекламу, отсутствие информационных пробелов, одинаковые кадры, слабые pattern interrupts, недостаток micro-payoff, отсутствие контраста и нативной бытовой конкретики.',
-      focus:'Перепиши beats так, чтобы каждый отвечал на один вопрос и порождал следующий; соседние сцены визуально контрастировали; каждые 2–4 секунды менялись состояние/масштаб/POV/эмоция/звук; среда и микро-игра героя были конкретными. Не превращай ролик в клиповый хаос и не меняй утверждённую идею.'
-    },
-    {
-      name:'showrunner',
-      role:'Ты финальный showrunner и supervisor AI-production. Проверяй FACT LOCK, continuity, физическую реализуемость, продуктовую необходимость, два доказательства/pivot, тайминг, визуальный payoff и отсутствие скучного beauty-shot.',
-      focus:'Собери финальную версию, которую можно без ручной починки передавать в storyboard и AI-превиз. Проверь, что второй proof отличается от первого, финал остаётся действием, а не beauty-shot/CTA, и нет сложной физики рук. Не завышай оценки ради прохождения порога.'
+      name:'native_showrunner',
+      role:'Ты финальный showrunner, UGC dialogue director и AI-production supervisor. Проверяй естественность речи/звука, FACT LOCK, continuity, физическую реализуемость, продуктовую необходимость, тайминг и payoff.',
+      focus:'Сделай речь бытовой и короткой, звук непрерывным, продукт точным, физику простой и финал действием. Удали рекламный канцелярит и мета-фразы. Собери production-ready версию без изменения утверждённой идеи.'
     }
   ];
   let lastReview=null;
@@ -2521,7 +2527,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     ].join('\n');
     await markScriptProgress(16+i,'Проверка '+(i+1)+' из '+reviewRoles.length+': '+rv.name);
     lastReview=await callScriptAIResilient({
-      prompt,schema:reviewSchema,name:'script_review_'+rv.name,images:[],effort:'high'
+      prompt,schema:reviewSchema,name:'script_review_'+rv.name,images:[],effort:'medium'
     });
     script=normalizeScriptStage(lastReview?.script||{},payload);
     script.quality=lastReview?.scores||{};
@@ -2566,7 +2572,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       '',
       'Обязательно сохрани factual safety и generatability. Верни полную финальную версию и честные scores.'
     ].join('\n');
-    lastReview=await callScriptAIResilient({prompt:repairPrompt,schema:reviewSchema,name:'script_review_repair',images:[],effort:'high'});
+    lastReview=await callScriptAIResilient({prompt:repairPrompt,schema:reviewSchema,name:'script_review_repair',images:[],effort:'medium'});
     script=normalizeScriptStage(lastReview?.script||{},payload);
     script.quality=lastReview?.scores||{};
     passes++;
@@ -2690,7 +2696,7 @@ function normalizeStoryboardStage(raw,payload={}){
   return scriptScenes.map((sc,i)=>normalizeStoryboardScene(arr[i],sc,i));
 }
 async function callStoryboardAI(accountId,{prompt,schema,name,images=[],effort='medium'}){
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('storyboard');
   const controller=new AbortController();
   const timeoutMs=125000;
   const timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -2829,7 +2835,7 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
       'Верни JSON по заданной схеме.'
     ].filter(Boolean).join('\n\n');
 
-    let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_chunk',images:refs,effort:'high'});
+    let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_chunk',images:refs,effort:'medium'});
     let arr=Array.isArray(raw?.storyboard)?raw.storyboard:[];
     let normalized=chunkScenes.map((sc,i)=>normalizeStoryboardScene(arr[i],sc,from+i));
     let missing=normalized.map((x,i)=>({scene:from+i+1,fields:storyboardSceneMissing(x)})).filter(x=>x.fields.length);
@@ -3488,7 +3494,7 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
     content.push({type:'input_text',text:'PREVIOUS GENERATED FRAME — только continuity/composition reference:'});
     content.push({type:'input_image',image_url:previousUrl,detail:'low'});
   }
-  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const model=openAIStageModel('previs-qc');
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
     body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'low'},max_output_tokens:1200})
@@ -3560,7 +3566,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
     for(const f of [previs[0],previs[previs.length-1]].filter(Boolean)){
       content.push({type:'input_text',text:'APPROVED PREVIZ ANCHOR:'},{type:'input_image',image_url:f.url,detail:'low'});
     }
-    const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+    const model=openAIStageModel('scene-qc');
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
       body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'low'},max_output_tokens:1400})
@@ -4189,7 +4195,7 @@ async function runFinalQc(run,finalPath,accountId){
     ].join('\n')},...(evidence.frames||[]).slice(0,8)];
     for(const [idx,url] of sourceProducts.entries())content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY ANGLE '+(idx+1)+':'},{type:'input_image',image_url:url,detail:'high'});
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
-    const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+    const model=openAIStageModel('final-qc');
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
