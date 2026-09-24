@@ -2733,9 +2733,31 @@ function syncRunIdeaLibrary(data,run){
   data.savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
   for(const opt of options){
     const existing=data.savedIdeas.find(x=>String(x?.id)===String(opt.id));
+    const productSnapshot={
+      id:String(run.productId||run.product?.id||''),
+      name:String(run.productName||run.product?.name||''),
+      category:String(run.product?.category||''),
+      utp:String(run.productUtp||run.product?.utp||''),
+      rules:String(run.productRules||run.product?.rules||''),
+      defaultCharacterId:run.product?.defaultCharacterId||null,
+      media:(Array.isArray(run.media)?run.media:(run.product?.media||[])).map(m=>({
+        id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary
+      })).filter(m=>m.url)
+    };
+    const characterSnap=run.character?JSON.parse(JSON.stringify(run.character)):null;
     const item={
       ...opt,
       selected:String(run.selectedIdeaOptionId||'')===String(opt.id),
+      productSnapshot,
+      characterSnapshot:characterSnap,
+      avatarReferencesSnapshot:(Array.isArray(run.avatarReferences)?run.avatarReferences:(characterSnap?.media||[])).map(m=>({
+        id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary
+      })).filter(m=>m.url),
+      launchConfig:{
+        brief:String(run.brief||''),style:String(run.style||'UGC'),duration:String(run.duration||'30 сек'),
+        format:String(run.format||'9:16'),modelMode:String(run.modelMode||'Авто — умный выбор'),
+        budget:Number(run.budget)||500,maxAttempts:Number(run.maxAttempts)||3
+      },
       createdAt:existing?.createdAt||new Date().toISOString(),
       updatedAt:new Date().toISOString()
     };
@@ -2748,11 +2770,7 @@ function applyIdeaOptionToRun(data,run,optionIdOrIndex){
   const key=String(optionIdOrIndex||'');
   const option=options.find(x=>String(x.id)===key)||options.find(x=>String(x.index)===key);
   if(!option)throw new Error('Вариант идеи не найден');
-  const others=options.filter(x=>x.id!==option.id).map(x=>({
-    title:x.idea.title,hook:x.idea.hook,concept:x.idea.concept,angle:x.idea.angle,
-    first3Seconds:x.idea.first3Seconds,mechanic:x.idea.mechanic,retention:x.idea.retention,
-    payoff:x.idea.payoff,productRole:x.idea.productRole
-  }));
+  const others=options.filter(x=>x.id!==option.id).map(x=>({...x.idea}));
   run.idea={...option.idea,alternatives:others};
   run.selectedIdeaOptionId=option.id;
   run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
@@ -2769,21 +2787,40 @@ async function launchSavedIdea(accountId,savedIdeaId){
   data.savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
   const saved=data.savedIdeas.find(x=>String(x?.id)===String(savedIdeaId));
   if(!saved)throw new Error('Сохранённая идея не найдена');
+
   const source=findRunById(data,saved.sourceRunId);
-  const product=findProductInState(data,saved.productId||saved.productName);
-  if(!product)throw new Error('Товар для этой идеи больше не найден');
-  const character=source?.character||characterSnapshot(resolveProductCharacter(data,product,{}));
-  const media=(Array.isArray(product.media)?product.media:[]).map(m=>({id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary})).filter(m=>m.url);
+  const currentProduct=findProductInState(data,saved.productId||saved.productName);
+  const snap=saved.productSnapshot&&typeof saved.productSnapshot==='object'?saved.productSnapshot:null;
+  const product=currentProduct||snap;
+  if(!product)throw new Error('В сохранённой идее нет снимка товара');
+
+  const media=(Array.isArray(product.media)?product.media:(snap?.media||[])).map(m=>({
+    id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary
+  })).filter(m=>m.url);
+
+  const character=saved.characterSnapshot||source?.character||characterSnapshot(resolveProductCharacter(data,currentProduct||product,{}));
+  const avatarRefs=(Array.isArray(saved.avatarReferencesSnapshot)&&saved.avatarReferencesSnapshot.length
+    ?saved.avatarReferencesSnapshot
+    :(character?.media||[])).map(m=>({
+      id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary
+    })).filter(m=>m.url);
+
+  const cfg=saved.launchConfig&&typeof saved.launchConfig==='object'?saved.launchConfig:{};
   const id=factoryId('r');
   const run={
-    ...(source?{
-      brief:source.brief||'',style:source.style||'UGC',duration:source.duration||'30 сек',format:source.format||'9:16',
-      modelMode:source.modelMode||'Авто — умный выбор',budget:source.budget||500,maxAttempts:source.maxAttempts||3
-    }:{brief:'',style:'UGC',duration:'30 сек',format:'9:16',modelMode:'Авто — умный выбор',budget:500,maxAttempts:3}),
+    brief:String(cfg.brief??source?.brief??''),style:String(cfg.style??source?.style??'UGC'),
+    duration:String(cfg.duration??source?.duration??'30 сек'),format:String(cfg.format??source?.format??'9:16'),
+    modelMode:String(cfg.modelMode??source?.modelMode??'Авто — умный выбор'),
+    budget:Number(cfg.budget??source?.budget)||500,maxAttempts:Number(cfg.maxAttempts??source?.maxAttempts)||3,
     id,accountId,batchId:factoryId('batch'),mode:'manual',variant:null,
-    productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',
-    media,product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',media,defaultCharacterId:product.defaultCharacterId||null},
-    characterId:character?.id||null,character,avatarReferences:character?.media||[],characterSource:character?'saved-idea':'none',
+    productId:String(product.id||saved.productId||''),productName:String(product.name||saved.productName||'Товар'),
+    productUtp:String(product.utp||''),productRules:String(product.rules||''),
+    media,product:{
+      id:String(product.id||saved.productId||''),name:String(product.name||saved.productName||'Товар'),
+      category:String(product.category||''),utp:String(product.utp||''),rules:String(product.rules||''),
+      media,defaultCharacterId:product.defaultCharacterId||null
+    },
+    characterId:character?.id||null,character,avatarReferences:avatarRefs,characterSource:character?'saved-idea-snapshot':'none',
     idea:{...saved.idea,alternatives:[]},selectedIdeaOptionId:'idea-'+id+'-1',
     status:'На проверке',stage:'Идея',progress:8,attempt:1,awaitingApproval:true,
     pipelineVersion:'previs-v3-background',script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,
@@ -2793,7 +2830,7 @@ async function launchSavedIdea(accountId,savedIdeaId){
   data.runs=Array.isArray(data.runs)?data.runs:[];
   data.runs.push(run);
   syncRunIdeaLibrary(data,run);
-  appendFactoryJournal(data,'Запущена сохранённая идея',product.name+' · '+saved.idea?.title);
+  appendFactoryJournal(data,'Запущена сохранённая идея',run.productName+' · '+saved.idea?.title);
   await writeAppState(data,accountId);
   return run;
 }
