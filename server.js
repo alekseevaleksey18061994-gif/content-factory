@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.4.0';
+const APP_VERSION='2.5.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1376,143 +1376,218 @@ async function generateScriptStage(payload,accountId,feedback=''){
   return script;
 }
 
+const STORYBOARD_REQUIRED_FIELDS=[
+  'title','duration','purpose','shot','framing','camera','lens','angle','environment','lighting',
+  'characters','product','action','startFrame','endFrame','continuity','sound','transition','negative','promptEn'
+];
+function storyboardSceneMissing(scene){
+  return STORYBOARD_REQUIRED_FIELDS.filter(k=>!String(scene?.[k]||'').trim());
+}
+function storyboardSceneComplete(scene){return storyboardSceneMissing(scene).length===0}
+function storyboardStageComplete(board,expectedCount){
+  const arr=Array.isArray(board)?board:[];
+  const missing=arr.map((x,i)=>({scene:i+1,fields:storyboardSceneMissing(x)})).filter(x=>x.fields.length);
+  return {ok:arr.length===expectedCount&&missing.length===0,count:arr.length,expectedCount,missing};
+}
+function storyboardSceneJsonSchema(){
+  return {
+    type:'object',additionalProperties:false,
+    required:['scene','title','duration','purpose','shot','framing','camera','lens','angle','environment','lighting','characters','product','action','startFrame','endFrame','continuity','dialogue','voiceover','onscreen','sound','transition','negative','promptEn'],
+    properties:{
+      scene:{type:'integer',minimum:1,maximum:30},
+      title:{type:'string'},duration:{type:'string'},purpose:{type:'string'},shot:{type:'string'},
+      framing:{type:'string'},camera:{type:'string'},lens:{type:'string'},angle:{type:'string'},
+      environment:{type:'string'},lighting:{type:'string'},characters:{type:'string'},product:{type:'string'},
+      action:{type:'string'},startFrame:{type:'string'},endFrame:{type:'string'},continuity:{type:'string'},
+      dialogue:{type:'string'},voiceover:{type:'string'},onscreen:{type:'string'},sound:{type:'string'},
+      transition:{type:'string'},negative:{type:'string'},promptEn:{type:'string'}
+    }
+  };
+}
+function normalizeStoryboardScene(raw,scriptScene={},index=0){
+  const x=raw&&typeof raw==='object'?raw:{};
+  const sc=scriptScene&&typeof scriptScene==='object'?scriptScene:{};
+  return {
+    scene:index+1,
+    title:String(x.title||sc.purpose||('Сцена '+(index+1))).slice(0,240),
+    duration:String(x.duration||x.time||sc.time||'').slice(0,120),
+    purpose:String(x.purpose||sc.purpose||'').slice(0,1800),
+    shot:String(x.shot||x.framing||sc.visual||'').slice(0,3500),
+    framing:String(x.framing||'').slice(0,1200),
+    camera:String(x.camera||'').slice(0,2000),
+    lens:String(x.lens||'').slice(0,600),
+    angle:String(x.angle||'').slice(0,1200),
+    environment:String(x.environment||x.location||'').slice(0,2500),
+    lighting:String(x.lighting||'').slice(0,1800),
+    characters:String(x.characters||'').slice(0,3500),
+    product:String(x.product||'').slice(0,3000),
+    action:String(x.action||sc.action||'').slice(0,4500),
+    startFrame:String(x.startFrame||'').slice(0,3000),
+    endFrame:String(x.endFrame||'').slice(0,3000),
+    continuity:String(x.continuity||sc.continuity||'').slice(0,4000),
+    voiceover:String(x.voiceover??sc.voiceover??'').slice(0,4500),
+    dialogue:String(x.dialogue??sc.dialogue??'').slice(0,4500),
+    onscreen:String(x.onscreen??sc.onscreen??'').slice(0,2500),
+    sound:String(x.sound||sc.sound||'').slice(0,2000),
+    transition:String(x.transition||sc.transition||'').slice(0,1600),
+    negative:String(x.negative||'').slice(0,3500),
+    prompt:String(x.promptEn||x.prompt||'').slice(0,9000),
+    promptEn:String(x.promptEn||x.prompt||'').slice(0,9000)
+  };
+}
 function normalizeStoryboardStage(raw,payload={}){
   const src=raw&&typeof raw==='object'?(raw.storyboard||raw):[];
   const script=normalizeScriptStage(payload.script||{},payload);
   const scriptScenes=Array.isArray(script.scenes)?script.scenes:[];
   const arr=Array.isArray(src)?src:(Array.isArray(raw?.scenes)?raw.scenes:[]);
-  return scriptScenes.map((sc,i)=>{
-    const x=arr[i]&&typeof arr[i]==='object'?arr[i]:{};
-    return {
-      scene:i+1,
-      title:String(x.title||sc.purpose||('Сцена '+(i+1))).slice(0,240),
-      duration:String(x.duration||x.time||sc.time||'').slice(0,120),
-      purpose:String(x.purpose||sc.purpose||'').slice(0,1800),
-      shot:String(x.shot||x.framing||sc.visual||'').slice(0,3500),
-      framing:String(x.framing||'').slice(0,1200),
-      camera:String(x.camera||'').slice(0,2000),
-      lens:String(x.lens||'').slice(0,600),
-      angle:String(x.angle||'').slice(0,1200),
-      environment:String(x.environment||x.location||'').slice(0,2500),
-      lighting:String(x.lighting||'').slice(0,1800),
-      characters:String(x.characters||'').slice(0,3500),
-      product:String(x.product||'').slice(0,3000),
-      action:String(x.action||sc.action||'').slice(0,4500),
-      startFrame:String(x.startFrame||'').slice(0,3000),
-      endFrame:String(x.endFrame||'').slice(0,3000),
-      continuity:String(x.continuity||sc.continuity||'').slice(0,4000),
-      voiceover:String(x.voiceover||sc.voiceover||'').slice(0,4500),
-      dialogue:String(x.dialogue||sc.dialogue||'').slice(0,4500),
-      onscreen:String(x.onscreen||sc.onscreen||'').slice(0,2500),
-      sound:String(x.sound||sc.sound||'').slice(0,2000),
-      transition:String(x.transition||sc.transition||'').slice(0,1600),
-      negative:String(x.negative||'').slice(0,3500),
-      prompt:String(x.promptEn||x.prompt||'').slice(0,9000),
-      promptEn:String(x.promptEn||x.prompt||'').slice(0,9000)
-    };
-  });
+  return scriptScenes.map((sc,i)=>normalizeStoryboardScene(arr[i],sc,i));
 }
-async function generateStoryboardStage(payload,accountId,feedback=''){
-  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
-  const idea=normalizeIdeaStage(payload.idea||{},payload);
-  const script=normalizeScriptStage(payload.script||{},payload);
-  if(!script.scenes?.length)throw new Error('Сначала нужен утверждённый сценарий');
-  const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,3);
-  const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,2);
-  const refs=[...productRefs,...avatarRefs].slice(0,5);
-  const master=[
-    'ROLE: Ты storyboard director, cinematographer и prompt engineer для AI-видео.',
-    'ИДЕЯ И СЦЕНАРИЙ УЖЕ УТВЕРЖДЕНЫ. Нельзя менять сюжет, тайминг, реплики, свойства товара или смысл сцен.',
-    '',
-    'УТВЕРЖДЁННАЯ ИДЕЯ',
-    JSON.stringify(idea),
-    '',
-    'УТВЕРЖДЁННЫЙ СЦЕНАРИЙ',
-    JSON.stringify(script),
-    '',
-    'ТОВАР И LOCKS',
-    'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
-    'УТП: '+String(payload.productUtp||payload.product?.utp||''),
-    'Ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
-    'FACT LOCK: storyboard не имеет права визуализировать неподтверждённый способ установки/крепления или характеристику. Если сценарий случайно содержит неподтверждённый факт — не усиливай его и пометь безопасную нейтральную визуализацию реального товара без демонстрации выдуманного механизма.',
-    'Персонаж/аватар: '+String(payload.character?.name||'не задан'),
-    'Внешность: '+String(payload.character?.look||''),
-    'Locks: '+String(payload.character?.locks||''),
-    'Формат: вертикальный 9:16.',
-    'Стиль: '+String(payload.style||'UGC'),
-    feedback?('Комментарий пользователя к переделке Storyboard: '+feedback):'',
-    '',
-    'ЗАДАЧА',
-    'Преврати КАЖДУЮ сцену сценария в точный визуальный storyboard и готовый технический prompt для видеогенератора.',
-    'Число storyboard-сцен должно ТОЧНО совпадать с числом сцен сценария. Сцена N storyboard = сцена N сценария.',
-    '',
-    'ДЛЯ КАЖДОЙ СЦЕНЫ ОБЯЗАТЕЛЬНО',
-    '1) title — короткое название кадра.',
-    '2) duration — тот же тайминг, что в сценарии.',
-    '3) purpose — зачем этот кадр существует.',
-    '4) shot — точное визуальное описание кадра.',
-    '5) framing — крупность: extreme close-up / close-up / medium / full / wide и т.п.',
-    '6) camera — движение камеры: static, handheld, slow push-in, tracking, whip pan и т.п.',
-    '7) lens — визуальное ощущение объектива, только если это действительно помогает.',
-    '8) angle — уровень/угол камеры.',
-    '9) environment — место, фон, важные объекты.',
-    '10) lighting — свет, время суток, характер освещения.',
-    '11) characters — кто в кадре и как выглядит. Повторяй критические признаки внешности в каждой сцене, где персонаж присутствует.',
-    '12) product — как именно выглядит и расположен товар. Не менять форму, цвет, рисунок, пропорции и ключевые детали.',
-    '13) action — одно последовательное действие, реально выполнимое за длительность сцены.',
-    '14) startFrame — что видно в самом первом кадре сцены.',
-    '15) endFrame — на чём заканчивается сцена, чтобы следующий монтажный переход был логичным.',
-    '16) continuity — что обязано совпасть с предыдущей/следующей сценой.',
-    '17) dialogue / voiceover / onscreen / sound — перенеси ИЗ СЦЕНАРИЯ, не сочиняй новые реплики.',
-    '18) transition — тот же смысл перехода, что в сценарии, но визуально конкретизированный.',
-    '19) negative — что модель НЕ должна делать: деформации товара, лишние пальцы, смена лица/одежды, логотипы, случайный текст, лишние предметы и т.д.',
-    '20) promptEn — готовый английский prompt для видеомодели. Он должен описывать только ОДНУ сцену, быть конкретным и не противоречить сценарию.',
-    '',
-    'ПРАВИЛА AI-ГЕНЕРАЦИИ',
-    '- Одна сцена = одна понятная визуальная задача. Не пытайся впихнуть 5 монтажных событий в 5 секунд.',
-    '- Если в сценарной сцене слишком много событий, сохрани смысл и выбери визуально главный момент; НЕ меняй сценарий.',
-    '- Главный референс товара важнее художественной красоты. Покупатель должен узнать реальный товар.',
-    '- Если товар мелкий/детальный, предпочитай medium/close-up и спокойную камеру.',
-    '- Для лица/аватара избегай резкой смены ракурсов и чрезмерно быстрых движений, которые ломают идентичность.',
-    '- Не генерируй читаемый мелкий текст внутри картинки; текст/субтитры добавляются на монтаже. В promptEn укажи no baked-in text.',
-    '- Важные объекты и лица держать в центральной safe-zone; не планировать ключевое действие у правого края или самого низа.',
-    '- Для динамики чередуй крупности, но не нарушай continuity.',
-    '- Локация не должна выглядеть пустой или стерильной декорацией. Добавляй уместные бытовые детали и 3–5 повторяющихся contextual props, которые поддерживают сюжет и остаются согласованными между сценами.',
-    '- Если действие происходит на кухне, кухня должна быть обжитой: посуда, доска, продукты, текстиль и мелкие кухонные детали по смыслу сцены, без визуального мусора и без случайной смены предметов.',
-    '- promptEn пишется на английском: многие видеомодели лучше следуют детальным англоязычным инструкциям.',
-    '',
-    'ВНУТРЕННЯЯ ПРОВЕРКА',
-    '- Storyboard полностью соответствует сценарию?',
-    '- Число сцен совпадает?',
-    '- Тайминги сохранены?',
-    '- Товар/персонаж описаны одинаково между сценами?',
-    '- Каждая сцена реально генерируема?',
-    '- Нет случайных новых реплик или свойств товара?',
-    '- Start/end frame позволяют смонтировать сцены последовательно?',
-    'Не показывай внутренние рассуждения.',
-    '',
-    'Верни ТОЛЬКО JSON без markdown:',
-    '{"storyboard":[{"scene":1,"title":"","duration":"","purpose":"","shot":"","framing":"","camera":"","lens":"","angle":"","environment":"","lighting":"","characters":"","product":"","action":"","startFrame":"","endFrame":"","continuity":"","dialogue":"","voiceover":"","onscreen":"","sound":"","transition":"","negative":"","promptEn":""}]}'
-  ].filter(Boolean).join('\n');
-  const input=[{role:'user',content:[
-    {type:'input_text',text:master},
-    ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
-  ]}];
+async function callStoryboardAI(accountId,{prompt,schema,name,images=[],effort='medium'}){
   const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
-  const r=await fetch('https://api.openai.com/v1/responses',{
-    method:'POST',
-    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-    body:JSON.stringify({model,input,reasoning:{effort:'medium'},max_output_tokens:6500})
-  });
+  const controller=new AbortController();
+  const timeoutMs=85000;
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  let r;
+  try{
+    r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',signal:controller.signal,
+      headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({
+        model,
+        input:[{role:'user',content:[
+          {type:'input_text',text:prompt},
+          ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
+        ]}],
+        reasoning:{effort},max_output_tokens:7600,
+        text:{format:{type:'json_schema',name,strict:true,schema}}
+      })
+    });
+  }catch(e){
+    if(e?.name==='AbortError')throw new Error('OpenAI превысил лимит времени Storyboard ('+Math.round(timeoutMs/1000)+' сек)');
+    throw e;
+  }finally{clearTimeout(timer)}
   const txt=await r.text();
   let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
   if(!r.ok)throw new Error(data?.error?.message||('OpenAI storyboard error '+r.status));
   const priced=openAIUsageCost(data?.model||model,data?.usage||{});
   if(priced.amountUsd>0)await recordExpense(accountId,{
-    provider:'OpenAI',category:'storyboard',description:'Генерация storyboard по утверждённому сценарию',
+    provider:'OpenAI',category:'storyboard',
+    description:name==='storyboard_scene'?'Перегенерация одной storyboard-сцены':'Генерация storyboard по утверждённому сценарию',
     amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
   }).catch(()=>{});
-  return normalizeStoryboardStage(safeAnalysisJson(openAIText(data)),payload);
+  const parsed=safeAnalysisJson(openAIText(data));
+  if(!parsed||typeof parsed!=='object')throw new Error('AI вернул некорректную структуру Storyboard');
+  return parsed;
+}
+function storyboardContext(payload,script,idea,feedback=''){
+  return [
+    'ИДЕЯ И СЦЕНАРИЙ УЖЕ УТВЕРЖДЕНЫ. Не меняй сюжет, порядок, тайминг, реплики, свойства товара или смысл сцен.',
+    'УТВЕРЖДЁННАЯ ИДЕЯ: '+JSON.stringify(idea),
+    'УТВЕРЖДЁННЫЙ СЦЕНАРИЙ: '+JSON.stringify(script),
+    'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
+    'УТП: '+String(payload.productUtp||payload.product?.utp||''),
+    'Ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
+    'FACT LOCK: не придумывай способ установки/крепления, размеры, материал или функции, которых нет в исходных данных.',
+    'Персонаж: '+String(payload.character?.name||'не задан'),
+    'Внешность: '+String(payload.character?.look||''),
+    'Locks персонажа: '+String(payload.character?.locks||''),
+    'Формат: вертикальный 9:16. Стиль: '+String(payload.style||'UGC')+'.',
+    feedback?('Комментарий пользователя: '+feedback):'',
+    'В каждой сцене ОБЯЗАТЕЛЬНО конкретно заполни location/environment, lighting, characters, product, startFrame и endFrame. Нельзя оставлять эти поля пустыми или ставить прочерк.',
+    'Также обязательно заполни framing, camera, lens, angle, negative и promptEn.',
+    'dialogue/voiceover/onscreen переноси из сценария без сочинения новых реплик; они могут быть пустой строкой, если речи/текста в сцене нет.',
+    'Локация и свет должны быть физически конкретными и совместимыми между соседними сценами.',
+    'characters должен повторять ключевые identity-признаки аватара в каждой сцене, где он виден.',
+    'product должен явно описывать положение реального товара и его видимые детали, без изменения конструкции.',
+    'startFrame и endFrame должны описывать именно первый и последний видимый кадр сцены и стыковаться с соседними сценами.',
+    'promptEn — подробный английский prompt только для одной сцены, no baked-in text, realistic hands, identity lock, product geometry lock.'
+  ].filter(Boolean).join('\n');
+}
+async function generateStoryboardStage(payload,accountId,feedback=''){
+  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const idea=normalizeIdeaStage(payload.idea||{},payload);
+  const script=normalizeScriptStage(payload.script||{},payload);
+  const scriptScenes=Array.isArray(script.scenes)?script.scenes:[];
+  if(!scriptScenes.length)throw new Error('Сначала нужен утверждённый сценарий');
+  const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
+  const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
+  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
+  const sceneSchema=storyboardSceneJsonSchema();
+  const schema={
+    type:'object',additionalProperties:false,required:['storyboard'],
+    properties:{storyboard:{type:'array',minItems:scriptScenes.length,maxItems:scriptScenes.length,items:sceneSchema}}
+  };
+  const prompt=[
+    'ROLE: senior storyboard director, cinematographer and AI-video prompt engineer.',
+    storyboardContext(payload,script,idea,feedback),
+    'Сделай ровно '+scriptScenes.length+' сцен. Сцена N storyboard = сцена N сценария.',
+    'Каждая сцена должна быть production-ready: ни одного пустого технического поля.',
+    'Верни JSON по заданной схеме.'
+  ].join('\n\n');
+  let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_full',images:refs,effort:'medium'});
+  let board=normalizeStoryboardStage(raw,payload);
+  let check=storyboardStageComplete(board,scriptScenes.length);
+  if(!check.ok){
+    const repair=[
+      'ROLE: technical storyboard repair editor.',
+      storyboardContext(payload,script,idea,feedback),
+      'Текущий storyboard: '+JSON.stringify(board),
+      'Проблемы: '+JSON.stringify(check.missing),
+      'Исправь ТОЛЬКО недостающие/слишком общие поля, сохрани сюжет и все уже хорошие детали.',
+      'Верни полный storyboard из '+scriptScenes.length+' сцен по схеме. Ни одного пустого обязательного технического поля.'
+    ].join('\n\n');
+    raw=await callStoryboardAI(accountId,{prompt:repair,schema,name:'storyboard_full_repair',images:refs,effort:'medium'});
+    board=normalizeStoryboardStage(raw,payload);
+    check=storyboardStageComplete(board,scriptScenes.length);
+  }
+  if(!check.ok)throw new Error('Storyboard неполный после автодокрутки: '+check.missing.map(x=>'сцена '+x.scene+' ['+x.fields.join(', ')+']').join('; '));
+  return board;
+}
+async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
+  if(!openaiConfigured())throw new Error('OpenAI API is not configured');
+  const idea=normalizeIdeaStage(payload.idea||{},payload);
+  const script=normalizeScriptStage(payload.script||{},payload);
+  const scriptScenes=Array.isArray(script.scenes)?script.scenes:[];
+  const index=Number(sceneNo)-1;
+  const scriptScene=scriptScenes[index];
+  if(!scriptScene)throw new Error('Сцена '+sceneNo+' отсутствует в сценарии');
+  const board=Array.isArray(payload.storyboard)?payload.storyboard:[];
+  const current=board[index]||{};
+  const prev=index>0?board[index-1]:null;
+  const next=index<board.length-1?board[index+1]:null;
+  const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
+  const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
+  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
+  const schema={
+    type:'object',additionalProperties:false,required:['scene'],
+    properties:{scene:storyboardSceneJsonSchema()}
+  };
+  const prompt=[
+    'ROLE: senior storyboard scene editor.',
+    storyboardContext(payload,script,idea,feedback),
+    'ПЕРЕДЕЛАЙ ТОЛЬКО СЦЕНУ '+sceneNo+'. Остальные сцены не меняй.',
+    'Сценарная сцена '+sceneNo+': '+JSON.stringify(scriptScene),
+    'Текущая storyboard-сцена: '+JSON.stringify(current),
+    prev?('Предыдущая сцена для continuity: '+JSON.stringify(prev)):'',
+    next?('Следующая сцена для continuity: '+JSON.stringify(next)):'',
+    'Верни одну полностью заполненную production-ready сцену. Все технические поля обязаны быть конкретными; никаких "—", "не задано" или пустых location/light/character/product/start/end.',
+    'Если комментарий пользователя пустой, улучшай сцену без изменения её смысла.'
+  ].filter(Boolean).join('\n\n');
+  let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_scene',images:refs,effort:'medium'});
+  let scene=normalizeStoryboardScene(raw.scene||raw,scriptScene,index);
+  let missing=storyboardSceneMissing(scene);
+  if(missing.length){
+    const repair=[
+      prompt,
+      'Предыдущий ответ неполный: '+JSON.stringify(scene),
+      'Заполни недостающие поля: '+missing.join(', ')+'. Верни одну полную сцену по схеме.'
+    ].join('\n\n');
+    raw=await callStoryboardAI(accountId,{prompt:repair,schema,name:'storyboard_scene_repair',images:[],effort:'medium'});
+    scene=normalizeStoryboardScene(raw.scene||raw,scriptScene,index);
+    missing=storyboardSceneMissing(scene);
+  }
+  if(missing.length)throw new Error('Сцена '+sceneNo+' осталась неполной: '+missing.join(', '));
+  return scene;
 }
 
 function normalizePrevisPlan(raw,payload={}){
