@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.33';
+const APP_VERSION='2.6.34';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1383,7 +1383,17 @@ function normalizeScriptStage(raw,payload={}){
     sound:String(x?.sound||'').slice(0,2500),
     transition:String(x?.transition||'').slice(0,1800),
     continuity:String(x?.continuity||'').slice(0,3000),
-    productRole:String(x?.productRole||'').slice(0,2500)
+    productRole:String(x?.productRole||'').slice(0,2500),
+    retentionMechanic:String(x?.retentionMechanic||'').slice(0,1800),
+    openLoop:String(x?.openLoop||'').slice(0,1800),
+    patternInterrupt:String(x?.patternInterrupt||'').slice(0,1800),
+    visualContrast:String(x?.visualContrast||'').slice(0,1800),
+    microConflict:String(x?.microConflict||'').slice(0,1800),
+    microPayoff:String(x?.microPayoff||'').slice(0,1800),
+    environmentStory:String(x?.environmentStory||'').slice(0,3000),
+    performanceBeat:String(x?.performanceBeat||'').slice(0,2200),
+    soundBridge:String(x?.soundBridge||'').slice(0,1800),
+    nextQuestion:String(x?.nextQuestion||'').slice(0,1800)
   }));
   return {
     title:String(src.title||payload.idea?.title||payload.productName||'Сценарий').slice(0,240),
@@ -1416,7 +1426,7 @@ function scriptStageComplete(script){
   const missing=required.filter(k=>!String(script?.[k]||'').trim());
   const scenes=Array.isArray(script?.scenes)?script.scenes:[];
   const badScenes=scenes.length<5||scenes.some((x,i)=>{
-    const fields=['time','purpose','visual','action','sound','continuity','productRole'];
+    const fields=['time','purpose','visual','action','sound','continuity','productRole','retentionMechanic','openLoop','patternInterrupt','visualContrast','microConflict','microPayoff','environmentStory','performanceBeat','soundBridge','nextQuestion'];
     return fields.some(k=>!String(x?.[k]||'').trim())||Number(x?.scene||0)!==i+1;
   });
   return {ok:missing.length===0&&!badScenes,missing,badScenes};
@@ -1455,7 +1465,17 @@ async function generateScriptStage(payload,accountId,feedback=''){
     sound:{type:'string'},
     transition:{type:'string'},
     continuity:{type:'string'},
-    productRole:{type:'string'}
+    productRole:{type:'string'},
+    retentionMechanic:{type:'string'},
+    openLoop:{type:'string'},
+    patternInterrupt:{type:'string'},
+    visualContrast:{type:'string'},
+    microConflict:{type:'string'},
+    microPayoff:{type:'string'},
+    environmentStory:{type:'string'},
+    performanceBeat:{type:'string'},
+    soundBridge:{type:'string'},
+    nextQuestion:{type:'string'}
   };
   const characterProperties={
     name:{type:'string'},role:{type:'string'},look:{type:'string'},voice:{type:'string'},locks:{type:'string'}
@@ -1493,6 +1513,11 @@ async function generateScriptStage(payload,accountId,feedback=''){
     factualSafety:{type:'integer',minimum:1,maximum:10},
     generatability:{type:'integer',minimum:1,maximum:10},
     payoff:{type:'integer',minimum:1,maximum:10},
+    sceneDensity:{type:'integer',minimum:1,maximum:10},
+    patternInterruptQuality:{type:'integer',minimum:1,maximum:10},
+    environmentSpecificity:{type:'integer',minimum:1,maximum:10},
+    visualContrast:{type:'integer',minimum:1,maximum:10},
+    microPayoffCadence:{type:'integer',minimum:1,maximum:10},
     overall:{type:'integer',minimum:1,maximum:10}
   };
   const reviewSchema={
@@ -1577,6 +1602,20 @@ async function generateScriptStage(payload,accountId,feedback=''){
     'ЦЕЛЬ: написать сценарий, который выглядит как нативный TikTok/Reels/Shorts, а не как карточка маркетплейса в видео.',
     'Ориентир для этой длительности: около '+target+' коротких сцен/beats. Каждая сцена должна добавлять новое действие, информацию, реакцию или доказательство.',
     '',
+    'VIRAL SHORT-FORM PLAYBOOK — применять как набор механик, а не как шаблон один-в-один:',
+    '- TikTok-first: ощущение нативного контента, а не рекламного ролика. Человек/быт/ошибка/действие раньше рекламной формулировки.',
+    '- Первые 0–2 сек: движение, эмоция, визуальный конфликт, необычный предметный state или результат ДО объяснения. Начинать можно mid-action/mid-sentence, если это естественно.',
+    '- Hook должен одновременно обещать ценность и оставлять информационный пробел. Не раскрывай весь ответ в первой фразе.',
+    '- Используй micro open loops: каждый beat отвечает на один вопрос и тут же создаёт следующий маленький вопрос.',
+    '- Pattern interrupt каждые 2–4 сек, но осмысленный: смена масштаба, направления движения, POV, эмоции, контекста, звука или состояния предмета. Не делай эффект ради эффекта.',
+    '- Чередуй tension → proof → reaction → escalation → payoff. Не делай линейное «показали товар → перечислили преимущества».',
+    '- Результат можно показать рано, но объяснение/механика раскрывается позже. Reverse reveal, wrong-way/right-way, before/after, tactile ASMR, POV, objection-first, mini-experiment, relatable fail, reaction payoff — использовать как разные семейства.',
+    '- В ролике должна быть хотя бы одна физически наглядная micro-proof и хотя бы один эмоциональный/reaction beat, если герой присутствует.',
+    '- Используй visual contrast между соседними сценами: macro→medium, static→motion, clean→messy, problem→solution, hand POV→face reaction и т.п.',
+    '- Sound design участвует в retention: J-cut/sound bridge перед склейкой, короткий impact/foley на действие, иногда 0.2–0.5 сек намеренной тишины перед reveal. Без постоянных бессмысленных whoosh.',
+    '- Финал = payoff/результат/реакция, который естественно может вернуть к первому кадру. CTA короткий и не убивает entertainment.',
+    '- Никаких неподтверждённых «вирусный», «миллионы купили», рейтингов, цифр и social proof без данных.',
+    '',
     'ЖЁСТКАЯ ДРАМАТУРГИЯ:',
     '1) 0–1 сек — scroll-stop: конкретное действие/ошибка/неожиданность, понятные без звука.',
     '2) К 2–3 сек — open loop: зритель понимает проблему, но ещё хочет увидеть решение/результат.',
@@ -1605,8 +1644,13 @@ async function generateScriptStage(payload,accountId,feedback=''){
     '18) Привязанный аватар нельзя заменять другим человеком. Его образ и манера речи сохраняются.',
     '',
     'СТРУКТУРА СЦЕН:',
-    'Для каждой сцены заполни time, purpose, visual, action, dialogue, voiceover, onscreen, sound, transition, continuity, productRole.',
-    'visual = что реально видит зритель; action = последовательность действия; purpose = зачем сцена нужна удержанию.',
+    'Для каждой сцены заполни time, purpose, visual, action, dialogue, voiceover, onscreen, sound, transition, continuity, productRole, retentionMechanic, openLoop, patternInterrupt, visualContrast, microConflict, microPayoff, environmentStory, performanceBeat, soundBridge, nextQuestion.',
+    'visual = что реально видит зритель с конкретной композицией и изменением состояния; action = последовательность одного главного действия; purpose = зачем сцена нужна удержанию.',
+    'environmentStory = очень конкретная бытовая среда: тип комнаты/зоны, мебель, материалы поверхностей, 3–6 правдоподобных предметов, признаки жизни, время суток/состояние пространства. Не используй абстракции вроде «современная кухня».',
+    'performanceBeat = точная микро-игра героя: взгляд, дыхание, выражение, направление внимания, движение плеч/рук, реакция; без театральности.',
+    'retentionMechanic/openLoop/nextQuestion должны объяснять, почему зритель остаётся на следующий beat. patternInterrupt — конкретно ЧТО меняется в восприятии кадра.',
+    'visualContrast должен быть сформулирован относительно предыдущего beat. microConflict = маленькое трение/проблема/сомнение внутри сцены. microPayoff = что именно зритель получает к концу beat.',
+    'soundBridge = какой звук начинается до склейки или продолжается после неё, чтобы монтаж ощущался связным и ритмичным.'
     'dialogue — только синхронная реплика героя в кадре; voiceover — только закадровая речь.',
     'transition должен быть мотивирован действием. Не вставляй модный переход просто ради эффекта.',
     'productRole объясняет, зачем товар нужен именно в этой сцене, без выдуманных свойств.',
@@ -1631,7 +1675,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       complete.missing.length?('Пустые обязательные поля верхнего уровня: '+complete.missing.join(', ')+'.'):'',
       complete.badScenes?'Есть неполные сцены или меньше 5 сцен.':'',
       'Не меняй утверждённую идею. Сохрани сильные части черновика и ДОПОЛНИ всё недостающее.',
-      'Каждая сцена обязана иметь непустые time, purpose, visual, action, sound, continuity, productRole.',
+      'Каждая сцена обязана иметь непустые time, purpose, visual, action, sound, continuity, productRole, retentionMechanic, openLoop, patternInterrupt, visualContrast, microConflict, microPayoff, environmentStory, performanceBeat, soundBridge, nextQuestion.',
       'dialogue, voiceover и onscreen могут быть пустыми только если они реально не нужны в конкретной сцене.',
       'Нумерация сцен строго 1..N, тайминги непрерывны, 5–10 сцен.',
       'Если отдельный CTA не нужен, поле cta заполни: «Без отдельного CTA — финал через визуальный payoff».',
@@ -1656,6 +1700,11 @@ async function generateScriptStage(payload,accountId,feedback=''){
       focus:'Сделай речь бытовой и короткой, звук драматургически непрерывным, а onscreen-текст минимальным. Удали мета-фразы «сейчас покажу/проверю/повторю» и всё, что просто проговаривает видимое действие. Видео должно работать без звука, но со звуком становиться лучше.'
     },
     {
+      name:'viral_mechanics',
+      role:'Ты performance creative strategist по TikTok/Reels/Shorts. Ищи линейную рекламу, отсутствие информационных пробелов, одинаковые кадры, слабые pattern interrupts, недостаток micro-payoff, отсутствие контраста и нативной бытовой конкретики.',
+      focus:'Перепиши beats так, чтобы каждый отвечал на один вопрос и порождал следующий; соседние сцены визуально контрастировали; каждые 2–4 секунды менялись состояние/масштаб/POV/эмоция/звук; среда и микро-игра героя были конкретными. Не превращай ролик в клиповый хаос и не меняй утверждённую идею.'
+    },
+    {
       name:'showrunner',
       role:'Ты финальный showrunner и supervisor AI-production. Проверяй FACT LOCK, continuity, физическую реализуемость, продуктовую необходимость, два доказательства/pivot, тайминг, визуальный payoff и отсутствие скучного beauty-shot.',
       focus:'Собери финальную версию, которую можно без ручной починки передавать в storyboard и AI-превиз. Проверь, что второй proof отличается от первого, финал остаётся действием, а не beauty-shot/CTA, и нет сложной физики рук. Не завышай оценки ради прохождения порога.'
@@ -1676,7 +1725,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       JSON.stringify(script),
       '',
       'ПРОВЕРЬ И СРАЗУ ПЕРЕПИШИ СЦЕНАРИЙ. Не ограничивайся комментариями.',
-      'Оцени честно по 1–10: scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, hookSpecificity, beatVariety, proofVariety, speechEconomy, visualStorytelling, productIntegration, audioPlan, continuity, factualSafety, generatability, payoff, overall.',
+      'Оцени честно по 1–10: scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, hookSpecificity, beatVariety, proofVariety, speechEconomy, visualStorytelling, productIntegration, audioPlan, continuity, factualSafety, generatability, payoff, sceneDensity, patternInterruptQuality, environmentSpecificity, visualContrast, microPayoffCadence, overall.',
       '9–10 — только действительно сильный результат. Если критерий ниже 8, исправь причину прямо в revised script.',
       'Запрещено менять ключевую механику утверждённой идеи. Разрешено менять тайминг, количество сцен в пределах 5–10, порядок микро-beats, реплики, SFX, onscreen, переходы и способ визуального доказательства.',
       'Верни issues и changes кратко, а в script — полную улучшенную версию.'
@@ -1699,7 +1748,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
         check.missing.length?('Пустые поля: '+check.missing.join(', ')+'.'):'',
         check.badScenes?'Есть неполные/неправильно пронумерованные сцены.':'',
         'Сохрани все улучшения предыдущего редактора и восстанови только недостающее.',
-        'Каждая сцена: time, purpose, visual, action, sound, continuity, productRole — непустые; сцены 1..N; 5–10 сцен.',
+        'Каждая сцена: time, purpose, visual, action, sound, continuity, productRole, retentionMechanic, openLoop, patternInterrupt, visualContrast, microConflict, microPayoff, environmentStory, performanceBeat, soundBridge, nextQuestion — непустые; сцены 1..N; 5–10 сцен.',
         'Верни полный сценарий и честные scores.'
       ].filter(Boolean).join('\n');
       lastReview=await callScriptAIResilient({prompt:repairReviewPrompt,schema:reviewSchema,name:'script_review_structure_repair',images:[],effort:'medium'});
@@ -1711,7 +1760,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     await markScriptProgress(16+i,'Проверка '+(i+1)+' из '+reviewRoles.length+' завершена');
   }
 
-  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','hookSpecificity','beatVariety','proofVariety','speechEconomy','productIntegration','audioPlan','continuity','factualSafety','generatability','payoff','overall'];
+  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','hookSpecificity','beatVariety','proofVariety','speechEconomy','productIntegration','audioPlan','continuity','factualSafety','generatability','payoff','sceneDensity','patternInterruptQuality','environmentSpecificity','visualContrast','microPayoffCadence','overall'];
   const failed=()=>criticalKeys.filter(k=>Number(script?.quality?.[k]||0)<8);
   let passes=reviewRoles.length;
   if(failed().length){
