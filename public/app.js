@@ -558,8 +558,9 @@ function stageReportHtml(r,stage){
     const qualityFields=[
       ["scrollStop","Scroll-stop"],["curiosityGap","Интрига"],["retention","Удержание"],
       ["pacing","Темп"],["nativeTikTok","TikTok-native"],["dialogueNaturalness","Речь"],
-      ["productIntegration","Товар"],["audioPlan","Звук"],["generatability","AI-генерация"],
-      ["payoff","Payoff"],["overall","Итог"]
+      ["hookSpecificity","Хук"],["beatVariety","Разнообразие beats"],["proofVariety","Разные proof"],
+      ["speechEconomy","Лаконичность"],["productIntegration","Товар"],["audioPlan","Звук"],
+      ["generatability","AI-генерация"],["payoff","Payoff"],["overall","Итог"]
     ];
     const qualityHtml=Object.keys(quality).length
       ?'<div class="script-quality-panel"><div class="script-quality-head"><div><small>AI SCRIPT DOCTOR</small><b>'+esc(review?.passes||1)+' проверки + автодокрутка</b></div><span class="status '+(review?.passed===false?"work":"done")+'">'+(review?.passed===false?"Есть замечания":"Проверено")+'</span></div><div class="script-quality-grid">'+qualityFields.filter(([k])=>quality[k]!=null).map(([k,label])=>'<div class="'+(Number(quality[k])>=8?"good":"warn")+'"><span>'+esc(label)+'</span><b>'+esc(quality[k])+'/10</b></div>').join("")+'</div>'+(review?.finalChanges?.length?'<details class="script-review-details"><summary>Что AI докрутил</summary><ul>'+review.finalChanges.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul></details>':'')+'</div>'
