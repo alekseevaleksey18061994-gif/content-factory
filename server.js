@@ -5554,46 +5554,114 @@ async function probeDuration(filePath){
     return Math.max(1,Number(String(result.stdout).trim())||1);
   }catch{return 1}
 }
-async function extractVideoEvidence(filePath){
+async function detectVideoShots(filePath,duration,maxShots=10){
+  let cuts=[];
+  try{
+    const {stderr}=await execFile('ffmpeg',[
+      '-hide_banner','-loglevel','info','-i',filePath,
+      '-vf','select=gt(scene\\,0.18),showinfo','-an','-f','null','-'
+    ],{timeout:120000,maxBuffer:12*1024*1024});
+    const rx=/pts_time:([0-9.]+)/g;let m;
+    while((m=rx.exec(String(stderr||''))))cuts.push(Number(m[1]));
+  }catch{}
+  cuts=cuts.filter(x=>Number.isFinite(x)&&x>0.25&&x<duration-0.2).sort((a,b)=>a-b);
+  const cleaned=[];
+  for(const t of cuts){
+    if(!cleaned.length||t-cleaned[cleaned.length-1]>=0.45)cleaned.push(t);
+  }
+  cuts=cleaned.slice(0,Math.max(0,maxShots-1));
+  if(!cuts.length&&duration>2.4){
+    const target=Math.max(1,Math.min(maxShots,Math.round(duration/2)));
+    cuts=Array.from({length:target-1},(_,i)=>Number((((i+1)*duration)/target).toFixed(3)));
+  }
+  const boundaries=[0,...cuts,duration];
+  const shots=[];
+  for(let i=0;i<boundaries.length-1;i++){
+    const a=boundaries[i],b=boundaries[i+1];
+    if(b-a<0.35&&shots.length){
+      shots[shots.length-1].end=b;
+      shots[shots.length-1].duration=Number((shots[shots.length-1].end-shots[shots.length-1].start).toFixed(3));
+      continue;
+    }
+    shots.push({shot:i+1,start:Number(a.toFixed(3)),end:Number(b.toFixed(3)),duration:Number((b-a).toFixed(3))});
+  }
+  return shots.slice(0,maxShots);
+}
+async function extractFrameAt(filePath,dir,time,name){
+  const out=path.join(dir,name+'.jpg');
+  await execFile('ffmpeg',[
+    '-hide_banner','-loglevel','error','-ss',String(Math.max(0,Number(time)||0)),'-i',filePath,
+    '-frames:v','1','-vf','scale=900:-2:force_original_aspect_ratio=decrease','-q:v','2','-y',out
+  ],{timeout:45000});
+  return out;
+}
+async function persistAnalysisKeyframes(accountId,sourceName,keyframes=[]){
+  const scope=(String(accountId||'main')+'__analysis_'+Date.now().toString(36)).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  const saved=[];
+  for(const kf of keyframes){
+    try{
+      const fileName=('shot-'+kf.shot+'-'+kf.phase+'-'+String(kf.time).replace('.','_')+'.jpg').slice(0,120);
+      const data=await callProductMedia({
+        action:'upload',productId:scope,fileName,mimeType:'image/jpeg',
+        dataBase64:fs.readFileSync(kf.path).toString('base64')
+      });
+      if(data?.media?.url)saved.push({...kf,url:data.media.url,storagePath:data.media.path||'',fileName});
+    }catch(e){
+      saved.push({...kf,uploadError:String(e?.message||e)});
+    }
+  }
+  return saved;
+}
+async function extractVideoEvidence(filePath,opts={}){
   const duration=await probeDuration(filePath);
   const dir=fs.mkdtempSync('/tmp/cf-video-');
-  const targetFrames=Math.max(12,Math.min(24,Math.ceil(Math.max(1,duration)*2)));
-  const fps=Math.max(.15,Math.min(4,targetFrames/Math.max(.25,duration)));
-  const framePattern=path.join(dir,'frame-%03d.jpg');
-  await execFile('ffmpeg',[
-    '-hide_banner','-loglevel','error','-i',filePath,
-    '-vf','fps='+fps+',scale=768:-2:force_original_aspect_ratio=decrease',
-    '-q:v','3','-frames:v',String(targetFrames),'-y',framePattern
-  ],{timeout:120000});
-  const names=fs.readdirSync(dir).filter(x=>x.endsWith('.jpg')).sort().slice(0,targetFrames);
-  const frameSamples=names.map((name,i)=>{
-    const file=path.join(dir,name);
-    const b=fs.readFileSync(file);
-    const timeSec=Math.min(Math.max(0,duration-.001),i/Math.max(.001,fps));
-    return {
-      index:i+1,timeSec:Number(timeSec.toFixed(2)),filePath:file,
-      dataUrl:'data:image/jpeg;base64,'+b.toString('base64')
-    };
-  });
-  const frames=frameSamples.map(x=>({type:'input_image',image_url:x.dataUrl,detail:'low'}));
-  let audioPresent=false;
-  try{
-    const probe=await execFile('ffprobe',[
-      '-v','error','-select_streams','a:0','-show_entries','stream=codec_type,codec_name',
-      '-of','json',filePath
-    ],{timeout:30000});
-    const parsed=JSON.parse(String(probe?.stdout||'{}'));
-    audioPresent=Array.isArray(parsed?.streams)&&parsed.streams.length>0;
-  }catch{}
+  const detailed=opts?.detailed===true;
   const audioPath=path.join(dir,'audio.mp3');
   let hasAudio=false;
-  if(audioPresent){
-    try{
-      await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vn','-ac','1','-ar','16000','-b:a','80k','-y',audioPath],{timeout:120000});
-      hasAudio=fs.existsSync(audioPath)&&fs.statSync(audioPath).size>128;
-    }catch{}
+  try{
+    await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vn','-ac','1','-ar','16000','-b:a','96k','-y',audioPath],{timeout:120000});
+    hasAudio=fs.existsSync(audioPath)&&fs.statSync(audioPath).size>1000;
+  }catch{}
+  if(!detailed){
+    const fps=Math.max(.02,Math.min(2,10/Math.max(1,duration)));
+    const framePattern=path.join(dir,'frame-%02d.jpg');
+    await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vf','fps='+fps+',scale=768:-2:force_original_aspect_ratio=decrease','-q:v','3','-frames:v','10','-y',framePattern],{timeout:120000});
+    const frames=fs.readdirSync(dir).filter(x=>/^frame-.*\.jpg$/i.test(x)).sort().slice(0,10).map(name=>{
+      const b=fs.readFileSync(path.join(dir,name));
+      return {type:'input_image',image_url:'data:image/jpeg;base64,'+b.toString('base64'),detail:'low'};
+    });
+    return {duration,dir,frames,analysisParts:frames,audioPath:hasAudio?audioPath:null,shots:[],keyframes:[]};
   }
-  return {duration,dir,frames,frameSamples,audioPresent,frameRateSample:fps,audioPath:hasAudio?audioPath:null};
+  const shots=await detectVideoShots(filePath,duration,10);
+  const keyframes=[];
+  for(const shot of shots){
+    const phases=shots.length<=6
+      ? [
+          ['start',Math.min(shot.end-0.05,shot.start+0.08)],
+          ['mid',shot.start+(shot.duration/2)],
+          ['end',Math.max(shot.start+0.05,shot.end-0.08)]
+        ]
+      : [
+          ['start',Math.min(shot.end-0.05,shot.start+0.08)],
+          ['end',Math.max(shot.start+0.05,shot.end-0.08)]
+        ];
+    for(const [phase,tRaw] of phases){
+      const t=Number(Math.max(0,Math.min(duration,Number(tRaw)||0)).toFixed(3));
+      try{
+        const p=await extractFrameAt(filePath,dir,t,'shot-'+shot.shot+'-'+phase);
+        keyframes.push({shot:shot.shot,phase,time:t,path:p,start:shot.start,end:shot.end});
+      }catch{}
+    }
+  }
+  const analysisParts=[];
+  const frames=[];
+  for(const kf of keyframes){
+    const b=fs.readFileSync(kf.path);
+    analysisParts.push({type:'input_text',text:'SOURCE VIDEO · SHOT '+kf.shot+' · '+String(kf.phase).toUpperCase()+' · t='+kf.time.toFixed(3)+'s · shot range '+kf.start.toFixed(3)+'–'+kf.end.toFixed(3)+'s'});
+    const img={type:'input_image',image_url:'data:image/jpeg;base64,'+b.toString('base64'),detail:'high'};
+    analysisParts.push(img);frames.push(img);
+  }
+  return {duration,dir,frames,analysisParts,audioPath:hasAudio?audioPath:null,shots,keyframes};
 }
 function openAIQuotaError(error){
   const msg=String(error?.message||error||'').toLowerCase();
