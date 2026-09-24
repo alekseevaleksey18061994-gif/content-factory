@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.16';
+const APP_VERSION='2.6.17';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -3420,6 +3420,7 @@ async function createIdeaDraft(body,accountId){
   };
   const jobId=factoryId('job');
   const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),pipelineVersion:'previs-v3-background',
+    modeUpdatedAt:payload.created||new Date().toISOString(),modeUpdatedBy:'idea-draft',
     status:'В работе',stage:'Идея',progress:3,attempt:0,awaitingApproval:false,
     backgroundTask:{id:jobId,type:'idea',status:'queued',queuedAt:new Date().toISOString()},
     idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,sceneCount:0,
@@ -3430,6 +3431,70 @@ async function createIdeaDraft(body,accountId){
   await writeAppState(data,accountId);
   enqueueStageTask(accountId,run.id,'idea','',jobId);
   return run;
+}
+
+async function processManualModeCheckpoint(accountId,runId){
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run||run.mode!=='manual'||run.paused||run.status==='Остановлено'||run.status==='Ошибка'||run.status==='Готово')return {ok:true,skipped:true};
+  if(run.status==='На проверке'||run.awaitingApproval===true)return {ok:true,alreadyWaiting:true};
+
+  if(!run.idea){
+    const jobId=factoryId('job');
+    run.status='В работе';run.stage='Идея';run.awaitingApproval=false;
+    run.backgroundTask={id:jobId,type:'idea',status:'queued',queuedAt:new Date().toISOString(),note:'Продолжение после переключения в ручной режим'};
+    run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    return await processStageTask(accountId,runId,'idea','',jobId);
+  }
+  if(!run.script){
+    const jobId=factoryId('job');
+    run.status='В работе';run.stage='Сценарий';run.awaitingApproval=false;
+    run.backgroundTask={id:jobId,type:'script',status:'queued',queuedAt:new Date().toISOString(),note:'Продолжение после переключения в ручной режим'};
+    run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    return await processStageTask(accountId,runId,'script','',jobId);
+  }
+  if(!Array.isArray(run.storyboard)||!run.storyboard.length){
+    const jobId=factoryId('job');
+    run.status='В работе';run.stage='Storyboard';run.awaitingApproval=false;
+    run.backgroundTask={id:jobId,type:'storyboard',status:'queued',queuedAt:new Date().toISOString(),note:'Продолжение после переключения в ручной режим'};
+    run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    return await processStageTask(accountId,runId,'storyboard','',jobId);
+  }
+  if(!run.previsResult?.completed){
+    run.status='В работе';run.stage='Превиз-кадры';run.awaitingApproval=false;run.previsRunning=false;
+    run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    return await processRunPrevis(accountId,runId);
+  }
+  if(!run.generationResult?.completed){
+    run.status='В работе';run.stage='Генерация';run.awaitingApproval=false;run.backendGenerationRunning=false;
+    run.error='';run.generationError='';run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    return await processRunGeneration(accountId,runId);
+  }
+
+  if(!run.montageResult?.url){
+    run.status='На проверке';run.stage='На проверке';run.awaitingApproval=true;run.progress=Math.max(70,Number(run.progress)||0);
+    run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    return {ok:true,stage:'На проверке'};
+  }
+
+  run.status='На проверке';run.stage='На проверке';run.awaitingApproval=true;run.progress=Math.max(95,Number(run.progress)||0);
+  run.updatedAt=new Date().toISOString();
+  await writeAppState(data,accountId);
+  return {ok:true,stage:'На проверке'};
+}
+function enqueueManualModeCheckpoint(accountId,runId){
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  return enqueueAccountBackground(
+    account,
+    'manual-mode-checkpoint:'+String(runId),
+    ()=>processManualModeCheckpoint(account,runId),
+    'manual-mode-checkpoint'
+  );
 }
 
 async function runControlAction(body,accountId){
@@ -3456,6 +3521,9 @@ async function runControlAction(body,accountId){
     // current atomic stage and then sees run.mode === 'manual' and stops for approval.
     if(nextMode==='manual'){
       await writeAppState(data,accountId);
+      if(!run.paused&&run.status!=='Остановлено'&&run.status!=='Ошибка'&&run.status!=='Готово'){
+        enqueueManualModeCheckpoint(accountId,run.id);
+      }
       return run;
     }
 
