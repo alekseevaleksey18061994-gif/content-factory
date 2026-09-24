@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.35';
+const APP_VERSION='2.6.36';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2110,14 +2110,21 @@ async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
 
 function previsFrameShowsProduct(frame={},scene={}){
   if(frame?.productInFrame===true)return true;
+  if(frame?.productInFrame===false)return false;
   const visual=[
     frame?.composition,frame?.framing,frame?.action,frame?.environment,frame?.location,
-    frame?.productRole,frame?.productPlacement,frame?.productVisibility,
-    scene?.startFrame,scene?.endFrame,scene?.action,scene?.product,scene?.environment
+    frame?.productRole,frame?.productPlacement,frame?.productVisibility,frame?.productConsistency,
+    scene?.startFrame,scene?.endFrame,scene?.action,scene?.product,scene?.productRole,scene?.environment
   ].filter(Boolean).join(' ').toLowerCase();
-  const mentionsHolder=/держател|paper\s*towel\s*holder|towel\s*holder|holder\b/.test(visual);
-  const explicitlyAbsent=/держател[^.]{0,80}(полностью\s+)?не\s+виден|holder[^.]{0,80}not\s+visible|без\s+держателя|no\s+holder/.test(visual);
-  return mentionsHolder&&!explicitlyAbsent;
+  if(/(?:товар|продукт|product|item)[^.]{0,80}(?:не\s+виден|отсутствует|за\s+кадром|not\s+visible|off[- ]?screen|absent)|(?:без\s+товара|no\s+product)/i.test(visual))return false;
+  return Boolean(
+    String(frame?.productRole||'').trim() ||
+    String(frame?.productPlacement||'').trim() ||
+    String(frame?.productVisibility||'').trim() ||
+    String(scene?.product||'').trim() ||
+    String(scene?.productRole||'').trim() ||
+    /товар|продукт|product|item|держ|использ|установ|сним|надев|показыв|демонстр|в\s+рук|в\s+кадр|рулон|мочал|щ[её]тк|sprayer|holder|mat|fan|curler|roll/i.test(visual)
+  );
 }
 
 function normalizePrevisPlan(raw,payload={}){
@@ -2324,7 +2331,7 @@ function paperTowelHolderLock(run,context=''){
 function previsRefsForFrame(run,frame,done=[]){
   const urls=[];
   const lockProduct=previsFrameShowsProduct(frame,{});
-  const productRefs=lockProduct?productIdentityUrls(run,2):[];
+  const productRefs=lockProduct?productIdentityUrls(run,3):[];
   urls.push(...productRefs);
 
   const byId=new Map(done.filter(x=>x?.url).map(x=>[String(x.id),x.url]));
@@ -2355,7 +2362,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     universalProductIdentityLock(run),
     paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
     previsFrameShowsProduct(frame,{})
-      ? 'CRITICAL PRODUCT LOCK: reference images 1-2 are authoritative SOURCE PRODUCT photos. Reproduce the exact holder geometry, proportions, arm/rod, end cap, support/base shape, thickness, color and visible construction. NEVER redesign, simplify, thicken, shorten, add brackets, add a box-shaped mount, invent a hinge, invent an end stop or copy geometry from a generated anchor. Generated frames are continuity references only.'
+      ? 'CRITICAL PRODUCT LOCK: the first source-product reference images are authoritative ORIGINAL PRODUCT photos. Reproduce this exact physical product: silhouette, geometry, proportions, number and placement of parts, edges/ends, openings, mounts, controls, seams, material, texture, color, transparency and markings. Do not redesign, simplify, mirror, thicken, shorten, add/remove parts, invent mechanisms or copy product geometry from generated anchors when it differs from the source photos. Generated frames control composition only; ORIGINAL PRODUCT photos always win for product identity.'
       : '',
     run.character?.name?('Avatar identity locks: '+String(run.character.name)+'; '+String(run.character.look||'')+'; '+String(run.character.locks||'')):'',
     'Composition: '+String(frame.composition||''),
@@ -2376,7 +2383,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     'No baked-in text, no random logos, no extra fingers, no product deformation, no face change, no wardrobe change unless the approved scenario explicitly requires it.',
     frame.negativePrompt?('Negative: '+frame.negativePrompt):''
   ].filter(Boolean).join('\n').slice(0,15000);
-  const sourceProductRefs=previsFrameShowsProduct(frame,{})?productIdentityUrls(run,2):[];
+  const sourceProductRefs=previsFrameShowsProduct(frame,{})?productIdentityUrls(run,3):[];
   const sourceProductSet=new Set(sourceProductRefs);
   const input=[{role:'user',content:[
     {type:'input_text',text:prompt},
@@ -2634,6 +2641,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
     await downloadUrlFile(videoUrl,videoPath);
     evidence=await extractVideoEvidence(videoPath);
     const identity=primaryIdentityUrls(run);
+    const sourceProducts=productIdentityUrls(run,3);
     const previs=(Array.isArray(run.previsFrames)?run.previsFrames:[])
       .filter(x=>Number(x?.scene)===Number(sceneNo)&&x?.url).sort((a,b)=>Number(a.frame)-Number(b.frame));
     const content=[{type:'input_text',text:[
@@ -2656,7 +2664,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'Cinema Bible: '+JSON.stringify(run.previsPlan?.cinemaBible||{}),
       'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","lightingPhysics":"ok|warn|fail","motionPhysics":"ok|warn|fail","materialRealism":"ok|warn|fail","cinematicComposition":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},...(evidence?.frames||[]).slice(0,8)];
-    if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
+    for(const [idx,url] of sourceProducts.entries())content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY ANGLE '+(idx+1)+':'},{type:'input_image',image_url:url,detail:'high'});
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
     for(const f of [previs[0],previs[previs.length-1]].filter(Boolean)){
       content.push({type:'input_text',text:'APPROVED PREVIZ ANCHOR:'},{type:'input_image',image_url:f.url,detail:'low'});
@@ -4343,6 +4351,23 @@ async function runControlAction(body,accountId){
     await writeAppState(data,accountId);
     enqueueRunGeneration(accountId,run.id,'regenerate-scene');
     return run;
+  }
+  if(action==='delete_scene_video'){
+    const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
+    run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
+    const old=run.sceneResults[scene];
+    if(!old)throw new Error('Видео сцены не найдено');
+    for(const pm of (Array.isArray(old.persistedMedia)?old.persistedMedia:[])){
+      if(pm?.path)try{await callProductMedia({action:'delete',path:String(pm.path)})}catch(e){console.warn('[scene-video-delete] '+String(e?.message||e))}
+    }
+    delete run.sceneResults[scene];
+    run.acceptedScenes=(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).filter(x=>Number(x)!==scene);
+    const urls=Object.keys(run.sceneResults).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
+    run.generationResult={...(run.generationResult||{}),urls,completedScenes:Object.values(run.sceneResults).filter(x=>x?.ok&&x?.urls?.length).length,totalScenes:(run.storyboard||[]).length,completed:false};
+    run.voiceoverResult=null;run.montageResult=null;run.qcResult=null;run.postProductionRunning=false;run.backendGenerationRunning=false;
+    run.stage='Генерация';run.status='На проверке';run.awaitingApproval=true;run.progress=Math.min(65,Math.max(38,Number(run.progress)||38));run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Удалено видео сцены',(run.productName||run.id)+' · сцена '+scene);
+    await writeAppState(data,accountId);return run;
   }
   if(action==='delete_previs_frame'){
     const frameId=String(body?.frameId||'');
@@ -6579,6 +6604,13 @@ async function deleteFactoryEntity(accountId,type,id){
       'Удалён процесс',
       (deleted.productName||deleted.id)+' · '+(deleted.status||deleted.stage||'')+' · медиа сохранено: '+archivedMedia.length+' · видео скопировано: '+(persistence.copied||0)+(persistence.failed?(' · ошибок копирования: '+persistence.failed):'')
     );
+  }else if(type==='media'){
+    data.mediaLibrary=Array.isArray(data.mediaLibrary)?data.mediaLibrary:[];
+    deleted=data.mediaLibrary.find(x=>String(x?.id||'')===id)||null;
+    if(!deleted)throw new Error('Медиафайл не найден');
+    if(deleted?.path){try{await callProductMedia({action:'delete',path:String(deleted.path)})}catch(e){console.warn('[media-library-delete] '+String(e?.message||e))}}
+    data.mediaLibrary=data.mediaLibrary.filter(x=>String(x?.id||'')!==id);
+    appendFactoryJournal(data,'Удалён файл из медиатеки',(deleted.productName||'')+' · '+(deleted.kind==='video'?'видео':'фото')+' · '+(deleted.sourceStage||''));
   }else if(type==='script'){
     data.scripts=Array.isArray(data.scripts)?data.scripts:[];
     deleted=data.scripts.find(x=>String(x?.id||'')===id)||null;
