@@ -966,24 +966,27 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     }catch{}
   }
 
-  const candidateSchema={
-    type:'object',
-    additionalProperties:false,
-    required:['candidates'],
-    properties:{
-      candidates:{
-        type:'array',minItems:20,maxItems:20,
-        items:{
-          type:'object',additionalProperties:false,
-          required:['title','formatPattern','hook','concept','mechanic','payoff'],
-          properties:{
-            title:{type:'string'},formatPattern:{type:'string'},hook:{type:'string'},
-            concept:{type:'string'},mechanic:{type:'string'},payoff:{type:'string'}
+  function candidateSchemaFor(count){
+    return {
+      type:'object',
+      additionalProperties:false,
+      required:['candidates'],
+      properties:{
+        candidates:{
+          type:'array',minItems:count,maxItems:count,
+          items:{
+            type:'object',additionalProperties:false,
+            required:['title','formatPattern','hook','concept','mechanic','payoff'],
+            properties:{
+              title:{type:'string'},formatPattern:{type:'string'},hook:{type:'string'},
+              concept:{type:'string'},mechanic:{type:'string'},payoff:{type:'string'}
+            }
           }
         }
       }
-    }
-  };
+    };
+  }
+  const candidateSchema=candidateSchemaFor(20);
   const finalSchema={
     type:'object',
     additionalProperties:false,
@@ -1053,13 +1056,12 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     }
   };
 
-  async function callIdeaAI({prompt,schema,name,images=[]}){
+  async function callIdeaAI({prompt,schema,name,images=[],effort='medium',maxTokens=4800,timeoutMs=90000}){
     const input=[{role:'user',content:[
       {type:'input_text',text:prompt},
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
     ]}];
     const controller=new AbortController();
-    const timeoutMs=name==='idea_candidates'?85000:75000;
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     let r;
     try{
@@ -1068,7 +1070,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         signal:controller.signal,
         headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
         body:JSON.stringify({
-          model,input,reasoning:{effort:'medium'},max_output_tokens:name==='idea_candidates'?7000:4800,
+          model,input,reasoning:{effort},max_output_tokens:maxTokens,
           text:{format:{type:'json_schema',name,strict:true,schema}}
         })
       });
@@ -1081,7 +1083,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
     const priced=openAIUsageCost(data?.model||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{
-      provider:'OpenAI',category:'idea',description:name==='idea_candidates'?'20 TikTok-концепций идеи':name==='hook_lab'?'Hook Lab · 5 хуков':'TikTok Creative Critic идеи',
+      provider:'OpenAI',category:'idea',description:name.startsWith('idea_candidates')?'TikTok-концепции идеи · партия 10':name==='hook_lab'?'Hook Lab · 5 хуков':'TikTok Creative Critic идеи',
       amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
     }).catch(()=>{});
     const parsed=safeAnalysisJson(openAIText(data));
@@ -1108,7 +1110,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
 
   const generatorPrompt=[
     'ROLE: senior TikTok creative director + performance UGC director. Ты придумываешь не «рекламный ролик», а нативное короткое видео, которое должно остановить скролл и удержать зрителя.',
-    'Сгенерируй РОВНО 20 принципиально разных концепций. Различаться должна МЕХАНИКА просмотра и причина досмотреть, а не только формулировка.',
+    'Сформируй пул из 20 принципиально разных концепций. Для стабильности они генерируются двумя независимыми партиями по 10. Различаться должна МЕХАНИКА просмотра и причина досмотреть, а не только формулировка.',
     context,
     '',
     '20 FORMAT PATTERNS — используй каждый максимум один раз и укажи его в formatPattern:',
@@ -1164,12 +1166,27 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Не повторяй одну и ту же механику под разными названиями.'
   ].join('\n');
 
-  await markIdeaProgress(4,'Генерирую 20 разных механик');
-  const candidateData=await callIdeaAI({
-    prompt:generatorPrompt,schema:candidateSchema,name:'idea_candidates',images:refs
-  });
-  const candidates=Array.isArray(candidateData?.candidates)?candidateData.candidates:[];
-  if(candidates.length!==20)throw new Error('Генератор идеи вернул не 20 концепций');
+  await markIdeaProgress(4,'Генерирую 20 разных механик · 2 партии по 10');
+  const batchAPrompt=[
+    generatorPrompt,
+    '',
+    'ПАРТИЯ A: верни РОВНО 10 кандидатов и используй только FORMAT PATTERNS 1–10, по одному разу каждый. Не создавай кандидаты 11–20.'
+  ].join('\n');
+  const batchBPrompt=[
+    generatorPrompt,
+    '',
+    'ПАРТИЯ B: верни РОВНО 10 кандидатов и используй только FORMAT PATTERNS 11–20, по одному разу каждый. Не создавай кандидаты 1–10.'
+  ].join('\n');
+  const batchSchema=candidateSchemaFor(10);
+  const [batchA,batchB]=await Promise.all([
+    callIdeaAI({prompt:batchAPrompt,schema:batchSchema,name:'idea_candidates_a',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000}),
+    callIdeaAI({prompt:batchBPrompt,schema:batchSchema,name:'idea_candidates_b',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000})
+  ]);
+  const candidates=[
+    ...(Array.isArray(batchA?.candidates)?batchA.candidates:[]),
+    ...(Array.isArray(batchB?.candidates)?batchB.candidates:[])
+  ];
+  if(candidates.length!==20)throw new Error('Генератор идеи вернул '+candidates.length+' из 20 концепций');
   await markIdeaProgress(5,'Creative Critic выбирает и усиливает лучшую');
 
   const criticBase=[
