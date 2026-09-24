@@ -228,82 +228,54 @@ async function runEphemeralAuthSelfTest(){
   if(process.env.AUTH_EPHEMERAL_SELFTEST!=='1')return {skipped:true};
   const marker=randomBytes(6).toString('hex');
   const email='auth-selftest-'+marker+'@example.invalid';
-  const oldPassword='Old!'+randomBytes(12).toString('base64url');
-  const newPassword='New!'+randomBytes(12).toString('base64url');
-  const userId='usr_selftest_'+marker;
-  const accountId='acc_selftest_'+marker;
-  let createdUser=false,createdAccount=false;
+  const password='Test!'+randomBytes(14).toString('base64url');
+  let createdUserId='',createdAccountIds=[];
   try{
-    const users=await ensureUsersRegistry();
-    const salt=randomBytes(16).toString('hex');
-    users.users.push({
-      id:userId,login:email,email,displayName:'Auth Selftest',
-      salt,passwordHash:hashPassword(oldPassword,salt),
-      authType:'email',passwordSetupRequired:true,
-      passwordSetupAllowedUntil:new Date(Date.now()+10*60*1000).toISOString(),
-      createdAt:new Date().toISOString()
-    });
-    await writeUsersRegistry(users);createdUser=true;
-    for(let attempt=0;attempt<8;attempt++){
-      const check=await ensureUsersRegistry();
-      if((check.users||[]).some(u=>u.id===userId))break;
-      await new Promise(r=>setTimeout(r,150));
-    }
-
-    const accounts=await ensureAccountsRegistry();
-    accounts.accounts.push({
-      id:accountId,name:'Auth Selftest',owner:'',company:'',email,phone:'',notes:'',memory:'',
-      avatarUrl:'',avatarPath:'',ownerUserId:userId,createdAt:new Date().toISOString()
-    });
-    await writeAccountsRegistry(accounts);createdAccount=true;
-    for(let attempt=0;attempt<8;attempt++){
-      const check=await ensureAccountsRegistry();
-      if((check.accounts||[]).some(a=>a.id===accountId))break;
-      await new Promise(r=>setTimeout(r,150));
-    }
-    await new Promise(r=>setTimeout(r,250));
-
     const base='http://127.0.0.1:'+port;
     const reg=await fetch(base+'/api/auth/register',{
       method:'POST',headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
-      body:JSON.stringify({email,password:newPassword})
+      body:JSON.stringify({email,password})
     });
     const regData=await reg.json().catch(()=>({}));
-    if(!reg.ok||regData?.activated!==true)throw new Error('activation '+reg.status+' '+String(regData?.code||regData?.error||''));
+    if(!(reg.status===200||reg.status===201)||!regData?.user?.id)throw new Error('register '+reg.status+' '+String(regData?.code||regData?.error||''));
+    createdUserId=String(regData.user.id);
+    const regCookie=String(reg.headers.get('set-cookie')||'').split(';')[0];
+    if(!regCookie)throw new Error('registration cookie missing');
 
-    const cookie=String(reg.headers.get('set-cookie')||'').split(';')[0];
-    if(!cookie)throw new Error('activation cookie missing');
-    const me=await fetch(base+'/api/auth/me',{headers:{cookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
+    const me=await fetch(base+'/api/auth/me',{headers:{cookie:regCookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
     const meData=await me.json().catch(()=>({}));
-    if(!me.ok||meData?.user?.id!==userId)throw new Error('me '+me.status);
+    if(!me.ok||meData?.user?.id!==createdUserId)throw new Error('me-after-register '+me.status);
 
-    const acc=await fetch(base+'/api/accounts',{headers:{cookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
+    const acc=await fetch(base+'/api/accounts',{headers:{cookie:regCookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
     const accData=await acc.json().catch(()=>({}));
-    if(!acc.ok||!Array.isArray(accData?.accounts)||!accData.accounts.some(x=>x.id===accountId))throw new Error('accounts '+acc.status);
+    if(!acc.ok||!Array.isArray(accData?.accounts)||!accData.accounts.length)throw new Error('accounts '+acc.status);
+    createdAccountIds=accData.accounts.map(x=>String(x.id||'')).filter(Boolean);
 
     const login=await fetch(base+'/api/auth/login',{
       method:'POST',headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
-      body:JSON.stringify({email,password:newPassword})
+      body:JSON.stringify({email,password})
     });
     const loginData=await login.json().catch(()=>({}));
-    if(!login.ok||loginData?.user?.id!==userId)throw new Error('relogin '+login.status+' '+String(loginData?.code||loginData?.error||''));
+    if(!login.ok||loginData?.user?.id!==createdUserId)throw new Error('login '+login.status+' '+String(loginData?.code||loginData?.error||''));
+    const loginCookie=String(login.headers.get('set-cookie')||'').split(';')[0];
+    if(!loginCookie)throw new Error('login cookie missing');
 
-    console.log('[auth-ephemeral-selftest] PASS activation=200 me=200 accounts=200 relogin=200');
+    const me2=await fetch(base+'/api/auth/me',{headers:{cookie:loginCookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
+    const me2Data=await me2.json().catch(()=>({}));
+    if(!me2.ok||me2Data?.user?.id!==createdUserId)throw new Error('me-after-login '+me2.status);
+
+    console.log('[auth-ephemeral-selftest] PASS register='+reg.status+' me=200 accounts=200 login=200 me2=200');
     return {ok:true};
   }finally{
     try{
-      if(createdUser){
-        const users=await ensureUsersRegistry();
-        users.users=(users.users||[]).filter(u=>u.id!==userId);
-        await writeUsersRegistry(users);
-      }
+      const users=await ensureUsersRegistry();
+      users.users=(users.users||[]).filter(u=>u.id!==createdUserId&&normalizeEmail(u.email||u.login)!==email);
+      await writeUsersRegistry(users);
     }catch(e){console.error('[auth-ephemeral-selftest] cleanup-user '+String(e?.message||e))}
     try{
-      if(createdAccount){
-        const accounts=await ensureAccountsRegistry();
-        accounts.accounts=(accounts.accounts||[]).filter(a=>a.id!==accountId);
-        await writeAccountsRegistry(accounts);
-      }
+      const accounts=await ensureAccountsRegistry();
+      accounts.accounts=(accounts.accounts||[]).filter(a=>!createdAccountIds.includes(String(a.id||''))&&normalizeEmail(a.email||'')!==email);
+      await writeAccountsRegistry(accounts);
     }catch(e){console.error('[auth-ephemeral-selftest] cleanup-account '+String(e?.message||e))}
   }
 }
