@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.8';
+const APP_VERSION='2.6.9';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1725,7 +1725,7 @@ function normalizePrevisPlan(raw,payload={}){
             ? ('START STATE — отчётливое начало микро-действия, до результата. '+String(scene.startFrame||x.action||scene.action||''))
             : ('END STATE — микро-действие заметно продвинулось или завершено; результат визуально отличается от START. '+String(scene.endFrame||x.action||scene.action||''))
         ).slice(0,3500),
-        productInFrame:Boolean(x.productInFrame ?? !!scene.product),
+        productInFrame:Boolean(x.productInFrame ?? false),
         productRole:String(x.productRole||scene.product||'').slice(0,2200),
         productPlacement:String(x.productPlacement||'').slice(0,1200),
         productVisibility:String(x.productVisibility||'').slice(0,1000),
@@ -1783,7 +1783,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     '- приоритет: generated anchorFrames > continuityFrames > source identityRefs;',
     '- reference frame задаёт continuity, но НЕ разрешает копировать ту же позу и композицию;',
     '- первый кадр первой сцены может быть identity-led; далее преимущественно anchor-led;',
-    '- productInFrame=true ТОЛЬКО если сам держатель реально виден в этом конкретном START/END кадре. Не ставь true только потому, что у сцены заполнено поле product;',
+    '- productInFrame=true ТОЛЬКО если сам держатель реально виден в этом конкретном START/END кадре. Если кадр показывает проблему с рулоном ДО появления держателя, ставь false. Не ставь true только потому, что у сцены заполнено поле product;',
     '- если персонаж впервые появляется позднее, разрешено один раз подключить его source identity reference для фиксации лица.',
     '',
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
@@ -2024,11 +2024,13 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'Задача/действие: '+String(frame.action||frame.goal||''),
       'Композиция: '+String(frame.composition||''),
       'Локация: '+String(frame.environment||frame.location||''),
-      'CRITICAL: если товар есть в кадре, его геометрия, пропорции, крепёжные элементы, цвет и материал должны совпадать с SOURCE PRODUCT IMAGE. Generated anchors не имеют права переопределять форму товара.',
-      "CRITICAL: START и END должны отражать разные фазы действия. Если END выглядит как почти тот же кадр/поза/композиция без заметного продвижения действия — FAIL.",
-      "Для END при наличии PREVIOUS GENERATED FRAME требуй минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Identity и continuity при этом должны сохраниться.",
+      'ОЖИДАНИЕ ТОВАРА В ЭТОМ КАДРЕ: '+(frame.productInFrame?'товар должен быть виден':'товар может НЕ быть виден; отсутствие товара само по себе НЕ является ошибкой'),
+      'CRITICAL PRODUCT FAIL только когда frame.productInFrame=true И видимый товар заметно отличается от SOURCE PRODUCT IMAGE по геометрии, пропорциям, крепёжным элементам, цвету или материалу.',
+      "CRITICAL ACTION FAIL: START показывает уже завершённый результат, либо END почти не продвигает микро-действие относительно PREVIOUS GENERATED FRAME.",
+      "Для END желательны минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Но изменение ракурса само по себе не обязательно, если само действие визуально продвинулось.",
+      'SOFT DIFFERENCES — только WARN, не FAIL: точная позиция предметов на несколько сантиметров, частичное перекрытие/неперекрытие товара телом, небольшая разница крупности, ракурса, позы, композиции, декора или расположения героя, если смысл действия сохранён.',
       'Локация должна выглядеть правдоподобно и обжито, если storyboard не требует стерильной студии.',
-      'Не наказывай за небольшие художественные различия. FAIL только за заметную ошибку товара, неверное действие/фазу, серьёзный артефакт, неправильного персонажа или явное нарушение storyboard.',
+      'FAIL только за критическое: неверная фаза/действие, заметно неправильный товар когда он должен быть виден, другой персонаж, серьёзные артефакты рук/товара или противоречие смыслу сцены. Не требуй пиксельного совпадения со storyboard.',
       'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},
     {type:'input_text',text:'CANDIDATE PREVIZ:'},
@@ -2057,12 +2059,19 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   const priced=openAIUsageCost(data?.model||model,data?.usage||{});
   if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-qc',description:'QC превиз-кадра '+frame.scene+'.'+frame.frame,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
   const score=Number(parsed.score);
+  const checks=parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{};
+  const productFail=frame.productInFrame===true&&String(checks.product||'').toLowerCase()==='fail';
+  const actionFail=String(checks.actionPhase||'').toLowerCase()==='fail';
+  const avatarFail=frame.avatarInFrame===true&&String(checks.avatar||'').toLowerCase()==='fail';
+  const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
+  const criticalFail=productFail||actionFail||avatarFail||artifactsFail;
   return {
-    passed:parsed.passed!==false&&(!Number.isFinite(score)||score>=8),
+    passed:!criticalFail,
     score:Number.isFinite(score)?score:null,
     summary:String(parsed.summary||'').slice(0,1200),
-    checks:parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{},
-    issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,10):[]
+    checks,
+    issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,10):[],
+    criticalFail
   };
 }
 
@@ -2141,7 +2150,7 @@ async function processRunPrevis(accountId,runId){
 
       let img=null,qc=null,lastQcError='',lastGenerationError='';
       const previous=run.previsFrames.filter(x=>Number(x?.scene)===Number(spec.scene)&&x?.url).sort((a,b)=>Number(a.frame)-Number(b.frame)).slice(-1)[0];
-      const attempts=['higgsfield','higgsfield','openai'];
+      const attempts=['higgsfield','higgsfield','openai','openai'];
 
       for(let attempt=0;attempt<attempts.length;attempt++){
         const provider=attempts[attempt];
@@ -2170,8 +2179,8 @@ async function processRunPrevis(accountId,runId){
       }
 
       if(!img)throw new Error(
-        'Сцена '+spec.scene+', кадр '+spec.frame+' не получен. '+
-        (lastQcError?('QC: '+lastQcError):('Генерация: '+lastGenerationError))
+        'Сцена '+spec.scene+', кадр '+spec.frame+' не получен после '+attempts.length+' попыток. '+
+        (lastQcError?('Критический QC: '+lastQcError):('Генерация: '+lastGenerationError))
       );
 
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
