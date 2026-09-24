@@ -412,8 +412,12 @@ async function runLocalAuthSelfTest(){
   const accRes=await fetch(base+'/api/accounts',{headers:{cookie,'user-agent':'content-factory-auth-selftest'}});
   const accData=await accRes.json().catch(()=>({}));
   if(!accRes.ok||!Array.isArray(accData?.accounts)||!accData.accounts.length)throw new Error('accounts '+accRes.status+' count='+(accData?.accounts?.length||0));
-  console.log('[auth-selftest] PASS user='+meData.user.id+' accounts='+accData.accounts.length);
-  return {ok:true,userId:meData.user.id,accounts:accData.accounts.length};
+  const accountId=String(accData.accounts[0]?.id||'main');
+  const stateRes=await fetch(base+'/api/state?account='+encodeURIComponent(accountId),{headers:{cookie,'user-agent':'content-factory-auth-selftest'}});
+  const stateData=await stateRes.json().catch(()=>({}));
+  if(!stateRes.ok||stateData?.ok!==true)throw new Error('state '+stateRes.status+' '+String(stateData?.error||'').slice(0,160));
+  console.log('[auth-selftest] PASS user='+meData.user.id+' account='+accountId+' state=200');
+  return {ok:true,userId:meData.user.id,accountId,state:true};
 }
 
 async function userOwnsAccount(userId,accountId){
