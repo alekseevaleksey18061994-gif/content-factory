@@ -72,7 +72,15 @@ const DEFAULT_ACCOUNT_ID='main';
 const ACCOUNTS_REGISTRY_ID='accounts_registry';
 const USERS_REGISTRY_ID='auth_users_registry';
 const SESSION_COOKIE='cf_session';
+const AUTH_REGISTRY_CACHE_MS=30000;
+let usersRegistryCache=null;
+let usersRegistryCacheAt=0;
+let accountsRegistryCache=null;
+let accountsRegistryCacheAt=0;
 
+function cloneRegistry(value){
+  try{return structuredClone(value)}catch{return JSON.parse(JSON.stringify(value))}
+}
 
 function normalizeLogin(value){
   return String(value||'').trim().toLowerCase().replace(/\s+/g,'').slice(0,240);
@@ -177,17 +185,28 @@ function clearSessionCookie(res){
   res.setHeader('set-cookie',SESSION_COOKIE+'=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure');
 }
 async function ensureUsersRegistry(){
+  if(usersRegistryCache&&(Date.now()-usersRegistryCacheAt)<AUTH_REGISTRY_CACHE_MS){
+    return cloneRegistry(usersRegistryCache);
+  }
   const row=await readStateRow(USERS_REGISTRY_ID);
-  if(row.data?.users) return row.data;
+  if(row.data?.users){
+    usersRegistryCache=cloneRegistry(row.data);
+    usersRegistryCacheAt=Date.now();
+    return cloneRegistry(row.data);
+  }
   const registry={version:1,users:[]};
   await writeStateRow(USERS_REGISTRY_ID,registry);
-  return registry;
+  usersRegistryCache=cloneRegistry(registry);
+  usersRegistryCacheAt=Date.now();
+  return cloneRegistry(registry);
 }
 async function writeUsersRegistry(registry){
   registry.version=1;
   registry.users=Array.isArray(registry.users)?registry.users:[];
   await writeStateRow(USERS_REGISTRY_ID,registry);
-  return registry;
+  usersRegistryCache=cloneRegistry(registry);
+  usersRegistryCacheAt=Date.now();
+  return cloneRegistry(registry);
 }
 async function sessionUser(req){
   const session=readSessionToken(parseCookies(req)[SESSION_COOKIE]);
@@ -287,6 +306,10 @@ async function runEphemeralAuthSelfTest(){
     const me=await retryJson('/api/auth/me',{headers:commonHeaders,accept:[200]});
     if(me.data?.user?.id!==createdUserId)throw new Error('me-after-register '+me.status);
 
+    const acc=await retryJson('/api/accounts',{headers:commonHeaders,accept:[200]});
+    if(!Array.isArray(acc.data?.accounts)||!acc.data.accounts.length)throw new Error('accounts '+acc.status);
+    createdAccountIds=acc.data.accounts.map(x=>String(x.id||'')).filter(Boolean);
+
     const login=await retryJson('/api/auth/login',{
       method:'POST',
       headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
@@ -304,7 +327,7 @@ async function runEphemeralAuthSelfTest(){
     });
     if(me2.data?.user?.id!==createdUserId)throw new Error('me-after-login '+me2.status);
 
-    console.log('[auth-ephemeral-selftest] PASS register='+reg.status+' me=200 logout/login=200 me2=200');
+    console.log('[auth-ephemeral-selftest] PASS register='+reg.status+' me=200 accounts=200 login=200 me2=200');
     return {ok:true};
   }finally{
     try{
@@ -524,8 +547,15 @@ function blankFactoryState(){
 }
 
 async function ensureAccountsRegistry(){
+  if(accountsRegistryCache&&(Date.now()-accountsRegistryCacheAt)<AUTH_REGISTRY_CACHE_MS){
+    return cloneRegistry(accountsRegistryCache);
+  }
   const row=await readStateRow(ACCOUNTS_REGISTRY_ID);
-  if(row.data?.accounts?.length) return row.data;
+  if(row.data?.accounts?.length){
+    accountsRegistryCache=cloneRegistry(row.data);
+    accountsRegistryCacheAt=Date.now();
+    return cloneRegistry(row.data);
+  }
   const registry={
     version:1,
     accounts:[{
@@ -544,14 +574,18 @@ async function ensureAccountsRegistry(){
     }]
   };
   await writeStateRow(ACCOUNTS_REGISTRY_ID,registry);
-  return registry;
+  accountsRegistryCache=cloneRegistry(registry);
+  accountsRegistryCacheAt=Date.now();
+  return cloneRegistry(registry);
 }
 
 async function writeAccountsRegistry(registry){
   registry.version=1;
   registry.accounts=Array.isArray(registry.accounts)?registry.accounts:[];
   await writeStateRow(ACCOUNTS_REGISTRY_ID,registry);
-  return registry;
+  accountsRegistryCache=cloneRegistry(registry);
+  accountsRegistryCacheAt=Date.now();
+  return cloneRegistry(registry);
 }
 
 async function callProductMedia(payload){
