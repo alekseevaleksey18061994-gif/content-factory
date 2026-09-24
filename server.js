@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.12';
+const APP_VERSION='2.6.13';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2013,10 +2013,10 @@ async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[
   };
 }
 
-async function generatePrevisImage(accountId,run,frame,referenceUrls=[],provider='higgsfield'){
+async function generatePrevisImage(accountId,run,frame,referenceUrls=[],provider='openai'){
   if(provider==='openai'){
     const img=await generateOpenAIPrevisImage(accountId,run,frame,referenceUrls);
-    return {...img,provider:'OpenAI',fallbackFrom:'Nano Banana Pro'};
+    return {...img,provider:'OpenAI',fallbackFrom:''};
   }
   return generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls);
 }
@@ -2041,7 +2041,8 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'SOFT DIFFERENCES — только WARN, не FAIL: точная позиция предметов на несколько сантиметров, частичное перекрытие/неперекрытие товара телом, небольшая разница крупности, ракурса, позы, композиции, декора или расположения героя, если смысл действия сохранён.',
       'Локация должна выглядеть правдоподобно и обжито, если storyboard не требует стерильной студии.',
       'FAIL только за критическое: неверная фаза/действие, заметно неправильный товар когда он должен быть виден, другой персонаж, серьёзные артефакты рук/товара или противоречие смыслу сцены. Не требуй пиксельного совпадения со storyboard.',
-      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
+      'КРИТИЧНОСТЬ: critical=true только если кадр нельзя использовать дальше без переделки: реально неправильный товар, перепутана START/END фаза целиком, другой персонаж или серьёзный артефакт. Точная поза кисти, положение миски, небольшое отличие траектории/ракурса/кадрирования — WARN и critical=false.',
+      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},
     {type:'input_text',text:'CANDIDATE PREVIZ:'},
     {type:'input_image',image_url:imageUrl,detail:'low'}
@@ -2074,7 +2075,8 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   const actionFail=String(checks.actionPhase||'').toLowerCase()==='fail';
   const avatarFail=frame.avatarInFrame===true&&String(checks.avatar||'').toLowerCase()==='fail';
   const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
-  const criticalFail=productFail||actionFail||avatarFail||artifactsFail;
+  const declaredCritical=parsed.critical===true;
+  const criticalFail=productFail||avatarFail||artifactsFail||(declaredCritical&&actionFail);
   return {
     passed:!criticalFail,
     score:Number.isFinite(score)?score:null,
@@ -2105,9 +2107,11 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'Начало: '+String(scene.startFrame||''),
       'Конец: '+String(scene.endFrame||''),
       'Continuity: '+String(scene.continuity||''),
-      'CRITICAL FAIL: форма/пропорции/детали товара отличаются от исходного фото; сцена стала просто демонстрацией товара вместо нужного действия; неправильная фаза/действие; заметно другой персонаж; серьёзные артефакты рук/товара; локация противоречит storyboard.',
+      'CRITICAL FAIL только если: видимый товар заметно неправильной геометрии/конструкции; ролик показывает другое действие или обратную смысловую фазу; другой персонаж; серьёзные артефакты рук/товара.',
+      'SOFT WARN, НЕ FAIL: рука движется немного в другом направлении, предмет расположен иначе, миска/реквизит частично обрезаны, небольшая разница в позе, кадрировании, траектории, крупности или композиции — если рекламный смысл и микро-действие читаются.',
+      'Не требуй буквального покадрового совпадения с текстом storyboard. Storyboard задаёт смысл START→END и continuity, а не пиксельную хореографию.',
       'Среда должна выглядеть естественно и достаточно живо для рекламного ролика, но без случайного визуального мусора.',
-      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
+      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},...(evidence?.frames||[]).slice(0,4)];
     if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
@@ -2125,12 +2129,19 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
     const priced=openAIUsageCost(data?.model||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'scene-qc',description:'QC видео-сцены '+sceneNo,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
     const score=Number(parsed.score);
+    const checks=parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{};
+    const productFail=String(checks.product||'').toLowerCase()==='fail';
+    const avatarFail=String(checks.avatar||'').toLowerCase()==='fail';
+    const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
+    const storyFail=String(checks.storyAction||'').toLowerCase()==='fail';
+    const criticalFail=productFail||avatarFail||artifactsFail||(parsed.critical===true&&storyFail);
     return {
-      passed:parsed.passed!==false&&(!Number.isFinite(score)||score>=8),
+      passed:!criticalFail,
       score:Number.isFinite(score)?score:null,
       summary:String(parsed.summary||'').slice(0,1600),
-      checks:parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{},
-      issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,12):[]
+      checks,
+      issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,12):[],
+      criticalFail
     };
   }finally{
     try{fs.rmSync(dir,{recursive:true,force:true})}catch{}
@@ -2160,7 +2171,7 @@ async function processRunPrevis(accountId,runId){
 
       let img=null,qc=null,lastQcError='',lastGenerationError='';
       const previous=run.previsFrames.filter(x=>Number(x?.scene)===Number(spec.scene)&&x?.url).sort((a,b)=>Number(a.frame)-Number(b.frame)).slice(-1)[0];
-      const attempts=['higgsfield','higgsfield','openai','openai'];
+      const attempts=['openai','openai','openai'];
 
       for(let attempt=0;attempt<attempts.length;attempt++){
         const provider=attempts[attempt];
@@ -2424,18 +2435,23 @@ function sceneDurationSeconds(scene){
   return 5;
 }
 const generationQueues=new Map();
+const queuedGenerationRuns=new Map();
 function enqueueRunGeneration(accountId,runId,label='backend-generation'){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const key=account+'::'+String(runId);
-  const previous=generationQueues.get(key)||Promise.resolve();
+  const runKey=account+'::'+String(runId);
+  if(queuedGenerationRuns.has(runKey))return queuedGenerationRuns.get(runKey);
+  const queueKey=account;
+  const previous=generationQueues.get(queueKey)||Promise.resolve();
   let next;
   next=previous.catch(()=>{}).then(()=>processRunGeneration(account,runId)).catch(e=>{
     console.error('['+label+'] '+runId+' '+String(e?.message||e));
     return {ok:false,error:String(e?.message||e)};
   }).finally(()=>{
-    if(generationQueues.get(key)===next)generationQueues.delete(key);
+    queuedGenerationRuns.delete(runKey);
+    if(generationQueues.get(queueKey)===next)generationQueues.delete(queueKey);
   });
-  generationQueues.set(key,next);
+  generationQueues.set(queueKey,next);
+  queuedGenerationRuns.set(runKey,next);
   return next;
 }
 const postProductionQueues=new Map();
@@ -2818,16 +2834,19 @@ async function processSpecificPostStage(accountId,runId,stage){
 
 function videoProviderMode(run){
   const mode=String(run?.modelMode||'').toLowerCase();
-  if(mode.includes('только runway'))return 'runway-only';
   if(mode.includes('только higgsfield'))return 'higgsfield-only';
-  return 'higgsfield-runway';
+  if(mode.includes('только runway'))return 'runway-only';
+  // Higgsfield currently returns low-credit errors for video. Prefer the connected
+  // Runway backend by default instead of burning one failed Higgsfield request per scene.
+  if(process.env.RUNWAYML_API_SECRET)return 'runway-only';
+  return 'higgsfield-only';
 }
 
 async function processRunGeneration(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
   if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
   if(run.backendGenerationRunning)return {ok:true,alreadyRunning:true};
-  const expectedPrevis=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*3);
+  const expectedPrevis=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*2);
   const readyPrevis=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).length;
   if(!run.previsResult?.completed||!expectedPrevis||readyPrevis<expectedPrevis)return {ok:false,error:'Нельзя запускать видео: превиз готов не полностью ('+readyPrevis+'/'+expectedPrevis+')'};
   run.backendGenerationRunning=true;
@@ -2870,15 +2889,16 @@ async function processRunGeneration(accountId,runId){
         'SOUND: generate only natural diegetic room/action sounds for the scene (paper, fabric, kitchen/bathroom ambience, object handling as appropriate). NO generated speech, NO narration, NO random music; narration is added in post-production.',
         'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
       ].filter(Boolean).join('\n').slice(0,1000);
-      let result=null,lastError=null,sceneQc=null;
+      let result=null,lastError=null,sceneQc=null,qcCorrection='';
       const providerMode=videoProviderMode(run);
       const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
       for(let attempt=1;attempt<=maxAttempts;attempt++){
         let candidate=null;
+        const attemptPrompt=(prompt+(qcCorrection?'\nQC CORRECTION FOR THIS RETRY: '+qcCorrection:'')).slice(0,950);
         if(providerMode!=='runway-only'){
           try{
             candidate=await generateHiggsfieldScene({
-              accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
+              accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
               aspectRatio:'9:16',resolution:'720p',generateAudio:true
             });
             if(!(candidate?.ok&&candidate?.urls?.length)){
@@ -2893,7 +2913,7 @@ async function processRunGeneration(accountId,runId){
         if(!candidate&&providerMode!=='higgsfield-only'&&process.env.RUNWAYML_API_SECRET){
           try{
             candidate=await generateRunwayScene({
-              accountId,prompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
+              accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
             });
             if(candidate?.ok&&candidate?.urls?.length)candidate.fallbackFrom=providerMode==='runway-only'?'':'higgsfield';
             else candidate=null;
@@ -2909,7 +2929,8 @@ async function processRunGeneration(accountId,runId){
           sceneQc={passed:null,score:null,summary:'QC недоступен: '+String(e?.message||e),issues:[]};
         }
         if(sceneQc.passed!==false){result=candidate;break}
-        lastError=new Error('AI-QC сцены: '+((sceneQc.issues||[]).join('; ')||sceneQc.summary||'качество ниже порога'));
+        qcCorrection=((sceneQc.issues||[]).join('; ')||sceneQc.summary||'Исправь критическое несоответствие действию/товару').slice(0,1400);
+        lastError=new Error('AI-QC сцены: '+qcCorrection);
         console.warn('[scene-qc-retry] '+runId+' scene '+sceneNo+' attempt '+attempt+' '+String(lastError.message));
       }
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
@@ -3410,7 +3431,7 @@ async function runControlAction(body,accountId){
       try{await callProductMedia({action:'delete',path:String(old.path)})}catch(e){console.warn('[previs-delete] '+String(e?.message||e))}
     }
     run.previsFrames.splice(pos,1);
-    const expected=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*3);
+    const expected=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*2);
     const ready=run.previsFrames.filter(x=>x?.url).length;
     run.previsResult={completed:false,totalFrames:ready,totalScenes:Number(run.previsPlan?.totalScenes)||run.sceneCount||0};
     invalidateAfterPrevisChange(run);
@@ -3449,7 +3470,7 @@ async function runControlAction(body,accountId){
     };
     if(pos>=0)run.previsFrames[pos]=item;else run.previsFrames.push(item);
     run.previsFrames.sort((a,b)=>(Number(a.scene)-Number(b.scene))||(Number(a.frame)-Number(b.frame)));
-    const expected=Number(run.previsPlan?.totalFrames)||planFrames.length||((run.storyboard||[]).length*3);
+    const expected=Number(run.previsPlan?.totalFrames)||planFrames.length||((run.storyboard||[]).length*2);
     const ready=run.previsFrames.filter(x=>x?.url).length;
     run.previsResult={
       completed:Boolean(expected&&ready>=expected),
@@ -3563,7 +3584,7 @@ async function runControlAction(body,accountId){
       return run;
     }
     if(current==='Превиз-кадры'||current==='Референсы'){
-      const expected=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*3);
+      const expected=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*2);
       const ready=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).length;
       if(!run.script)throw new Error('Нельзя запускать видео: сценарий отсутствует');
       if(!Array.isArray(run.storyboard)||!run.storyboard.length)throw new Error('Нельзя запускать видео: Storyboard отсутствует');
@@ -4918,19 +4939,22 @@ async function recoverPendingBackendGenerations(){
     for(const account of (registry.accounts||[])){
       const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
       const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+      const ids=[];
       for(const run of (data.runs||[])){
         const hasPlan=!!run?.idea&&!!run?.script&&Array.isArray(run?.storyboard)&&run.storyboard.length>0;
         const complete=!!run?.generationResult?.completed;
         if(run&&hasPlan&&!complete&&!run.paused&&['В работе','Ошибка'].includes(run.status)&&run.stage==='Генерация'){
+          ids.push(String(run.id));
           run.backendGenerationRunning=false;
           run.status='В работе';
           run.error='';
           run.generationError='';
           run.updatedAt=new Date().toISOString();
-          await writeAppState(data,accountId);
-          enqueueRunGeneration(accountId,run.id,'backend-generation-recovery');
         }
       }
+      if(!ids.length)continue;
+      await writeAppState(data,accountId);
+      for(const runId of ids)enqueueRunGeneration(accountId,runId,'backend-generation-recovery');
     }
   }catch(e){console.error('[backend-generation-recovery] scan '+String(e?.message||e))}
 }
