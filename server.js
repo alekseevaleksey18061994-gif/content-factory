@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.3.0';
+const APP_VERSION='2.4.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2786,29 +2786,34 @@ async function dispatchExistingRun(accountId,run){
 function buildIdeaOptions(run){
   const base=run?.idea&&typeof run.idea==='object'?run.idea:{};
   const raw=[base,...(Array.isArray(base.alternatives)?base.alternatives:[])].slice(0,5);
+  const required=['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'];
   return raw.map((src,i)=>{
+    const primary=i===0;
     const optionIdea={
-      title:String(src?.title||base.title||('Идея '+(i+1))).slice(0,240),
-      concept:String(src?.concept||base.concept||'').slice(0,5000),
-      hook:String(src?.hook||base.hook||'').slice(0,2000),
-      angle:String(src?.angle||base.angle||'').slice(0,2000),
-      why:String(src?.why||base.why||('Альтернативная концепция №'+(i+1))).slice(0,4000),
-      audience:String(src?.audience||base.audience||'').slice(0,2000),
-      first3Seconds:String(src?.first3Seconds||src?.hook||base.first3Seconds||base.hook||'').slice(0,3000),
-      mechanic:String(src?.mechanic||src?.concept||base.mechanic||'').slice(0,3000),
-      productRole:String(src?.productRole||base.productRole||'').slice(0,3000),
-      retention:String(src?.retention||src?.concept||base.retention||'').slice(0,3000),
-      payoff:String(src?.payoff||base.payoff||src?.concept||'').slice(0,3000),
-      ctaDirection:String(src?.ctaDirection||base.ctaDirection||'Без отдельного CTA — финал через визуальный payoff.').slice(0,2000),
-      production:String(src?.production||base.production||'').slice(0,1600),
+      title:String(src?.title||(primary?base.title:'')||('Идея '+(i+1))).slice(0,240),
+      concept:String(src?.concept||(primary?base.concept:'')||'').slice(0,5000),
+      hook:String(src?.hook||(primary?base.hook:'')||'').slice(0,2000),
+      angle:String(src?.angle||(primary?base.angle:'')||'').slice(0,2000),
+      why:String(src?.why||(primary?base.why:'')||'').slice(0,4000),
+      audience:String(src?.audience||(primary?base.audience:'')||'').slice(0,2000),
+      first3Seconds:String(src?.first3Seconds||src?.hook||(primary?(base.first3Seconds||base.hook):'')||'').slice(0,3000),
+      mechanic:String(src?.mechanic||(primary?base.mechanic:'')||'').slice(0,3000),
+      productRole:String(src?.productRole||(primary?base.productRole:'')||'').slice(0,3000),
+      retention:String(src?.retention||(primary?base.retention:'')||'').slice(0,3000),
+      payoff:String(src?.payoff||(primary?base.payoff:'')||'').slice(0,3000),
+      ctaDirection:String(src?.ctaDirection||(primary?base.ctaDirection:'')||'').slice(0,2000),
+      production:String(src?.production||(primary?base.production:'')||'').slice(0,1600),
       quality:src?.quality&&typeof src.quality==='object'?src.quality:{}
     };
+    const missing=required.filter(k=>!String(optionIdea[k]||'').trim());
     return {
       id:'idea-'+String(run.id||'run')+'-'+(i+1),
       index:i+1,
       sourceRunId:String(run.id||''),
       productId:String(run.productId||''),
       productName:String(run.productName||run.product?.name||''),
+      complete:missing.length===0,
+      missing,
       idea:optionIdea
     };
   });
@@ -3805,7 +3810,7 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
       return {ok:false,requires_confirmation:true,message:'Нужно отдельное подтверждение удаления запуска '+run.id+'.'};
     }
     data.runs=data.runs.filter(x=>x.id!==run.id);
-    appendFactoryJournal(data,'ChatGPT удалил запуск',(run.productName||'Ролик')+' · '+run.id);
+    appendFactoryJournal(data,'ChatGPT удалил запуск',(run.productName||'Ролик')+' · '+run.id+' · идеи сохранены отдельно');
     await writeAppState(data,accountId);
     return {ok:true,deleted:{id:run.id,productName:run.productName}};
   }
@@ -5349,7 +5354,7 @@ const server=http.createServer(async(req,res)=>{
       }
       return json(res,400,{ok:false,error:'Неизвестное действие идеи'});
     }catch(e){
-      return json(res,502,{ok:false,error:'Не удалось запустить сохранённую идею',detail:String(e?.message||e)});
+      return json(res,502,{ok:false,error:'Не удалось выполнить действие с сохранённой идеей',detail:String(e?.message||e)});
     }
   }
 
