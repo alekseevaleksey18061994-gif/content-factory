@@ -895,18 +895,28 @@ async function recentIdeaContext(accountId,productId){
       .slice(-12)
       .map(v=>{
         const a=v?.analysis&&typeof v.analysis==='object'?v.analysis:{};
+        const src=a?.sourceBlueprint||a?.sourceReconstruction||{};
+        const adapt=a?.adaptation||{};
         return {
           title:String(v?.title||v?.name||v?.sourceName||'').slice(0,200),
           summary:String(v?.summary||a?.summary||v?.result?.summary||'').slice(0,1800),
-          hook:String(a?.hook||'').slice(0,1200),
-          hookFamily:String(a?.hookFamily||'').slice(0,600),
+          hook:String(a?.hook||src?.sourceHook||'').slice(0,1200),
+          sourceHook:String(src?.sourceHook||'').slice(0,1000),
+          scriptSummary:String(src?.scriptSummary||'').slice(0,1600),
+          visualDNA:String(src?.visualDNA||'').slice(0,1600),
+          cameraGrammar:String(src?.cameraGrammar||a?.cameraLanguage||'').slice(0,1600),
+          lightingGrammar:String(src?.lightingGrammar||'').slice(0,1200),
+          setGrammar:String(src?.setGrammar||a?.setDesign||'').slice(0,1600),
+          editingGrammar:String(src?.editingGrammar||'').slice(0,1600),
+          audioGrammar:String(src?.audioGrammar||a?.soundDesign||'').slice(0,1600),
+          sourceShots:Array.isArray(src?.shots)?src.shots.slice(0,12):[],
+          improvedConcept:String(adapt?.concept||'').slice(0,1600),
+          improvedHook:String(adapt?.hook||'').slice(0,1200),
+          improvedScenes:Array.isArray(adapt?.scenes)?adapt.scenes.slice(0,10):[],
           retentionMap:Array.isArray(a?.retentionMap)?a.retentionMap.slice(0,10):[],
           patternInterrupts:Array.isArray(a?.patternInterrupts)?a.patternInterrupts.slice(0,10):[],
           visualContrasts:Array.isArray(a?.visualContrasts)?a.visualContrasts.slice(0,10):[],
           microPayoffs:Array.isArray(a?.microPayoffs)?a.microPayoffs.slice(0,10):[],
-          cameraLanguage:a?.cameraLanguage||'',
-          setDesign:a?.setDesign||'',
-          soundDesign:a?.soundDesign||'',
           scenes:Array.isArray(a?.scenes)?a.scenes.slice(0,10):[],
           whyWorks:Array.isArray(a?.whyWorks)?a.whyWorks.slice(0,10):[]
         };
