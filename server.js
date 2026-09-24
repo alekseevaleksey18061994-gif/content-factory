@@ -2259,7 +2259,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     '- приоритет: generated anchorFrames > continuityFrames > source identityRefs;',
     '- reference frame задаёт continuity, но НЕ разрешает копировать ту же позу и композицию;',
     '- первый кадр первой сцены может быть identity-led; далее преимущественно anchor-led;',
-    '- productInFrame=true ВСЕГДА, когда сам держатель виден хотя бы частично: крупно, сбоку, в фоне, перекрыт рукой/рулоном или занимает небольшую часть кадра. false разрешён только когда держатель полностью отсутствует из видимой области кадра;',
+    '- productInFrame=true ВСЕГДА, когда исходный товар виден хотя бы частично: крупно, сбоку, в фоне, перекрыт рукой/другим объектом или занимает небольшую часть кадра. false разрешён только когда товар полностью отсутствует из видимой области кадра;',
     '- если персонаж впервые появляется позднее, разрешено один раз подключить его source identity reference для фиксации лица.',
     '',
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
@@ -2564,7 +2564,7 @@ async function generatePrevisImage(accountId,run,frame,referenceUrls=[],provider
 async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   if(!openaiConfigured())return {passed:null,score:null,summary:'OpenAI QC недоступен',issues:[]};
   const identity=primaryIdentityUrls(run);
-  const productRefs=productIdentityUrls(run,2);
+  const productRefs=productIdentityUrls(run,3);
   const lockProduct=previsFrameShowsProduct(frame,{});
   const content=[
     {type:'input_text',text:[
@@ -2579,8 +2579,8 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'ОЖИДАНИЕ ТОВАРА В ЭТОМ КАДРЕ: '+(lockProduct?'товар виден и ОБЯЗАН совпадать с исходными фото':'товар может отсутствовать'),
       universalProductIdentityLock(run),
       paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')),
-      'CRITICAL HOLDER ACTION FAIL: для этого держателя свободный конец справа и он несъёмный; рулон надевается справа налево к основанию. Снятие/откручивание торца, загрузка со стороны основания, зеркальная конструкция, съёмная ось или дополнительная опора — FAIL.',
-      'CRITICAL PRODUCT FAIL когда lockProduct=true и есть ЛЮБОЕ заметное изменение конструкции: другой кронштейн/основание, другой стержень/ось, придуманный торец или стопор, изменение толщины/длины/пропорций, лишняя коробка/шарнир/крепёж, иной цвет/материал, либо holder выглядит как другая модель.',
+      paperTowelHolderLock(run,[frame.action,frame.productPlacement,frame.productRole,frame.composition].filter(Boolean).join(' ')) ? 'CRITICAL HOLDER ACTION FAIL: для этого держателя свободный конец справа и он несъёмный; рулон надевается справа налево к основанию. Снятие/откручивание торца, загрузка со стороны основания, зеркальная конструкция, съёмная ось или дополнительная опора — FAIL.' : '',
+      'CRITICAL PRODUCT FAIL когда lockProduct=true и есть ЛЮБОЕ заметное изменение исходного товара: другая форма/силуэт, геометрия, пропорции, количество или расположение деталей, края/торцы/отверстия/крепления/кнопки, материал, текстура, цвет, маркировка, либо товар выглядит как другая модель.',
       "CRITICAL ACTION FAIL: START показывает уже завершённый результат, либо END почти не продвигает микро-действие относительно PREVIOUS GENERATED FRAME.",
       "Для END желательны минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Но изменение ракурса само по себе не обязательно, если само действие визуально продвинулось.",
       'SOFT DIFFERENCES — только WARN, не FAIL: точная позиция предметов на несколько сантиметров, частичное перекрытие/неперекрытие товара телом, небольшая разница крупности, ракурса, позы, композиции, декора или расположения героя, если смысл действия сохранён.',
@@ -2655,7 +2655,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'Continuity: '+String(scene.continuity||''),
       universalProductIdentityLock(run),
       paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' ')),
-      'CRITICAL HOLDER FAIL: если есть установка/снятие рулона, свободный правый конец остаётся несъёмным; установка идёт справа налево к основанию. Нельзя откручивать/снимать торец или ось, загружать со стороны основания или зеркалить конструкцию.',
+      paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' ')) ? 'CRITICAL HOLDER FAIL: если есть установка/снятие рулона, свободный правый конец остаётся несъёмным; установка идёт справа налево к основанию. Нельзя откручивать/снимать торец или ось, загружать со стороны основания или зеркалить конструкцию.' : '',
       'CRITICAL FAIL только если: видимый товар заметно неправильной геометрии/конструкции; ролик показывает другое действие или обратную смысловую фазу; другой персонаж; серьёзные артефакты рук/товара.',
       'SOFT WARN, НЕ FAIL: рука движется немного в другом направлении, предмет расположен иначе, миска/реквизит частично обрезаны, небольшая разница в позе, кадрировании, траектории, крупности или композиции — если рекламный смысл и микро-действие читаются.',
       'Не требуй буквального покадрового совпадения с текстом storyboard. Storyboard задаёт смысл START→END и continuity, а не пиксельную хореографию.',
@@ -3192,6 +3192,7 @@ async function runFinalQc(run,finalPath,accountId){
   try{
     evidence=await extractVideoEvidence(finalPath);
     const identity=primaryIdentityUrls(run);
+    const sourceProducts=productIdentityUrls(run,3);
     const content=[{type:'input_text',text:[
       'ROLE: финальный строгий QC-аудитор вертикального рекламного ролика.',
       'Проверяй только видимое. Сравни финал с утверждённой идеей, сценарием, storyboard, исходным товаром и continuity.',
@@ -3208,7 +3209,7 @@ async function runFinalQc(run,finalPath,accountId){
       'Scene QC map: '+JSON.stringify(Object.fromEntries(Object.entries(run.sceneResults||{}).map(([k,v])=>[k,{score:v?.qc?.score,checks:v?.qc?.checks,issues:v?.qc?.issues,provider:v?.routerProvider||v?.provider}]))),
       'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail","lightingPhysics":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","motionPhysics":"ok|warn|fail","shotVariety":"ok|warn|fail","colorContinuity":"ok|warn|fail"},"issues":[""],"directorCut":{"score":10,"reshootScenes":[1],"sceneNotes":[{"scene":1,"issue":"","fix":"","preferredProvider":"runway|seedance"}],"montageActions":[""],"reason":""}}'
     ].join('\n')},...(evidence.frames||[]).slice(0,8)];
-    if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
+    for(const [idx,url] of sourceProducts.entries())content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY ANGLE '+(idx+1)+':'},{type:'input_image',image_url:url,detail:'high'});
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
     const model=process.env.OPENAI_MODEL||'gpt-6-astra';
     const r=await fetch('https://api.openai.com/v1/responses',{
