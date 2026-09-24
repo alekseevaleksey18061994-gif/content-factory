@@ -142,8 +142,19 @@ function parseCookies(req){
 function sessionSecret(){
   return process.env.AUTH_SESSION_SECRET || process.env.CONTENT_FACTORY_DB_SECRET || '';
 }
-function makeSessionToken(userId){
-  const payload=Buffer.from(JSON.stringify({uid:userId,exp:Date.now()+30*24*60*60*1000})).toString('base64url');
+function makeSessionToken(userOrId){
+  const isUser=userOrId&&typeof userOrId==='object';
+  const uid=String(isUser?userOrId.id:userOrId||'');
+  const payloadData={
+    uid,
+    exp:Date.now()+30*24*60*60*1000,
+    ...(isUser?{
+      email:normalizeEmail(userOrId.email||''),
+      login:normalizeLogin(userOrId.login||''),
+      displayName:String(userOrId.displayName||'').slice(0,120)
+    }:{})
+  };
+  const payload=Buffer.from(JSON.stringify(payloadData)).toString('base64url');
   const sig=createHmac('sha256',sessionSecret()).update(payload).digest('base64url');
   return payload+'.'+sig;
 }
@@ -183,7 +194,19 @@ async function sessionUser(req){
   if(!session) return null;
   const registry=await ensureUsersRegistry();
   const user=registry.users.find(u=>u.id===session.uid);
-  return user?{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login,createdAt:user.createdAt}:null;
+  if(user)return {id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login,createdAt:user.createdAt};
+  // Fresh registrations can be briefly invisible through the external state API.
+  // A signed token minted by this server carries the same identity as a short read-after-write fallback.
+  if(session.email&&validEmail(session.email)){
+    return {
+      id:String(session.uid),
+      login:normalizeLogin(session.login||session.email),
+      email:normalizeEmail(session.email),
+      displayName:String(session.displayName||session.email).slice(0,120),
+      transientSession:true
+    };
+  }
+  return null;
 }
 async function applyOneTimeAuthMigration(){
   const migrationId=String(process.env.AUTH_MIGRATION_ID||'').trim();
@@ -7505,7 +7528,7 @@ const server=http.createServer(async(req,res)=>{
       delete user.resetTokenExpiresAt;
       user.passwordUpdatedAt=new Date().toISOString();
       await writeUsersRegistry(users);
-      setSessionCookie(res,makeSessionToken(user.id));
+      setSessionCookie(res,makeSessionToken(user));
       return json(res,200,{ok:true,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось изменить пароль.',detail:String(e?.message||e)});
@@ -7599,7 +7622,7 @@ const server=http.createServer(async(req,res)=>{
             }
           }catch(e){console.warn('[auth-register-bootstrap] '+String(e?.message||e))}
 
-          setSessionCookie(res,makeSessionToken(existing.id));
+          setSessionCookie(res,makeSessionToken(existing));
           return json(res,200,{ok:true,activated:true,user:{id:existing.id,login:existing.login,email:existing.email,displayName:existing.displayName||email}});
         }
 
@@ -7638,7 +7661,7 @@ const server=http.createServer(async(req,res)=>{
         await writeAppState(blankFactoryState(),id);
       }
       await writeAccountsRegistry(accounts);
-      setSessionCookie(res,makeSessionToken(user.id));
+      setSessionCookie(res,makeSessionToken(user));
       return json(res,201,{ok:true,user:{id:user.id,login:user.login,email:user.email,displayName:user.displayName},emailRecoveryReady:!authBootstrapError});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось зарегистрироваться по почте.',detail:String(e?.message||e)});
@@ -7722,7 +7745,7 @@ const server=http.createServer(async(req,res)=>{
         await writeUsersRegistry(users);
       }
 
-      setSessionCookie(res,makeSessionToken(user.id));
+      setSessionCookie(res,makeSessionToken(user));
       return json(res,200,{ok:true,migratedLegacy,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
     }catch(e){
       console.warn('[auth-login-error] '+String(e?.message||e));
