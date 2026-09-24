@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.6';
+const APP_VERSION='2.6.7';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1503,7 +1503,17 @@ async function callStoryboardAI(accountId,{prompt,schema,name,images=[],effort='
     description:name==='storyboard_scene'?'Перегенерация одной storyboard-сцены':'Генерация storyboard по утверждённому сценарию',
     amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
   }).catch(()=>{});
-  const parsed=safeAnalysisJson(openAIText(data));
+  const outputText=openAIText(data);
+  const incompleteReason=String(data?.incomplete_details?.reason||'');
+  if(data?.status==='incomplete'||incompleteReason){
+    const reason=incompleteReason||'incomplete';
+    throw new Error('OpenAI вернул незавершённый Storyboard: '+reason);
+  }
+  const rawJson=String(outputText||'').trim().replace(/^\`\`\`(?:json)?\\s*/i,'').replace(/\\s*\`\`\`$/,'');
+  let parsed;
+  try{parsed=JSON.parse(rawJson)}catch{
+    throw new Error('OpenAI вернул обрезанный или некорректный JSON Storyboard');
+  }
   if(!parsed||typeof parsed!=='object')throw new Error('AI вернул некорректную структуру Storyboard');
   return parsed;
 }
@@ -1547,36 +1557,60 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
   const sceneSchema=storyboardSceneJsonSchema();
-  const schema={
-    type:'object',additionalProperties:false,required:['storyboard'],
-    properties:{storyboard:{type:'array',minItems:scriptScenes.length,maxItems:scriptScenes.length,items:sceneSchema}}
-  };
-  const prompt=[
-    'ROLE: senior storyboard director, cinematographer and AI-video prompt engineer.',
-    storyboardContext(payload,script,idea,feedback),
-    'Сделай ровно '+scriptScenes.length+' сцен. Сцена N storyboard = сцена N сценария.',
-    'Для каждой сцены заранее спроектируй ровно 2 превиз-кадра через поля startFrame и endFrame.',
-    'Не делай START и END почти одинаковыми: это два разных момента одного действия, между которыми ролик должен ощущаться живым и динамичным.',
-    'Каждая сцена должна быть production-ready: ни одного пустого технического поля.',
-    'Верни JSON по заданной схеме.'
-  ].join('\n\n');
-  let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_full',images:refs,effort:'medium'});
-  let board=normalizeStoryboardStage(raw,payload);
-  let check=storyboardStageComplete(board,scriptScenes.length);
-  if(!check.ok){
-    const repair=[
-      'ROLE: technical storyboard repair editor.',
-      storyboardContext(payload,script,idea,feedback),
-      'Текущий storyboard: '+JSON.stringify(board),
-      'Проблемы: '+JSON.stringify(check.missing),
-      'Исправь ТОЛЬКО недостающие/слишком общие поля, сохрани сюжет и все уже хорошие детали.',
-      'Верни полный storyboard из '+scriptScenes.length+' сцен по схеме. Ни одного пустого обязательного технического поля.'
-    ].join('\n\n');
-    raw=await callStoryboardAI(accountId,{prompt:repair,schema,name:'storyboard_full_repair',images:refs,effort:'medium'});
-    board=normalizeStoryboardStage(raw,payload);
-    check=storyboardStageComplete(board,scriptScenes.length);
+  const chunkSize=3;
+  const board=[];
+
+  for(let from=0;from<scriptScenes.length;from+=chunkSize){
+    const chunkScenes=scriptScenes.slice(from,from+chunkSize);
+    const to=from+chunkScenes.length;
+    const chunkScript={...script,scenes:chunkScenes,sceneCount:chunkScenes.length};
+    const schema={
+      type:'object',additionalProperties:false,required:['storyboard'],
+      properties:{storyboard:{type:'array',minItems:chunkScenes.length,maxItems:chunkScenes.length,items:sceneSchema}}
+    };
+    const prompt=[
+      'ROLE: senior storyboard director, cinematographer and AI-video prompt engineer.',
+      storyboardContext(payload,chunkScript,idea,feedback),
+      'Ты создаёшь ТОЛЬКО сцены '+(from+1)+'–'+to+' из общего сценария на '+scriptScenes.length+' сцен.',
+      from>0?('Предыдущая сценарная сцена для continuity: '+JSON.stringify(scriptScenes[from-1])):'',
+      to<scriptScenes.length?('Следующая сценарная сцена для continuity: '+JSON.stringify(scriptScenes[to])):'',
+      'Верни ровно '+chunkScenes.length+' storyboard-сцен в том же порядке.',
+      'Номера scene должны быть '+chunkScenes.map((_,i)=>from+i+1).join(', ')+'.',
+      'Для каждой сцены заранее спроектируй ровно 2 превиз-кадра через startFrame и endFrame.',
+      'START и END — разные моменты действия; минимум 2 заметных визуальных отличия при сохранении continuity.',
+      'Пиши конкретно, но компактно: каждое техническое поле 1 короткое предложение. Не повторяй одинаковое описание в нескольких полях.',
+      'Все обязательные поля должны быть непустыми.',
+      'Верни JSON по заданной схеме.'
+    ].filter(Boolean).join('\n\n');
+
+    let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_chunk',images:refs,effort:'medium'});
+    let arr=Array.isArray(raw?.storyboard)?raw.storyboard:[];
+    let normalized=chunkScenes.map((sc,i)=>normalizeStoryboardScene(arr[i],sc,from+i));
+    let missing=normalized.map((x,i)=>({scene:from+i+1,fields:storyboardSceneMissing(x)})).filter(x=>x.fields.length);
+
+    if(missing.length){
+      const repair=[
+        'ROLE: technical storyboard repair editor.',
+        storyboardContext(payload,chunkScript,idea,feedback),
+        'Исправляешь только сцены '+(from+1)+'–'+to+'.',
+        'Текущий chunk: '+JSON.stringify(normalized),
+        'Недостающие поля: '+JSON.stringify(missing),
+        'Верни ровно '+chunkScenes.length+' полностью заполненных сцен. Сохрани хорошие данные, дополни недостающее. Кратко и конкретно.'
+      ].join('\n\n');
+      raw=await callStoryboardAI(accountId,{prompt:repair,schema,name:'storyboard_chunk_repair',images:refs,effort:'medium'});
+      arr=Array.isArray(raw?.storyboard)?raw.storyboard:[];
+      normalized=chunkScenes.map((sc,i)=>normalizeStoryboardScene(arr[i],sc,from+i));
+      missing=normalized.map((x,i)=>({scene:from+i+1,fields:storyboardSceneMissing(x)})).filter(x=>x.fields.length);
+    }
+
+    if(missing.length){
+      throw new Error('Storyboard неполный после автодокрутки: '+missing.map(x=>'сцена '+x.scene+' ['+x.fields.join(', ')+']').join('; '));
+    }
+    board.push(...normalized);
   }
-  if(!check.ok)throw new Error('Storyboard неполный после автодокрутки: '+check.missing.map(x=>'сцена '+x.scene+' ['+x.fields.join(', ')+']').join('; '));
+
+  const check=storyboardStageComplete(board,scriptScenes.length);
+  if(!check.ok)throw new Error('Storyboard неполный: '+check.missing.map(x=>'сцена '+x.scene+' ['+x.fields.join(', ')+']').join('; '));
   return board;
 }
 async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
