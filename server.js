@@ -5896,13 +5896,14 @@ async function persistVideoAnalysisFrames(accountId,analysisId,samples=[]){
     const batch=list.slice(from,from+4);
     const rows=await Promise.all(batch.map(async x=>{
       try{
+        const phase=String(x.phase||'frame').replace(/[^a-z0-9_-]/gi,'');
         const data=await callProductMedia({
           action:'upload',productId:scoped,
-          fileName:'frame-'+String(x.index||0).padStart(2,'0')+'-'+Math.round((Number(x.timeSec)||0)*1000)+'.jpg',
+          fileName:'shot-'+String(x.shot||x.index||0).padStart(2,'0')+'-'+phase+'-'+Math.round((Number(x.timeSec)||0)*1000)+'.jpg',
           mimeType:'image/jpeg',
           dataBase64:fs.readFileSync(x.filePath).toString('base64')
         });
-        return {index:x.index,timeSec:x.timeSec,url:data?.media?.url||'',path:data?.media?.path||''};
+        return {index:x.index,timeSec:x.timeSec,shot:Number(x.shot)||0,phase:String(x.phase||''),start:Number(x.start)||0,end:Number(x.end)||0,url:data?.media?.url||'',path:data?.media?.path||''};
       }catch(e){
         console.warn('[video-analysis-frame-upload] '+String(e?.message||e));
         return {index:x.index,timeSec:x.timeSec,url:'',path:''};
