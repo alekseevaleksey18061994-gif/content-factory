@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='1.8.0';
+const APP_VERSION='1.9.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -920,7 +920,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
 
 function scenarioTargetCount(payload={}){
   const seconds=Number(String(payload.duration||'30').match(/\d+/)?.[0]||30);
-  return Math.max(4,Math.min(8,Math.round(seconds/6)));
+  return Math.max(5,Math.min(10,Math.round(seconds/4)));
 }
 function normalizeScriptStage(raw,payload={}){
   const src=raw&&typeof raw==='object'?(raw.script||raw):{};
@@ -961,8 +961,20 @@ function normalizeScriptStage(raw,payload={}){
     globalContinuity:String(src.globalContinuity||'').slice(0,5000),
     subtitleRules:String(src.subtitleRules||'').slice(0,3000),
     productRules:String(src.productRules||payload.productRules||payload.product?.rules||'').slice(0,5000),
+    quality:src.quality&&typeof src.quality==='object'?src.quality:{},
+    reviewProcess:src.reviewProcess&&typeof src.reviewProcess==='object'?src.reviewProcess:null,
     scenes
   };
+}
+function scriptStageComplete(script){
+  const required=['title','logline','hook','structure','cta','tone','duration','globalContinuity','subtitleRules','productRules'];
+  const missing=required.filter(k=>!String(script?.[k]||'').trim());
+  const scenes=Array.isArray(script?.scenes)?script.scenes:[];
+  const badScenes=scenes.length<5||scenes.some((x,i)=>{
+    const fields=['time','purpose','visual','action','sound','continuity','productRole'];
+    return fields.some(k=>!String(x?.[k]||'').trim())||Number(x?.scene||0)!==i+1;
+  });
+  return {ok:missing.length===0&&!badScenes,missing,badScenes};
 }
 async function generateScriptStage(payload,accountId,feedback=''){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
@@ -973,95 +985,239 @@ async function generateScriptStage(payload,accountId,feedback=''){
   const refs=[
     ...(payload.media||payload.product?.media||[]).map(x=>x?.url),
     ...(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url)
-  ].filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,4);
-  const master=[
-    'ROLE: Ты сценарист, режиссёр и продюсер коротких вертикальных рекламных видео для TikTok, Reels и YouTube Shorts.',
-    'ВАЖНО: идея уже утверждена. НЕ придумывай новую идею. Твоя задача — превратить утверждённую идею в полноценный съёмочный сценарий.',
-    '',
-    'УТВЕРЖДЁННАЯ ИДЕЯ',
-    JSON.stringify(idea),
-    '',
-    'ТОВАР',
-    'Название: '+String(payload.productName||payload.product?.name||'Товар'),
+  ].filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,5);
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+
+  const sceneProperties={
+    scene:{type:'integer',minimum:1,maximum:10},
+    time:{type:'string'},
+    purpose:{type:'string'},
+    visual:{type:'string'},
+    action:{type:'string'},
+    dialogue:{type:'string'},
+    voiceover:{type:'string'},
+    onscreen:{type:'string'},
+    sound:{type:'string'},
+    transition:{type:'string'},
+    continuity:{type:'string'},
+    productRole:{type:'string'}
+  };
+  const characterProperties={
+    name:{type:'string'},role:{type:'string'},look:{type:'string'},voice:{type:'string'},locks:{type:'string'}
+  };
+  const scriptObjectSchema={
+    type:'object',additionalProperties:false,
+    required:['title','logline','hook','structure','cta','tone','duration','characters','globalContinuity','subtitleRules','productRules','scenes'],
+    properties:{
+      title:{type:'string'},logline:{type:'string'},hook:{type:'string'},structure:{type:'string'},
+      cta:{type:'string'},tone:{type:'string'},duration:{type:'string'},
+      characters:{type:'array',maxItems:4,items:{type:'object',additionalProperties:false,required:['name','role','look','voice','locks'],properties:characterProperties}},
+      globalContinuity:{type:'string'},subtitleRules:{type:'string'},productRules:{type:'string'},
+      scenes:{type:'array',minItems:5,maxItems:10,items:{type:'object',additionalProperties:false,required:Object.keys(sceneProperties),properties:sceneProperties}}
+    }
+  };
+  const draftSchema={
+    type:'object',additionalProperties:false,required:['script'],
+    properties:{script:scriptObjectSchema}
+  };
+  const scoreProperties={
+    scrollStop:{type:'integer',minimum:1,maximum:10},
+    curiosityGap:{type:'integer',minimum:1,maximum:10},
+    retention:{type:'integer',minimum:1,maximum:10},
+    pacing:{type:'integer',minimum:1,maximum:10},
+    nativeTikTok:{type:'integer',minimum:1,maximum:10},
+    dialogueNaturalness:{type:'integer',minimum:1,maximum:10},
+    visualStorytelling:{type:'integer',minimum:1,maximum:10},
+    productIntegration:{type:'integer',minimum:1,maximum:10},
+    audioPlan:{type:'integer',minimum:1,maximum:10},
+    continuity:{type:'integer',minimum:1,maximum:10},
+    factualSafety:{type:'integer',minimum:1,maximum:10},
+    generatability:{type:'integer',minimum:1,maximum:10},
+    payoff:{type:'integer',minimum:1,maximum:10},
+    overall:{type:'integer',minimum:1,maximum:10}
+  };
+  const reviewSchema={
+    type:'object',additionalProperties:false,required:['scores','issues','changes','script'],
+    properties:{
+      scores:{type:'object',additionalProperties:false,required:Object.keys(scoreProperties),properties:scoreProperties},
+      issues:{type:'array',maxItems:12,items:{type:'string'}},
+      changes:{type:'array',maxItems:12,items:{type:'string'}},
+      script:scriptObjectSchema
+    }
+  };
+
+  async function callScriptAI({prompt,schema,name,images=[],effort='high'}){
+    const input=[{role:'user',content:[
+      {type:'input_text',text:prompt},
+      ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
+    ]}];
+    const r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',
+      headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({
+        model,input,reasoning:{effort},max_output_tokens:7600,
+        text:{format:{type:'json_schema',name,strict:true,schema}}
+      })
+    });
+    const txt=await r.text();
+    let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
+    if(!r.ok)throw new Error(data?.error?.message||('OpenAI script error '+r.status));
+    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+    if(priced.amountUsd>0)await recordExpense(accountId,{
+      provider:'OpenAI',category:'script',
+      description:name==='script_draft'?'Черновик сценария':'AI-проверка и докрутка сценария',
+      amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
+    }).catch(()=>{});
+    const parsed=safeAnalysisJson(openAIText(data));
+    if(!parsed||typeof parsed!=='object')throw new Error('AI вернул некорректную структуру сценария');
+    return parsed;
+  }
+
+  const context=[
+    'УТВЕРЖДЁННАЯ ИДЕЯ: '+JSON.stringify(idea),
+    'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
+    'Категория: '+String(payload.product?.category||payload.category||''),
     'УТП: '+String(payload.productUtp||payload.product?.utp||''),
     'Факты/ограничения товара: '+String(payload.productRules||payload.product?.rules||''),
-    'FACT LOCK: запрещено добавлять способ установки, материал, размеры, прочность, характеристики или обещания, если они не указаны явно выше/в брифе. Фотографии подтверждают только внешний вид товара. Не превращай предположение по фото в рекламный факт.',
-    'Длительность ролика: '+String(payload.duration||'30 сек'),
-    'Формат: вертикальный 9:16.',
+    'Длительность: '+String(payload.duration||'30 сек'),
+    'Формат: вертикальный 9:16',
     'Стиль: '+String(payload.style||'UGC'),
     'Бриф пользователя: '+String(payload.brief||''),
-    'AI-персонаж: '+String(payload.character?.name||'не задан'),
-    'Внешность/locks персонажа: '+String(payload.character?.look||'')+' '+String(payload.character?.locks||''),
-    'Манера речи привязанного аватара: '+String(payload.character?.voice||''),
-    'Темы/роль аватара: '+String(payload.character?.topics||''),
-    payload.character?.name?'AVATAR LOCK: этот персонаж привязан к товару и является ведущим по умолчанию. Сценарий должен быть написан под его образ и голос; не заменяй его другим случайным человеком.':'',
-    feedback?('Комментарий пользователя к переделке: '+feedback):'',
-    '',
-    'ПРИНЦИПЫ',
-    '1) Это СЦЕНАРИЙ, а не storyboard и не промпты генератора. Не пиши технические промпты для видеомоделей.',
-    '2) Разбей ролик примерно на '+target+' сцен. Допустимо 4–8, если драматургия требует другого количества.',
-    '3) Тайминг сцен обязан покрыть всю длительность без дыр и нелепых пересечений.',
-    '4) Первые 1–3 секунды — сильный хук из утверждённой идеи. Никаких заставок, логотипов и медленного вступления.',
-    '5) Для КАЖДОЙ сцены обязательно: time, purpose, visual, action, dialogue, voiceover, onscreen, sound, transition, continuity, productRole.',
-    '6) visual = конкретно что видит зритель: место, персонажи, композиция, ключевое действие. Не абстрактное «показать продукт».',
-    '7) action = последовательность действий внутри сцены, понятная режиссёру.',
-    '8) dialogue = только реплики персонажей в кадре. voiceover = только закадровый голос. Не смешивай их.',
-    '9) Текст должен реально помещаться в отведённое время. Не пиши 40 слов на 4 секунды.',
-    '10) onscreen = только действительно нужный экранный текст/субтитр. Он должен быть коротким и читабельным.',
-    '11) sound = музыка, SFX, пауза или тишина. Звук должен поддерживать действие, а не быть случайным.',
-    '12) transition = как логично перейти в следующую сцену: cut, match cut, whip, jump cut, freeze frame и т.п. Только если оправдано.',
-    '13) continuity = что ОБЯЗАНО сохраниться между сценами: внешность героя, одежда, помещение, положение товара, цвет, повреждения, реквизит и т.п.',
-    '14) productRole = зачем товар находится именно в этой сцене и что зритель узнаёт/понимает о нём.',
-    '15) Не добавляй характеристик, свойств, размеров, материалов, цветов, эффектов или обещаний, которых нет в данных товара.',
-    '16) Внешность персонажа/аватара должна быть одинаковой во всех сценах. Если задана одежда/locks — не меняй.',
-    '17) Товар должен оставаться визуально тем же товаром. Если мелкие детали критичны, пометь это в continuity/productRole, но не изобретай их.',
-    '18) Не копируй сюжет, реплики, шутки или персонажей конкурентов. Можно использовать только паттерны структуры и удержания.',
-    '19) Сценарий должен работать как история: причина → развитие → payoff/результат → естественный CTA.',
-    '20) Если идея юмористическая, реклама может быть отложена к финалу; если демонстрационная — товар должен появиться раньше. Следуй утверждённой идее.',
-    '21) АУДИО: для ролика около 30 секунд не оставляй всю речь в одной средней сцене. Если формат предполагает голос, распределяй короткие естественные voiceover-фразы минимум по 3 смысловым точкам: хук/начало, развитие и payoff/финал. Полностью немые сцены допустимы только осознанно и должны иметь sound/SFX.',
-    '22) По умолчанию используй voiceover для рекламной речи. dialogue оставляй только когда персонаж действительно должен говорить в кадре; постобработка не должна зависеть от случайно сгенерированного голоса видеомодели.',
-    '23) Манера текста разговорная: короткие фразы, естественные паузы, без дикторских штампов и канцелярита.',
-    '',
-    'КОНТРОЛЬ СУБТИТРОВ И ИНТЕРФЕЙСА',
-    'Крупный читаемый текст, без длинных абзацев.',
-    'Не закладывай важный текст у правого края и в самом низу кадра — там интерфейс TikTok/Reels/Shorts.',
-    'Сохраняй смысл в центральной безопасной зоне кадра.',
-    '',
-    'ВНУТРЕННЯЯ ПРОВЕРКА ПЕРЕД ОТВЕТОМ',
-    '- Хук понятен без дополнительного объяснения?',
-    '- Есть ли у каждой сцены конкретная функция?',
-    '- Сумма таймингов соответствует длительности?',
-    '- Реплики реально произнести за указанное время?',
-    '- Есть ли причинно-следственная связь между сценами?',
-    '- Нет ли выдуманных характеристик товара?',
-    '- Есть ли continuity для героя и товара?',
-    '- Можно ли потом превратить каждую сцену в отдельный storyboard?',
-    'Не показывай внутренние рассуждения.',
-    '',
-    'Разборы конкурентов, если были — использовать только как структурные паттерны, не копировать: '+JSON.stringify(ctx.analyses),
-    '',
-    'Верни ТОЛЬКО валидный JSON без markdown:',
-    '{"script":{"title":"","logline":"","hook":"","structure":"","cta":"","tone":"","duration":"","characters":[{"name":"","role":"","look":"","voice":"","locks":""}],"globalContinuity":"","subtitleRules":"","productRules":"","scenes":[{"scene":1,"time":"0–4 сек","purpose":"","visual":"","action":"","dialogue":"","voiceover":"","onscreen":"","sound":"","transition":"","continuity":"","productRole":""}]}}'
+    payload.character?.name?('Привязанный AI-аватар: '+String(payload.character.name)+'. Возраст/образ: '+String(payload.character.age||'')+'. Внешность: '+String(payload.character.look||'')+'. Голос: '+String(payload.character.voice||'')+'. Темы: '+String(payload.character.topics||'')+'. Locks: '+String(payload.character.locks||'')):'',
+    'Разборы конкурентов — только структурные паттерны, не копировать: '+JSON.stringify(ctx.analyses),
+    feedback?('Комментарий пользователя к переделке: '+feedback):''
   ].filter(Boolean).join('\n');
-  const input=[{role:'user',content:[
-    {type:'input_text',text:master},
-    ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
-  ]}];
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
-  const r=await fetch('https://api.openai.com/v1/responses',{
-    method:'POST',
-    headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-    body:JSON.stringify({model,input,reasoning:{effort:'medium'},max_output_tokens:5000})
-  });
-  const txt=await r.text();
-  let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
-  if(!r.ok)throw new Error(data?.error?.message||('OpenAI script error '+r.status));
-  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
-  if(priced.amountUsd>0)await recordExpense(accountId,{
-    provider:'OpenAI',category:'script',description:'Генерация сценария ролика',
-    amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
-  }).catch(()=>{});
-  return normalizeScriptStage(safeAnalysisJson(openAIText(data)),payload);
+
+  const master=[
+    'ROLE: senior TikTok showrunner, сценарист, retention editor и режиссёр AI-видео.',
+    'Идея уже утверждена. Нельзя менять её ключевую механику, обещание, товар или героя. Можно и нужно радикально улучшать ИСПОЛНЕНИЕ: темп, порядок beats, хук, реплики, доказательства, переходы, payoff и звук.',
+    context,
+    '',
+    'ЦЕЛЬ: написать сценарий, который выглядит как нативный TikTok/Reels/Shorts, а не как карточка маркетплейса в видео.',
+    'Ориентир для этой длительности: около '+target+' коротких сцен/beats. Каждая сцена должна добавлять новое действие, информацию, реакцию или доказательство.',
+    '',
+    'ЖЁСТКАЯ ДРАМАТУРГИЯ:',
+    '1) 0–1 сек — scroll-stop: конкретное действие/ошибка/неожиданность, понятные без звука.',
+    '2) К 2–3 сек — open loop: зритель понимает проблему, но ещё хочет увидеть решение/результат.',
+    '3) Каждые 2–4 секунды — новый beat. Не растягивай одно действие на 6–8 секунд, если внутри ничего не меняется.',
+    '4) Reveal товара происходит через действие, а не через «вот наш товар».',
+    '5) После первого доказательства обязательно второй proof, twist, новый бытовой контекст или усиление результата.',
+    '6) Последние секунды — визуальный payoff. Beauty-shot максимум короткий; CTA не должен съедать финал.',
+    '7) По возможности финальный кадр создаёт естественный loop к первому, но не натягивай его.',
+    '',
+    'РЕЧЬ И ЗВУК:',
+    '8) Реплики короткие, бытовые, живые. Никаких «Проверим один и тот же жест», «идеальное решение», «организуйте пространство» и другого рекламного канцелярита.',
+    '9) Не проговаривай то, что зритель уже видит. Голос должен добавлять эмоцию, контекст, вопрос или вывод.',
+    '10) Первая реплика, если есть, обычно 3–8 слов. Текст обязан помещаться в тайминг.',
+    '11) Экранный текст не дублирует длинную озвучку. Короткая фраза — максимум одна мысль.',
+    '12) Звук начинается осознанно с первых 0–2 сек: голос, бытовой звук или SFX. Не допускай случайной тишины и ситуации, когда голос появляется только в середине ролика.',
+    '13) Для ролика 25–35 секунд, если выбран голосовой формат, распределяй речь минимум по 3 смысловым точкам: начало, развитие, payoff.',
+    '',
+    'AI-ГЕНЕРИРУЕМОСТЬ И CONTINUITY:',
+    '14) Одна сцена = одно главное физическое действие. Избегай сложной хореографии рук, невозможной физики, толпы, большого пролива и мелкого читаемого текста.',
+    '15) Товар, рулон, герой, одежда, кухня и освещение должны сохраняться. В continuity каждой сцены укажи только реально важные locks.',
+    '16) FACT LOCK: запрещено придумывать материал, размеры, прочность, способ крепления/установки и скрытые функции. Фото подтверждают только внешний вид.',
+    '17) Если способ крепления товара не подтверждён, НЕ показывай и НЕ описывай выдуманное крепление. Используй нейтральный ракурс/размещение, подтверждаемое референсом.',
+    '18) Привязанный аватар нельзя заменять другим человеком. Его образ и манера речи сохраняются.',
+    '',
+    'СТРУКТУРА СЦЕН:',
+    'Для каждой сцены заполни time, purpose, visual, action, dialogue, voiceover, onscreen, sound, transition, continuity, productRole.',
+    'visual = что реально видит зритель; action = последовательность действия; purpose = зачем сцена нужна удержанию.',
+    'dialogue — только синхронная реплика героя в кадре; voiceover — только закадровая речь.',
+    'transition должен быть мотивирован действием. Не вставляй модный переход просто ради эффекта.',
+    'productRole объясняет, зачем товар нужен именно в этой сцене, без выдуманных свойств.',
+    '',
+    'SAFE ZONE: важный текст — в центральной области 9:16; не у правого края и не в самом низу.',
+    'Тайминги обязаны непрерывно покрывать всю длительность без дыр и пересечений.',
+    '',
+    'Перед ответом внутренне проверь: scroll-stop, open loop, смену beats, второй proof/twist, естественность речи, звук с начала, FACT LOCK, continuity, тайминг и финальный payoff. Не показывай внутренние рассуждения.'
+  ].join('\n');
+
+  const draftData=await callScriptAI({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
+  let script=normalizeScriptStage(draftData,payload);
+  const complete=scriptStageComplete(script);
+  if(!complete.ok)throw new Error('Черновик сценария неполный');
+
+  const reviewRoles=[
+    {
+      name:'retention',
+      role:'Ты TikTok retention editor. Ищи места, где зритель свайпнет: слабый первый кадр, отсутствие curiosity gap, длинные сцены без нового beat, раннее раскрытие всего решения, повторяющиеся доказательства, затянутый CTA.',
+      focus:'Перепиши исполнение так, чтобы каждые 2–4 секунды происходило новое осмысленное событие. Для 25–35 сек должны ощущаться 7–10 beats. Не меняй утверждённую идею.'
+    },
+    {
+      name:'native_audio',
+      role:'Ты UGC dialogue director и sound editor. Ищи рекламные формулировки, дикторский тон, дублирование картинки словами, неестественные реплики, тишину в начале, голос только в середине и перегруженные субтитры.',
+      focus:'Сделай речь бытовой и короткой, звук драматургически непрерывным, а onscreen-текст минимальным. Видео должно работать без звука, но со звуком становиться лучше.'
+    },
+    {
+      name:'showrunner',
+      role:'Ты финальный showrunner и supervisor AI-production. Проверяй FACT LOCK, continuity, физическую реализуемость, продуктовую необходимость, два доказательства/pivot, тайминг, визуальный payoff и отсутствие скучного beauty-shot.',
+      focus:'Собери финальную версию, которую можно без ручной починки передавать в storyboard и AI-превиз. Не завышай оценки ради прохождения порога.'
+    }
+  ];
+  let lastReview=null;
+  for(let i=0;i<reviewRoles.length;i++){
+    const rv=reviewRoles[i];
+    const prompt=[
+      rv.role,
+      rv.focus,
+      '',
+      'УТВЕРЖДЁННАЯ ИДЕЯ И КОНТЕКСТ:',
+      context,
+      '',
+      'ТЕКУЩАЯ ВЕРСИЯ СЦЕНАРИЯ:',
+      JSON.stringify(script),
+      '',
+      'ПРОВЕРЬ И СРАЗУ ПЕРЕПИШИ СЦЕНАРИЙ. Не ограничивайся комментариями.',
+      'Оцени честно по 1–10: scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, visualStorytelling, productIntegration, audioPlan, continuity, factualSafety, generatability, payoff, overall.',
+      '9–10 — только действительно сильный результат. Если критерий ниже 8, исправь причину прямо в revised script.',
+      'Запрещено менять ключевую механику утверждённой идеи. Разрешено менять тайминг, количество сцен в пределах 5–10, порядок микро-beats, реплики, SFX, onscreen, переходы и способ визуального доказательства.',
+      'Верни issues и changes кратко, а в script — полную улучшенную версию.'
+    ].join('\n');
+    lastReview=await callScriptAI({
+      prompt,schema:reviewSchema,name:'script_review_'+rv.name,images:[],effort:'high'
+    });
+    script=normalizeScriptStage(lastReview?.script||{},payload);
+    script.quality=lastReview?.scores||{};
+    const check=scriptStageComplete(script);
+    if(!check.ok)throw new Error('AI-проверка сценария вернула неполную версию');
+  }
+
+  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','productIntegration','audioPlan','continuity','factualSafety','generatability','payoff','overall'];
+  const failed=()=>criticalKeys.filter(k=>Number(script?.quality?.[k]||0)<8);
+  let passes=reviewRoles.length;
+  if(failed().length){
+    const repairPrompt=[
+      'ROLE: финальный emergency script doctor.',
+      'Ниже сценарий уже прошёл три независимые AI-проверки, но часть критических критериев всё ещё ниже 8/10.',
+      'НЕ меняй утверждённую идею. Исправь именно проваленные критерии глубокой правкой, а не косметикой.',
+      context,
+      '',
+      'ПРОВАЛЕННЫЕ КРИТЕРИИ: '+failed().join(', '),
+      'ТЕКУЩИЙ СЦЕНАРИЙ: '+JSON.stringify(script),
+      '',
+      'Обязательно сохрани factual safety и generatability. Верни полную финальную версию и честные scores.'
+    ].join('\n');
+    lastReview=await callScriptAI({prompt:repairPrompt,schema:reviewSchema,name:'script_review_repair',images:[],effort:'high'});
+    script=normalizeScriptStage(lastReview?.script||{},payload);
+    script.quality=lastReview?.scores||{};
+    passes++;
+  }
+
+  const finalCheck=scriptStageComplete(script);
+  if(!finalCheck.ok)throw new Error('Финальный сценарий неполный');
+  const finalFailed=failed();
+  script.reviewProcess={
+    passes,
+    autoRefined:true,
+    criticalThreshold:8,
+    passed:finalFailed.length===0,
+    failedCriteria:finalFailed,
+    finalIssues:Array.isArray(lastReview?.issues)?lastReview.issues.slice(0,12):[],
+    finalChanges:Array.isArray(lastReview?.changes)?lastReview.changes.slice(0,12):[],
+    evaluatedAt:new Date().toISOString()
+  };
+  return script;
 }
 
 function normalizeStoryboardStage(raw,payload={}){
