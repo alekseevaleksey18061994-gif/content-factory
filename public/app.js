@@ -329,7 +329,7 @@ function renderIdeas(){
   }).join(""):'<div class="empty">Идей пока нет. Выбери товар и нажми «Сгенерировать идею».</div>';
 }
 $("#generateIdeaBtn")?.addEventListener("click",async()=>{
-  const btn=$("#generateIdeaBtn"),status=$("#ideaStatus");btn.disabled=true;status.textContent="Ищу 8 разных механик и выбираю сильнейшую идею…";
+  const btn=$("#generateIdeaBtn"),status=$("#ideaStatus");btn.disabled=true;status.textContent="Ищу 10 разных механик, дважды проверяю и докручиваю идею…";
   try{
     const r=await fetch("/api/ideas/generate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       accountId:activeAccountId,productId:$("#ideaProduct")?.value||"",style:$("#ideaStyle")?.value||"UGC",brief:$("#ideaBrief")?.value.trim()||""
