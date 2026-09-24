@@ -1142,21 +1142,29 @@ function renderCosts(){
     }).join("");
 
     const balanceParts=[];
+    const runwayApiCreditError=runs.some(r=>/runway[^\n]*not enough credits|not enough credits[^\n]*runway/i.test(String(r?.error||r?.generationError||"")));
+    const higgsfieldApiCreditError=runs.some(r=>/higgsfield[^\n]*(credit balance is too low|not enough credits|insufficient credits)/i.test(String(r?.error||r?.generationError||"")));
     if(billing.higgsfield){
       balanceParts.push(
-        '<div class="billing-balance"><b>Higgsfield</b><span>'+
-        esc(billing.higgsfield.plan||"")+' · '+esc(billing.higgsfield.credits||0)+' кредитов'+
+        '<div class="billing-balance"><b>Higgsfield Web / MCP</b><span>'+
+        esc(billing.higgsfield.plan||"")+' · '+esc(billing.higgsfield.credits||0)+' кредитов · не API-баланс'+
         '</span></div>'
       );
     }
     if(billing.runway){
       balanceParts.push(
-        '<div class="billing-balance"><b>Runway</b><span>'+
+        '<div class="billing-balance"><b>Runway Web</b><span>'+
         esc(billing.runway.plan||"")+' · '+esc(billing.runway.totalCredits||0)+' кредитов ('+
-        esc(billing.runway.planCredits||0)+' тариф + '+esc(billing.runway.purchasedCredits||0)+' куплено)'+
+        esc(billing.runway.planCredits||0)+' тариф + '+esc(billing.runway.purchasedCredits||0)+' куплено) · не API-баланс'+
         '</span></div>'
       );
     }
+    balanceParts.push(
+      '<div class="billing-balance"><b>Content Factory API</b><span>'+
+      'Runway Dev: '+(runwayApiCreditError?'недостаточно кредитов':'отдельный баланс')+
+      ' · Higgsfield API: '+(higgsfieldApiCreditError?'недостаточно средств':'отдельный prepaid-баланс')+
+      '</span></div>'
+    );
 
     billingSummary.innerHTML=
       (fundingHtml||'<div class="empty compact-empty">Подписок и пополнений пока нет.</div>')+
