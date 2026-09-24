@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.29';
+const APP_VERSION='2.6.30';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1308,6 +1308,38 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     const variants=Array.isArray(hookLab?.variants)?hookLab.variants:[];
     const selectedIndex=Math.max(1,Math.min(5,Number(hookLab?.selectedIndex)||1));
     idea.hookLab={variants,selectedIndex,selectionReason:String(hookLab?.selectionReason||''),generatedAt:new Date().toISOString()};
+    const hookPreviewRefs=[...productRefs.slice(0,2),avatarRefs[0]].filter(Boolean);
+    for(let i=0;i<variants.length;i++){
+      const h=variants[i]||{};
+      try{
+        const frame={
+          scene:0,frame:i+1,frameType:'start',hookLab:true,productInFrame:true,
+          action:String(h.action||''),composition:String(h.firstFrame||''),
+          framing:'vertical 9:16 scroll-stop close/medium composition',
+          environment:'natural believable environment for the approved concept',
+          lighting:'realistic social-video lighting',
+          avatarInFrame:Boolean(payload.character),
+          avatarDescription:payload.character?String(payload.character.look||payload.character.name||''):'',
+          productPlacement:'Product must remain the exact source product while supporting the hook action.',
+          continuityNotes:'Hook Lab preview only; preserve exact product/avatar identity.',
+          imagePromptEn:[
+            'TikTok/Reels first-frame scroll stopper.',
+            'Visual hook type: '+String(h.type||''),
+            'First frame: '+String(h.firstFrame||''),
+            'Action beginning: '+String(h.action||''),
+            'Open loop: '+String(h.openLoop||''),
+            'Natural UGC, immediately readable without sound.'
+          ].join(' ')
+        };
+        const preview=await generateOpenAIPrevisImage(accountId,payload,frame,hookPreviewRefs);
+        h.previewUrl=preview?.url||'';
+        h.previewPath=preview?.path||'';
+        h.previewModel=preview?.model||'gpt-image-2';
+      }catch(e){
+        h.previewError=String(e?.message||e).slice(0,500);
+      }
+    }
+    idea.hookLab.variants=variants;
     const selectedHook=variants[selectedIndex-1];
     if(selectedHook){
       idea.hook=[selectedHook.firstFrame,selectedHook.line].filter(Boolean).join(' · ').slice(0,2000);
@@ -2233,7 +2265,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
   const body={
     model,input,
-    tools:[{type:'image_generation',model:'gpt-image-2',action:'auto',size:'1024x1536',quality:previsFrameShowsProduct(frame,{})?'medium':'low',output_format:'png'}],
+    tools:[{type:'image_generation',model:'gpt-image-2',action:'auto',size:'1024x1536',quality:frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'medium':'low'),output_format:'png'}],
     tool_choice:'required'
   };
   const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},body:JSON.stringify(body)});
@@ -2246,8 +2278,9 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   const uploaded=await callProductMedia({action:'upload',productId:scoped,fileName:'previs-s'+frame.scene+'-f'+frame.frame+'-'+Date.now()+'.png',mimeType:'image/png',dataBase64:'data:image/png;base64,'+b64});
   if(!uploaded?.media?.url)throw new Error('Не удалось сохранить превиз-кадр');
   const priced=openAIUsageCost(data?.model||model,data?.usage||{});
-  const amountUsd=priced.amountUsd>0?priced.amountUsd:imageGenerationFallbackUsd('low','1024x1536');
-  await recordExpense(accountId,{provider:'OpenAI',category:'previs-image',description:'Превиз-кадр сцены '+frame.scene+' · '+frame.frame,amountUsd,model:'gpt-image-2',usage:{size:'1024x1536',quality:'low',references:referenceUrls.length},source:'auto'}).catch(()=>{});
+  const previewQuality=frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'medium':'low');
+  const amountUsd=priced.amountUsd>0?priced.amountUsd:imageGenerationFallbackUsd(previewQuality,'1024x1536');
+  await recordExpense(accountId,{provider:'OpenAI',category:frame?.hookLab?'hook-preview':'previs-image',description:(frame?.hookLab?'Hook Lab превиз ':'Превиз-кадр сцены '+frame.scene+' · ')+frame.frame,amountUsd,model:'gpt-image-2',usage:{size:'1024x1536',quality:previewQuality,references:referenceUrls.length},source:'auto'}).catch(()=>{});
   return {
     url:uploaded.media.url,
     path:uploaded.media.path||'',
@@ -2650,7 +2683,7 @@ function previsSceneReferenceUrls(run,sceneNo){
   const anchors=frames.length
     ? [frames[0]?.url,frames[Math.floor((frames.length-1)/2)]?.url,frames[frames.length-1]?.url].filter(Boolean)
     : [];
-  return [...new Set([...anchors.slice(0,2),...identity])].slice(0,4);
+  return [...new Set([...anchors.slice(0,2),...identity])].slice(0,6);
 }
 async function processAutoPipeline(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
@@ -2825,11 +2858,9 @@ async function notifyN8nArchive(payload){
   }
 }
 function runReferenceUrls(run){
-  const productMedia=Array.isArray(run.media)?run.media:(Array.isArray(run.product?.media)?run.product.media:[]);
-  const avatarMedia=Array.isArray(run.avatarReferences)?run.avatarReferences:(Array.isArray(run.character?.media)?run.character.media:[]);
-  const productPrimary=productMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||''))) || productMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
-  const avatarPrimary=avatarMedia.find(x=>x?.isPrimary&&/^https:\/\//i.test(String(x?.url||''))) || avatarMedia.find(x=>/^https:\/\//i.test(String(x?.url||'')));
-  return [productPrimary?.url,avatarPrimary?.url].filter(Boolean);
+  const productRefs=productIdentityUrls(run,2);
+  const avatarRefs=avatarIdentityUrls(run,1);
+  return [...new Set([...productRefs,...avatarRefs].filter(Boolean))];
 }
 function sceneDurationSeconds(scene){
   const nums=String(scene?.duration||'').match(/\d+(?:[.,]\d+)?/g)||[];
