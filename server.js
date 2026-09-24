@@ -5557,20 +5557,43 @@ async function probeDuration(filePath){
 async function extractVideoEvidence(filePath){
   const duration=await probeDuration(filePath);
   const dir=fs.mkdtempSync('/tmp/cf-video-');
-  const fps=Math.max(.02,Math.min(2,10/duration));
-  const framePattern=path.join(dir,'frame-%02d.jpg');
-  await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vf','fps='+fps+',scale=768:-2:force_original_aspect_ratio=decrease','-q:v','3','-frames:v','10','-y',framePattern],{timeout:120000});
-  const frames=fs.readdirSync(dir).filter(x=>x.endsWith('.jpg')).sort().slice(0,10).map(name=>{
-    const b=fs.readFileSync(path.join(dir,name));
-    return {type:'input_image',image_url:'data:image/jpeg;base64,'+b.toString('base64'),detail:'low'};
+  const targetFrames=Math.max(12,Math.min(24,Math.ceil(Math.max(1,duration)*2)));
+  const fps=Math.max(.15,Math.min(4,targetFrames/Math.max(.25,duration)));
+  const framePattern=path.join(dir,'frame-%03d.jpg');
+  await execFile('ffmpeg',[
+    '-hide_banner','-loglevel','error','-i',filePath,
+    '-vf','fps='+fps+',scale=768:-2:force_original_aspect_ratio=decrease',
+    '-q:v','3','-frames:v',String(targetFrames),'-y',framePattern
+  ],{timeout:120000});
+  const names=fs.readdirSync(dir).filter(x=>x.endsWith('.jpg')).sort().slice(0,targetFrames);
+  const frameSamples=names.map((name,i)=>{
+    const file=path.join(dir,name);
+    const b=fs.readFileSync(file);
+    const timeSec=Math.min(Math.max(0,duration-.001),i/Math.max(.001,fps));
+    return {
+      index:i+1,timeSec:Number(timeSec.toFixed(2)),filePath:file,
+      dataUrl:'data:image/jpeg;base64,'+b.toString('base64')
+    };
   });
+  const frames=frameSamples.map(x=>({type:'input_image',image_url:x.dataUrl,detail:'low'}));
+  let audioPresent=false;
+  try{
+    const probe=await execFile('ffprobe',[
+      '-v','error','-select_streams','a:0','-show_entries','stream=codec_type,codec_name',
+      '-of','json',filePath
+    ],{timeout:30000});
+    const parsed=JSON.parse(String(probe?.stdout||'{}'));
+    audioPresent=Array.isArray(parsed?.streams)&&parsed.streams.length>0;
+  }catch{}
   const audioPath=path.join(dir,'audio.mp3');
   let hasAudio=false;
-  try{
-    await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vn','-ac','1','-ar','16000','-b:a','64k','-y',audioPath],{timeout:120000});
-    hasAudio=fs.existsSync(audioPath)&&fs.statSync(audioPath).size>0;
-  }catch{}
-  return {duration,dir,frames,audioPath:hasAudio?audioPath:null};
+  if(audioPresent){
+    try{
+      await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vn','-ac','1','-ar','16000','-b:a','80k','-y',audioPath],{timeout:120000});
+      hasAudio=fs.existsSync(audioPath)&&fs.statSync(audioPath).size>128;
+    }catch{}
+  }
+  return {duration,dir,frames,frameSamples,audioPresent,frameRateSample:fps,audioPath:hasAudio?audioPath:null};
 }
 function openAIQuotaError(error){
   const msg=String(error?.message||error||'').toLowerCase();
@@ -5600,25 +5623,54 @@ async function waitDescriptJob(jobId,timeoutMs=240000){
 }
 function videoAnalysisPrompt({sourceName='',sourceType='video',product=null,avatar=null,metadata={},transcript=''}) {
   return [
-    'Проанализируй короткое рекламное видео как performance creative director.',
-    'Ничего в проекте не редактируй. Нужен только аналитический ответ.',
-    'Верни ТОЛЬКО валидный JSON без markdown с полями summary, hook, hookFamily, retentionMap, patternInterrupts, visualContrasts, soundDesign, cameraLanguage, setDesign, microPayoffs, scenes, editing, whyWorks, weaknesses, adaptation.',
-    'scenes — массив исходных сцен: duration, shot, action, dialogueOrVoice, retentionMechanic, openLoop, patternInterrupt, microPayoff, visualContrast, camera, environment, soundBridge.',
-    'retentionMap — по временным отрезкам объясни: что удерживает, какой вопрос открыт, какой payoff закрывает его и что заставляет смотреть дальше.',
-    'patternInterrupts — все осмысленные смены масштаба/POV/движения/эмоции/звука/состояния предмета с примерным временем.',
-    'visualContrasts — как соседние кадры отличаются по крупности, движению, эмоции, свету или состоянию.',
-    'cameraLanguage — фокусные/ракурсы/движение камеры и почему они работают. setDesign — интерьер, слои глубины, props, материалы, practical lights и бытовая правдоподобность.',
-    'soundDesign — diegetic/foley/SFX/music/тишина/J-cut/L-cut и их роль в удержании. microPayoffs — маленькие награды зрителю до финала.',
-    'adaptation — НОВАЯ самостоятельная адаптация под наш товар и AI-аватара: concept, hook, scenes, cta.',
-    'Каждая adaptation.scenes: duration, shot, avatarAction, productAction, voiceover, onscreen.',
-    'Не копируй чужие точные реплики, брендинг, музыку или уникальную постановку. Переноси только общие механики удержания, темп, структуру и типы кадров.',
-    'Отдельно выяви: scroll-stop первых 1–3 секунд, open loop, смену beats, proof/twist, payoff, монтажный темп, звуковую механику.',
+    'ROLE: forensic short-form video analyst + performance creative director + editor + cinematographer.',
+    'Сначала ВОССТАНОВИ ИСХОДНИК максимально точно по доступным кадрам, таймкодам и аудио. Только после этого создай улучшенную самостоятельную версию.',
+    'Ничего в проекте не редактируй. Не выдумывай то, чего не видно/не слышно. Явно разделяй OBSERVED и INFERRED.',
+    '',
+    'Верни ТОЛЬКО валидный JSON без markdown со структурой:',
+    '{',
+    ' "summary":{"description":"","mechanic":"","durationSeconds":0,"limitations":""},',
+    ' "sourceReconstruction":{',
+    '   "spokenTranscript":"","voiceoverScript":"","dialogueScript":"","onscreenText":[],"musicAndSfx":"","',
+    '   "sourceScript":[{"time":"","visual":"","action":"","spoken":"","onscreen":"","sound":"","purpose":""}],',
+    '   "shots":[{"shot":1,"start":"","end":"","duration":"","framing":"","angle":"","cameraMovement":"","lensFeel":"","action":"","avatarAction":"","productAction":"","handsAndPhysics":"","environment":"","setDesign":"","lighting":"","onscreenText":"","spoken":"","sound":"","transition":"","retentionMechanic":"","confidence":"high|medium|low"}]',
+    ' },',
+    ' "hook":{"observation":"","mechanism":"","limitation":""},',
+    ' "hookFamily":"","retentionMap":[],"patternInterrupts":[],"visualContrasts":[],"soundDesign":"","cameraLanguage":"","setDesign":"","microPayoffs":[],',
+    ' "scenes":[],"editing":{},"whyWorks":[],"weaknesses":[],',
+    ' "adaptation":{"status":"ready|needs_product","concept":{"title":"","idea":"","durationSeconds":0,"location":"","avatar":"","productStatus":""},"hook":{"visual":"","voiceover":"","onscreen":""},"scenes":[],"cta":{"text":"","productionNotes":""}}',
+    '}',
+    '',
+    'КРИТИЧЕСКИ ВАЖНО ДЛЯ sourceReconstruction:',
+    '1) spokenTranscript = дословная речь/озвучка ТОЛЬКО если она реально получена из транскрипта/аудио. Если речи нет или аудио недоступно — пустая строка, не фантазируй.',
+    '2) voiceoverScript отдельно от dialogueScript. Если нельзя уверенно отличить — укажи это в limitations.',
+    '3) sourceScript = хронологический сценарий исходника: таймкод → что видно → действие → речь → экранный текст → звук → функция.',
+    '4) shots = максимально подробный shot-by-shot разбор: границы кадра/склейки, крупность, ракурс, camera movement, приблизительная оптика, действие рук и товара, интерьер/фон/props, свет, текст, звук, переход, retention-механика.',
+    '5) Если точная граница склейки неизвестна, ставь приблизительный таймкод и confidence medium/low.',
+    '6) Не объединяй разные кадры в одну сцену только ради краткости. Цель — получить production blueprint, из которого можно построить улучшенную версию.',
+    '',
+    'RETENTION/CREATIVE РАЗБОР:',
+    'retentionMap — по временным отрезкам: что удерживает, какой вопрос открыт, какой payoff закрывает его, что заставляет смотреть дальше.',
+    'patternInterrupts — смены масштаба/POV/движения/эмоции/звука/состояния предмета с временем.',
+    'visualContrasts — контраст между соседними кадрами.',
+    'cameraLanguage — крупности, ракурсы, движения, вероятная оптика и их функция.',
+    'setDesign — интерьер, слои глубины, props, материалы, practical lights, бытовая правдоподобность.',
+    'soundDesign — речь, музыка, foley, SFX, тишина, J/L-cuts и роль звука.',
+    'microPayoffs — маленькие награды зрителю до финального payoff.',
+    '',
+    'ADAPTATION = улучшенная САМОСТОЯТЕЛЬНАЯ версия, а не shot-for-shot копия.',
+    'Сохраняй общую маркетинговую механику, сильный темп и тип доказательства, но меняй формулировки, постановку, композиции и конкретные creative choices.',
+    'Каждая adaptation.scenes должна содержать duration, purpose, shot, camera, environment, avatarAction, productAction, voiceover, onscreen, sound, retentionMechanic, patternInterrupt, microPayoff.',
+    'Если конкретный наш товар НЕ выбран, adaptation.status="needs_product": можно предложить только общую механику и черновой план; нельзя придумывать геометрию, крепление или свойства.',
+    'Если товар выбран — строго использовать его Product DNA/правила, а не конструкцию товара из видео-конкурента.',
+    'Не копируй чужой брендинг, музыку, уникальные реплики или точную последовательность выразительных кадров.',
+    '',
     'Источник: '+String(sourceType)+'. Название: '+String(sourceName||'без названия')+'.',
     'Метаданные: '+JSON.stringify(metadata||{}),
-    transcript?('Транскрипт: '+String(transcript).slice(0,30000)):'',
+    transcript?('РАСПОЗНАННАЯ РЕЧЬ/АУДИО: '+String(transcript).slice(0,45000)):'РАСПОЗНАННАЯ РЕЧЬ: отсутствует или не извлечена.',
     'Наш товар: '+(product?JSON.stringify({name:product.name,category:product.category,utp:product.utp,rules:product.rules,productDNA:product.productDNA||null}):'не выбран')+'.',
     'Наш AI-аватар: '+(avatar?JSON.stringify({name:avatar.name,age:avatar.age,look:avatar.look,voice:avatar.voice,topics:avatar.topics,locks:avatar.locks}):'не выбран')+'.',
-    'Если данных недостаточно, не выдумывай — пометь ограничение в weaknesses.'
+    'Если данных недостаточно, не угадывай — зафиксируй ограничение.'
   ].filter(Boolean).join('\n');
 }
 async function saveVideoAnalysisResult(opts,analysis,provider,extra={}){
@@ -5629,13 +5681,17 @@ async function saveVideoAnalysisResult(opts,analysis,provider,extra={}){
   const product=findProductInState(data,opts.productId)||null;
   const avatar=findCharacterInState(data,opts.avatarId)||null;
   const item={
-    id:factoryId('va'),
+    id:String(opts.analysisId||factoryId('va')),
     sourceType:String(opts.sourceType||'video'),
     sourceName:String(opts.sourceName||'Видео').slice(0,240),
     sourceUrl:String(opts.sourceUrl||'').slice(0,2000),
     productId:product?.id||'',productName:product?.name||'',
     avatarId:avatar?.id||'',avatarName:avatar?.name||'',
     transcript:String(opts.transcript||'').slice(0,50000),
+    transcriptStatus:String(opts.transcriptStatus||'').slice(0,80),
+    transcriptError:String(opts.transcriptError||'').slice(0,1000),
+    audioPresent:Boolean(opts.audioPresent),
+    frameSamples:Array.isArray(opts.frameSamples)?opts.frameSamples.slice(0,30).map(x=>({index:Number(x.index)||0,timeSec:Number(x.timeSec)||0,url:String(x.url||'').slice(0,2000),path:String(x.path||'').slice(0,2000)})):[],
     analysis,
     provider:String(provider||''),
     fallbackFrom:String(extra.fallbackFrom||''),
@@ -5714,6 +5770,38 @@ async function analyzeUploadedVideoWithDescript(filePath,opts){
   });
 }
 
+async function persistVideoAnalysisFrames(accountId,analysisId,samples=[]){
+  const scoped=(sanitizeAccountId(accountId)+'__analysis_'+String(analysisId||factoryId('va'))).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  const out=[];
+  const list=(Array.isArray(samples)?samples:[]).slice(0,24);
+  for(let from=0;from<list.length;from+=4){
+    const batch=list.slice(from,from+4);
+    const rows=await Promise.all(batch.map(async x=>{
+      try{
+        const data=await callProductMedia({
+          action:'upload',productId:scoped,
+          fileName:'frame-'+String(x.index||0).padStart(2,'0')+'-'+Math.round((Number(x.timeSec)||0)*1000)+'.jpg',
+          mimeType:'image/jpeg',
+          dataBase64:fs.readFileSync(x.filePath).toString('base64')
+        });
+        return {index:x.index,timeSec:x.timeSec,url:data?.media?.url||'',path:data?.media?.path||''};
+      }catch(e){
+        console.warn('[video-analysis-frame-upload] '+String(e?.message||e));
+        return {index:x.index,timeSec:x.timeSec,url:'',path:''};
+      }
+    }));
+    out.push(...rows.filter(x=>x.url));
+  }
+  return out;
+}
+function analysisImageParts(frameSamples=[]){
+  const parts=[];
+  for(const x of (Array.isArray(frameSamples)?frameSamples:[])){
+    parts.push({type:'input_text',text:'SOURCE FRAME '+x.index+' · approx '+Number(x.timeSec||0).toFixed(2)+'s'});
+    parts.push({type:'input_image',image_url:x.dataUrl,detail:'low'});
+  }
+  return parts;
+}
 async function transcribeAudio(audioPath){
   if(!audioPath||!fs.existsSync(audioPath))return '';
   const stat=fs.statSync(audioPath);
@@ -5734,17 +5822,10 @@ async function analyzeReferenceMaterial(opts){
   data.videoAnalyses=Array.isArray(data.videoAnalyses)?data.videoAnalyses:[];
   const product=findProductInState(data,opts.productId)||null;
   const avatar=findCharacterInState(data,opts.avatarId)||null;
-  const prompt=[
-    'Ты аналитик коротких рекламных видео. Разбери исходный материал и создай НОВУЮ адаптацию под товар и AI-аватара Content Factory.',
-    'Не копируй дословные реплики, уникальные формулировки, музыку, брендинг или точную постановку чужого ролика. Сохраняй только общие маркетинговые механики, темп, типы кадров и структуру.',
-    'Верни только JSON с полями summary, hook, scenes, editing, whyWorks, weaknesses, adaptation.',
-    'adaptation должна содержать concept, hook, scenes и cta. Каждая адаптированная сцена: duration, shot, avatarAction, productAction, voiceover, onscreen.',
-    'Источник: '+String(opts.sourceType||'video')+'. Название: '+String(opts.sourceName||'без названия')+'.',
-    'Метаданные: '+JSON.stringify(opts.metadata||{}),
-    'Транскрипт: '+String(opts.transcript||'').slice(0,45000),
-    'Наш товар: '+(product?JSON.stringify({name:product.name,category:product.category,utp:product.utp,rules:product.rules,mediaCount:(product.media||[]).length}):'не выбран')+'.',
-    'Наш AI-аватар: '+(avatar?JSON.stringify({name:avatar.name,age:avatar.age,look:avatar.look,voice:avatar.voice,topics:avatar.topics,locks:avatar.locks}):'не выбран')+'.'
-  ].join('\n');
+  const prompt=videoAnalysisPrompt({
+    sourceName:opts.sourceName,sourceType:opts.sourceType,product,avatar,
+    metadata:opts.metadata||{},transcript:opts.transcript||''
+  });
   const extraImages=[];
   const pm=(product?.media||[]).find(m=>m.isPrimary)||(product?.media||[])[0];
   if(pm?.url)extraImages.push({type:'input_image',image_url:pm.url,detail:'low'});
@@ -5754,7 +5835,7 @@ async function analyzeReferenceMaterial(opts){
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-    body:JSON.stringify({model,input:[{role:'user',content:[{type:'input_text',text:prompt},...(opts.imageParts||[]),...extraImages]}],max_output_tokens:6000})
+    body:JSON.stringify({model,input:[{role:'user',content:[{type:'input_text',text:prompt},...(opts.imageParts||[]),...extraImages]}],reasoning:{effort:'high'},max_output_tokens:10000})
   });
   const raw=await r.text();
   let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
@@ -5796,16 +5877,37 @@ async function analyzeUploadedVideo(req,url){
   try{
     await streamRequestToFile(req,filePath);
     evidence=await extractVideoEvidence(filePath);
-    const transcript=await transcribeAudio(evidence.audioPath).catch(()=> '');
+    const analysisId=factoryId('va');
+    const persistedFrames=await persistVideoAnalysisFrames(accountId,analysisId,evidence.frameSamples||[]);
+    let transcript='',transcriptError='',transcriptStatus=evidence.audioPresent?'pending':'no-audio';
+    if(evidence.audioPath){
+      try{
+        transcript=await transcribeAudio(evidence.audioPath);
+        transcriptStatus=transcript?'ok':'empty';
+      }catch(e){
+        transcriptError=String(e?.message||e).slice(0,1000);
+        transcriptStatus='failed';
+        console.warn('[video-analysis-transcript] '+transcriptError);
+      }
+    }
     const opts={
+      analysisId,
       accountId,
       sourceType:'upload',
       sourceName:fileName,
-      transcript,
-      imageParts:evidence.frames,
+      transcript,transcriptStatus,transcriptError,
+      audioPresent:Boolean(evidence.audioPresent),
+      frameSamples:persistedFrames,
+      imageParts:analysisImageParts(evidence.frameSamples||[]),
       productId:url.searchParams.get('productId')||'',
       avatarId:url.searchParams.get('avatarId')||'',
-      metadata:{durationSeconds:Math.round(evidence.duration),frames:evidence.frames.length},
+      metadata:{
+        durationSeconds:Number(evidence.duration.toFixed(2)),
+        sampledFrames:(evidence.frameSamples||[]).length,
+        audioPresent:Boolean(evidence.audioPresent),
+        transcriptStatus,
+        frameTimeline:(evidence.frameSamples||[]).map(x=>({index:x.index,timeSec:x.timeSec}))
+      },
       mimeType:String(req.headers['content-type']||'video/mp4').split(';')[0]
     };
     try{
