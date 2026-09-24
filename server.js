@@ -5980,7 +5980,7 @@ async function analyzeReferenceMaterial(opts){
   const avatar=findCharacterInState(data,opts.avatarId)||null;
   const prompt=videoAnalysisPrompt({
     sourceName:opts.sourceName,sourceType:opts.sourceType,product,avatar,
-    metadata:opts.metadata||{},transcript:opts.transcript||''
+    metadata:opts.metadata||{},transcript:opts.transcript||'',timedTranscript:opts.timedTranscript||'',shotMap:opts.shotMap||[]
   });
   const extraImages=[];
   const pm=(product?.media||[]).find(m=>m.isPrimary)||(product?.media||[])[0];
@@ -5991,7 +5991,12 @@ async function analyzeReferenceMaterial(opts){
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-    body:JSON.stringify({model,input:[{role:'user',content:[{type:'input_text',text:prompt},...(opts.imageParts||[]),...extraImages]}],reasoning:{effort:'high'},max_output_tokens:10000})
+    body:JSON.stringify({
+      model,
+      input:[{role:'user',content:[{type:'input_text',text:prompt},...(opts.imageParts||[]),...extraImages]}],
+      reasoning:{effort:'high'},max_output_tokens:14000,
+      text:{format:{type:'json_schema',name:'forensic_video_analysis',strict:true,schema:videoAnalysisJsonSchema()}}
+    })
   });
   const raw=await r.text();
   let response;try{response=raw?JSON.parse(raw):{}}catch{response={raw}}
