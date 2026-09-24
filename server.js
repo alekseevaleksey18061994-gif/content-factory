@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.10';
+const APP_VERSION='2.6.11';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -4837,20 +4837,13 @@ async function recoverPendingPrevisAndAutopilot(){
           }
         }
 
-        if(run.mode!=='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&['В работе','Ошибка'].includes(String(run.status||''))){
-          const wasError=run.status==='Ошибка';
+        if(run.mode!=='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&String(run.status||'')==='В работе'){
           run.previsRunning=false;
-          run.status='В работе';
           run.error='';
           run.previsError='';
-          if(wasError){
-            run.previsPlan=null;
-            run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
-            run.previsResult=null;
-          }
           run.updatedAt=new Date().toISOString();
           await writeAppState(data,accountId);
-          enqueueRunPrevis(accountId,run.id,wasError?'previs-error-recovery':'previs-recovery');
+          enqueueRunPrevis(accountId,run.id,'previs-recovery');
           continue;
         }
         const pendingStoryboardScenes=Object.entries(run.storyboardSceneJobs||{})
@@ -4879,15 +4872,12 @@ async function recoverFailedAutoPrevisRuns(){
     const registry=await ensureAccountsRegistry();
     for(const account of (registry.accounts||[])){
       const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
-      const snapshot=await readAppState(accountId);
-      const candidateIds=(Array.isArray(snapshot?.data?.runs)?snapshot.data.runs:[])
-        .filter(run=>run&&run.mode!=='manual'&&!run.paused&&run.status==='Ошибка'&&String(run.stage||'')==='Превиз-кадры'&&!run.previsResult?.completed)
-        .map(run=>String(run.id||'')).filter(Boolean);
-      for(const runId of candidateIds){
-        const fresh=await readAppState(accountId);
-        const data=fresh?.data||blankFactoryState();
-        const run=findRunById(data,runId);
-        if(!run||run.paused||run.status!=='Ошибка'||String(run.stage||'')!=='Превиз-кадры'||run.previsResult?.completed)continue;
+      const state=await readAppState(accountId);
+      const data=state?.data||blankFactoryState();
+      const candidateIds=[];
+      for(const run of (Array.isArray(data.runs)?data.runs:[])){
+        if(!run||run.mode==='manual'||run.paused||run.status!=='Ошибка'||String(run.stage||'')!=='Превиз-кадры'||run.previsResult?.completed)continue;
+        candidateIds.push(String(run.id));
         run.previsRunning=false;
         run.status='В работе';
         run.error='';
@@ -4897,8 +4887,14 @@ async function recoverFailedAutoPrevisRuns(){
         run.previsResult=null;
         run.updatedAt=new Date().toISOString();
         appendFactoryJournal(data,'Автовосстановление превиза',(run.productName||run.id)+' · продолжаю с сохранением готовых кадров');
-        await writeAppState(data,accountId);
-        enqueueRunPrevis(accountId,run.id,'failed-previs-recovery');
+      }
+      if(!candidateIds.length)continue;
+      // Important: persist every recovery together BEFORE any worker starts,
+      // otherwise the first worker can write an older full-state snapshot and
+      // restore neighboring runs back to Error.
+      await writeAppState(data,accountId);
+      for(const runId of candidateIds){
+        enqueueRunPrevis(accountId,runId,'failed-previs-recovery');
       }
     }
   }catch(e){
