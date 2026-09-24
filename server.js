@@ -1949,10 +1949,13 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
 
   // Up to two focused repair passes. Before each pass use the strongest of selected + alternatives,
   // so a good alternative can save the run without paying for unnecessary regeneration.
+  let repairPassesUsed=0;
   for(let repairAttempt=1;repairAttempt<=2;repairAttempt++){
+
     const failedNow=criticalFailures(idea);
     const heuristicIssues=currentHeuristicIssues();
     if(!failedNow.length&&!heuristicIssues.length)break;
+    repairPassesUsed=repairAttempt;
     await markIdeaProgress(7,'Докручиваю слабые места · попытка '+repairAttempt+'/2');
     const repairPrompt=[
       'ROLE: senior TikTok Creative Critic + AI production director.',
@@ -2012,7 +2015,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     const selectedIndex=Math.max(1,Math.min(5,Number(hookLab?.selectedIndex)||1));
     idea.hookLab={variants,selectedIndex,selectionReason:String(hookLab?.selectionReason||''),generatedAt:new Date().toISOString()};
     const hookPreviewRefs=[...productRefs.slice(0,2),avatarRefs[0]].filter(Boolean);
-    for(let i=0;i<variants.length;i++){
+    async function renderHookPreview(i){
       const h=variants[i]||{};
       try{
         const frame={
@@ -2042,6 +2045,9 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         h.previewError=String(e?.message||e).slice(0,500);
       }
     }
+    for(let i=0;i<variants.length;i+=2){
+      await Promise.all([i,i+1].filter(n=>n<variants.length).map(renderHookPreview));
+    }
     idea.hookLab.variants=variants;
     const selectedHook=variants[selectedIndex-1];
     if(selectedHook){
@@ -2055,10 +2061,12 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   await markIdeaProgress(8,'Идея и Hook Lab готовы');
   idea.creativeProcess={
     generatedCandidates:20,
+    shortlistedCandidates:5,
     critic:true,
-    criticPasses:failed().length||heuristicIssues.length?2:1,
-    refined:true,
+    criticPasses:1+repairPassesUsed,
+    refined:repairPassesUsed>0,
     criticalThreshold:8,
+    autoPromotion:true,
     evaluatedAt:new Date().toISOString()
   };
   return idea;
