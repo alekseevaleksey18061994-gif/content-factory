@@ -7291,8 +7291,17 @@ const server=http.createServer(async(req,res)=>{
       const users=await ensureUsersRegistry();
       const tokenHash=hashResetToken(token);
       const now=Date.now();
-      const user=users.users.find(u=>u?.resetTokenHash&&safeHexEqual(tokenHash,u.resetTokenHash)&&Date.parse(String(u.resetTokenExpiresAt||''))>now);
-      if(!user)return json(res,401,{ok:false,error:'Ссылка восстановления недействительна или уже истекла.'});
+      let user=users.users.find(u=>u?.resetTokenHash&&safeHexEqual(tokenHash,u.resetTokenHash)&&Date.parse(String(u.resetTokenExpiresAt||''))>now);
+      if(!user){
+        const recoveryHash=String(process.env.AUTH_RECOVERY_TOKEN_HASH||'');
+        const recoveryLogin=normalizeLogin(process.env.AUTH_RECOVERY_LOGIN||'');
+        const issuedAt=Date.parse(String(process.env.AUTH_RECOVERY_ISSUED_AT||''));
+        const expiresAt=Date.parse(String(process.env.AUTH_RECOVERY_EXPIRES_AT||''));
+        const candidate=users.users.find(u=>u.login===recoveryLogin);
+        const alreadyUsed=Number.isFinite(issuedAt)&&Date.parse(String(candidate?.passwordUpdatedAt||''))>=issuedAt;
+        if(candidate&&recoveryHash&&safeHexEqual(tokenHash,recoveryHash)&&Number.isFinite(expiresAt)&&expiresAt>now&&!alreadyUsed)user=candidate;
+      }
+      if(!user)return json(res,401,{ok:false,error:'Ссылка восстановления недействительна, уже использована или истекла.'});
       const salt=randomBytes(16).toString('hex');
       user.salt=salt;
       user.passwordHash=hashPassword(password,salt);
