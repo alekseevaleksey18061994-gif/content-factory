@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.3';
+const APP_VERSION='2.6.4';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1625,24 +1625,29 @@ function normalizePrevisPlan(raw,payload={}){
   const frames=[];
   for(let i=0;i<board.length;i++){
     const sceneNo=i+1,scene=board[i]||{};
-    const sceneFrames=incoming.filter(x=>Number(x?.scene)===sceneNo).slice(0,3);
-    const fallbackTypes=['start','middle','end'];
-    for(let j=0;j<3;j++){
-      const x=sceneFrames[j]||{};
+    const sceneFrames=incoming
+      .filter(x=>Number(x?.scene)===sceneNo)
+      .sort((a,b)=>Number(a?.frame||0)-Number(b?.frame||0));
+    const startRaw=sceneFrames.find(x=>String(x?.frameType||'').toLowerCase()==='start')||sceneFrames[0]||{};
+    const endRaw=sceneFrames.find(x=>String(x?.frameType||'').toLowerCase()==='end')||sceneFrames[sceneFrames.length-1]||sceneFrames[1]||{};
+    const selected=[startRaw,endRaw];
+    const fallbackTypes=['start','end'];
+    for(let j=0;j<2;j++){
+      const x=selected[j]||{};
       frames.push({
         id:String(x.id||('s'+sceneNo+'f'+(j+1))),
         scene:sceneNo,
         frame:j+1,
-        frameType:String(x.frameType||fallbackTypes[j]).slice(0,40),
+        frameType:fallbackTypes[j],
         timecode:String(x.timecode||scene.duration||'').slice(0,120),
         durationHint:String(x.durationHint||'0.8s').slice(0,60),
         goal:String(x.goal||scene.purpose||'').slice(0,2200),
         storyFunction:String(x.storyFunction||'').slice(0,900),
         continuityRole:String(x.continuityRole||'').slice(0,1800),
         composition:String(
-          j===0 ? (x.composition||scene.startFrame||scene.shot||'') :
-          j===1 ? (x.composition||scene.shot||'') :
-                  (x.composition||scene.endFrame||scene.shot||'')
+          j===0
+            ? (x.composition||scene.startFrame||scene.shot||'')
+            : (x.composition||scene.endFrame||scene.shot||'')
         ).slice(0,3500),
         framing:String(x.framing||scene.framing||'').slice(0,1000),
         cameraAngle:String(x.cameraAngle||scene.angle||'').slice(0,1000),
@@ -1661,9 +1666,9 @@ function normalizePrevisPlan(raw,payload={}){
         expression:String(x.expression||'').slice(0,900),
         pose:String(x.pose||'').slice(0,1200),
         action:String(
-          j===0 ? ('START STATE — до выполнения главного действия. '+String(scene.startFrame||x.action||scene.action||'')) :
-          j===1 ? ('MIDDLE ACTION — действие явно происходит сейчас. '+String(x.action||scene.action||'')) :
-                  ('END STATE — действие завершено, виден результат. '+String(scene.endFrame||x.action||scene.action||''))
+          j===0
+            ? ('START STATE — отчётливое начало микро-действия, до результата. '+String(scene.startFrame||x.action||scene.action||''))
+            : ('END STATE — микро-действие заметно продвинулось или завершено; результат визуально отличается от START. '+String(scene.endFrame||x.action||scene.action||''))
         ).slice(0,3500),
         productInFrame:Boolean(x.productInFrame ?? !!scene.product),
         productRole:String(x.productRole||scene.product||'').slice(0,2200),
@@ -1691,7 +1696,7 @@ function normalizePrevisPlan(raw,payload={}){
   return {
     totalScenes:board.length,
     totalFrames:frames.length,
-    logic:String(src.logic||'3 превиз-кадра на сцену; исходные фото используются только для bootstrap identity, затем приоритет у уже сгенерированных anchor-кадров.').slice(0,3000),
+    logic:String(src.logic||'2 превиз-кадра на сцену: START и END. Кадры должны показывать заметное развитие действия, а не два почти одинаковых фото. Исходные фото используются для identity, generated anchors — для continuity.').slice(0,3000),
     frames
   };
 }
@@ -1703,15 +1708,25 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'ROLE: Ты film director, storyboard supervisor, cinematographer и AI previsualization planner.',
     'ИДЕЯ, СЦЕНАРИЙ И STORYBOARD УЖЕ УТВЕРЖДЕНЫ. Не менять сюжет и реплики.',
     'Нужно построить кинематографический превиз будущего вертикального ролика 9:16 ДО видеогенерации.',
-    'Для КАЖДОЙ storyboard-сцены сделай ровно 3 ключевых кадра: start, middle, end.',
-    'При '+board.length+' сценах итог должен быть '+(board.length*3)+' кадров.',
+    'Для КАЖДОЙ storyboard-сцены сделай ровно 2 ключевых кадра: START и END.',
+    'При '+board.length+' сценах итог должен быть '+(board.length*2)+' кадров.',
+    'START и END — это два момента ОДНОГО микро-действия, а не два варианта одной и той же фотографии.',
+    '',
+    'КРИТИЧЕСКО: ДИНАМИКА И ВИЗУАЛЬНОЕ РАЗЛИЧИЕ:',
+    '- START показывает исходное состояние и начало движения; END показывает заметно продвинувшееся действие или его результат;',
+    '- START и END должны отличаться с первого взгляда. Запрещены почти одинаковые поза, композиция и положение товара;',
+    '- между START и END измени минимум 2 из признаков: состояние/позиция товара, положение рук/тела, крупность кадра, угол камеры, положение объекта в кадре, взаимодействие с окружением;',
+    '- при этом НЕ ломай continuity: тот же человек, одежда, товар, геометрия товара, локация, общий свет и направление действия;',
+    '- чередуй киноязык между сценами: wide/medium/close-up/detail и front/3/4/side; не повторяй одну композицию сцену за сценой без причины;',
+    '- каждый END должен создавать ощущение движения вперёд и визуально подготавливать START следующей сцены;',
+    '- не делай статичный beauty-shot вместо действия, если storyboard требует действие;',
     '',
     'КРИТИЧЕСКОЕ ПРАВИЛО РЕФЕРЕНСОВ:',
     '- исходные фото товара/аватара нужны только для понимания identity: формы, цвета, фактуры, лица, одежды, locks;',
     '- НЕ делай исходное фото товара главным anchor каждого нового кадра;',
     '- после первого сгенерированного кадра основой следующих кадров становятся уже СГЕНЕРИРОВАННЫЕ кадры;',
     '- приоритет: generated anchorFrames > continuityFrames > source identityRefs;',
-    '- новый кадр должен развивать действие и композицию, а не повторять предыдущий;',
+    '- reference frame задаёт continuity, но НЕ разрешает копировать ту же позу и композицию;',
     '- первый кадр первой сцены может быть identity-led; далее преимущественно anchor-led;',
     '- если персонаж впервые появляется позднее, разрешено один раз подключить его source identity reference для фиксации лица.',
     '',
@@ -1729,12 +1744,12 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'scene, frame, frameType, timecode, durationHint, goal, storyFunction, continuityRole, composition, framing, cameraAngle, cameraPosition, lensFeel, cameraMotion, depth, focus, location, environment, lighting, mood, colorMood, avatarInFrame, avatarDescription, expression, pose, action, productInFrame, productRole, productPlacement, productVisibility, productConsistency, dialogue, voiceover, onscreenText, soundCue, previousAnchor, nextIntent, continuityNotes, referenceMode, identityRefs, anchorFrames, continuityFrames, imagePromptRu, imagePromptEn, negativePrompt, qualityNotes.',
     '',
     'imagePromptEn должен быть подробным cinematic prompt для ОДНОГО статичного 9:16 keyframe: realistic commercial film still, exact composition, lighting, camera, action phase, character/product continuity. No baked-in text, no random logo, no product deformation.',
-    'Кадры A/B/C одной сцены обязаны показывать разные фазы действия: начало → развитие → финал.',
+    'Кадры START/END одной сцены обязаны показывать разные фазы действия и заметное визуальное развитие.',
     'END кадр сцены должен визуально готовить START следующей сцены.',
     'Не показывай внутренние рассуждения.',
     '',
     'Верни ТОЛЬКО JSON:',
-    '{"previsPlan":{"totalScenes":'+board.length+',"totalFrames":'+(board.length*3)+',"logic":"","frames":[{"id":"s1f1","scene":1,"frame":1,"frameType":"start","timecode":"","durationHint":"0.8s","goal":"","storyFunction":"","continuityRole":"","composition":"","framing":"","cameraAngle":"","cameraPosition":"","lensFeel":"","cameraMotion":"","depth":"","focus":"","location":"","environment":"","lighting":"","mood":"","colorMood":"","avatarInFrame":false,"avatarDescription":"","expression":"","pose":"","action":"","productInFrame":true,"productRole":"","productPlacement":"","productVisibility":"","productConsistency":"","dialogue":"","voiceover":"","onscreenText":"","soundCue":"","previousAnchor":"","nextIntent":"","continuityNotes":"","referenceMode":"identity-led","identityRefs":[],"anchorFrames":[],"continuityFrames":[],"imagePromptRu":"","imagePromptEn":"","negativePrompt":"","qualityNotes":""}]}}'
+    '{"previsPlan":{"totalScenes":'+board.length+',"totalFrames":'+(board.length*2)+',"logic":"","frames":[{"id":"s1f1","scene":1,"frame":1,"frameType":"start","timecode":"","durationHint":"0.8s","goal":"","storyFunction":"","continuityRole":"","composition":"","framing":"","cameraAngle":"","cameraPosition":"","lensFeel":"","cameraMotion":"","depth":"","focus":"","location":"","environment":"","lighting":"","mood":"","colorMood":"","avatarInFrame":false,"avatarDescription":"","expression":"","pose":"","action":"","productInFrame":true,"productRole":"","productPlacement":"","productVisibility":"","productConsistency":"","dialogue":"","voiceover":"","onscreenText":"","soundCue":"","previousAnchor":"","nextIntent":"","continuityNotes":"","referenceMode":"identity-led","identityRefs":[],"anchorFrames":[],"continuityFrames":[],"imagePromptRu":"","imagePromptEn":"","negativePrompt":"","qualityNotes":""}]}}'
   ].filter(Boolean).join('\n');
   const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
   const r=await fetch('https://api.openai.com/v1/responses',{
@@ -1745,7 +1760,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
   const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
   if(!r.ok)throw new Error(data?.error?.message||('OpenAI previs plan error '+r.status));
   const priced=openAIUsageCost(data?.model||model,data?.usage||{});
-  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-plan',description:'План 15–20 превиз-кадров',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-plan',description:'План START/END превиз-кадров',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
   return normalizePrevisPlan(safeAnalysisJson(openAIText(data)),payload);
 }
 function primaryIdentityUrls(run){
@@ -1775,10 +1790,8 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
   const phase=String(frame.frameType||'').toLowerCase();
   const phaseRule=phase==='start'
-    ? 'FRAME PHASE: START. Show the initial state immediately BEFORE the main action is completed. Do not show the result yet.'
-    : phase==='middle'
-      ? 'FRAME PHASE: MIDDLE. Show the action clearly IN PROGRESS, visibly different from START and END.'
-      : 'FRAME PHASE: END. Show the completed result of this scene and visually prepare the next scene. Do not repeat the START pose.';
+    ? 'FRAME PHASE: START. Show the initial state and the beginning of the micro-action, before the result.'
+    : 'FRAME PHASE: END. Show a clearly advanced or completed state. It must differ visibly from START in at least two aspects such as action state, hand/body pose, product position, framing, camera angle or object interaction. Preserve identity and scene continuity, but do not clone the START composition.';
   const prompt=[
     'Generate exactly one cinematic vertical 9:16 previsualization keyframe for a future commercial video.',
     'This is frame '+frame.frame+' ('+frame.frameType+') of scene '+frame.scene+'.',
@@ -1840,10 +1853,8 @@ async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[
   if(!higgsfieldConfigured())throw new Error('Higgsfield API is not configured');
   const phase=String(frame.frameType||'').toLowerCase();
   const phaseRule=phase==='start'
-    ? 'START: show the initial state before the main action is completed.'
-    : phase==='middle'
-      ? 'MIDDLE: show the action clearly in progress, visually different from START and END.'
-      : 'END: show the completed result and prepare the next scene; do not repeat the START pose.';
+    ? 'START: show the initial state and the beginning of the micro-action, before the result.'
+    : 'END: show a clearly advanced or completed state. Make it visibly different from START in at least two aspects: action state, hand/body pose, product position, framing, camera angle or object interaction. Preserve identity and continuity; do not clone the START composition.';
   const prompt=[
     'Create one photorealistic cinematic vertical 9:16 PREVIZ frame for an ecommerce video ad.',
     'Scene '+frame.scene+', frame '+frame.frame+' ('+String(frame.frameType||'')+').',
@@ -1956,7 +1967,7 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'Композиция: '+String(frame.composition||''),
       'Локация: '+String(frame.environment||frame.location||''),
       'CRITICAL: если товар есть в кадре, его геометрия, пропорции, крепёжные элементы, цвет и материал должны совпадать с SOURCE PRODUCT IMAGE. Generated anchors не имеют права переопределять форму товара.',
-      'CRITICAL: START/MIDDLE/END должны отражать правильную фазу действия, а не одинаковую позу.',
+      'CRITICAL: START и END должны отражать разные фазы действия. Если END выглядит как почти тот же кадр/поза/композиция без заметного продвижения действия — FAIL.',\n      'Для END при наличии PREVIOUS GENERATED FRAME требуй минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Identity и continuity при этом должны сохраниться.',
       'Локация должна выглядеть правдоподобно и обжито, если storyboard не требует стерильной студии.',
       'Не наказывай за небольшие художественные различия. FAIL только за заметную ошибку товара, неверное действие/фазу, серьёзный артефакт, неправильного персонажа или явное нарушение storyboard.',
       'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
@@ -2058,7 +2069,7 @@ async function processRunPrevis(accountId,runId){
   run.stage='Превиз-кадры';run.status='В работе';run.awaitingApproval=false;run.progress=Math.max(28,Number(run.progress)||0);run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
   await writeAppState(data,accountId);
   try{
-    let plan=run.previsPlan&&Array.isArray(run.previsPlan.frames)?run.previsPlan:await generatePrevisPlan(run,accountId);
+    let plan=run.previsPlan&&Array.isArray(run.previsPlan.frames)?normalizePrevisPlan(run.previsPlan,run):await generatePrevisPlan(run,accountId);
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     run.previsPlan=plan;run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
     await writeAppState(data,accountId);
