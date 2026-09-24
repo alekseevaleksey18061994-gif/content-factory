@@ -1975,14 +1975,20 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     'No baked-in text, no random logos, no extra fingers, no product deformation, no face change, no wardrobe change unless the approved scenario explicitly requires it.',
     frame.negativePrompt?('Negative: '+frame.negativePrompt):''
   ].filter(Boolean).join('\n').slice(0,15000);
+  const sourceProductRefs=previsFrameShowsProduct(frame,{})?productIdentityUrls(run,2):[];
+  const sourceProductSet=new Set(sourceProductRefs);
   const input=[{role:'user',content:[
     {type:'input_text',text:prompt},
-    ...referenceUrls.map(url=>({type:'input_image',image_url:url,detail:'low'}))
+    ...referenceUrls.map(url=>({
+      type:'input_image',
+      image_url:url,
+      detail:sourceProductSet.has(url)?'high':'low'
+    }))
   ]}];
   const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
   const body={
     model,input,
-    tools:[{type:'image_generation',model:'gpt-image-2',action:'auto',size:'1024x1536',quality:'low',output_format:'png'}],
+    tools:[{type:'image_generation',model:'gpt-image-2',action:'auto',size:'1024x1536',quality:previsFrameShowsProduct(frame,{})?'medium':'low',output_format:'png'}],
     tool_choice:'required'
   };
   const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},body:JSON.stringify(body)});
@@ -1997,7 +2003,13 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   const priced=openAIUsageCost(data?.model||model,data?.usage||{});
   const amountUsd=priced.amountUsd>0?priced.amountUsd:imageGenerationFallbackUsd('low','1024x1536');
   await recordExpense(accountId,{provider:'OpenAI',category:'previs-image',description:'Превиз-кадр сцены '+frame.scene+' · '+frame.frame,amountUsd,model:'gpt-image-2',usage:{size:'1024x1536',quality:'low',references:referenceUrls.length},source:'auto'}).catch(()=>{});
-  return {url:uploaded.media.url,path:uploaded.media.path||'',model:'gpt-image-2',references:referenceUrls};
+  return {
+    url:uploaded.media.url,
+    path:uploaded.media.path||'',
+    model:'gpt-image-2',
+    references:referenceUrls,
+    productLockVersion:previsFrameShowsProduct(frame,{})?'source-v2':''
+  };
 }
 const accountBackgroundQueues=new Map();
 const accountBackgroundJobs=new Map();
@@ -2187,7 +2199,7 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-qc',description:'QC превиз-кадра '+frame.scene+'.'+frame.frame,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
   const score=Number(parsed.score);
   const checks=parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{};
-  const productFail=lockProduct&&String(checks.product||'').toLowerCase()==='fail';
+  const productFail=lockProduct&&String(checks.product||'').toLowerCase()!=='ok';
   const actionFail=String(checks.actionPhase||'').toLowerCase()==='fail';
   const avatarFail=frame.avatarInFrame===true&&String(checks.avatar||'').toLowerCase()==='fail';
   const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
