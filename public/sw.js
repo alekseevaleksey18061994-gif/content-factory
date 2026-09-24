@@ -1,4 +1,4 @@
-const BUILD='content-factory-v30';
+const BUILD='content-factory-v31';
 self.addEventListener('install',event=>event.waitUntil(self.skipWaiting()));
 self.addEventListener('activate',event=>event.waitUntil((async()=>{
   const keys=await caches.keys();
@@ -8,7 +8,7 @@ self.addEventListener('activate',event=>event.waitUntil((async()=>{
   await Promise.all(clients.map(async client=>{
     try{
       const u=new URL(client.url);
-      u.searchParams.set('build','30');
+      u.searchParams.set('build','31');
       await client.navigate(u.toString());
     }catch{}
   }));
