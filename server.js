@@ -879,6 +879,242 @@ async function ensureProductDNA(data,product,accountId){
   }
 }
 
+
+function clampScore100(value,fallback=null){
+  const n=Number(value);
+  if(!Number.isFinite(n))return fallback;
+  return Math.max(0,Math.min(100,Math.round(n)));
+}
+function statusScore100(status,fallback=75){
+  const s=String(status||'').toLowerCase();
+  if(s==='ok')return 100;
+  if(s==='warn')return 82;
+  if(s==='fail')return 0;
+  return fallback;
+}
+function continuityBibleText(run){
+  const b=run?.continuityBible;
+  if(!b||typeof b!=='object')return '';
+  return [
+    'CONTINUITY BIBLE — immutable across the film:',
+    b.avatarLock?('avatar='+b.avatarLock):'',
+    b.wardrobeLock?('wardrobe='+b.wardrobeLock):'',
+    b.productLock?('product='+b.productLock):'',
+    b.environmentLock?('environment='+b.environmentLock):'',
+    b.spatialLock?('spatial='+b.spatialLock):'',
+    b.lightingLock?('lighting='+b.lightingLock):'',
+    b.colorLock?('color='+b.colorLock):'',
+    b.screenDirection?('screen-direction='+b.screenDirection):'',
+    Array.isArray(b.recurringProps)&&b.recurringProps.length?('recurring-props='+b.recurringProps.join('; ')):'',
+    Array.isArray(b.hardRules)&&b.hardRules.length?('hard-rules='+b.hardRules.join('; ')):''
+  ].filter(Boolean).join(' ').slice(0,3200);
+}
+async function ensureContinuityBible(run,accountId){
+  if(run?.continuityBible?.version==='v1')return run.continuityBible;
+  const fallback={
+    version:'v1',provider:'deterministic',
+    avatarLock:String(run?.character?.locks||run?.character?.look||'').slice(0,1200),
+    wardrobeLock:'Keep the same wardrobe unless the approved storyboard explicitly changes it.',
+    productLock:[String(run?.productRules||run?.product?.rules||''),productDNAText(run)].filter(Boolean).join(' ').slice(0,2200),
+    environmentLock:String(run?.script?.globalContinuity||'Keep the approved locations consistent between adjacent scenes.').slice(0,1800),
+    spatialLock:'Preserve left/right object placement, mounting orientation, entrances/exits and screen direction unless a cut intentionally resets geography.',
+    lightingLock:String(run?.previsPlan?.cinemaBible?.lightingBible||'Keep motivated key-light direction and time-of-day continuity within each location.').slice(0,1400),
+    colorLock:String(run?.previsPlan?.cinemaBible?.colorBible||'Keep white balance, skin tone and product color stable.').slice(0,1200),
+    screenDirection:'Preserve handedness, product orientation and movement direction across matching actions.',
+    recurringProps:[],
+    hardRules:['Do not mirror the product or avatar.','Do not silently change wardrobe, hairstyle, room layout or product construction between shots.'],
+    scenes:(Array.isArray(run?.storyboard)?run.storyboard:[]).map((s,i)=>({scene:i+1,entryState:String(s?.startFrame||''),exitState:String(s?.endFrame||''),handoff:String(s?.continuity||'')}))
+  };
+  if(!openaiConfigured()){run.continuityBible=fallback;return fallback}
+  const schema={
+    type:'object',additionalProperties:false,
+    required:['avatarLock','wardrobeLock','productLock','environmentLock','spatialLock','lightingLock','colorLock','screenDirection','recurringProps','hardRules','scenes'],
+    properties:{
+      avatarLock:{type:'string'},wardrobeLock:{type:'string'},productLock:{type:'string'},environmentLock:{type:'string'},
+      spatialLock:{type:'string'},lightingLock:{type:'string'},colorLock:{type:'string'},screenDirection:{type:'string'},
+      recurringProps:{type:'array',items:{type:'string'},maxItems:20},
+      hardRules:{type:'array',items:{type:'string'},maxItems:24},
+      scenes:{type:'array',items:{type:'object',additionalProperties:false,required:['scene','entryState','exitState','handoff'],properties:{
+        scene:{type:'integer',minimum:1,maximum:30},entryState:{type:'string'},exitState:{type:'string'},handoff:{type:'string'}
+      }},maxItems:30}
+    }
+  };
+  const refs=[...productIdentityUrls(run,2),...avatarIdentityUrls(run,1)].filter(Boolean);
+  const prompt=[
+    'ROLE: film script supervisor and continuity supervisor for AI-generated commercial video.',
+    'Create a strict continuity bible from ONLY confirmed product facts, avatar locks, approved script/storyboard and source images.',
+    'Never invent a wardrobe detail, product mechanism, room object or hidden construction that is not present in the approved inputs.',
+    'Lock: avatar identity; wardrobe/hair when specified; product orientation/construction; room geography; recurring props; key-light direction; color temperature; screen direction; handoff state between adjacent scenes.',
+    'The goal is to prevent silent changes between generated shots.',
+    'Product: '+String(run?.productName||''),
+    'Product rules: '+String(run?.productRules||run?.product?.rules||''),
+    productDNAText(run),
+    'Avatar: '+JSON.stringify(run?.character||{}),
+    'Script continuity: '+String(run?.script?.globalContinuity||''),
+    'Storyboard: '+JSON.stringify((run?.storyboard||[]).map((s,i)=>({scene:i+1,startFrame:s?.startFrame,endFrame:s?.endFrame,environment:s?.environment,setDesign:s?.setDesign,props:s?.props,lighting:s?.lighting,characters:s?.characters,product:s?.product,action:s?.action,continuity:s?.continuity}))),
+    'Return JSON only.'
+  ].filter(Boolean).join('\n').slice(0,18000);
+  try{
+    const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+    const content=[{type:'input_text',text:prompt},...refs.map((url,i)=>({type:'input_image',image_url:url,detail:i<2?'high':'low'}))];
+    const r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'medium'},max_output_tokens:4500,text:{format:{type:'json_schema',name:'continuity_bible',strict:true,schema}}})
+    });
+    const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+    if(!r.ok)throw new Error(data?.error?.message||('Continuity Bible error '+r.status));
+    const parsed=safeAnalysisJson(openAIText(data))||{};
+    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+    if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'continuity',description:'Continuity Engine · continuity bible',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+    run.continuityBible={...fallback,...parsed,version:'v1',provider:'OpenAI',generatedAt:new Date().toISOString()};
+  }catch(e){
+    console.warn('[continuity-bible] '+String(e?.message||e));
+    run.continuityBible={...fallback,error:String(e?.message||e).slice(0,500)};
+  }
+  return run.continuityBible;
+}
+async function runDirectorPreflight(run,accountId){
+  if(!openaiConfigured())return {passed:null,score:null,continuityScore:null,shotVarietyScore:null,productReadinessScore:null,sceneNotes:[],summary:'OpenAI Director Preflight недоступен'};
+  const frames=(Array.isArray(run?.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).slice(0,20);
+  const productRefs=productIdentityUrls(run,3);
+  const avatar=avatarIdentityUrls(run,1)[0]||'';
+  const content=[{type:'input_text',text:[
+    'ROLE: senior commercial film director doing a PRE-GENERATION director preflight.',
+    'Judge whether this approved storyboard + previz is ready to become video. Do not rewrite the concept.',
+    'Score 0-100: overall directing readiness, continuity, shot variety, and product readiness.',
+    'Product readiness is strict: if any visible product frame is a different physical model, productReadinessScore must be below 90 and critical=true.',
+    'Check adjacent scenes for repeated framing/angle/motion, static presentation, weak action progression, broken geography, wardrobe/face drift, lighting/color jumps, and product orientation drift.',
+    'For every weak scene provide a concrete fix and choose preferredProvider runway or seedance. Use seedance for complex hands/product mechanics; runway for simple motion/camera.',
+    continuityBibleText(run),
+    universalProductIdentityLock(run),
+    'Storyboard: '+JSON.stringify((run?.storyboard||[]).map((s,i)=>({scene:i+1,title:s?.title,framing:s?.framing,camera:s?.camera,angle:s?.angle,lens:s?.lens,startFrame:s?.startFrame,action:s?.action,endFrame:s?.endFrame,environment:s?.environment,lighting:s?.lighting,continuity:s?.continuity}))),
+    'Return ONLY JSON: {"passed":true,"critical":false,"score":100,"continuityScore":100,"shotVarietyScore":100,"productReadinessScore":100,"summary":"","sceneNotes":[{"scene":1,"severity":"low|medium|high|critical","issue":"","fix":"","preferredProvider":"runway|seedance"}]}'
+  ].filter(Boolean).join('\n')}];
+  for(const [i,f] of frames.entries())content.push({type:'input_text',text:'PREVIZ '+(i+1)+' · scene '+f.scene+' '+String(f.frameType||'')+':'},{type:'input_image',image_url:f.url,detail:'low'});
+  for(const [i,u] of productRefs.entries())content.push({type:'input_text',text:'SOURCE PRODUCT '+(i+1)+':'},{type:'input_image',image_url:u,detail:'high'});
+  if(avatar)content.push({type:'input_text',text:'SOURCE AVATAR:'},{type:'input_image',image_url:avatar,detail:'low'});
+  const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+  const r=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+    body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'medium'},max_output_tokens:2800})
+  });
+  const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+  if(!r.ok)throw new Error(data?.error?.message||('Director Preflight error '+r.status));
+  const parsed=safeAnalysisJson(openAIText(data))||{};
+  const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+  if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'director-preflight',description:'Director AI · preflight перед видео',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+  const score=clampScore100(parsed.score,null);
+  const continuityScore=clampScore100(parsed.continuityScore,null);
+  const shotVarietyScore=clampScore100(parsed.shotVarietyScore,null);
+  const productReadinessScore=clampScore100(parsed.productReadinessScore,null);
+  const critical=parsed.critical===true||Number(productReadinessScore)<90;
+  return {
+    passed:!critical&&parsed.passed!==false&&(!Number.isFinite(score)||score>=88),
+    critical,score,continuityScore,shotVarietyScore,productReadinessScore,
+    summary:String(parsed.summary||'').slice(0,2400),
+    sceneNotes:Array.isArray(parsed.sceneNotes)?parsed.sceneNotes.slice(0,12).map(x=>({
+      scene:Number(x?.scene)||0,severity:String(x?.severity||'medium').toLowerCase(),
+      issue:String(x?.issue||'').slice(0,1200),fix:String(x?.fix||'').slice(0,1800),
+      preferredProvider:/seedance/i.test(String(x?.preferredProvider||''))?'seedance':'runway'
+    })):[]
+  };
+}
+async function ensureAudioDirectorPlan(run,accountId){
+  if(run?.audioDirector?.planVersion==='v1'&&Array.isArray(run.audioDirector.scenes))return run.audioDirector;
+  const lines=runVoiceLines(run);
+  const fallback={
+    planVersion:'v1',provider:'deterministic',targetLufs:-16,truePeak:-1.5,lra:7,
+    policy:'Narration is added in post. Keep natural scene sound under speech; no random generated music.',
+    scenes:lines.map(x=>({scene:x.scene,speechStartSec:x.text?0.12:0,speechEndSec:Math.max(0.8,x.duration-0.15),sceneAudioGain:0.32,duckingDb:x.text?-9:0,sfx:'',ambience:'natural scene ambience',soundBridge:''}))
+  };
+  if(!openaiConfigured()){run.audioDirector=fallback;return fallback}
+  const schema={
+    type:'object',additionalProperties:false,required:['policy','scenes'],
+    properties:{
+      policy:{type:'string'},
+      scenes:{type:'array',minItems:lines.length,maxItems:lines.length,items:{type:'object',additionalProperties:false,required:['scene','speechStartSec','speechEndSec','sceneAudioGain','duckingDb','sfx','ambience','soundBridge'],properties:{
+        scene:{type:'integer',minimum:1,maximum:30},speechStartSec:{type:'number',minimum:0,maximum:30},speechEndSec:{type:'number',minimum:0,maximum:30},
+        sceneAudioGain:{type:'number',minimum:0,maximum:1},duckingDb:{type:'number',minimum:-24,maximum:0},sfx:{type:'string'},ambience:{type:'string'},soundBridge:{type:'string'}
+      }}}
+    }
+  };
+  const prompt=[
+    'ROLE: senior sound editor and dialogue editor for TikTok/Reels/Shorts.',
+    'Build an audio timeline for each scene. Do not invent spoken text; preserve approved voiceover/dialogue exactly.',
+    'Speech should feel conversational, start intentionally, and never appear randomly only in the middle of the film.',
+    'Use natural diegetic scene sound and sound bridges. Do not request random AI music; music is absent unless explicitly supplied later.',
+    'Target final social-video loudness will be -16 LUFS, max true peak -1.5 dBTP, LRA about 7.',
+    'For scenes with speech, choose speechStartSec and speechEndSec inside that scene duration with breathing room; do not make every line start at the exact same offset.',
+    'Storyboard/audio: '+JSON.stringify((run?.storyboard||[]).map((s,i)=>({scene:i+1,duration:sceneDurationSeconds(s),dialogue:s?.dialogue,voiceover:s?.voiceover,sound:s?.sound,soundDesign:s?.soundDesign,transition:s?.transition}))),
+    'Voice lines: '+JSON.stringify(lines),
+    'Return JSON only.'
+  ].join('\n');
+  try{
+    const model=process.env.OPENAI_MODEL||'gpt-6-astra';
+    const r=await fetch('https://api.openai.com/v1/responses',{
+      method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+      body:JSON.stringify({model,input:prompt,reasoning:{effort:'low'},max_output_tokens:3200,text:{format:{type:'json_schema',name:'audio_director_plan',strict:true,schema}}})
+    });
+    const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+    if(!r.ok)throw new Error(data?.error?.message||('Audio Director error '+r.status));
+    const parsed=safeAnalysisJson(openAIText(data))||{};
+    const priced=openAIUsageCost(data?.model||model,data?.usage||{});
+    if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'audio-director',description:'Audio Director · таймлайн звука',amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
+    run.audioDirector={...fallback,...parsed,planVersion:'v1',provider:'OpenAI',generatedAt:new Date().toISOString(),targetLufs:-16,truePeak:-1.5,lra:7};
+  }catch(e){
+    console.warn('[audio-director] '+String(e?.message||e));
+    run.audioDirector={...fallback,error:String(e?.message||e).slice(0,500)};
+  }
+  return run.audioDirector;
+}
+async function measureAudioLoudness(filePath){
+  try{
+    const {stderr}=await execFile('ffmpeg',[
+      '-hide_banner','-nostats','-i',filePath,
+      '-af','loudnorm=I=-16:TP=-1.5:LRA=7:print_format=json',
+      '-f','null','-'
+    ],{timeout:120000,maxBuffer:8*1024*1024});
+    const blocks=String(stderr||'').match(/\{[\s\S]*?"input_i"[\s\S]*?\}/g)||[];
+    const parsed=blocks.length?JSON.parse(blocks[blocks.length-1]):{};
+    const integrated=Number(parsed.input_i),truePeak=Number(parsed.input_tp),lra=Number(parsed.input_lra);
+    let score=100;
+    if(Number.isFinite(integrated))score-=Math.min(35,Math.max(0,Math.abs(integrated-(-16))-0.7)*9);
+    else score-=25;
+    if(Number.isFinite(truePeak)&&truePeak>-1.0)score-=Math.min(30,(truePeak+1.0)*18);
+    if(Number.isFinite(lra)&&lra>12)score-=Math.min(15,(lra-12)*2);
+    return {integratedLufs:Number.isFinite(integrated)?integrated:null,truePeakDbtp:Number.isFinite(truePeak)?truePeak:null,lra:Number.isFinite(lra)?lra:null,score:clampScore100(score,75),passed:score>=90};
+  }catch(e){
+    return {integratedLufs:null,truePeakDbtp:null,lra:null,score:75,passed:false,error:String(e?.message||e).slice(0,500)};
+  }
+}
+function updateQualityGate(run){
+  const previsScores=(Array.isArray(run?.previsFrames)?run.previsFrames:[]).map(x=>Number(x?.qc?.productIdentityScore)).filter(Number.isFinite);
+  const sceneScores=Object.values(run?.sceneResults||{}).map(x=>Number(x?.qc?.productIdentityScore)).filter(Number.isFinite);
+  const finalIdentity=Number(run?.qcResult?.productIdentityScore);
+  const identityPool=[...previsScores,...sceneScores,...(Number.isFinite(finalIdentity)?[finalIdentity]:[])];
+  const productIdentity=identityPool.length?Math.min(...identityPool):null;
+  const continuityCandidates=[
+    Number(run?.directorPreflight?.continuityScore),
+    ...Object.values(run?.sceneResults||{}).map(x=>Number(x?.qc?.continuityScore)).filter(Number.isFinite),
+    Number(run?.qcResult?.continuityScore)
+  ].filter(Number.isFinite);
+  const continuity=continuityCandidates.length?Math.min(...continuityCandidates):null;
+  const directorPreflight=clampScore100(run?.directorPreflight?.score,null);
+  const audio=clampScore100(run?.audioDirector?.analysis?.score??run?.audioDirector?.score,null);
+  const directorCut=clampScore100(Number.isFinite(Number(run?.qcResult?.directorCut?.score))?Number(run.qcResult.directorCut.score)*10:(Number.isFinite(Number(run?.qcResult?.score))?Number(run.qcResult.score)*10:null),null);
+  const systems=[
+    {key:'productIdentity',label:'Product Identity',score:productIdentity,threshold:94},
+    {key:'continuity',label:'Continuity Engine',score:continuity,threshold:88},
+    {key:'directorPreflight',label:'Director AI',score:directorPreflight,threshold:88},
+    {key:'audio',label:'Audio Director',score:audio,threshold:90},
+    {key:'directorCut',label:'Final Director Cut',score:directorCut,threshold:90}
+  ].map(x=>({...x,status:x.score==null?'pending':x.score>=x.threshold?'green':'attention'}));
+  const available=systems.filter(x=>x.score!=null);
+  const overall=available.length?Math.min(...available.map(x=>x.score)):null;
+  run.qualityGate={version:'v1',systems,overall,passed:systems.every(x=>x.status==='green'),updatedAt:new Date().toISOString()};
+  return run.qualityGate;
+}
+
 async function recentIdeaContext(accountId,productId){
   try{
     const state=await readAppState(accountId);
@@ -2388,10 +2624,12 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     'Environment: '+String(frame.environment||frame.location||''),
     'Lighting: '+String(frame.lighting||''),
     'CINEMA BIBLE FOR THIS FILM: '+JSON.stringify(run.previsPlan?.cinemaBible||{}),
+    continuityBibleText(run),
     'Action phase: '+String(frame.action||''),
     'Avatar: '+String(frame.avatarDescription||''),
     'Product placement: '+String(frame.productPlacement||frame.productRole||''),
     'Continuity: '+String(frame.continuityNotes||''),
+    continuityBibleText(run),
     'Next visual intent: '+String(frame.nextIntent||''),
     frame.qualityNotes?('QC CORRECTION NOTES: '+String(frame.qualityNotes)):'',
     String(frame.imagePromptEn||frame.imagePromptRu||''),
@@ -2613,7 +2851,10 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'Локация должна выглядеть правдоподобно и обжито, если storyboard не требует стерильной студии.',
       'FAIL только за критическое: неверная фаза/действие, заметно неправильный товар когда он должен быть виден, другой персонаж, серьёзные артефакты рук/товара или противоречие смыслу сцены. Не требуй пиксельного совпадения со storyboard.',
       'КРИТИЧНОСТЬ: critical=true только если кадр нельзя использовать дальше без переделки: реально неправильный товар, перепутана START/END фаза целиком, другой персонаж или серьёзный артефакт. Точная поза кисти, положение миски, небольшое отличие траектории/ракурса/кадрирования — WARN и critical=false.',
-      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
+      continuityBibleText(run),
+      'PRODUCT IDENTITY SCORE 0–100 is independent from cinematic score. Compare silhouette, geometry, proportions, part count/placement, mounting/orientation, material/color/markings. 100 = no visible drift; below 94 = not safe as a product anchor.',
+      'CONTINUITY SCORE 0–100 compares avatar/wardrobe, room geography, props, lighting/color and screen direction to the continuity bible and previous frame.',
+      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"productIdentityScore":100,"continuityScore":100,"identityChecks":{"geometry":100,"parts":100,"orientation":100,"materialColor":100,"markings":100,"mechanics":100},"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},
     {type:'input_text',text:'CANDIDATE PREVIZ:'},
     {type:'input_image',image_url:imageUrl,detail:'low'}
@@ -2642,7 +2883,11 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
   if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'previs-qc',description:'QC превиз-кадра '+frame.scene+'.'+frame.frame,amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
   const score=Number(parsed.score);
   const checks=parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{};
-  const productFail=lockProduct&&String(checks.product||'').toLowerCase()!=='ok';
+  const fallbackIdentity=lockProduct?statusScore100(checks.product,70):100;
+  const productIdentityScore=clampScore100(parsed.productIdentityScore,fallbackIdentity);
+  const continuityScore=clampScore100(parsed.continuityScore,previousUrl?statusScore100(checks.environment,82):100);
+  const identityChecks=parsed.identityChecks&&typeof parsed.identityChecks==='object'?parsed.identityChecks:{};
+  const productFail=lockProduct&&(String(checks.product||'').toLowerCase()!=='ok'||Number(productIdentityScore)<94);
   const actionFail=String(checks.actionPhase||'').toLowerCase()==='fail';
   const avatarFail=frame.avatarInFrame===true&&String(checks.avatar||'').toLowerCase()==='fail';
   const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
@@ -2652,7 +2897,7 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
     passed:!criticalFail,
     score:Number.isFinite(score)?score:null,
     summary:String(parsed.summary||'').slice(0,1200),
-    checks,
+    checks,productIdentityScore,continuityScore,identityChecks,
     issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,10):[],
     criticalFail
   };
@@ -2688,7 +2933,10 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'Среда должна выглядеть естественно и достаточно живо для рекламного ролика, но без случайного визуального мусора.',
       'CINEMA QUALITY: отдельно оцени cameraNaturalness, lightingPhysics, motionPhysics, materialRealism и cinematicComposition. Это не critical само по себе, но должно снижать score и давать точные issues для улучшения следующего дубля.',
       'Cinema Bible: '+JSON.stringify(run.previsPlan?.cinemaBible||{}),
-      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","lightingPhysics":"ok|warn|fail","motionPhysics":"ok|warn|fail","materialRealism":"ok|warn|fail","cinematicComposition":"ok|warn|fail"},"issues":[""]}'
+      continuityBibleText(run),
+      'Score productIdentityScore 0–100 against SOURCE PRODUCT images across ALL sampled video frames. Any morph/mirror/part-count/construction/color drift lowers it sharply; below 94 is unsafe.',
+      'Score continuityScore 0–100 for avatar, wardrobe, room geography, recurring props, lighting/color and screen direction versus approved previz and continuity bible.',
+      'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"productIdentityScore":100,"continuityScore":100,"identityChecks":{"geometry":100,"parts":100,"orientation":100,"materialColor":100,"markings":100,"mechanics":100},"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","lightingPhysics":"ok|warn|fail","motionPhysics":"ok|warn|fail","materialRealism":"ok|warn|fail","cinematicComposition":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},...(evidence?.frames||[]).slice(0,8)];
     for(const [idx,url] of sourceProducts.entries())content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY ANGLE '+(idx+1)+':'},{type:'input_image',image_url:url,detail:'high'});
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
@@ -2708,7 +2956,10 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
     const score=Number(parsed.score);
     const checks=parsed.checks&&typeof parsed.checks==='object'?parsed.checks:{};
     const productStatus=String(checks.product||'').toLowerCase();
-    const productFail=sourceProducts.length>0&&productStatus!=='ok';
+    const productIdentityScore=clampScore100(parsed.productIdentityScore,sourceProducts.length?statusScore100(productStatus,70):100);
+    const continuityScore=clampScore100(parsed.continuityScore,statusScore100(checks.continuity,82));
+    const identityChecks=parsed.identityChecks&&typeof parsed.identityChecks==='object'?parsed.identityChecks:{};
+    const productFail=sourceProducts.length>0&&(productStatus!=='ok'||Number(productIdentityScore)<94);
     const avatarFail=String(checks.avatar||'').toLowerCase()==='fail';
     const artifactsFail=String(checks.artifacts||'').toLowerCase()==='fail';
     const storyFail=String(checks.storyAction||'').toLowerCase()==='fail';
@@ -2717,7 +2968,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       passed:!criticalFail,
       score:Number.isFinite(score)?score:null,
       summary:String(parsed.summary||'').slice(0,1600),
-      checks,
+      checks,productIdentityScore,continuityScore,identityChecks,
       issues:Array.isArray(parsed.issues)?parsed.issues.map(String).slice(0,12):[],
       criticalFail
     };
@@ -2736,6 +2987,8 @@ async function processRunPrevis(accountId,runId){
   run.stage='Превиз-кадры';run.status='В работе';run.awaitingApproval=false;run.progress=Math.max(28,Number(run.progress)||0);run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
   await writeAppState(data,accountId);
   try{
+    await ensureContinuityBible(run,accountId);
+    await writeAppState(data,accountId);
     let plan=run.previsPlan&&Array.isArray(run.previsPlan.frames)?normalizePrevisPlan(run.previsPlan,run):await generatePrevisPlan(run,accountId);
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     run.previsPlan=plan;run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
@@ -2819,6 +3072,21 @@ async function processRunPrevis(accountId,runId){
     run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+ready+'/'+expected+' кадров · OpenAI GPT Image');
 
+    if(run.previsResult.completed){
+      const preflight=await runDirectorPreflight(run,accountId);
+      run.directorPreflight={...preflight,completedAt:new Date().toISOString()};
+      for(const note of (preflight.sceneNotes||[])){
+        const sc=run.storyboard?.[Number(note.scene)-1];
+        if(sc)sc.directorPreflightNotes=[note.issue,note.fix].filter(Boolean).join(' | ').slice(0,2400);
+      }
+      updateQualityGate(run);
+      appendFactoryJournal(data,'Director AI · preflight',(run.productName||run.id)+' · '+(preflight.score??'—')+'/100 · product '+(preflight.productReadinessScore??'—')+'/100');
+      if(preflight.critical===true||Number(preflight.productReadinessScore)<90){
+        throw new Error('Director AI остановил видео до исправления превиза: '+String(preflight.summary||'product/continuity readiness ниже безопасного порога'));
+      }
+      await writeAppState(data,accountId);
+    }
+
     if(run.mode==='manual'){
       run.status='На проверке';run.stage='Превиз-кадры';run.progress=36;run.awaitingApproval=true;
       await writeAppState(data,accountId);
@@ -2866,7 +3134,7 @@ async function ensureSceneProductAnchorGate(run,sceneNo,accountId){
       frame.qc=qc;
     }
     const status=String(qc?.checks?.product||'').toLowerCase();
-    if(qc?.passed===false||status!=='ok'){
+    if(qc?.passed===false||status!=='ok'||Number(qc?.productIdentityScore||0)<94){
       throw new Error('PRE-VIDEO PRODUCT GATE: сцена '+sceneNo+', '+String(frame.frameType||('кадр '+frame.frame))+' не совпадает с исходным товаром. Видео не будет генерироваться из неправильного превиза. '+String((qc?.issues||[]).join('; ')||qc?.summary||'нужна перегенерация превиза'));
     }
     previousUrl=frame.url;
@@ -3119,8 +3387,9 @@ async function generateOpenAITts(text,instructions='',voice='coral'){
   return Buffer.from(await r.arrayBuffer());
 }
 
-async function createRunVoiceover(run,dir){
+async function createRunVoiceover(run,dir,audioPlan=null){
   const lines=runVoiceLines(run);
+  audioPlan=audioPlan&&typeof audioPlan==='object'?audioPlan:(run?.audioDirector||null);
   const avatarVoice=String(run?.character?.voice||'').trim();
   const instructions=[
     'Говори на естественном разговорном русском языке как живой UGC-автор, а не диктор рекламы.',
@@ -3139,18 +3408,21 @@ async function createRunVoiceover(run,dir){
       fs.writeFileSync(mp3,await generateOpenAITts(line.text,instructions,voice));
       const rawDur=await probeDuration(mp3);
       const target=Math.max(0.8,Number(line.duration)||5);
-      const available=Math.max(0.6,target-0.35);
-      const tempo=rawDur>available?Math.min(1.22,rawDur/available):1;
+      const sceneAudio=(audioPlan?.scenes||[]).find(x=>Number(x?.scene)===Number(line.scene))||{};
+      const speechStart=Math.max(0,Math.min(target-0.6,Number(sceneAudio.speechStartSec)||0.12));
+      const desiredEnd=Math.max(speechStart+0.6,Math.min(target-0.08,Number(sceneAudio.speechEndSec)||target-0.15));
+      const available=Math.max(0.6,desiredEnd-speechStart);
+      const tempo=rawDur>available?Math.min(1.18,rawDur/available):1;
       const filters=[];
       if(tempo>1.001)filters.push('atempo='+tempo.toFixed(4));
       filters.push('afade=t=in:st=0:d=0.04');
-      filters.push('adelay=120|120');
+      filters.push('adelay='+Math.round(speechStart*1000)+'|'+Math.round(speechStart*1000));
       filters.push('apad');
       filters.push('atrim=0:'+target.toFixed(3));
       filters.push('afade=t=out:st='+Math.max(0,target-0.08).toFixed(3)+':d=0.08');
       filters.push('loudnorm=I=-18:TP=-2:LRA=7');
       await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',mp3,'-af',filters.join(','),'-ar','48000','-ac','2','-c:a','pcm_s16le','-y',wav],{timeout:120000});
-      spoken.push({scene:line.scene,text:line.text,duration:target,source:line.source,rawDuration:Math.round(rawDur*100)/100});
+      spoken.push({scene:line.scene,text:line.text,duration:target,speechStartSec:Math.round(speechStart*100)/100,speechEndSec:Math.round(desiredEnd*100)/100,source:line.source,rawDuration:Math.round(rawDur*100)/100});
     }else{
       await execFile('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t',String(line.duration),'-c:a','pcm_s16le','-y',wav],{timeout:30000});
     }
@@ -3204,17 +3476,18 @@ async function assembleRunVideo(run,dir,voicePath){
   const hasVoice=Boolean(voicePath&&fs.existsSync(voicePath));
   const args=['-hide_banner','-loglevel','error','-i',combined];
   if(hasVoice)args.push('-i',voicePath);
-  args.push('-f','lavfi','-t',String(totalDur),'-i','anoisesrc=color=pink:amplitude=0.015:r=48000');
+  args.push('-f','lavfi','-t',String(totalDur),'-i','anoisesrc=color=pink:amplitude=0.003:r=48000');
   const roomIndex=hasVoice?2:1;
   const filters=[
-    '[0:a]volume=0.28[scene]',
-    '['+roomIndex+':a]highpass=f=80,lowpass=f=5500,volume=0.06[room]'
+    '[0:a]volume=0.34[scene]',
+    '['+roomIndex+':a]highpass=f=90,lowpass=f=4800,volume=0.025[room]'
   ];
   if(hasVoice){
-    filters.push('[1:a]volume=1.0[voice]');
-    filters.push('[scene][room][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]');
+    filters.push('[1:a]volume=1.0,highpass=f=70,lowpass=f=14500,asplit=2[vside][voice]');
+    filters.push('[scene][vside]sidechaincompress=threshold=0.018:ratio=7:attack=18:release=260:makeup=1[ducked]');
+    filters.push('[ducked][room][voice]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,alimiter=limit=0.94[aout]');
   }else{
-    filters.push('[scene][room]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]');
+    filters.push('[scene][room]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,alimiter=limit=0.94[aout]');
   }
   args.push('-filter_complex',filters.join(';'),'-map','0:v:0','-map','[aout]','-c:v','copy','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-shortest','-movflags','+faststart','-y',finalPath);
   try{
@@ -3254,11 +3527,15 @@ async function runFinalQc(run,finalPath,accountId){
       'Сценарий: '+JSON.stringify(run.script||{}),
       'CRITICAL FAIL: любое заметное изменение исходного товара — геометрии, пропорций, количества/расположения деталей, креплений, торцов, материала, цвета или конструкции; также потеря ключевого действия/payoff, грубая смена персонажа/локации, серьёзные артефакты, пропущенная/дублированная сцена, неправильный формат.',
       'Оцени также живость окружения, монтажную связность, понятность проблемы→решения, естественность рекламы и соответствие 9:16.',
+      continuityBibleText(run),
+      'Audio Director metadata: '+JSON.stringify(run.audioDirector||{}),
+      'productIdentityScore 0–100: compare the product across final sampled frames to SOURCE PRODUCT angles. Below 95 is not release-safe.',
+      'continuityScore 0–100: avatar/wardrobe, geography/props, lighting/color and screen direction across adjacent scenes.',
       'CINEMA QC: оцени физическую мотивированность света, естественность camera movement, отсутствие стерильно-плавающей камеры, правдоподобный вес/контакт движений, разнообразие крупностей и углов, цветовую/световую continuity между соседними сценами. Эти пункты дают WARN/снижают score, но становятся critical только если реально ломают сцену.',
       'DIRECTOR CUT: смотри ролик как режиссёр после первого монтажа. Если 1–2 конкретные сцены заметно тянут ролик вниз по удержанию/динамике/киношности, укажи их номера для пересъёмки. Не отправляй сцену на пересъёмку ради мелочи. Для каждой такой сцены дай точную постановочную правку и preferredProvider runway|seedance. Также дай монтажные замечания, которые не требуют пересъёмки.',
       'Storyboard для нумерации сцен: '+JSON.stringify(run.storyboard||[]),
       'Scene QC map: '+JSON.stringify(Object.fromEntries(Object.entries(run.sceneResults||{}).map(([k,v])=>[k,{score:v?.qc?.score,checks:v?.qc?.checks,issues:v?.qc?.issues,provider:v?.routerProvider||v?.provider}]))),
-      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail","lightingPhysics":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","motionPhysics":"ok|warn|fail","shotVariety":"ok|warn|fail","colorContinuity":"ok|warn|fail"},"issues":[""],"directorCut":{"score":10,"reshootScenes":[1],"sceneNotes":[{"scene":1,"issue":"","fix":"","preferredProvider":"runway|seedance"}],"montageActions":[""],"reason":""}}'
+      'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"productIdentityScore":100,"continuityScore":100,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail","lightingPhysics":"ok|warn|fail","cameraNaturalness":"ok|warn|fail","motionPhysics":"ok|warn|fail","shotVariety":"ok|warn|fail","colorContinuity":"ok|warn|fail"},"issues":[""],"directorCut":{"score":10,"reshootScenes":[1],"sceneNotes":[{"scene":1,"issue":"","fix":"","preferredProvider":"runway|seedance"}],"montageActions":[""],"reason":""}}'
     ].join('\n')},...(evidence.frames||[]).slice(0,8)];
     for(const [idx,url] of sourceProducts.entries())content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY ANGLE '+(idx+1)+':'},{type:'input_image',image_url:url,detail:'high'});
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
@@ -3275,10 +3552,12 @@ async function runFinalQc(run,finalPath,accountId){
     if(priced.amountUsd>0)await recordExpense(accountId,{provider:'OpenAI',category:'qc',description:'AI-проверка финального ролика',amountUsd:priced.amountUsd,model:response?.model||model,usage:priced.details,source:'auto'}).catch(()=>{});
     const score=Number(parsed.score);
     const finalChecks=parsed?.checks&&typeof parsed.checks==='object'?parsed.checks:{};
-    const productIdentityOk=!sourceProducts.length||String(finalChecks.productConsistency||'').toLowerCase()==='ok';
+    const productIdentityScore=clampScore100(parsed.productIdentityScore,sourceProducts.length?statusScore100(finalChecks.productConsistency,70):100);
+    const continuityScore=clampScore100(parsed.continuityScore,statusScore100(finalChecks.continuity,82));
+    const productIdentityOk=!sourceProducts.length||(String(finalChecks.productConsistency||'').toLowerCase()==='ok'&&Number(productIdentityScore)>=95);
     return {
-      passed:productIdentityOk&&parsed?.passed!==false&&(!Number.isFinite(score)||score>=8),
-      score:Number.isFinite(score)?score:null,
+      passed:productIdentityOk&&Number(continuityScore)>=85&&parsed?.passed!==false&&(!Number.isFinite(score)||score>=8),
+      score:Number.isFinite(score)?score:null,productIdentityScore,continuityScore,
       summary:String(parsed?.summary||'AI-проверка завершена.').slice(0,3000),
       checks:finalChecks,
       issues:Array.isArray(parsed?.issues)?parsed.issues.map(x=>String(x)).slice(0,20):[],
@@ -3313,9 +3592,12 @@ async function processRunPostProduction(accountId,runId){
     appendFactoryJournal(data,'Запущена постобработка',(run.productName||run.id)+' · сцены подтверждены '+accepted.size+'/'+total);
     await writeAppState(data,accountId);
 
+    const audioPlan=await ensureAudioDirectorPlan(run,accountId);
+    updateQualityGate(run);
+    await writeAppState(data,accountId);
     let voicePath=null;
     if(!run.voiceoverResult){
-      const voice=await createRunVoiceover(run,dir);
+      const voice=await createRunVoiceover(run,dir,audioPlan);
       voicePath=voice.path;
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       run.voiceoverResult={ok:true,provider:voice.provider,model:voice.model,voice:voice.voice,voiceStyle:voice.instructions,soundDesign:'scene-audio + continuous room tone + narration',spokenScenes:voice.spoken,completedAt:new Date().toISOString()};
@@ -3323,12 +3605,14 @@ async function processRunPostProduction(accountId,runId){
       appendFactoryJournal(data,'Озвучка готова',(run.productName||run.id)+' · '+voice.spoken.length+' сцен с речью');
       await writeAppState(data,accountId);
     }else{
-      voicePath=(await createRunVoiceover(run,dir)).path;
+      voicePath=(await createRunVoiceover(run,dir,audioPlan)).path;
     }
 
     const finalPath=await assembleRunVideo(run,dir,voicePath);
+    const audioAnalysis=await measureAudioLoudness(finalPath);
     const media=await uploadRunMedia(accountId,runId,finalPath,'final-'+runId+'.mp4','video/mp4');
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    run.audioDirector={...(run.audioDirector||audioPlan||{}),analysis:audioAnalysis,score:audioAnalysis.score,passed:audioAnalysis.passed,completedAt:new Date().toISOString()};
     run.montageResult={ok:true,url:media?.url||'',path:media?.path||'',fileName:media?.fileName||('final-'+runId+'.mp4'),durationSeconds:Math.round(await probeDuration(finalPath)),completedAt:new Date().toISOString()};
     run.stage='AI-проверка';run.progress=88;run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Монтаж готов',run.productName||run.id);
@@ -3337,6 +3621,7 @@ async function processRunPostProduction(accountId,runId){
     const qc=await runFinalQc(run,finalPath,accountId);
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     run.qcResult={...qc,completedAt:new Date().toISOString()};
+    updateQualityGate(run);
     run.postProductionRunning=false;run.error='';run.updatedAt=new Date().toISOString();
 
     const dc=qc?.directorCut&&typeof qc.directorCut==='object'?qc.directorCut:{reshootScenes:[]};
@@ -3346,13 +3631,15 @@ async function processRunPostProduction(accountId,runId){
     const finalScore=Number(qc?.score);
     if(run.mode!=='manual'&&dcPass<1&&dcScenes.length&&(!Number.isFinite(finalScore)||finalScore<9.3)){
       run.sceneVersions=run.sceneVersions&&typeof run.sceneVersions==='object'?run.sceneVersions:{};
+      run.sceneHistory=run.sceneHistory&&typeof run.sceneHistory==='object'?run.sceneHistory:{};
       const noteMap=new Map((Array.isArray(dc.sceneNotes)?dc.sceneNotes:[]).map(x=>[Number(x?.scene),x]));
       for(const sceneNo of dcScenes){
         const old=run.sceneResults?.[sceneNo];
         if(old){
-          run.sceneVersions[sceneNo]=Array.isArray(run.sceneVersions[sceneNo])?run.sceneVersions[sceneNo]:[];
-          run.sceneVersions[sceneNo].push({...old,archivedAt:new Date().toISOString(),reason:'director-cut'});
-          run.sceneVersions[sceneNo]=run.sceneVersions[sceneNo].slice(-5);
+          run.sceneHistory[sceneNo]=Array.isArray(run.sceneHistory[sceneNo])?run.sceneHistory[sceneNo]:[];
+          run.sceneHistory[sceneNo].push({...old,archivedAt:new Date().toISOString(),reason:'director-cut'});
+          run.sceneHistory[sceneNo]=run.sceneHistory[sceneNo].slice(-5);
+          run.sceneVersions[sceneNo]=(Number(run.sceneVersions[sceneNo])||1)+1;
         }
         if(run.sceneResults)delete run.sceneResults[sceneNo];
         const note=noteMap.get(sceneNo)||{};
@@ -3427,9 +3714,10 @@ async function processSpecificPostStage(accountId,runId,stage){
     appendFactoryJournal(data,'Переделывается этап',(run.productName||run.id)+' · '+stage);
     await writeAppState(data,accountId);
 
+    const audioPlan=(stage==='Озвучка'||stage==='Монтаж')?await ensureAudioDirectorPlan(run,accountId):null;
     let voicePath=null;
     if(stage==='Озвучка'||stage==='Монтаж'){
-      const voice=await createRunVoiceover(run,dir);
+      const voice=await createRunVoiceover(run,dir,audioPlan);
       voicePath=voice.path;
       if(stage==='Озвучка'){
         state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
@@ -3444,8 +3732,10 @@ async function processSpecificPostStage(accountId,runId,stage){
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       run.stage='Монтаж';run.status='В работе';run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
       const finalPath=await assembleRunVideo(run,dir,voicePath);
+      const audioAnalysis=await measureAudioLoudness(finalPath);
       const media=await uploadRunMedia(accountId,runId,finalPath,'final-'+runId+'.mp4','video/mp4');
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      run.audioDirector={...(run.audioDirector||audioPlan||{}),analysis:audioAnalysis,score:audioAnalysis.score,passed:audioAnalysis.passed,completedAt:new Date().toISOString()};
       run.montageResult={ok:true,url:media?.url||'',path:media?.path||'',fileName:media?.fileName||('final-'+runId+'.mp4'),durationSeconds:Math.round(await probeDuration(finalPath)),completedAt:new Date().toISOString()};
       run.qcResult=null;run.stage='AI-проверка';run.progress=88;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Монтаж переделан',run.productName||run.id);await writeAppState(data,accountId);
@@ -3537,6 +3827,7 @@ function buildRunwayMotionPrompt(run,scene,qcCorrection=''){
   return [
     'Continuous seamless single shot.',
     productLock,
+    continuityBibleText(run),
     start?('START state: '+start+'.'):'',
     action?('One clear physical action: '+action+'.'):'',
     end?('END state: '+end+'.'):'',
@@ -3558,6 +3849,7 @@ function buildSeedanceMotionPrompt(run,scene,qcCorrection=''){
   return [
     'ONE continuous cinematic shot. Preserve temporal continuity from START to END.',
     compactVideoProductLock(run,scene),
+    continuityBibleText(run),
     'IDENTITY PRIORITY: if a generated keyframe contains any product drift, keep the scene composition/action but correct the physical product to the Product DNA and explicit product rules.',
     'START: '+cleanMotionText(scene.startFrame||scene.shot||''),
     'ACTION: '+cleanMotionText(scene.action||''),
@@ -3744,6 +4036,8 @@ async function processRunGeneration(accountId,runId){
         'PREVIZ LOCK: используй превиз-кадры как композиционные anchors и реально разыграй заданное действие во времени. Не превращай сцену в статичную девушку, которая просто держит товар.',
         'PRODUCT LOCK: источник товара важнее previz при конфликте формы. Не менять силуэт, пропорции, крепёж, торцы, материал, цвет и ключевые детали.',
         'ENVIRONMENT: сохраняй ту же обжитую локацию и повторяющийся реквизит. Не делай пустой стерильный фон, если storyboard этого не требует.',
+        continuityBibleText(run),
+        scene.directorPreflightNotes?('DIRECTOR PREFLIGHT: '+String(scene.directorPreflightNotes)):'',
         'SOUND: generate only natural diegetic room/action sounds for the scene (paper, fabric, kitchen/bathroom ambience, object handling as appropriate). NO generated speech, NO narration, NO random music; narration is added in post-production.',
         'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
       ].filter(Boolean).join('\n').slice(0,1000);
@@ -3751,7 +4045,8 @@ async function processRunGeneration(accountId,runId){
       let bestCandidate=null,bestQc=null,bestScore=-Infinity;
       const route=(run.sceneRouting&&run.sceneRouting[sceneNo])||heuristicSceneRoute(scene);
       const providerMode=videoProviderMode(run);
-      let preferred=manualSceneProvider(run,sceneNo)||(providerMode==='runway-only'?'runway':providerMode==='higgsfield-only'?'seedance':String(route?.provider||'runway'));
+      const directorNote=(run?.directorPreflight?.sceneNotes||[]).find(x=>Number(x?.scene)===sceneNo)||null;
+      let preferred=manualSceneProvider(run,sceneNo)||(providerMode==='runway-only'?'runway':providerMode==='higgsfield-only'?'seedance':directorNote?.preferredProvider||String(route?.provider||'runway'));
       let escalatedFrom='';
       const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
       const targetQcScore=sceneNo===1?9.2:(String(route?.risk||'').toLowerCase()==='high'?9.0:String(route?.risk||'').toLowerCase()==='medium'?8.8:8.6);
@@ -3829,6 +4124,7 @@ async function processRunGeneration(accountId,runId){
         const persisted=await persistRunVideoUrls(accountId,run.id,result.urls,'scene-'+sceneNo).catch(e=>({urls:result.urls,media:[],failed:[{error:String(e?.message||e)}]}));
         const savedUrls=persisted.urls?.length?persisted.urls:result.urls;
         run.sceneResults[sceneNo]={ok:true,urls:savedUrls,persistedMedia:persisted.media||[],storageWarnings:persisted.failed||[],provider:result.provider,model:result.model,routerProvider:result.routerProvider||'',routerReason:result.routerReason||'',escalatedFrom:result.escalatedFrom||'',requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,bestOfN:{targetScore:targetQcScore,bestScore:Number.isFinite(bestScore)?bestScore:null,maxAttempts},completedAt:new Date().toISOString()};
+        updateQualityGate(run);
         appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total+(sceneQc?.score?' · QC '+sceneQc.score+'/10':'')+(persisted.failed?.length?' · резервная копия: частично':' · сохранена в медиатеке'));
       }else{
         const err=creditBlock
