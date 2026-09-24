@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.37';
+const APP_VERSION='2.6.38';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2345,7 +2345,7 @@ function previsRefsForFrame(run,frame,done=[]){
   if(urls.length===productRefs.length&&done.length)urls.push(done[done.length-1]?.url);
 
   if(frame.avatarInFrame)urls.push(...avatarIdentityUrls(run,1));
-  return [...new Set(urls.filter(Boolean))].slice(0,4);
+  return [...new Set(urls.filter(Boolean))].slice(0,6);
 }
 async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
@@ -3606,6 +3606,10 @@ async function processRunGeneration(accountId,runId){
   const readyPrevis=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).length;
   if(!run.previsResult?.completed||!expectedPrevis||readyPrevis<expectedPrevis)return {ok:false,error:'Нельзя запускать видео: превиз готов не полностью ('+readyPrevis+'/'+expectedPrevis+')'};
   const productVisibleFrames=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url&&previsFrameShowsProduct(x,{}));
+  const sourceProductRefs=productIdentityUrls(run,3);
+  if(productVisibleFrames.length&&!sourceProductRefs.length){
+    return {ok:false,error:'Product Identity Gate остановил видео: нет исходных фото товара. Добавь хотя бы одно исходное фото товара — без него точную геометрию подтверждать нельзя.'};
+  }
   const productIdentityProblems=productVisibleFrames.filter(x=>x?.qc?.passed===false||String(x?.qc?.checks?.product||'').toLowerCase()!=='ok');
   if(productIdentityProblems.length){
     const bad=productIdentityProblems.map(x=>'сцена '+x.scene+' '+String(x.frameType||('кадр '+x.frame))).join(', ');
