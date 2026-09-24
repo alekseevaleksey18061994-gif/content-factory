@@ -617,7 +617,7 @@ function stageReportHtml(r,stage){
   }
   else if(stage==="Storyboard"){
     body=board.length?'<div class="storyboard-report">'+board.map((x,i)=>'<article class="storyboard-report-card">'+
-      '<div class="storyboard-report-head"><span class="storyboard-number">'+(i+1)+'</span><div><h3>'+esc(x.title||"Сцена")+'</h3><small>'+esc(x.duration||"")+'</small></div></div>'+
+      '<div class="storyboard-report-head"><span class="storyboard-number">'+(i+1)+'</span><div class="storyboard-head-copy"><h3>'+esc(x.title||"Сцена")+'</h3><small>'+esc(x.duration||"")+'</small></div><button class="storyboard-scene-regen" '+(["queued","processing"].includes(r.storyboardSceneJobs?.[i+1]?.status)?'disabled':'')+' onclick="event.stopPropagation();regenerateStoryboardScene(\''+r.id+'\','+(i+1)+')">'+(["queued","processing"].includes(r.storyboardSceneJobs?.[i+1]?.status)?'⏳ Обновляется':'↻ Переделать сцену')+'</button></div>'+
       '<div class="storyboard-meta">'+
         '<div><small>Задача</small><p>'+esc(x.purpose||"—")+'</p></div>'+
         '<div><small>Крупность</small><p>'+esc(x.framing||"—")+'</p></div>'+
@@ -703,6 +703,17 @@ window.deleteSavedIdea=async(ideaId)=>{
   const r=await fetch("/api/ideas/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,action:"delete_saved",ideaId})});
   const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Не удалось удалить идею");return}
   await syncFromServer();renderIdeas();
+};
+window.regenerateStoryboardScene=async(runId,scene)=>{
+  const note=prompt("Что изменить только в сцене "+scene+"? Оставь пустым, чтобы AI просто докрутил её и заполнил все поля.","");
+  if(note===null)return;
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+    accountId:activeAccountId,runId,action:"regenerate_storyboard_scene",scene,note
+  })});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){alert(data.detail||data.error||"Не удалось переделать сцену");return}
+  await syncFromServer();selectedRunId=runId;runStageOpen="Storyboard";renderRunDetail();
+  go("runDetail",{skipChatSync:true});
 };
 window.runAction=async(id,action,stage="")=>{
   let note="";
