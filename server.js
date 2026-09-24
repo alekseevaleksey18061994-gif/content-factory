@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='1.6.1';
+const APP_VERSION='1.6.2';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -568,9 +568,41 @@ function normalizeRunPlan(raw,payload={}){
     }
   };
 }
+function parseIdeaJsonLoose(value){
+  if(value&&typeof value==='object'&&!Array.isArray(value))return value;
+  const raw=String(value||'').trim().replace(/^\`\`\`(?:json)?\s*/i,'').replace(/\s*\`\`\`$/,'');
+  if(!raw)return null;
+  const candidates=[
+    raw,
+    raw.replace(/,\s*""\s*}/g,'}').replace(/,\s*([}\]])/g,'$1')
+  ];
+  for(const c of candidates){
+    try{return JSON.parse(c)}catch{}
+    const start=c.indexOf('{'),end=c.lastIndexOf('}');
+    if(start>=0&&end>start){try{return JSON.parse(c.slice(start,end+1))}catch{}}
+  }
+  return null;
+}
+function ideaStageComplete(idea){
+  const required=['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'];
+  const missing=required.filter(k=>!String(idea?.[k]||'').trim());
+  const alternatives=Array.isArray(idea?.alternatives)?idea.alternatives:[];
+  const badAlt=alternatives.length<4||alternatives.slice(0,4).some(x=>!String(x?.title||'').trim()||!String(x?.hook||'').trim()||!String(x?.concept||'').trim()||!String(x?.angle||'').trim());
+  return {ok:missing.length===0&&!badAlt,missing,badAlt};
+}
+
 function normalizeIdeaStage(raw,payload={}){
-  const src=raw&&typeof raw==='object'?(raw.selected||raw.idea||raw):{};
-  const alts=Array.isArray(raw?.alternatives)?raw.alternatives:(Array.isArray(src?.alternatives)?src.alternatives:[]);
+  let source=raw;
+  if(source&&typeof source==='object'&&typeof source.summary==='string'){
+    const nested=parseIdeaJsonLoose(source.summary);
+    if(nested)source=nested;
+  }
+  if(source&&typeof source==='object'&&typeof source.concept==='string'&&/^\s*\{/.test(source.concept)){
+    const nested=parseIdeaJsonLoose(source.concept);
+    if(nested?.selected)source=nested;
+  }
+  const src=source&&typeof source==='object'?(source.selected||source.idea||source):{};
+  const alts=Array.isArray(source?.alternatives)?source.alternatives:(Array.isArray(src?.alternatives)?src.alternatives:[]);
   return {
     title:String(src.title||payload.productName||'Идея ролика').slice(0,240),
     concept:String(src.concept||src.summary||payload.brief||'').slice(0,5000),
@@ -696,7 +728,44 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-    body:JSON.stringify({model,input,reasoning:{effort:'medium'},max_output_tokens:2800})
+    body:JSON.stringify({
+      model,input,
+      reasoning:{effort:'medium'},
+      max_output_tokens:3200,
+      text:{format:{
+        type:'json_schema',
+        name:'content_factory_idea',
+        strict:true,
+        schema:{
+          type:'object',
+          additionalProperties:false,
+          required:['selected','alternatives'],
+          properties:{
+            selected:{
+              type:'object',
+              additionalProperties:false,
+              required:['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'],
+              properties:{
+                title:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
+                concept:{type:'string'},mechanic:{type:'string'},angle:{type:'string'},productRole:{type:'string'},
+                retention:{type:'string'},payoff:{type:'string'},ctaDirection:{type:'string'},production:{type:'string'},why:{type:'string'}
+              }
+            },
+            alternatives:{
+              type:'array',
+              minItems:4,
+              maxItems:4,
+              items:{
+                type:'object',
+                additionalProperties:false,
+                required:['title','hook','concept','angle'],
+                properties:{title:{type:'string'},hook:{type:'string'},concept:{type:'string'},angle:{type:'string'}}
+              }
+            }
+          }
+        }
+      }}
+    })
   });
   const txt=await r.text();
   let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
@@ -706,7 +775,12 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     provider:'OpenAI',category:'idea',description:'Генерация креативной идеи ролика',
     amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
   }).catch(()=>{});
-  return normalizeIdeaStage(safeAnalysisJson(openAIText(data)),payload);
+  const idea=normalizeIdeaStage(safeAnalysisJson(openAIText(data)),payload);
+  const check=ideaStageComplete(idea);
+  if(!check.ok){
+    throw new Error('AI вернул неполную идею: '+(check.missing.length?('пустые поля '+check.missing.join(', ')):'')+(check.badAlt?' · альтернатив должно быть 4 и все поля должны быть заполнены':''));
+  }
+  return idea;
 }
 
 function scenarioTargetCount(payload={}){
