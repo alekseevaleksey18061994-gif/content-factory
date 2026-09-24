@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.18';
+const APP_VERSION='2.6.19';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2891,6 +2891,11 @@ async function processSpecificPostStage(accountId,runId,stage){
   }
 }
 
+function providerCreditError(error){
+  const msg=String(error?.message||error||'').toLowerCase();
+  return /not enough credits|insufficient credits|credit balance is too low|out of credits|low credit balance/.test(msg);
+}
+
 function videoProviderMode(run){
   const mode=String(run?.modelMode||'').toLowerCase();
   if(mode.includes('только higgsfield'))return 'higgsfield-only';
@@ -2948,7 +2953,7 @@ async function processRunGeneration(accountId,runId){
         'SOUND: generate only natural diegetic room/action sounds for the scene (paper, fabric, kitchen/bathroom ambience, object handling as appropriate). NO generated speech, NO narration, NO random music; narration is added in post-production.',
         'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
       ].filter(Boolean).join('\n').slice(0,1000);
-      let result=null,lastError=null,sceneQc=null,qcCorrection='';
+      let result=null,lastError=null,sceneQc=null,qcCorrection='',creditBlock=null;
       const providerMode=videoProviderMode(run);
       const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
       for(let attempt=1;attempt<=maxAttempts;attempt++){
@@ -2966,9 +2971,11 @@ async function processRunGeneration(accountId,runId){
             }
           }catch(e){
             lastError=e;
+            if(providerCreditError(e))creditBlock={provider:'Higgsfield',message:String(e?.message||e)};
             console.error('[higgsfield-scene] '+runId+' scene '+sceneNo+' '+String(e?.message||e));
           }
         }
+        if(creditBlock)break;
         if(!candidate&&providerMode!=='higgsfield-only'&&process.env.RUNWAYML_API_SECRET){
           try{
             candidate=await generateRunwayScene({
@@ -2978,9 +2985,11 @@ async function processRunGeneration(accountId,runId){
             else candidate=null;
           }catch(re){
             lastError=new Error((lastError?String(lastError.message)+'; ':'')+'Runway: '+String(re?.message||re));
+            if(providerCreditError(re))creditBlock={provider:'Runway',message:String(re?.message||re)};
             console.error('[runway-fallback] '+runId+' scene '+sceneNo+' '+String(re?.message||re));
           }
         }
+        if(creditBlock)break;
         if(!candidate)continue;
         try{
           sceneQc=await runGeneratedSceneQc(run,scene,sceneNo,candidate.urls[0],accountId);
@@ -2999,7 +3008,9 @@ async function processRunGeneration(accountId,runId){
         run.sceneResults[sceneNo]={ok:true,urls:result.urls,provider:result.provider,model:result.model,requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,completedAt:new Date().toISOString()};
         appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total+(sceneQc?.score?' · QC '+sceneQc.score+'/10':''));
       }else{
-        const err=String(lastError?.message||'Не удалось получить качественную сцену');
+        const err=creditBlock
+          ? (creditBlock.provider+': недостаточно кредитов в API-аккаунте, подключённом к Railway. Генерация остановлена без повторных попыток. '+creditBlock.message)
+          : String(lastError?.message||'Не удалось получить качественную сцену');
         run.sceneResults[sceneNo]={ok:false,error:err,qc:sceneQc,completedAt:new Date().toISOString()};
         run.backendGenerationRunning=false;run.status='Ошибка';run.stage='Генерация';run.generationError='Сцена '+sceneNo+': '+err;run.error=run.generationError;
         run.updatedAt=new Date().toISOString();
