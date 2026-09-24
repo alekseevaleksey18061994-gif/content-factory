@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.2.0';
+const APP_VERSION='2.3.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -582,7 +582,12 @@ function ideaStageComplete(idea){
   const required=['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'];
   const missing=required.filter(k=>!String(idea?.[k]||'').trim());
   const alternatives=Array.isArray(idea?.alternatives)?idea.alternatives:[];
-  const badAlt=alternatives.length<4||alternatives.slice(0,4).some(x=>!String(x?.title||'').trim()||!String(x?.hook||'').trim()||!String(x?.concept||'').trim()||!String(x?.angle||'').trim());
+  const altRequired=['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'];
+  const altQualityRequired=['hook','retention','nativeTikTok','proofVariety','shareability','originality','generatability','overall'];
+  const badAlt=alternatives.length<4||alternatives.slice(0,4).some(x=>
+    altRequired.some(k=>!String(x?.[k]||'').trim()) ||
+    altQualityRequired.some(k=>!Number.isFinite(Number(x?.quality?.[k])))
+  );
   return {ok:missing.length===0&&!badAlt,missing,badAlt};
 }
 
@@ -614,9 +619,19 @@ function normalizeIdeaStage(raw,payload={}){
     production:String(src.production||src.productionComplexity||'').slice(0,1200),
     alternatives:alts.slice(0,5).map(x=>({
       title:String(x?.title||'').slice(0,240),
-      hook:String(x?.hook||'').slice(0,1500),
-      concept:String(x?.concept||'').slice(0,3000),
-      angle:String(x?.angle||'').slice(0,1500)
+      audience:String(x?.audience||'').slice(0,2000),
+      hook:String(x?.hook||'').slice(0,2000),
+      first3Seconds:String(x?.first3Seconds||x?.hook||'').slice(0,3000),
+      concept:String(x?.concept||'').slice(0,5000),
+      mechanic:String(x?.mechanic||'').slice(0,3000),
+      angle:String(x?.angle||'').slice(0,2000),
+      productRole:String(x?.productRole||'').slice(0,3000),
+      retention:String(x?.retention||'').slice(0,3000),
+      payoff:String(x?.payoff||'').slice(0,3000),
+      ctaDirection:String(x?.ctaDirection||'').slice(0,2000),
+      production:String(x?.production||'').slice(0,1600),
+      why:String(x?.why||'').slice(0,4000),
+      quality:x?.quality&&typeof x.quality==='object'?x.quality:{}
     }))
   };
 }
@@ -695,8 +710,26 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         type:'array',minItems:4,maxItems:4,
         items:{
           type:'object',additionalProperties:false,
-          required:['title','hook','concept','angle'],
-          properties:{title:{type:'string'},hook:{type:'string'},concept:{type:'string'},angle:{type:'string'}}
+          required:['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why','quality'],
+          properties:{
+            title:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
+            concept:{type:'string'},mechanic:{type:'string'},angle:{type:'string'},productRole:{type:'string'},
+            retention:{type:'string'},payoff:{type:'string'},ctaDirection:{type:'string'},production:{type:'string'},why:{type:'string'},
+            quality:{
+              type:'object',additionalProperties:false,
+              required:['hook','retention','nativeTikTok','proofVariety','shareability','originality','generatability','overall'],
+              properties:{
+                hook:{type:'integer',minimum:1,maximum:10},
+                retention:{type:'integer',minimum:1,maximum:10},
+                nativeTikTok:{type:'integer',minimum:1,maximum:10},
+                proofVariety:{type:'integer',minimum:1,maximum:10},
+                shareability:{type:'integer',minimum:1,maximum:10},
+                originality:{type:'integer',minimum:1,maximum:10},
+                generatability:{type:'integer',minimum:1,maximum:10},
+                overall:{type:'integer',minimum:1,maximum:10}
+              }
+            }
+          }
         }
       },
       quality:{
@@ -902,7 +935,8 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '- заканчивается сильным визуальным payoff; loop желателен, но не должен быть натянут.',
     '',
     'В поле why кратко объясни, почему зритель не свайпнет и почему досмотрит. Не пересказывай весь процесс выбора.',
-    'Верни 1 финальную усиленную идею + 4 действительно разные альтернативы + честные оценки quality.'
+    'Каждая из 4 альтернатив должна быть ПОЛНОЙ самостоятельной идеей, а не короткой заметкой: audience, first3Seconds, mechanic, productRole, retention, payoff, ctaDirection, production, why и собственная quality-оценка должны относиться именно к этой механике, а не копироваться из selected.',
+    'Верни 1 финальную усиленную идею + 4 действительно разные полностью заполненные альтернативы + честные оценки quality.'
   ].join('\n');
 
   async function criticPass(prompt){
@@ -917,7 +951,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         'ТЕХНИЧЕСКАЯ ПРОВЕРКА ФОРМЫ: предыдущий ответ оказался неполным.',
         'Предыдущий ответ: '+JSON.stringify(out),
         'Пустые обязательные поля: '+complete.missing.join(', ')+(complete.badAlt?' · альтернативы неполные':'')+'.',
-        'Верни полный объект по той же схеме. КАЖДОЕ текстовое поле selected и всех 4 alternatives должно быть непустым.',
+        'Верни полный объект по той же схеме. КАЖДОЕ текстовое поле selected и всех 4 alternatives должно быть непустым; у каждой alternative должны быть собственные retention/payoff/production/why и quality, а не копии selected.',
         'Если отдельный CTA не нужен, ctaDirection всё равно заполни формулировкой «без отдельного CTA; финал через визуальный payoff».',
         'Не сокращай и не удаляй поля ради экономии токенов.'
       ].join('\n');
