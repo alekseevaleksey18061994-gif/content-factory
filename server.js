@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.24';
+const APP_VERSION='2.6.25';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -278,6 +278,7 @@ async function writeAppState(data,accountId=DEFAULT_ACCOUNT_ID){
     output.products=mergeNewestById(current.data.products,data?.products,2000);
     output.characters=mergeNewestById(current.data.characters,data?.characters,1000);
     output.savedIdeas=mergeNewestById(current.data.savedIdeas,data?.savedIdeas,5000);
+    output.mediaLibrary=mergeNewestById(current.data.mediaLibrary,data?.mediaLibrary,10000);
     output.expenses=mergeNewestById(current.data.expenses,data?.expenses,5000);
     output.journal=mergeNewestById(current.data.journal,data?.journal,1000);
     output.scripts=mergeNewestById(current.data.scripts,data?.scripts,3000);
@@ -302,6 +303,7 @@ function blankFactoryState(){
     campaigns:[],
     scripts:[],
     savedIdeas:[],
+    mediaLibrary:[],
     characters:[],
     journal:[],
     expenses:[],
@@ -2527,7 +2529,9 @@ function runKnownMediaUrls(data,accountId){
       for(const u of (Array.isArray(sr?.urls)?sr.urls:[]))if(u)set.add(String(u));
     }
     if(run?.montageResult?.url)set.add(String(run.montageResult.url));
+    if(run?.finalMedia?.url)set.add(String(run.finalMedia.url));
   }
+  for(const m of (Array.isArray(data?.mediaLibrary)?data.mediaLibrary:[]))if(m?.url)set.add(String(m.url));
   return set;
 }
 function mergeByIdPreserveExisting(existing=[],incoming=[],limit=5000){
@@ -2550,6 +2554,7 @@ function mergeClientStateWithServer(existingData={},incomingData={}){
   // backend stage/progress/results/errors backwards.
   out.runs=Array.isArray(existingData.runs)?existingData.runs:[];
   out.savedIdeas=Array.isArray(existingData.savedIdeas)?existingData.savedIdeas:[];
+  out.mediaLibrary=mergeByIdPreserveExisting(existingData.mediaLibrary,incomingData.mediaLibrary,10000);
   out.expenses=mergeByIdPreserveExisting(existingData.expenses,incomingData.expenses,3000);
   out.journal=mergeByIdPreserveExisting(existingData.journal,incomingData.journal,500);
   out.scripts=mergeByIdPreserveExisting(existingData.scripts,incomingData.scripts,2000);
@@ -5278,6 +5283,107 @@ async function recoverLegacyPlaceholderRuns(){
   }
 }
 
+function archiveRunMediaToLibrary(data,run){
+  data.mediaLibrary=Array.isArray(data.mediaLibrary)?data.mediaLibrary:[];
+  const existingKeys=new Set(data.mediaLibrary.map(x=>String(x?.sourceKey||x?.url||x?.path||'')).filter(Boolean));
+  const archivedAt=new Date().toISOString();
+  const added=[];
+  const add=(kind,url='',pathValue='',meta={})=>{
+    url=String(url||'').trim();
+    pathValue=String(pathValue||'').trim();
+    if(!url&&!pathValue)return;
+    const sourceKey=String(meta.sourceKey||url||pathValue);
+    if(existingKeys.has(sourceKey))return;
+    existingKeys.add(sourceKey);
+    added.push({
+      id:factoryId('media'),
+      sourceKey,
+      kind:kind==='video'?'video':'image',
+      url,
+      path:pathValue,
+      fileName:String(meta.fileName||''),
+      mimeType:String(meta.mimeType||''),
+      productId:String(run?.productId||''),
+      productName:String(run?.productName||run?.product?.name||''),
+      sourceRunId:String(run?.id||''),
+      sourceStage:String(meta.sourceStage||''),
+      scene:Number(meta.scene)||null,
+      frame:Number(meta.frame)||null,
+      provider:String(meta.provider||''),
+      model:String(meta.model||''),
+      archivedAt,
+      createdAt:String(meta.createdAt||archivedAt)
+    });
+  };
+
+  for(const frame of (Array.isArray(run?.previsFrames)?run.previsFrames:[])){
+    add('image',frame?.url,frame?.path,{
+      sourceKey:'previs:'+String(run?.id||'')+':'+String(frame?.id||frame?.scene+'-'+frame?.frame||frame?.url||''),
+      fileName:frame?.fileName||'',
+      mimeType:frame?.mimeType||'image/png',
+      sourceStage:'Превиз-кадры',
+      scene:frame?.scene,
+      frame:frame?.frame,
+      provider:frame?.provider,
+      model:frame?.model,
+      createdAt:frame?.generatedAt
+    });
+  }
+
+  const seenVideoUrls=new Set();
+  for(const [sceneKey,result] of Object.entries(run?.sceneResults||{})){
+    const urls=[...(Array.isArray(result?.urls)?result.urls:[]),result?.url].filter(Boolean);
+    for(const videoUrl of urls){
+      const key=String(videoUrl);
+      if(seenVideoUrls.has(key))continue;
+      seenVideoUrls.add(key);
+      add('video',videoUrl,'',{
+        sourceKey:'scene:'+String(run?.id||'')+':'+String(sceneKey)+':'+key,
+        fileName:'scene-'+sceneKey+'.mp4',
+        mimeType:'video/mp4',
+        sourceStage:'Генерация',
+        scene:Number(sceneKey),
+        provider:result?.provider,
+        model:result?.model,
+        createdAt:result?.completedAt
+      });
+    }
+  }
+  for(const videoUrl of (Array.isArray(run?.generationResult?.urls)?run.generationResult.urls:[])){
+    const key=String(videoUrl);
+    if(seenVideoUrls.has(key))continue;
+    seenVideoUrls.add(key);
+    add('video',videoUrl,'',{
+      sourceKey:'generation:'+String(run?.id||'')+':'+key,
+      fileName:'generated-scene.mp4',
+      mimeType:'video/mp4',
+      sourceStage:'Генерация'
+    });
+  }
+
+  if(run?.montageResult?.url||run?.montageResult?.path){
+    add('video',run.montageResult?.url,run.montageResult?.path,{
+      sourceKey:'montage:'+String(run?.id||''),
+      fileName:run.montageResult?.fileName||('final-'+String(run?.id||'')+'.mp4'),
+      mimeType:'video/mp4',
+      sourceStage:'Монтаж',
+      createdAt:run.montageResult?.completedAt
+    });
+  }
+  if(run?.finalMedia?.url||run?.finalMedia?.path){
+    add('video',run.finalMedia?.url,run.finalMedia?.path,{
+      sourceKey:'final:'+String(run?.id||''),
+      fileName:run.finalMedia?.fileName||('final-'+String(run?.id||'')+'.mp4'),
+      mimeType:run.finalMedia?.mimeType||'video/mp4',
+      sourceStage:'Готово',
+      createdAt:run.finalMedia?.completedAt
+    });
+  }
+
+  if(added.length)data.mediaLibrary=[...data.mediaLibrary,...added].slice(-10000);
+  return added;
+}
+
 async function deleteFactoryEntity(accountId,type,id){
   accountId=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
   type=String(type||'').trim();
@@ -5291,17 +5397,18 @@ async function deleteFactoryEntity(accountId,type,id){
     data.runs=Array.isArray(data.runs)?data.runs:[];
     deleted=data.runs.find(x=>String(x?.id||'')===id)||null;
     if(!deleted)throw new Error('Процесс не найден');
+    const archivedMedia=archiveRunMediaToLibrary(data,deleted);
     data.runs=data.runs.filter(x=>String(x?.id||'')!==id);
-    data.scripts=(Array.isArray(data.scripts)?data.scripts:[]).filter(x=>String(x?.runId||'')!==id);
-    const mediaPaths=[
-      ...(Array.isArray(deleted.previsFrames)?deleted.previsFrames.map(x=>x?.path):[]),
-      deleted.montageResult?.path,
-      deleted.finalMedia?.path
-    ].filter(Boolean);
-    for(const p of [...new Set(mediaPaths)]){
-      try{await callProductMedia({action:'delete',path:String(p)})}catch{}
-    }
-    appendFactoryJournal(data,'Удалён процесс',(deleted.productName||deleted.id)+' · '+(deleted.status||deleted.stage||''));
+    data.scripts=(Array.isArray(data.scripts)?data.scripts:[]).map(x=>
+      String(x?.runId||'')===id
+        ? {...x,sourceRunId:id,runId:null,archivedFromRun:true,updatedAt:new Date().toISOString()}
+        : x
+    );
+    appendFactoryJournal(
+      data,
+      'Удалён процесс',
+      (deleted.productName||deleted.id)+' · '+(deleted.status||deleted.stage||'')+' · медиа сохранено: '+archivedMedia.length
+    );
   }else if(type==='script'){
     data.scripts=Array.isArray(data.scripts)?data.scripts:[];
     deleted=data.scripts.find(x=>String(x?.id||'')===id)||null;
@@ -5817,6 +5924,7 @@ const server=http.createServer(async(req,res)=>{
         for(const character of (Array.isArray(data.characters)?data.characters:[])){
           for(const media of (Array.isArray(character?.media)?character.media:[])) if(media?.path) knownPaths.add(String(media.path));
         }
+        for(const media of (Array.isArray(data.mediaLibrary)?data.mediaLibrary:[])) if(media?.path) knownPaths.add(String(media.path));
         const registry=await ensureAccountsRegistry();
         const account=registry.accounts.find(x=>x.id===accountId&&x.ownerUserId===req.cfUser?.id);
         if(account?.avatarPath)knownPaths.add(String(account.avatarPath));
