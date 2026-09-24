@@ -3419,6 +3419,8 @@ async function processRunGeneration(accountId,runId){
           preferred='seedance';
           if(run.sceneRouting?.[sceneNo])run.sceneRouting[sceneNo]={...run.sceneRouting[sceneNo],provider:'seedance',complexity:'complex',risk:'high',source:'qc-escalation',escalatedFrom:'runway',reason:'Runway не прошёл AI-QC: '+qcCorrection.slice(0,500)};
           appendFactoryJournal(data,'Эскалация сцены в Seedance',(run.productName||run.id)+' · сцена '+sceneNo+' · Runway → Seedance после QC');
+          run.updatedAt=new Date().toISOString();
+          await writeAppState(data,accountId);
         }
         console.warn('[scene-qc-retry] '+runId+' scene '+sceneNo+' attempt '+attempt+' '+String(lastError.message));
       }
