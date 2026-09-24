@@ -1057,16 +1057,42 @@ $("#saveCharacter").onclick=async()=>{
 window.createWithCharacter=id=>{openCreate();setTimeout(()=>$("#characterSelect").value=id,0)};
 
 
+function videoAnalysisText(value,keys=[]){
+  if(value==null)return "";
+  if(typeof value==="string"||typeof value==="number")return String(value);
+  if(Array.isArray(value))return value.map(x=>videoAnalysisText(x,keys)).filter(Boolean).join(" · ");
+  if(typeof value==="object"){
+    for(const k of keys){if(value[k]!=null&&String(value[k]).trim())return videoAnalysisText(value[k],keys)}
+    return Object.entries(value).filter(([,v])=>v!=null&&String(v).trim()).slice(0,8).map(([k,v])=>k+": "+videoAnalysisText(v,keys)).join(" · ");
+  }
+  return String(value);
+}
 function renderVideoLab(){
   const psel=$("#analysisProduct"),asel=$("#analysisAvatar");
   if(psel)psel.innerHTML='<option value="">Без товара</option>'+products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join("");
   if(asel)asel.innerHTML='<option value="">Без аватара</option>'+characters.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>').join("");
   const list=$("#videoAnalysisList");if(!list)return;
   list.innerHTML=videoAnalyses.length?videoAnalyses.slice().reverse().map(v=>{
-    const a=v.analysis||{},adapt=a.adaptation||{},scenes=Array.isArray(adapt.scenes)?adapt.scenes:[];
-    return '<article class="video-analysis-card"><div class="video-analysis-head"><div><span class="chip">'+esc(v.sourceType==="youtube"?"YouTube":"Загрузка")+'</span>'+(v.provider?'<span class="chip">AI: '+esc(v.provider)+'</span>':'')+'<h3>'+esc(v.sourceName||"Видео")+'</h3><p>'+esc((v.productName?"Товар: "+v.productName:"")+(v.avatarName?" · Аватар: "+v.avatarName:"")+(v.providerNote?" · "+v.providerNote:""))+'</p></div><div class="catalog-actions"><button class="secondary" onclick="saveAnalysisAsScript(\''+v.id+'\')">Сохранить сценарий</button><button class="danger-btn" onclick="deleteVideoAnalysis(\''+v.id+'\')">Удалить</button></div></div>'+
-      '<div class="analysis-columns"><div><small>Что происходит</small><p>'+esc(a.summary||"—")+'</p><b>Хук</b><p>'+esc(a.hook||"—")+'</p></div><div><small>Наша адаптация</small><p>'+esc(adapt.concept||"—")+'</p><b>Новый хук</b><p>'+esc(adapt.hook||"—")+'</p></div></div>'+
-      '<div class="analysis-scenes">'+scenes.slice(0,8).map((s,i)=>'<div><span>'+(i+1)+'</span><p><b>'+esc(s.duration||"Сцена")+'</b> '+esc(s.shot||"")+'<br>'+esc(s.voiceover||s.onscreen||"")+'</p></div>').join("")+'</div></article>'
+    const a=v.analysis||{},src=a.sourceReconstruction||{},adapt=a.adaptation||{},adaptScenes=Array.isArray(adapt.scenes)?adapt.scenes:[],sourceShots=Array.isArray(src.shots)?src.shots:(Array.isArray(a.scenes)?a.scenes:[]);
+    const summary=videoAnalysisText(a.summary,["description","mechanic"]);
+    const hook=videoAnalysisText(a.hook,["observation","mechanism","visual"]);
+    const adaptConcept=videoAnalysisText(adapt.concept,["idea","title"]);
+    const adaptHook=videoAnalysisText(adapt.hook,["visual","voiceover","onscreen"]);
+    const transcript=String(src.spokenTranscript||src.voiceoverScript||v.transcript||"").trim();
+    const frames=Array.isArray(v.frameSamples)?v.frameSamples.filter(x=>x?.url):[];
+    const audioBadge=v.audioPresent?(transcript?'Аудио ✓':'Аудио без расшифровки'):'Без аудио';
+    const productWarn=!v.productName?'<div class="analysis-warning"><b>Товар не выбран.</b> Разбор исходника сохранён, но улучшенная версия пока не привязана к Product DNA конкретного товара.</div>':'';
+    const sourceScript=Array.isArray(src.sourceScript)?src.sourceScript:[];
+    return '<article class="video-analysis-card">'+
+      '<div class="video-analysis-head"><div><span class="chip">'+esc(v.sourceType==="youtube"?"YouTube":"Загрузка")+'</span>'+(v.provider?'<span class="chip">AI: '+esc(v.provider)+'</span>':'')+'<span class="chip">'+esc(audioBadge)+'</span><h3>'+esc(v.sourceName||"Видео")+'</h3><p>'+esc((v.productName?"Товар: "+v.productName:"")+(v.avatarName?" · Аватар: "+v.avatarName:"")+(v.providerNote?" · "+v.providerNote:""))+'</p></div><div class="catalog-actions"><button class="secondary" onclick="saveAnalysisAsScript(\''+v.id+'\')">Создать сценарий из улучшенной версии</button><button class="danger-btn" onclick="deleteVideoAnalysis(\''+v.id+'\')">Удалить</button></div></div>'+
+      productWarn+
+      '<div class="analysis-columns"><div><small>Исходный ролик</small><p>'+esc(summary||"—")+'</p><b>Хук исходника</b><p>'+esc(hook||"—")+'</p></div><div><small>Улучшенная самостоятельная версия</small><p>'+esc(adaptConcept||"—")+'</p><b>Новый хук</b><p>'+esc(adaptHook||"—")+'</p></div></div>'+
+      (transcript?'<details class="analysis-detail" open><summary>🎙 Озвучка / речь исходника</summary><p>'+esc(transcript)+'</p></details>':(v.audioPresent?'<div class="analysis-warning">Аудиодорожка найдена, но точная речь не извлечена. При повторном разборе система теперь показывает ошибку транскрипции и использует резервный путь.</div>':''))+
+      (frames.length?'<details class="analysis-detail" open><summary>🖼 Извлечённые кадры · '+frames.length+'</summary><div class="analysis-frame-grid">'+frames.map(x=>'<figure><img src="'+esc(x.url)+'" alt="Кадр"><figcaption>'+Number(x.timeSec||0).toFixed(1)+'с</figcaption></figure>').join("")+'</div></details>':'')+
+      (sourceShots.length?'<details class="analysis-detail" open><summary>🎬 Shot-by-shot исходника · '+sourceShots.length+'</summary><div class="analysis-scenes">'+sourceShots.slice(0,24).map((s,i)=>'<div><span>'+(s.shot||i+1)+'</span><p><b>'+esc(s.start||s.timing||s.duration||"Кадр")+(s.end?'–'+esc(s.end):'')+'</b> '+esc([s.framing,s.angle,s.cameraMovement,s.shot].filter(Boolean).join(" · "))+'<br>'+esc([s.action,s.productAction,s.dialogueOrVoice,s.spoken,s.onscreenText,s.retentionMechanic].filter(Boolean).join(" · "))+'</p></div>').join("")+'</div></details>':'')+
+      (sourceScript.length?'<details class="analysis-detail"><summary>📝 Восстановленный сценарий исходника</summary><div class="analysis-scenes">'+sourceScript.slice(0,30).map((s,i)=>'<div><span>'+(i+1)+'</span><p><b>'+esc(s.time||"")+'</b> '+esc([s.visual,s.action,s.spoken,s.onscreen,s.sound,s.purpose].filter(Boolean).join(" · "))+'</p></div>').join("")+'</div></details>':'')+
+      (adaptScenes.length?'<details class="analysis-detail" open><summary>🚀 Улучшенная версия · '+adaptScenes.length+' сцен</summary><div class="analysis-scenes">'+adaptScenes.slice(0,16).map((s,i)=>'<div><span>'+(i+1)+'</span><p><b>'+esc(s.duration||"Сцена")+'</b> '+esc([s.shot,s.camera,s.avatarAction,s.productAction].filter(Boolean).join(" · "))+'<br>'+esc([s.voiceover,s.onscreen,s.sound,s.retentionMechanic,s.patternInterrupt,s.microPayoff].filter(Boolean).join(" · "))+'</p></div>').join("")+'</div></details>':'')+
+    '</article>';
   }).join(""):'<div class="empty">Разборов пока нет.</div>';
 }
 $("#analyzeVideoFile")?.addEventListener("click",async()=>{
@@ -1095,8 +1121,12 @@ $("#analyzeYoutube")?.addEventListener("click",async()=>{
 window.saveAnalysisAsScript=id=>{
   const v=videoAnalyses.find(x=>x.id===id);if(!v)return;
   const a=v.analysis?.adaptation||{};
-  const sceneText=(a.scenes||[]).map((s,i)=>(i+1)+". "+[s.duration,s.shot,s.avatarAction,s.productAction,s.voiceover,s.onscreen].filter(Boolean).join(" · ")).join("\n");
-  scripts.push({id:uid("s"),title:"Адаптация: "+(v.sourceName||"Видео"),hook:a.hook||"",body:[a.concept,sceneText].filter(Boolean).join("\n\n"),cta:a.cta||"",used:0,created:now()});
+  if(!v.productName&&a.status==="needs_product"){alert("Сначала выбери конкретный товар и повтори разбор, чтобы улучшенная версия получила Product DNA и точные правила товара.");return}
+  const sceneText=(a.scenes||[]).map((s,i)=>(i+1)+". "+[s.duration,s.purpose,s.shot,s.camera,s.avatarAction,s.productAction,s.voiceover,s.onscreen,s.sound,s.retentionMechanic,s.patternInterrupt,s.microPayoff].filter(Boolean).join(" · ")).join("\n");
+  const hook=videoAnalysisText(a.hook,["voiceover","visual","onscreen"]);
+  const concept=videoAnalysisText(a.concept,["idea","title"]);
+  const cta=videoAnalysisText(a.cta,["text","productionNotes"]);
+  scripts.push({id:uid("s"),title:"Адаптация: "+(v.sourceName||"Видео"),hook,body:[concept,sceneText].filter(Boolean).join("\n\n"),cta,used:0,created:now()});
   log("Сценарий создан из разбора",v.sourceName||"Видео");persist();go("scripts");
 };
 
