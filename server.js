@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.7';
+const APP_VERSION='2.6.8';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1177,7 +1177,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
     ]}];
     const controller=new AbortController();
-    const timeoutMs=name==='script_draft'?80000:75000;
+    const timeoutMs=name==='script_draft'?90000:(String(name).startsWith('script_review_')?105000:90000);
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     let r;
     try{
@@ -1206,6 +1206,17 @@ async function generateScriptStage(payload,accountId,feedback=''){
     const parsed=safeAnalysisJson(openAIText(data));
     if(!parsed||typeof parsed!=='object')throw new Error('AI вернул некорректную структуру сценария');
     return parsed;
+  }
+
+  async function callScriptAIResilient(args){
+    try{
+      return await callScriptAI(args);
+    }catch(e){
+      const message=String(e?.message||e);
+      if(!/превысил лимит времени/i.test(message))throw e;
+      await markScriptProgress(15,'OpenAI отвечает долго — повторяю этап в более лёгком режиме');
+      return await callScriptAI({...args,effort:'medium'});
+    }
   }
 
   const context=[
@@ -1272,7 +1283,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
   ].join('\n');
 
   await markScriptProgress(13,'Пишу черновик сценария');
-  let draftData=await callScriptAI({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
+  let draftData=await callScriptAIResilient({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
   let script=normalizeScriptStage(draftData,payload);
   let complete=scriptStageComplete(script);
   if(!complete.ok){
@@ -1291,7 +1302,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       'Если отдельный CTA не нужен, поле cta заполни: «Без отдельного CTA — финал через визуальный payoff».',
       'Верни полный script по схеме.'
     ].filter(Boolean).join('\n');
-    draftData=await callScriptAI({prompt:repairDraftPrompt,schema:draftSchema,name:'script_draft_repair',images:[],effort:'medium'});
+    draftData=await callScriptAIResilient({prompt:repairDraftPrompt,schema:draftSchema,name:'script_draft_repair',images:[],effort:'medium'});
     script=normalizeScriptStage(draftData,payload);
     complete=scriptStageComplete(script);
   }
@@ -1336,7 +1347,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       'Верни issues и changes кратко, а в script — полную улучшенную версию.'
     ].join('\n');
     await markScriptProgress(16+i,'Проверка '+(i+1)+' из '+reviewRoles.length+': '+rv.name);
-    lastReview=await callScriptAI({
+    lastReview=await callScriptAIResilient({
       prompt,schema:reviewSchema,name:'script_review_'+rv.name,images:[],effort:'high'
     });
     script=normalizeScriptStage(lastReview?.script||{},payload);
@@ -1356,7 +1367,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
         'Каждая сцена: time, purpose, visual, action, sound, continuity, productRole — непустые; сцены 1..N; 5–10 сцен.',
         'Верни полный сценарий и честные scores.'
       ].filter(Boolean).join('\n');
-      lastReview=await callScriptAI({prompt:repairReviewPrompt,schema:reviewSchema,name:'script_review_structure_repair',images:[],effort:'medium'});
+      lastReview=await callScriptAIResilient({prompt:repairReviewPrompt,schema:reviewSchema,name:'script_review_structure_repair',images:[],effort:'medium'});
       script=normalizeScriptStage(lastReview?.script||{},payload);
       script.quality=lastReview?.scores||script.quality||{};
       check=scriptStageComplete(script);
@@ -1381,7 +1392,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       '',
       'Обязательно сохрани factual safety и generatability. Верни полную финальную версию и честные scores.'
     ].join('\n');
-    lastReview=await callScriptAI({prompt:repairPrompt,schema:reviewSchema,name:'script_review_repair',images:[],effort:'high'});
+    lastReview=await callScriptAIResilient({prompt:repairPrompt,schema:reviewSchema,name:'script_review_repair',images:[],effort:'high'});
     script=normalizeScriptStage(lastReview?.script||{},payload);
     script.quality=lastReview?.scores||{};
     passes++;
@@ -1772,6 +1783,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     '- приоритет: generated anchorFrames > continuityFrames > source identityRefs;',
     '- reference frame задаёт continuity, но НЕ разрешает копировать ту же позу и композицию;',
     '- первый кадр первой сцены может быть identity-led; далее преимущественно anchor-led;',
+    '- productInFrame=true ТОЛЬКО если сам держатель реально виден в этом конкретном START/END кадре. Не ставь true только потому, что у сцены заполнено поле product;',
     '- если персонаж впервые появляется позднее, разрешено один раз подключить его source identity reference для фиксации лица.',
     '',
     'Товар: '+String(payload.productName||payload.product?.name||'Товар'),
@@ -1853,6 +1865,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     'Product placement: '+String(frame.productPlacement||frame.productRole||''),
     'Continuity: '+String(frame.continuityNotes||''),
     'Next visual intent: '+String(frame.nextIntent||''),
+    frame.qualityNotes?('QC CORRECTION NOTES: '+String(frame.qualityNotes)):'',
     String(frame.imagePromptEn||frame.imagePromptRu||''),
     'REFERENCE POLICY: generated frames control composition and continuity. Source product/avatar photos are strict identity locks only. Never copy the source composition, but NEVER let generated anchors override the real product geometry, proportions, mounting parts, color, texture or the avatar identity.',
     'ENVIRONMENT QUALITY: make the location feel real, inhabited and commercially believable. Keep recurring contextual props appropriate to the approved scene; avoid empty sterile showroom backgrounds unless the storyboard explicitly requires them.',
@@ -1916,6 +1929,7 @@ async function generateHiggsfieldPrevisImage(accountId,run,frame,referenceUrls=[
     'Avatar: '+String(frame.avatarDescription||''),
     'Product placement: '+String(frame.productPlacement||frame.productRole||''),
     'Continuity: '+String(frame.continuityNotes||''),
+    frame.qualityNotes?('QC CORRECTION NOTES: '+String(frame.qualityNotes)):'',
     String(frame.imagePromptEn||frame.imagePromptRu||''),
     'REFERENCE HIERARCHY: generated prior frames control composition/continuity; source product and avatar references remain absolute identity locks.',
     'Make the environment lived-in, believable and commercially polished, not an empty sterile showroom.',
@@ -2131,9 +2145,13 @@ async function processRunPrevis(accountId,runId){
 
       for(let attempt=0;attempt<attempts.length;attempt++){
         const provider=attempts[attempt];
-        const refs=previsRefsForFrame(run,spec,run.previsFrames);
+        const correction=lastQcError
+          ? ('Previous candidate failed QC. Correct ALL of these issues in the new image: '+lastQcError)
+          : '';
+        const attemptSpec={...spec,qualityNotes:[String(spec.qualityNotes||''),correction].filter(Boolean).join('\n').slice(0,3500)};
+        const refs=previsRefsForFrame(run,attemptSpec,run.previsFrames);
         try{
-          img=await generatePrevisImage(accountId,run,spec,refs,provider);
+          img=await generatePrevisImage(accountId,run,attemptSpec,refs,provider);
         }catch(e){
           lastGenerationError=String(e?.message||e);
           img=null;
@@ -2141,7 +2159,7 @@ async function processRunPrevis(accountId,runId){
           continue;
         }
         try{
-          qc=await runPrevisFrameQc(run,spec,img.url,accountId,previous?.url||'');
+          qc=await runPrevisFrameQc(run,attemptSpec,img.url,accountId,previous?.url||'');
         }catch(e){
           qc={passed:null,score:null,summary:'QC недоступен: '+String(e?.message||e),issues:[]};
         }
@@ -4789,7 +4807,7 @@ async function recoverPendingPrevisAndAutopilot(){
             continue;
           }
         }else{
-          const pending=run.status==='В работе'||['queued','processing'].includes(String(run.backgroundTask?.status||''));
+          const pending=['В работе','Ошибка'].includes(String(run.status||''))||['queued','processing'].includes(String(run.backgroundTask?.status||''));
           if(pending){
             let task='';
             const queuedType=String(run.backgroundTask?.type||'');
@@ -4808,6 +4826,23 @@ async function recoverPendingPrevisAndAutopilot(){
               continue;
             }
           }
+        }
+
+        if(run.mode!=='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&['В работе','Ошибка'].includes(String(run.status||''))){
+          const wasError=run.status==='Ошибка';
+          run.previsRunning=false;
+          run.status='В работе';
+          run.error='';
+          run.previsError='';
+          if(wasError){
+            run.previsPlan=null;
+            run.previsFrames=[];
+            run.previsResult=null;
+          }
+          run.updatedAt=new Date().toISOString();
+          await writeAppState(data,accountId);
+          enqueueRunPrevis(accountId,run.id,wasError?'previs-error-recovery':'previs-recovery');
+          continue;
         }
         const pendingStoryboardScenes=Object.entries(run.storyboardSceneJobs||{})
           .filter(([,job])=>['queued','processing'].includes(String(job?.status||'')))
