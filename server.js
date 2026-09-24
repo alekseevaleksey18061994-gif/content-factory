@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.0.1';
+const APP_VERSION='2.0.2';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -650,8 +650,19 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,3);
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[])
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,2);
-  const refs=[...productRefs,...avatarRefs].slice(0,5);
+  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
   const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  async function markIdeaProgress(progress,step){
+    if(!payload?.id)return;
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(!run||run.stage!=='Идея')return;
+      run.progress=Math.max(Number(run.progress)||0,Number(progress)||0);
+      run.backgroundTask={...(run.backgroundTask||{}),step:String(step||''),heartbeatAt:new Date().toISOString()};
+      run.updatedAt=new Date().toISOString();
+      await writeAppState(data,accountId);
+    }catch{}
+  }
 
   const candidateSchema={
     type:'object',
@@ -662,11 +673,10 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         type:'array',minItems:10,maxItems:10,
         items:{
           type:'object',additionalProperties:false,
-          required:['title','formatPattern','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'],
+          required:['title','formatPattern','hook','concept','mechanic','payoff'],
           properties:{
-            title:{type:'string'},formatPattern:{type:'string'},audience:{type:'string'},hook:{type:'string'},first3Seconds:{type:'string'},
-            concept:{type:'string'},mechanic:{type:'string'},angle:{type:'string'},productRole:{type:'string'},
-            retention:{type:'string'},payoff:{type:'string'},ctaDirection:{type:'string'},production:{type:'string'},why:{type:'string'}
+            title:{type:'string'},formatPattern:{type:'string'},hook:{type:'string'},
+            concept:{type:'string'},mechanic:{type:'string'},payoff:{type:'string'}
           }
         }
       }
@@ -728,14 +738,24 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       {type:'input_text',text:prompt},
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
     ]}];
-    const r=await fetch('https://api.openai.com/v1/responses',{
-      method:'POST',
-      headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-      body:JSON.stringify({
-        model,input,reasoning:{effort:name==='idea_critic'?'high':'medium'},max_output_tokens:name==='idea_candidates'?7800:6000,
-        text:{format:{type:'json_schema',name,strict:true,schema}}
-      })
-    });
+    const controller=new AbortController();
+    const timeoutMs=name==='idea_candidates'?65000:75000;
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    let r;
+    try{
+      r=await fetch('https://api.openai.com/v1/responses',{
+        method:'POST',
+        signal:controller.signal,
+        headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+        body:JSON.stringify({
+          model,input,reasoning:{effort:'medium'},max_output_tokens:name==='idea_candidates'?4200:4800,
+          text:{format:{type:'json_schema',name,strict:true,schema}}
+        })
+      });
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('OpenAI превысил лимит времени на этапе '+name+' ('+Math.round(timeoutMs/1000)+' сек)');
+      throw e;
+    }finally{clearTimeout(timer)}
     const txt=await r.text();
     let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
     if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
@@ -806,26 +826,24 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '22. В каждой концепции должен быть хотя бы один social-native момент: узнаваемый микро-провал, неожиданное визуальное следствие, короткая эмоция или satisfying-результат, которым хочется поделиться/пересмотреть.',
     '23. Payoff — действие или видимый результат, а не статичный beauty-shot товара. Финальные 2–3 секунды должны оставаться частью истории.',
     '',
-    'ПОЛЯ:',
-    '- hook и first3Seconds должны описывать конкретный первый кадр/действие, а не маркетинговую фразу;',
-    '- mechanic = почему человек продолжает смотреть;',
-    '- retention = какие новые beats удерживают каждые несколько секунд;',
-    '- payoff = что зритель ВИДИТ в конце;',
-    '- production = краткий темп ролика по времени + план звука/речи;',
-    '- why = 2–4 предложения: почему это нативно для TikTok и почему товар необходим.',
-    '',
-    'Для каждой из 10 концепций заполни все поля. Не повторяй одну и ту же механику под разными названиями.'
+    'СЕЙЧАС НУЖНЫ ТОЛЬКО КОРОТКИЕ КАНДИДАТЫ — не расписывай полный сценарий.',
+    'Для каждой концепции заполни: title, formatPattern, hook, concept, mechanic, payoff.',
+    'Каждое поле — максимум 1–3 коротких предложения. Полную проработку сделает Creative Critic после отбора.',
+    'Не повторяй одну и ту же механику под разными названиями.'
   ].join('\n');
 
+  await markIdeaProgress(4,'Генерирую 10 разных механик');
   const candidateData=await callIdeaAI({
     prompt:generatorPrompt,schema:candidateSchema,name:'idea_candidates',images:refs
   });
   const candidates=Array.isArray(candidateData?.candidates)?candidateData.candidates:[];
   if(candidates.length!==10)throw new Error('Генератор идеи вернул не 10 концепций');
+  await markIdeaProgress(5,'Creative Critic выбирает и усиливает лучшую');
 
   const criticBase=[
     'ROLE: TikTok Creative Critic + retention editor. Ты отбираешь идею так, будто решаешь, переживёт ли она первые секунды в реальной ленте.',
     'Сначала безжалостно отсей слабые и рекламные варианты из 10 кандидатов. Затем возьми сильные элементы 2–3 лучших и собери ОДНУ финальную концепцию. Не обязан сохранять победителя как есть.',
+    'ВНУТРИ ОДНОГО ОТВЕТА проведи ДВЕ независимые проверки финала: (1) TikTok retention editor — хук, curiosity gap, темп, shareability; (2) AI-production director — FACT LOCK, естественность героя, разнообразие proof и генерируемость. После обеих проверок молча исправь найденные слабости и только затем верни результат.',
     context,
     '',
     'КАНДИДАТЫ:',
@@ -918,45 +936,35 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   }
 
   let idea=await criticPass(criticBase);
-  const editorialPrompt=[
-    criticBase,
-    '',
-    'ВТОРАЯ НЕЗАВИСИМАЯ РЕДАКТОРСКАЯ ПРОВЕРКА.',
-    'Предыдущая версия уже отобрана первым критиком:',
-    JSON.stringify({selected:idea,quality:idea.quality}),
-    '',
-    'Не доверяй предыдущим оценкам. Проверь как старший TikTok showrunner:',
-    '- не повторяются ли proof-сцены одним и тем же жестом;',
-    '- нет ли постановочных мета-реплик «сейчас покажу/проверю/повторю»;',
-    '- есть ли хотя бы один момент, который ощущается нативным для ленты, а не демонстрацией товара;',
-    '- достаточно ли сильный payoff, чтобы финал не превращался в beauty-shot/CTA;',
-    '- реально ли всё сгенерировать с устойчивыми руками, товаром и continuity.',
-    'Сразу перепиши слабые места. Верни полную улучшенную идею + 4 альтернативы + новые честные quality scores.'
-  ].join('\n');
-  idea=await criticPass(editorialPrompt);
+  await markIdeaProgress(7,'Проверяю вирусность и производственную реализуемость');
   const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','humanNaturalness','proofVariety','shareability','productNecessity','originality','generatability'];
   const failed=()=>criticalKeys.filter(k=>Number(idea?.quality?.[k]||0)<8);
-
-  if(failed().length){
+  const textCheck=[idea.hook,idea.first3Seconds,idea.concept,idea.retention,idea.payoff,idea.ctaDirection].join(' ');
+  const heuristicIssues=[];
+  if(/сейчас\s+(покаж|провер|повтор)|давайте\s+(провер|посмотр)/i.test(textCheck))heuristicIssues.push('мета-реплика вместо естественной реакции');
+  if(/beauty[- ]?shot|бьюти[- ]?шот/i.test(String(idea.payoff||'')))heuristicIssues.push('финал уходит в beauty-shot');
+  if(failed().length||heuristicIssues.length){
+    await markIdeaProgress(7,'Докручиваю слабые места');
     const repairPrompt=[
       criticBase,
       '',
-      'ПРЕДЫДУЩАЯ ФИНАЛЬНАЯ ВЕРСИЯ НЕ ПРОШЛА ПОРОГ:',
-      JSON.stringify({selected:idea,quality:idea.quality}),
-      'Проваленные критичные критерии: '+failed().join(', ')+'.',
-      'Сделай ОДНУ более сильную переработку. Не косметическую. Измени визуальный хук, central mechanic, второй beat или payoff настолько, насколько нужно, чтобы каждый критичный критерий был >=8, сохраняя factual safety и генерируемость.'
-    ].join('\n');
+      'ФИНАЛЬНАЯ ДОКРУТКА НУЖНА ТОЛЬКО ПО ПРОБЛЕМАМ:',
+      'Текущая версия: '+JSON.stringify({selected:idea,quality:idea.quality}),
+      failed().length?('Критерии ниже 8: '+failed().join(', ')):'',
+      heuristicIssues.length?('Структурные замечания: '+heuristicIssues.join('; ')):'',
+      'Исправь эти проблемы глубоко, но не меняй товар, FACT LOCK и привязанного аватара. Верни полную финальную идею + 4 альтернативы + честные quality scores.'
+    ].filter(Boolean).join('\n');
     idea=await criticPass(repairPrompt);
   }
-
   const finalFailed=failed();
   if(finalFailed.length){
     throw new Error('Идея не прошла Creative Critic: '+finalFailed.join(', ')+' ниже 8/10');
   }
+  await markIdeaProgress(8,'Идея готова');
   idea.creativeProcess={
     generatedCandidates:10,
     critic:true,
-    criticPasses:2,
+    criticPasses:failed().length||heuristicIssues.length?2:1,
     refined:true,
     criticalThreshold:8,
     evaluatedAt:new Date().toISOString()
