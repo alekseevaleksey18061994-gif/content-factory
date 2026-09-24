@@ -553,8 +553,33 @@ function stageReportHtml(r,stage){
       dialogue:"",voiceover:x.voiceover||"",onscreen:x.onscreen||"",sound:x.sound||"",
       transition:"",continuity:"",productRole:""
     }));
+    const quality=script.quality&&typeof script.quality==="object"?script.quality:{};
+    const review=script.reviewProcess&&typeof script.reviewProcess==="object"?script.reviewProcess:null;
+    const qualityFields=[
+      ["scrollStop","Scroll-stop"],["curiosityGap","Интрига"],["retention","Удержание"],
+      ["pacing","Темп"],["nativeTikTok","TikTok-native"],["dialogueNaturalness","Речь"],
+      ["productIntegration","Товар"],["audioPlan","Звук"],["generatability","AI-генерация"],
+      ["payoff","Payoff"],["overall","Итог"]
+    ];
+    const qualityHtml=Object.keys(quality).length
+      ?'<div class="script-quality-panel"><div class="script-quality-head"><div><small>AI SCRIPT DOCTOR</small><b>'+esc(review?.passes||1)+' проверки + автодокрутка</b></div><span class="status '+(review?.passed===false?"work":"done")+'">'+(review?.passed===false?"Есть замечания":"Проверено")+'</span></div><div class="script-quality-grid">'+qualityFields.filter(([k])=>quality[k]!=null).map(([k,label])=>'<div class="'+(Number(quality[k])>=8?"good":"warn")+'"><span>'+esc(label)+'</span><b>'+esc(quality[k])+'/10</b></div>').join("")+'</div>'+(review?.finalChanges?.length?'<details class="script-review-details"><summary>Что AI докрутил</summary><ul>'+review.finalChanges.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul></details>':'')+'</div>'
+      :'';
+    const tableHtml=scriptScenes.length?'<div class="script-table-wrap script-desktop-table"><table class="script-table script-table-rich"><thead><tr><th>№</th><th>Время</th><th>Задача сцены</th><th>Что в кадре</th><th>Текст / реплики</th><th>Звук</th></tr></thead><tbody>'+scriptScenes.map((x,i)=>{const speech=[x.dialogue?("Диалог: "+x.dialogue):"",x.voiceover?("Закадрово: "+x.voiceover):"",x.onscreen?("На экране: "+x.onscreen):""].filter(Boolean).join("\n");const visual=[x.visual,x.action].filter(Boolean).join("\n");return '<tr><td>'+(x.scene||i+1)+'</td><td>'+esc(x.time||"—")+'</td><td>'+esc(x.purpose||"—")+'</td><td>'+esc(visual||"—")+'</td><td>'+esc(speech||"—")+'</td><td>'+esc(x.sound||"—")+'</td></tr><tr class="script-detail-row"><td></td><td colspan="5"><div class="script-detail-grid"><span><b>Переход:</b> '+esc(x.transition||"—")+'</span><span><b>Continuity:</b> '+esc(x.continuity||"—")+'</span><span><b>Роль товара:</b> '+esc(x.productRole||"—")+'</span></div></td></tr>'}).join("")+'</tbody></table></div>':'';
+    const mobileHtml=scriptScenes.length?'<div class="script-mobile-list">'+scriptScenes.map((x,i)=>{
+      const speech=[x.dialogue?("Диалог: "+x.dialogue):"",x.voiceover?("Озвучка: "+x.voiceover):"",x.onscreen?("На экране: "+x.onscreen):""].filter(Boolean);
+      return '<article class="script-mobile-card">'+
+        '<div class="script-mobile-head"><span class="script-scene-number">'+(x.scene||i+1)+'</span><div><small>СЦЕНА '+(x.scene||i+1)+'</small><b>'+esc(x.time||"—")+'</b></div></div>'+
+        '<div class="script-mobile-purpose">'+esc(x.purpose||"—")+'</div>'+
+        '<div class="script-mobile-section"><small>Что видит зритель</small><p>'+esc(x.visual||"—")+'</p></div>'+
+        '<div class="script-mobile-section"><small>Действие</small><p>'+esc(x.action||"—")+'</p></div>'+
+        (speech.length?'<div class="script-mobile-section speech"><small>Речь / текст</small>'+speech.map(v=>'<p>'+esc(v)+'</p>').join("")+'</div>':'')+
+        '<div class="script-mobile-section"><small>Звук</small><p>'+esc(x.sound||"—")+'</p></div>'+
+        '<details class="script-mobile-tech"><summary>Переход · continuity · роль товара</summary><div><p><b>Переход:</b> '+esc(x.transition||"—")+'</p><p><b>Continuity:</b> '+esc(x.continuity||"—")+'</p><p><b>Роль товара:</b> '+esc(x.productRole||"—")+'</p></div></details>'+
+      '</article>';
+    }).join("")+'</div>':'';
     body='<div class="artifact-script">'+
       '<div class="script-master-head"><span class="kicker">УТВЕРЖДЁННАЯ ИДЕЯ → СЦЕНАРИЙ</span><h3>'+esc(script.title||idea.title||"Сценарий")+'</h3><p>'+esc(script.logline||script.structure||"")+'</p></div>'+
+      qualityHtml+
       '<div class="script-summary">'+
         '<div><small>Хук</small><p>'+esc(script.hook||idea.hook||"—")+'</p></div>'+
         '<div><small>CTA</small><p>'+esc(script.cta||idea.ctaDirection||"—")+'</p></div>'+
@@ -563,7 +588,7 @@ function stageReportHtml(r,stage){
       '</div>'+
       (script.globalContinuity?'<div class="script-rule-box"><small>Continuity всего ролика</small><p>'+esc(script.globalContinuity)+'</p></div>':'')+
       (script.subtitleRules?'<div class="script-rule-box"><small>Субтитры / safe zone</small><p>'+esc(script.subtitleRules)+'</p></div>':'')+
-      (scriptScenes.length?'<div class="script-table-wrap"><table class="script-table script-table-rich"><thead><tr><th>№</th><th>Время</th><th>Задача сцены</th><th>Что в кадре</th><th>Текст / реплики</th><th>Звук</th></tr></thead><tbody>'+scriptScenes.map((x,i)=>{const speech=[x.dialogue?("Диалог: "+x.dialogue):"",x.voiceover?("Закадрово: "+x.voiceover):"",x.onscreen?("На экране: "+x.onscreen):""].filter(Boolean).join("\n");const visual=[x.visual,x.action].filter(Boolean).join("\n");return '<tr><td>'+(x.scene||i+1)+'</td><td>'+esc(x.time||"—")+'</td><td>'+esc(x.purpose||"—")+'</td><td>'+esc(visual||"—")+'</td><td>'+esc(speech||"—")+'</td><td>'+esc(x.sound||"—")+'</td></tr><tr class="script-detail-row"><td></td><td colspan="5"><div class="script-detail-grid"><span><b>Переход:</b> '+esc(x.transition||"—")+'</span><span><b>Continuity:</b> '+esc(x.continuity||"—")+'</span><span><b>Роль товара:</b> '+esc(x.productRole||"—")+'</span></div></td></tr>'}).join("")+'</tbody></table></div>':'<p>'+esc(script.body||script.voiceover||"—")+'</p>')+
+      (scriptScenes.length?(tableHtml+mobileHtml):'<p>'+esc(script.body||script.voiceover||"—")+'</p>')+
     '</div>';
   }
   else if(stage==="Storyboard"){
