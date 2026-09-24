@@ -3003,6 +3003,68 @@ async function launchSavedIdea(accountId,savedIdeaId){
   return run;
 }
 
+const storyboardSceneQueues=new Map();
+function invalidateAfterStoryboardSceneChange(run,sceneNo){
+  const n=Number(sceneNo);
+  if(run.previsPlan?.frames){
+    run.previsPlan=null;
+    run.previsFrames=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>Number(x?.scene)!==n);
+    if(run.previsResult){
+      run.previsResult={...run.previsResult,completed:false,totalFrames:run.previsFrames.filter(x=>x?.url).length,completedAt:null};
+    }
+  }
+  run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
+  delete run.sceneResults[n];
+  run.generationResult=null;
+  run.acceptedScenes=(Array.isArray(run.acceptedScenes)?run.acceptedScenes:[]).filter(x=>Number(x)!==n);
+  run.voiceoverResult=null;run.montageResult=null;run.qcResult=null;
+  run.backendGenerationRunning=false;run.postProductionRunning=false;
+}
+function enqueueStoryboardSceneTask(accountId,runId,sceneNo,note=''){
+  const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const key=account+'::'+String(runId)+'::storyboard-scene-'+String(sceneNo);
+  const previous=storyboardSceneQueues.get(key)||Promise.resolve();
+  let next;
+  next=previous.catch(()=>{}).then(async()=>{
+    let state=await readAppState(account),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+    if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+    const scene=Math.max(1,Math.min(30,Number(sceneNo)||1));
+    run.storyboardSceneJobs=run.storyboardSceneJobs&&typeof run.storyboardSceneJobs==='object'?run.storyboardSceneJobs:{};
+    const jobId=factoryId('job');
+    run.storyboardSceneJobs[scene]={id:jobId,status:'processing',startedAt:new Date().toISOString(),note:String(note||'').slice(0,2000)};
+    run.status='В работе';run.stage='Storyboard';run.awaitingApproval=false;run.error='';run.updatedAt=new Date().toISOString();
+    await writeAppState(data,account);
+    try{
+      const updated=await generateStoryboardScene(run,account,scene,String(note||''));
+      state=await readAppState(account);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      if(!run)return {ok:false,error:'Ролик удалён во время обновления сцены'};
+      run.storyboard=Array.isArray(run.storyboard)?run.storyboard:[];
+      run.storyboard[scene-1]=updated;
+      run.sceneCount=Math.max(run.sceneCount||0,run.storyboard.length);
+      run.storyboardSceneVersions=run.storyboardSceneVersions&&typeof run.storyboardSceneVersions==='object'?run.storyboardSceneVersions:{};
+      run.storyboardSceneVersions[scene]=(Number(run.storyboardSceneVersions[scene])||1)+1;
+      invalidateAfterStoryboardSceneChange(run,scene);
+      run.storyboardSceneJobs[scene]={id:jobId,status:'done',finishedAt:new Date().toISOString()};
+      run.status='На проверке';run.stage='Storyboard';run.awaitingApproval=true;run.progress=Math.max(26,Number(run.progress)||0);run.error='';run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Storyboard-сцена переделана',(run.productName||run.id)+' · сцена '+scene+' · V'+run.storyboardSceneVersions[scene]);
+      await writeAppState(data,account);
+      return {ok:true,scene};
+    }catch(e){
+      state=await readAppState(account);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+      if(run){
+        run.storyboardSceneJobs=run.storyboardSceneJobs&&typeof run.storyboardSceneJobs==='object'?run.storyboardSceneJobs:{};
+        run.storyboardSceneJobs[scene]={...(run.storyboardSceneJobs[scene]||{}),status:'failed',failedAt:new Date().toISOString(),error:String(e?.message||e)};
+        run.status='Ошибка';run.stage='Storyboard';run.awaitingApproval=false;run.error='Storyboard сцена '+scene+': '+String(e?.message||e);run.updatedAt=new Date().toISOString();
+        appendFactoryJournal(data,'Ошибка storyboard-сцены',(run.productName||run.id)+' · сцена '+scene+' · '+String(e?.message||e));
+        await writeAppState(data,account);
+      }
+      return {ok:false,error:String(e?.message||e)};
+    }
+  }).finally(()=>{if(storyboardSceneQueues.get(key)===next)storyboardSceneQueues.delete(key)});
+  storyboardSceneQueues.set(key,next);
+  return next;
+}
+
 const stageTaskQueues=new Map();
 function stageTaskName(task){
   return task==='idea'?'Идея':task==='script'?'Сценарий':task==='storyboard'?'Storyboard':String(task||'Этап');
@@ -3184,6 +3246,18 @@ async function runControlAction(body,accountId){
   if(action==='stop'){
     run.status='Остановлено';run.paused=true;run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Производство остановлено',run.productName||run.id);await writeAppState(data,accountId);return run;
+  }
+  if(action==='regenerate_storyboard_scene'){
+    const scene=Math.max(1,Math.min(30,Number(body?.scene)||1));
+    if(!run.script)throw new Error('Сначала нужен готовый сценарий');
+    if(!Array.isArray(run.storyboard)||!run.storyboard[scene-1])throw new Error('Storyboard-сцена '+scene+' не найдена');
+    run.storyboardSceneJobs=run.storyboardSceneJobs&&typeof run.storyboardSceneJobs==='object'?run.storyboardSceneJobs:{};
+    run.storyboardSceneJobs[scene]={id:factoryId('job'),status:'queued',queuedAt:new Date().toISOString(),note:String(body?.note||'').slice(0,2000)};
+    run.status='В работе';run.stage='Storyboard';run.awaitingApproval=false;run.error='';run.updatedAt=new Date().toISOString();
+    appendFactoryJournal(data,'Storyboard-сцена поставлена на переделку',(run.productName||run.id)+' · сцена '+scene);
+    await writeAppState(data,accountId);
+    enqueueStoryboardSceneTask(accountId,run.id,scene,String(body?.note||''));
+    return run;
   }
   if(action==='regenerate_scene'){
     const scene=Math.max(1,Math.min(20,Number(body?.scene)||1));
