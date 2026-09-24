@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.25';
+const APP_VERSION='2.6.26';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -3078,8 +3078,10 @@ async function processRunGeneration(accountId,runId){
       if(!run)return {ok:false,error:'Ролик удалён во время генерации'};
       run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
       if(result?.ok&&result?.urls?.length){
-        run.sceneResults[sceneNo]={ok:true,urls:result.urls,provider:result.provider,model:result.model,requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,completedAt:new Date().toISOString()};
-        appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total+(sceneQc?.score?' · QC '+sceneQc.score+'/10':''));
+        const persisted=await persistRunVideoUrls(accountId,run.id,result.urls,'scene-'+sceneNo).catch(e=>({urls:result.urls,media:[],failed:[{error:String(e?.message||e)}]}));
+        const savedUrls=persisted.urls?.length?persisted.urls:result.urls;
+        run.sceneResults[sceneNo]={ok:true,urls:savedUrls,persistedMedia:persisted.media||[],storageWarnings:persisted.failed||[],provider:result.provider,model:result.model,requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,completedAt:new Date().toISOString()};
+        appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total+(sceneQc?.score?' · QC '+sceneQc.score+'/10':'')+(persisted.failed?.length?' · резервная копия: частично':' · сохранена в медиатеке'));
       }else{
         const err=creditBlock
           ? (creditBlock.provider+': недостаточно кредитов в API-аккаунте, подключённом к Railway. Генерация остановлена без повторных попыток. '+creditBlock.message)
@@ -5283,6 +5285,81 @@ async function recoverLegacyPlaceholderRuns(){
   }
 }
 
+async function persistRunVideoUrls(accountId,runId,urls=[],prefix='scene'){
+  const result={urls:[],media:[],failed:[]};
+  const scoped=(sanitizeAccountId(accountId)+'__run_'+String(runId||'run')).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80);
+  const seen=new Map();
+  for(let i=0;i<(Array.isArray(urls)?urls:[]).length;i++){
+    const originalUrl=String(urls[i]||'').trim();
+    if(!originalUrl)continue;
+    if(seen.has(originalUrl)){
+      const prev=seen.get(originalUrl);
+      result.urls.push(prev.url);
+      if(prev.media)result.media.push({...prev.media,index:i,originalUrl});
+      continue;
+    }
+    try{
+      const remote=await fetch(originalUrl);
+      if(!remote.ok)throw new Error('HTTP '+remote.status);
+      const buf=Buffer.from(await remote.arrayBuffer());
+      if(!buf.length)throw new Error('пустой файл');
+      if(buf.length>145*1024*1024)throw new Error('файл больше 145 МБ');
+      const mimeType=String(remote.headers.get('content-type')||'video/mp4').split(';')[0]||'video/mp4';
+      const ext=mimeType.includes('webm')?'webm':'mp4';
+      const fileName=String(prefix||'scene')+'-'+String(i+1)+'-'+Date.now()+'.'+ext;
+      const uploaded=await callProductMedia({
+        action:'upload',
+        productId:scoped,
+        fileName,
+        mimeType,
+        dataBase64:buf.toString('base64')
+      });
+      const media=uploaded?.media||null;
+      if(!media?.url)throw new Error('хранилище не вернуло URL');
+      const saved={url:String(media.url),path:String(media.path||''),fileName:String(media.fileName||fileName),mimeType:String(media.mimeType||mimeType)};
+      seen.set(originalUrl,{url:saved.url,media:saved});
+      result.urls.push(saved.url);
+      result.media.push({...saved,index:i,originalUrl});
+    }catch(e){
+      result.urls.push(originalUrl);
+      result.failed.push({index:i,url:originalUrl,error:String(e?.message||e)});
+      seen.set(originalUrl,{url:originalUrl,media:null});
+    }
+  }
+  return result;
+}
+
+async function persistExistingRunVideos(accountId,run){
+  let copied=0,failed=0;
+  run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
+  for(const [sceneKey,sr] of Object.entries(run.sceneResults)){
+    const urls=Array.isArray(sr?.urls)?sr.urls.filter(Boolean):(sr?.url?[sr.url]:[]);
+    if(!urls.length)continue;
+    const existing=Array.isArray(sr.persistedMedia)?sr.persistedMedia:[];
+    const existingOriginals=new Set(existing.map(x=>String(x?.originalUrl||'')).filter(Boolean));
+    const needs=urls.filter(u=>!existingOriginals.has(String(u)));
+    if(!needs.length)continue;
+    const persisted=await persistRunVideoUrls(accountId,run.id,needs,'scene-'+sceneKey);
+    copied+=persisted.media.length;failed+=persisted.failed.length;
+    if(persisted.urls.length){
+      const replacement=new Map();
+      needs.forEach((u,i)=>replacement.set(String(u),persisted.urls[i]||String(u)));
+      sr.urls=urls.map(u=>replacement.get(String(u))||String(u));
+      if(sr.url)sr.url=replacement.get(String(sr.url))||sr.url;
+    }
+    sr.persistedMedia=[...existing,...persisted.media];
+  }
+  const ordered=Object.keys(run.sceneResults).sort((a,b)=>Number(a)-Number(b)).flatMap(k=>run.sceneResults[k]?.urls||[]);
+  if(ordered.length){
+    run.generationResult={...(run.generationResult||{}),urls:ordered};
+  }else if(Array.isArray(run.generationResult?.urls)&&run.generationResult.urls.length){
+    const persisted=await persistRunVideoUrls(accountId,run.id,run.generationResult.urls,'generated');
+    copied+=persisted.media.length;failed+=persisted.failed.length;
+    run.generationResult={...(run.generationResult||{}),urls:persisted.urls,persistedMedia:persisted.media};
+  }
+  return {copied,failed};
+}
+
 function archiveRunMediaToLibrary(data,run){
   data.mediaLibrary=Array.isArray(data.mediaLibrary)?data.mediaLibrary:[];
   const existingKeys=new Set(data.mediaLibrary.map(x=>String(x?.sourceKey||x?.url||x?.path||'')).filter(Boolean));
@@ -5333,14 +5410,16 @@ function archiveRunMediaToLibrary(data,run){
   const seenVideoUrls=new Set();
   for(const [sceneKey,result] of Object.entries(run?.sceneResults||{})){
     const urls=[...(Array.isArray(result?.urls)?result.urls:[]),result?.url].filter(Boolean);
+    const persisted=Array.isArray(result?.persistedMedia)?result.persistedMedia:[];
     for(const videoUrl of urls){
       const key=String(videoUrl);
       if(seenVideoUrls.has(key))continue;
       seenVideoUrls.add(key);
-      add('video',videoUrl,'',{
+      const pm=persisted.find(x=>String(x?.url||'')===key||String(x?.originalUrl||'')===key)||null;
+      add('video',videoUrl,pm?.path||'',{
         sourceKey:'scene:'+String(run?.id||'')+':'+String(sceneKey)+':'+key,
-        fileName:'scene-'+sceneKey+'.mp4',
-        mimeType:'video/mp4',
+        fileName:pm?.fileName||('scene-'+sceneKey+'.mp4'),
+        mimeType:pm?.mimeType||'video/mp4',
         sourceStage:'Генерация',
         scene:Number(sceneKey),
         provider:result?.provider,
@@ -5397,6 +5476,7 @@ async function deleteFactoryEntity(accountId,type,id){
     data.runs=Array.isArray(data.runs)?data.runs:[];
     deleted=data.runs.find(x=>String(x?.id||'')===id)||null;
     if(!deleted)throw new Error('Процесс не найден');
+    const persistence=await persistExistingRunVideos(accountId,deleted).catch(e=>({copied:0,failed:1,error:String(e?.message||e)}));
     const archivedMedia=archiveRunMediaToLibrary(data,deleted);
     data.runs=data.runs.filter(x=>String(x?.id||'')!==id);
     data.scripts=(Array.isArray(data.scripts)?data.scripts:[]).map(x=>
@@ -5407,7 +5487,7 @@ async function deleteFactoryEntity(accountId,type,id){
     appendFactoryJournal(
       data,
       'Удалён процесс',
-      (deleted.productName||deleted.id)+' · '+(deleted.status||deleted.stage||'')+' · медиа сохранено: '+archivedMedia.length
+      (deleted.productName||deleted.id)+' · '+(deleted.status||deleted.stage||'')+' · медиа сохранено: '+archivedMedia.length+' · видео скопировано: '+(persistence.copied||0)+(persistence.failed?(' · ошибок копирования: '+persistence.failed):'')
     );
   }else if(type==='script'){
     data.scripts=Array.isArray(data.scripts)?data.scripts:[];
