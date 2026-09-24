@@ -5626,11 +5626,14 @@ async function extractVideoEvidence(filePath,opts={}){
     const fps=Math.max(.02,Math.min(2,10/Math.max(1,duration)));
     const framePattern=path.join(dir,'frame-%02d.jpg');
     await execFile('ffmpeg',['-hide_banner','-loglevel','error','-i',filePath,'-vf','fps='+fps+',scale=768:-2:force_original_aspect_ratio=decrease','-q:v','3','-frames:v','10','-y',framePattern],{timeout:120000});
-    const frames=fs.readdirSync(dir).filter(x=>/^frame-.*\.jpg$/i.test(x)).sort().slice(0,10).map(name=>{
-      const b=fs.readFileSync(path.join(dir,name));
-      return {type:'input_image',image_url:'data:image/jpeg;base64,'+b.toString('base64'),detail:'low'};
+    const names=fs.readdirSync(dir).filter(x=>/^frame-.*\.jpg$/i.test(x)).sort().slice(0,10);
+    const frameSamples=names.map((name,index)=>{
+      const filePath=path.join(dir,name),b=fs.readFileSync(filePath);
+      const dataUrl='data:image/jpeg;base64,'+b.toString('base64');
+      return {index:index+1,timeSec:Number(Math.min(duration,(index+0.5)/Math.max(.02,fps)).toFixed(3)),filePath,dataUrl};
     });
-    return {duration,dir,frames,analysisParts:frames,audioPath:hasAudio?audioPath:null,shots:[],keyframes:[]};
+    const frames=frameSamples.map(x=>({type:'input_image',image_url:x.dataUrl,detail:'low'}));
+    return {duration,dir,frames,analysisParts:frames,frameSamples,audioPath:hasAudio?audioPath:null,audioPresent:hasAudio,shots:[],keyframes:[]};
   }
   const shots=await detectVideoShots(filePath,duration,10);
   const keyframes=[];
@@ -5655,13 +5658,15 @@ async function extractVideoEvidence(filePath,opts={}){
   }
   const analysisParts=[];
   const frames=[];
-  for(const kf of keyframes){
-    const b=fs.readFileSync(kf.path);
+  const frameSamples=[];
+  for(let i=0;i<keyframes.length;i++){
+    const kf=keyframes[i],b=fs.readFileSync(kf.path),dataUrl='data:image/jpeg;base64,'+b.toString('base64');
     analysisParts.push({type:'input_text',text:'SOURCE VIDEO · SHOT '+kf.shot+' · '+String(kf.phase).toUpperCase()+' · t='+kf.time.toFixed(3)+'s · shot range '+kf.start.toFixed(3)+'–'+kf.end.toFixed(3)+'s'});
-    const img={type:'input_image',image_url:'data:image/jpeg;base64,'+b.toString('base64'),detail:'high'};
+    const img={type:'input_image',image_url:dataUrl,detail:'high'};
     analysisParts.push(img);frames.push(img);
+    frameSamples.push({index:i+1,timeSec:kf.time,filePath:kf.path,dataUrl,shot:kf.shot,phase:kf.phase,start:kf.start,end:kf.end});
   }
-  return {duration,dir,frames,analysisParts,audioPath:hasAudio?audioPath:null,shots,keyframes};
+  return {duration,dir,frames,analysisParts,frameSamples,audioPath:hasAudio?audioPath:null,audioPresent:hasAudio,shots,keyframes};
 }
 function openAIQuotaError(error){
   const msg=String(error?.message||error||'').toLowerCase();
