@@ -322,6 +322,17 @@ const at=runs.filter(r=>!["Готово","Запланировано","Опуб�
 $("#homeProducts").innerHTML=products.slice(0,3).map(pcard).join("")||'<div class="empty">Добавь первый товар</div>';$("#latestRuns").innerHTML=runs.length?runs.slice(-5).reverse().map(rrow).join(""):'<div class="empty">Пока нет роликов.</div>';
 const L=[["production","⌁","Производство","Конвейер"],["ideas","✦","Идеи","Создать и запустить"],["background","◷","Фоновые задачи","Все процессы"],["campaigns","◫","Кампании","Серии роликов"],["scripts","✎","Сценарии","Хуки и промты"],["scenes","▤","Сцены","Storyboard и версии"],["characters","◉","Персонажи","AI-блогеры"],["calendar","▦","Календарь","План публикаций"],["analytics","↗","Аналитика","Результаты"],["costs","₽","Расходы","Лимиты"],["journal","☷","Журнал","История"]];$("#sectionLinks").innerHTML=L.map(x=>'<button class="section-link" onclick="go(\''+x[0]+'\')"><b>'+x[1]+" "+x[2]+'</b><small>'+x[3]+'</small></button>').join("")
 }
+function ideaDetailsHtml(idea={}){
+  const fields=[
+    ["Аудитория",idea.audience],["Первые 3 секунды",idea.first3Seconds||idea.hook],
+    ["Механика",idea.mechanic],["Роль товара",idea.productRole],["Удержание",idea.retention],
+    ["Payoff",idea.payoff],["Угол",idea.angle],["CTA",idea.ctaDirection],
+    ["Production",idea.production],["Почему работает",idea.why]
+  ].filter(x=>String(x[1]||"").trim());
+  const q=idea.quality&&typeof idea.quality==="object"?idea.quality:{};
+  const qKeys=[["hook","Хук"],["retention","Удержание"],["nativeTikTok","TikTok"],["proofVariety","Proof"],["shareability","Share"],["originality","Оригинальность"],["generatability","AI"],["overall","Итог"]];
+  return '<details class="saved-idea-details"><summary>Все детали идеи</summary><div class="saved-idea-detail-grid">'+fields.map(x=>'<div><small>'+esc(x[0])+'</small><p>'+esc(x[1])+'</p></div>').join("")+'</div>'+(Object.keys(q).length?'<div class="saved-idea-scores">'+qKeys.filter(x=>q[x[0]]!=null).map(x=>'<span>'+esc(x[1])+' <b>'+esc(q[x[0]])+'/10</b></span>').join("")+'</div>':'')+'</details>';
+}
 function renderIdeas(){
   const list=$("#ideaList");if(!list)return;
   const items=savedIdeas.slice().reverse();
@@ -329,14 +340,14 @@ function renderIdeas(){
     const legacy=runs.filter(r=>r.idea).slice().reverse();
     list.innerHTML=legacy.length?legacy.map(r=>{
       const idea=r.idea||{};
-      return '<article class="idea-card"><div><span class="kicker">РОЛИК · ИДЕЯ</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Первые 3 секунды</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div></div><div class="idea-actions"><button class="secondary" onclick="openStageDetail(\''+r.id+'\',\'Идея\')">Открыть</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">▶ В сценарий</button></div></article>';
+      return '<article class="idea-card"><div><span class="kicker">РОЛИК · ИДЕЯ</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Первые 3 секунды</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div>'+ideaDetailsHtml(idea)+'</div><div class="idea-actions"><button class="secondary" onclick="openStageDetail(\''+r.id+'\',\'Идея\')">Открыть</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">▶ В сценарий</button></div></article>';
     }).join(""):'<div class="empty">Идей пока нет. Выбери товар и нажми «Сгенерировать идею».</div>';
     return;
   }
-  list.innerHTML='<div class="saved-ideas-head"><div><span class="kicker">БИБЛИОТЕКА</span><h2>Сохранённые идеи</h2><p>Каждый вариант сохраняется отдельно. Любую идею можно запустить позже как новый процесс.</p></div><b>'+items.length+'</b></div>'+
+  list.innerHTML='<div class="saved-ideas-head"><div><span class="kicker">БИБЛИОТЕКА</span><h2>Сохранённые идеи</h2><p>Идеи хранятся отдельно от процессов и не удаляются вместе с роликом.</p></div><b>'+items.length+'</b></div>'+
     items.map(x=>{
       const idea=x.idea||{},source=runs.find(r=>r.id===x.sourceRunId);
-      return '<article class="idea-card saved-idea-card '+(x.selected?'selected':'')+'"><div><span class="kicker">ВАРИАНТ '+esc(x.index||"")+(x.selected?' · ВЫБРАН':'')+'</span><h3>'+esc(idea.title||x.productName||"Идея")+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Хук</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div><small class="saved-idea-product">'+esc(x.productName||"")+'</small></div><div class="idea-actions">'+(source?'<button class="secondary" onclick="openStageDetail(\''+source.id+'\',\'Идея\')">Открыть исходный процесс</button>':'')+'<button class="btn primary" onclick="launchSavedIdea(\''+esc(x.id)+'\')">▶ Запустить эту идею</button></div></article>';
+      return '<article class="idea-card saved-idea-card '+(x.selected?'selected':'')+'"><div><span class="kicker">ВАРИАНТ '+esc(x.index||"")+(x.selected?' · ВЫБРАН':'')+'</span><h3>'+esc(idea.title||x.productName||"Идея")+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Хук</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div>'+ideaDetailsHtml(idea)+'<small class="saved-idea-product">'+esc(x.productName||"")+'</small></div><div class="idea-actions">'+(source?'<button class="secondary" onclick="openStageDetail(\''+source.id+'\',\'Идея\')">Открыть исходный процесс</button>':'')+'<button class="btn primary" onclick="launchSavedIdea(\''+esc(x.id)+'\')">▶ Запустить эту идею</button><button class="danger-btn" onclick="deleteSavedIdea(\''+esc(x.id)+'\')">Удалить идею</button></div></article>';
     }).join("");
 }
 
@@ -556,7 +567,7 @@ function stageReportHtml(r,stage){
         '<div><small>Сложность</small><p>'+esc(idea.production||"—")+'</p></div>'+
       '</div>'+
       '<div class="idea-why"><small>Почему эта идея выбрана</small><p>'+esc(idea.why||"—")+'</p></div>'+
-      (alternatives.length?'<div class="idea-alt-wrap"><div class="idea-alt-head"><div><h3>Другие сохранённые идеи</h3><p>Выбери любую вместо текущей или запусти её отдельным процессом.</p></div><span>'+alternatives.length+' варианта</span></div><div class="idea-alt-list">'+alternatives.map((x,i)=>'<article><span>'+String(i+1)+'</span><div class="idea-alt-copy"><b>'+esc(x.title||"Вариант")+'</b><small>'+esc(x.hook||"")+'</small><p>'+esc(x.concept||"")+'</p><div class="idea-alt-actions"><button class="btn primary" onclick="selectIdeaOption(\''+r.id+'\','+(i+2)+')">✓ Выбрать эту идею</button><button class="secondary" onclick="launchIdeaOption(\''+r.id+'\','+(i+2)+')">▶ Запустить отдельно</button></div></div></article>').join("")+'</div></div>':'')+
+      (alternatives.length?'<div class="idea-alt-wrap"><div class="idea-alt-head"><div><h3>Другие сохранённые идеи</h3><p>Все варианты полноценные и сохраняются отдельно.</p></div><span>'+alternatives.length+' варианта</span></div><div class="idea-alt-list">'+alternatives.map((x,i)=>'<article><span>'+String(i+1)+'</span><div class="idea-alt-copy"><b>'+esc(x.title||"Вариант")+'</b><small>'+esc(x.hook||"")+'</small><p>'+esc(x.concept||"")+'</p>'+ideaDetailsHtml(x)+'<div class="idea-alt-actions"><button class="btn primary" onclick="selectIdeaOption(\''+r.id+'\','+(i+2)+')">✓ Выбрать эту идею</button><button class="secondary" onclick="launchIdeaOption(\''+r.id+'\','+(i+2)+')">▶ Запустить отдельно</button></div></div></article>').join("")+'</div></div>':'')+
     '</div>';
   }
   else if(stage==="Сценарий"){
@@ -656,7 +667,7 @@ function stageReportHtml(r,stage){
     const q=r.qcResult;
     body=q?'<div class="artifact-script"><h3>'+(q.passed===false?'Есть замечания':'Проверка завершена')+'</h3><p>'+esc(q.summary||"")+'</p>'+(q.issues?.length?'<ul>'+q.issues.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul>':'')+'</div>':'<div class="empty compact-empty">AI-проверка ещё не завершена.</div>';
   } else body='<div class="empty compact-empty">Этот этап ещё не выполнен.</div>';
-  const canRegen=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация"].includes(stage);
+  const canRegen=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация","Озвучка","Монтаж","AI-проверка"].includes(stage);
   const manual=r.mode==="manual";
   const nextAction=!manual?''
     :stage==="Идея"
@@ -687,6 +698,12 @@ window.launchSavedIdea=async(ideaId)=>{
   const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Не удалось запустить идею");return}
   await syncFromServer();selectedRunId=data.run?.id||selectedRunId;runStageOpen="Идея";renderRunDetail();go("runDetail");
 };
+window.deleteSavedIdea=async(ideaId)=>{
+  if(!confirm("Удалить эту идею из библиотеки? Процессы и ролики не удалятся."))return;
+  const r=await fetch("/api/ideas/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,action:"delete_saved",ideaId})});
+  const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Не удалось удалить идею");return}
+  await syncFromServer();renderIdeas();
+};
 window.runAction=async(id,action,stage="")=>{
   let note="";
   if(action==="regenerate"){const v=prompt("Что изменить в этапе «"+stage+"»?","");if(v===null)return;note=v}
@@ -702,7 +719,8 @@ function renderRunDetail(){
   const currentIndex=Math.max(0,ST.indexOf(r.stage));
   const stageHtml=ST.map((st,i)=>{
     const done=stageDone(r,st),current=st===r.stage&&!done,status=done?"Готово":current?"В процессе":"Ожидает",cls=done?"done":current?"work":"wait";
-    return '<button class="stage stage-click '+(current?"progress":done?"done-stage":"pending")+'" onclick="openStageDetail(\''+r.id+'\',\''+st+'\')"><span class="stage-num">'+(i+1)+'</span><span><b>'+st+'</b><small>'+(done?"Есть результат":current?"Сейчас выполняется":"Ожидает")+'</small></span><span class="status '+cls+'">'+status+'</span></button>';
+    const regen=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация","Озвучка","Монтаж","AI-проверка"].includes(st)&&(done||current);
+    return '<div class="stage-row"><button class="stage stage-click '+(current?"progress":done?"done-stage":"pending")+'" onclick="openStageDetail(\''+r.id+'\',\''+st+'\')"><span class="stage-num">'+(i+1)+'</span><span><b>'+st+'</b><small>'+(done?"Есть результат":current?"Сейчас выполняется":"Ожидает")+'</small></span><span class="status '+cls+'">'+status+'</span></button>'+(regen?'<button class="stage-regen-btn" title="Переделать только этап '+esc(st)+'" onclick="event.stopPropagation();runAction(\''+r.id+'\',\'regenerate\',\''+st+'\')">↻</button>':'')+'</div>';
   }).join("");
   const readyHtml=rd.map(x=>'<div class="ready-line"><span><b>'+x[0]+'</b><small>'+(x[1]===x[2]?"Готово":"Нет результата")+'</small></span><span class="ready-count">'+x[1]+' из '+x[2]+'</span></div>').join("");
   const qcHtml=qc.map(t=>'<div class="qc-row"><span>'+t+'</span><b class="'+(r.qcResult?"qc-ok":"qc-wait")+'">'+(r.qcResult?"✓ Пройдено":"Ожидает")+'</b></div>').join("");
