@@ -3427,6 +3427,9 @@ async function runControlAction(body,accountId){
       return await queueRunStageTask(accountId,runId,'storyboard',String(body?.note||''));
     }
     if(current==='Storyboard'){
+      const storyboardBusy=(run.backgroundTask?.type==='storyboard'&&['queued','processing'].includes(String(run.backgroundTask?.status||''))) ||
+        Object.values(run.storyboardSceneJobs||{}).some(j=>['queued','processing'].includes(String(j?.status||'')));
+      if(storyboardBusy)throw new Error('Storyboard ещё обновляется. Дождись завершения текущей генерации сцены.');
       if(!run.script)throw new Error('Нельзя запускать превиз: сценарий отсутствует');
       if(!Array.isArray(run.storyboard)||!run.storyboard.length)throw new Error('Storyboard ещё не готов');
       const sbCheck=storyboardStageComplete(run.storyboard,(run.script?.scenes||[]).length);
