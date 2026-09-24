@@ -6037,37 +6037,48 @@ async function analyzeUploadedVideo(req,url){
   let evidence=null;
   try{
     await streamRequestToFile(req,filePath);
-    evidence=await extractVideoEvidence(filePath);
+    evidence=await extractVideoEvidence(filePath,{detailed:true});
     const analysisId=factoryId('va');
     const persistedFrames=await persistVideoAnalysisFrames(accountId,analysisId,evidence.frameSamples||[]);
-    let transcript='',transcriptError='',transcriptStatus=evidence.audioPresent?'pending':'no-audio';
+    let transcription={text:'',timedText:'',segments:[],status:evidence.audioPresent?'pending':'no-audio',model:'',fallback:''};
+    let transcriptError='';
     if(evidence.audioPath){
       try{
-        transcript=await transcribeAudio(evidence.audioPath);
-        transcriptStatus=transcript?'ok':'empty';
+        transcription=await transcribeAudioDetailed(evidence.audioPath);
       }catch(e){
         transcriptError=String(e?.message||e).slice(0,1000);
-        transcriptStatus='failed';
+        transcription={text:'',timedText:'',segments:[],status:'failed',model:'',fallback:transcriptError};
         console.warn('[video-analysis-transcript] '+transcriptError);
       }
     }
+    const transcript=String(transcription.text||'');
+    const timedTranscript=String(transcription.timedText||'');
+    const transcriptStatus=String(transcription.status||'');
+    const keyframes=persistedFrames.map(x=>({
+      shot:Number(x.shot)||0,phase:String(x.phase||''),time:Number(x.timeSec)||0,url:x.url||'',storagePath:x.path||'',fileName:''
+    }));
     const opts={
       analysisId,
       accountId,
       sourceType:'upload',
       sourceName:fileName,
-      transcript,transcriptStatus,transcriptError,
+      transcript,timedTranscript,transcription,transcriptStatus,transcriptError,
       audioPresent:Boolean(evidence.audioPresent),
       frameSamples:persistedFrames,
-      imageParts:analysisImageParts(evidence.frameSamples||[]),
+      keyframes,
+      shotMap:evidence.shots||[],
+      imageParts:evidence.analysisParts||analysisImageParts(evidence.frameSamples||[]),
       productId:url.searchParams.get('productId')||'',
       avatarId:url.searchParams.get('avatarId')||'',
       metadata:{
         durationSeconds:Number(evidence.duration.toFixed(2)),
-        sampledFrames:(evidence.frameSamples||[]).length,
+        detectedShots:(evidence.shots||[]).length,
+        extractedKeyframes:(evidence.frameSamples||[]).length,
         audioPresent:Boolean(evidence.audioPresent),
         transcriptStatus,
-        frameTimeline:(evidence.frameSamples||[]).map(x=>({index:x.index,timeSec:x.timeSec}))
+        transcriptionModel:String(transcription.model||''),
+        shotRanges:evidence.shots||[],
+        frameTimeline:(evidence.frameSamples||[]).map(x=>({index:x.index,shot:x.shot,phase:x.phase,timeSec:x.timeSec}))
       },
       mimeType:String(req.headers['content-type']||'video/mp4').split(';')[0]
     };
