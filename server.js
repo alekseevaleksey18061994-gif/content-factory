@@ -2032,7 +2032,7 @@ async function processAutoPipeline(accountId,runId){
   try{
     if(!run.idea){
       const idea=await generateIdeaStage(run,accountId,run.variant||1);
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.idea=idea;run.stage='Сценарий';run.progress=10;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
+      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);run.idea=idea;syncRunIdeaLibrary(data,run);run.stage='Сценарий';run.progress=10;run.updatedAt=new Date().toISOString();await writeAppState(data,accountId);
     }
     if(!run.script){
       const script=await generateScriptStage(run,accountId);
@@ -3445,7 +3445,7 @@ async function executeFactoryTool(name,args={},accountId=DEFAULT_ACCOUNT_ID){
   accountId=sanitizeAccountId(accountId);
   const state=await readAppState(accountId);
   const data=state?.data && typeof state.data==='object' ? state.data : {
-    version:1,products:[],runs:[],campaigns:[],scripts:[],characters:[],journal:[],expenses:[],settings:{}
+    version:1,products:[],runs:[],campaigns:[],scripts:[],savedIdeas:[],characters:[],journal:[],expenses:[],settings:{}
   };
   data.products=Array.isArray(data.products)?data.products:[];
   data.runs=Array.isArray(data.runs)?data.runs:[];
@@ -4518,6 +4518,29 @@ async function deleteFactoryEntity(accountId,type,id){
   return {type,id,label:String(deleted?.name||deleted?.title||deleted?.sourceName||deleted?.productName||id)};
 }
 
+
+async function recoverSavedIdeaLibrary(){
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId);
+      const data=state?.data||blankFactoryState();
+      data.runs=Array.isArray(data.runs)?data.runs:[];
+      data.savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
+      let changed=false;
+      for(const run of data.runs){
+        if(!run?.idea)continue;
+        const before=JSON.stringify({selectedIdeaOptionId:run.selectedIdeaOptionId,ideaOptions:run.ideaOptions});
+        const beforeCount=data.savedIdeas.length;
+        syncRunIdeaLibrary(data,run);
+        if(before!==JSON.stringify({selectedIdeaOptionId:run.selectedIdeaOptionId,ideaOptions:run.ideaOptions})||beforeCount!==data.savedIdeas.length)changed=true;
+      }
+      if(changed)await writeAppState(data,accountId);
+    }
+  }catch(e){console.error('[idea-library-recovery] '+String(e?.message||e))}
+}
+
 const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
 
@@ -5208,6 +5231,11 @@ const server=http.createServer(async(req,res)=>{
 server.listen(port,'0.0.0.0',async()=>{
   console.log(`Content Factory запущен на порту ${port}`);
   setTimeout(async()=>{
+    try{
+      await recoverSavedIdeaLibrary();
+    }catch(e){
+      console.error('[startup-recovery] idea-library '+String(e?.message||e));
+    }
     try{
       await recoverLegacyPlaceholderRuns();
     }catch(e){
