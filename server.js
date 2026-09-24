@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.1.0';
+const APP_VERSION='2.2.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -215,6 +215,7 @@ function blankFactoryState(){
     runs:[],
     campaigns:[],
     scripts:[],
+    savedIdeas:[],
     characters:[],
     journal:[],
     expenses:[],
@@ -2658,6 +2659,110 @@ async function dispatchExistingRun(accountId,run){
 }
 
 
+
+function buildIdeaOptions(run){
+  const base=run?.idea&&typeof run.idea==='object'?run.idea:{};
+  const raw=[base,...(Array.isArray(base.alternatives)?base.alternatives:[])].slice(0,5);
+  return raw.map((src,i)=>{
+    const optionIdea={
+      title:String(src?.title||base.title||('Идея '+(i+1))).slice(0,240),
+      concept:String(src?.concept||base.concept||'').slice(0,5000),
+      hook:String(src?.hook||base.hook||'').slice(0,2000),
+      angle:String(src?.angle||base.angle||'').slice(0,2000),
+      why:String(src?.why||base.why||('Альтернативная концепция №'+(i+1))).slice(0,4000),
+      audience:String(src?.audience||base.audience||'').slice(0,2000),
+      first3Seconds:String(src?.first3Seconds||src?.hook||base.first3Seconds||base.hook||'').slice(0,3000),
+      mechanic:String(src?.mechanic||src?.concept||base.mechanic||'').slice(0,3000),
+      productRole:String(src?.productRole||base.productRole||'').slice(0,3000),
+      retention:String(src?.retention||src?.concept||base.retention||'').slice(0,3000),
+      payoff:String(src?.payoff||base.payoff||src?.concept||'').slice(0,3000),
+      ctaDirection:String(src?.ctaDirection||base.ctaDirection||'Без отдельного CTA — финал через визуальный payoff.').slice(0,2000),
+      production:String(src?.production||base.production||'').slice(0,1600),
+      quality:src?.quality&&typeof src.quality==='object'?src.quality:{}
+    };
+    return {
+      id:'idea-'+String(run.id||'run')+'-'+(i+1),
+      index:i+1,
+      sourceRunId:String(run.id||''),
+      productId:String(run.productId||''),
+      productName:String(run.productName||run.product?.name||''),
+      idea:optionIdea
+    };
+  });
+}
+function syncRunIdeaLibrary(data,run){
+  if(!run?.idea)return [];
+  const options=buildIdeaOptions(run);
+  run.ideaOptions=options;
+  if(!run.selectedIdeaOptionId)run.selectedIdeaOptionId=options[0]?.id||'';
+  data.savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
+  for(const opt of options){
+    const existing=data.savedIdeas.find(x=>String(x?.id)===String(opt.id));
+    const item={
+      ...opt,
+      selected:String(run.selectedIdeaOptionId||'')===String(opt.id),
+      createdAt:existing?.createdAt||new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    };
+    if(existing)Object.assign(existing,item);else data.savedIdeas.push(item);
+  }
+  return options;
+}
+function applyIdeaOptionToRun(data,run,optionIdOrIndex){
+  const options=(Array.isArray(run.ideaOptions)&&run.ideaOptions.length?run.ideaOptions:syncRunIdeaLibrary(data,run));
+  const key=String(optionIdOrIndex||'');
+  const option=options.find(x=>String(x.id)===key)||options.find(x=>String(x.index)===key);
+  if(!option)throw new Error('Вариант идеи не найден');
+  const others=options.filter(x=>x.id!==option.id).map(x=>({
+    title:x.idea.title,hook:x.idea.hook,concept:x.idea.concept,angle:x.idea.angle,
+    first3Seconds:x.idea.first3Seconds,mechanic:x.idea.mechanic,retention:x.idea.retention,
+    payoff:x.idea.payoff,productRole:x.idea.productRole
+  }));
+  run.idea={...option.idea,alternatives:others};
+  run.selectedIdeaOptionId=option.id;
+  run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
+  run.stage='Идея';run.status='На проверке';run.progress=8;run.awaitingApproval=true;run.error='';
+  run.updatedAt=new Date().toISOString();
+  data.savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
+  for(const x of data.savedIdeas){
+    if(String(x?.sourceRunId)===String(run.id))x.selected=String(x.id)===String(option.id);
+  }
+  return option;
+}
+async function launchSavedIdea(accountId,savedIdeaId){
+  const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+  data.savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
+  const saved=data.savedIdeas.find(x=>String(x?.id)===String(savedIdeaId));
+  if(!saved)throw new Error('Сохранённая идея не найдена');
+  const source=findRunById(data,saved.sourceRunId);
+  const product=findProductInState(data,saved.productId||saved.productName);
+  if(!product)throw new Error('Товар для этой идеи больше не найден');
+  const character=source?.character||characterSnapshot(resolveProductCharacter(data,product,{}));
+  const media=(Array.isArray(product.media)?product.media:[]).map(m=>({id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary})).filter(m=>m.url);
+  const id=factoryId('r');
+  const run={
+    ...(source?{
+      brief:source.brief||'',style:source.style||'UGC',duration:source.duration||'30 сек',format:source.format||'9:16',
+      modelMode:source.modelMode||'Авто — умный выбор',budget:source.budget||500,maxAttempts:source.maxAttempts||3
+    }:{brief:'',style:'UGC',duration:'30 сек',format:'9:16',modelMode:'Авто — умный выбор',budget:500,maxAttempts:3}),
+    id,accountId,batchId:factoryId('batch'),mode:'manual',variant:null,
+    productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',
+    media,product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',media,defaultCharacterId:product.defaultCharacterId||null},
+    characterId:character?.id||null,character,avatarReferences:character?.media||[],characterSource:character?'saved-idea':'none',
+    idea:{...saved.idea,alternatives:[]},selectedIdeaOptionId:'idea-'+id+'-1',
+    status:'На проверке',stage:'Идея',progress:8,attempt:1,awaitingApproval:true,
+    pipelineVersion:'previs-v3-background',script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,
+    sceneCount:0,sceneVersions:{},acceptedScenes:[],generationResult:null,
+    created:new Date().toISOString(),updatedAt:new Date().toISOString()
+  };
+  data.runs=Array.isArray(data.runs)?data.runs:[];
+  data.runs.push(run);
+  syncRunIdeaLibrary(data,run);
+  appendFactoryJournal(data,'Запущена сохранённая идея',product.name+' · '+saved.idea?.title);
+  await writeAppState(data,accountId);
+  return run;
+}
+
 const stageTaskQueues=new Map();
 function stageTaskName(task){
   return task==='idea'?'Идея':task==='script'?'Сценарий':task==='storyboard'?'Storyboard':String(task||'Этап');
@@ -2711,6 +2816,7 @@ async function processStageTask(accountId,runId,task,note='',jobId=''){
       run.idea=result;
       run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
       run.progress=8;
+      syncRunIdeaLibrary(data,run);
       appendFactoryJournal(data,'Идея готова',(run.productName||run.id)+' · '+String(result?.title||''));
     }else if(task==='script'){
       const complete=scriptStageComplete(result);
@@ -2975,6 +3081,20 @@ async function runControlAction(body,accountId){
     run.status='Готово';run.stage='Готово';run.progress=100;run.updatedAt=new Date().toISOString();
     appendFactoryJournal(data,'Ролик утверждён',run.productName||run.id);
     await writeAppState(data,accountId);return run;
+  }
+  if(action==='select_idea_option'){
+    const option=applyIdeaOptionToRun(data,run,body?.optionId||body?.optionIndex);
+    appendFactoryJournal(data,'Выбрана идея',(run.productName||run.id)+' · '+option.idea.title);
+    await writeAppState(data,accountId);
+    return run;
+  }
+  if(action==='launch_idea_option'){
+    const options=(Array.isArray(run.ideaOptions)&&run.ideaOptions.length?run.ideaOptions:syncRunIdeaLibrary(data,run));
+    const key=String(body?.optionId||body?.optionIndex||'');
+    const option=options.find(x=>String(x.id)===key)||options.find(x=>String(x.index)===key);
+    if(!option)throw new Error('Вариант идеи не найден');
+    await writeAppState(data,accountId);
+    return await launchSavedIdea(accountId,option.id);
   }
   if(action==='advance_stage'){
     const current=String(run.stage||'Идея');
@@ -4997,6 +5117,19 @@ const server=http.createServer(async(req,res)=>{
       return json(res,201,{ok:true,run});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось создать идею',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/ideas/action' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const accountId=sanitizeAccountId(body?.accountId||DEFAULT_ACCOUNT_ID);
+      if(!(await userOwnsAccount(req.cfUser?.id,accountId))) return json(res,403,{ok:false,error:'Нет доступа к этому аккаунту.'});
+      if(body?.action!=='launch_saved')return json(res,400,{ok:false,error:'Неизвестное действие идеи'});
+      const run=await launchSavedIdea(accountId,String(body?.ideaId||''));
+      return json(res,201,{ok:true,run});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось запустить сохранённую идею',detail:String(e?.message||e)});
     }
   }
 
