@@ -1634,7 +1634,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     if(!r.ok)throw new Error(data?.error?.message||('OpenAI idea error '+r.status));
     const priced=openAIUsageCost(data?.model||model,data?.usage||{});
     if(priced.amountUsd>0)await recordExpense(accountId,{
-      provider:'OpenAI',category:'idea',description:name.startsWith('idea_candidates')?'TikTok-концепции идеи · партия 10':name==='hook_lab'?'Hook Lab · 5 хуков':'TikTok Creative Critic идеи',
+      provider:'OpenAI',category:'idea',description:name.startsWith('idea_candidates')?'TikTok-концепции идеи · партия 10':name==='idea_shortlist'?'Creative Critic · shortlist 5/20':name==='hook_lab'?'Hook Lab · 5 хуков':'TikTok Creative Critic идеи',
       amountUsd:priced.amountUsd,model:data?.model||model,usage:priced.details,source:'auto'
     }).catch(()=>{});
     const parsed=safeAnalysisJson(openAIText(data));
@@ -1738,7 +1738,44 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     ...(Array.isArray(batchB?.candidates)?batchB.candidates:[])
   ];
   if(candidates.length!==20)throw new Error('Генератор идеи вернул '+candidates.length+' из 20 концепций');
-  await markIdeaProgress(5,'Creative Critic выбирает и усиливает лучшую');
+  await markIdeaProgress(5,'Creative Critic · быстрый шорт-лист 5 из 20');
+
+  const shortlistSchema={
+    type:'object',additionalProperties:false,
+    required:['topIndices','selectionReason'],
+    properties:{
+      topIndices:{type:'array',minItems:5,maxItems:5,items:{type:'integer',minimum:1,maximum:20}},
+      selectionReason:{type:'string'}
+    }
+  };
+  const shortlistPrompt=[
+    'ROLE: TikTok senior creative selector.',
+    context,
+    'Ниже 20 коротких концепций. Выбери РОВНО 5 сильнейших по вероятности остановить скролл, удержать 25–35 секунд, нативности, разнообразию proof, роли товара и реальной AI-генерируемости.',
+    'Не улучшай и не переписывай идеи на этом шаге. Только выбери индексы.',
+    'Не выбирай пять почти одинаковых механик. Нужны разные причины досмотреть.',
+    'КАНДИДАТЫ:',
+    JSON.stringify(candidates.map((x,i)=>({index:i+1,title:x.title,formatPattern:x.formatPattern,hook:x.hook,mechanic:x.mechanic,payoff:x.payoff}))),
+    'Верни JSON only.'
+  ].join('\n');
+  let shortlist={topIndices:[1,2,3,4,5],selectionReason:'fallback'};
+  try{
+    shortlist=await callIdeaAI({
+      prompt:shortlistPrompt,schema:shortlistSchema,name:'idea_shortlist',
+      images:[],effort:'low',maxTokens:1200,timeoutMs:60000
+    });
+  }catch(e){
+    console.warn('[idea-shortlist] fallback '+String(e?.message||e));
+  }
+  const picked=[];
+  for(const raw of (Array.isArray(shortlist?.topIndices)?shortlist.topIndices:[])){
+    const n=Math.max(1,Math.min(20,Number(raw)||0));
+    if(n&&!picked.includes(n))picked.push(n);
+  }
+  for(let n=1;picked.length<5&&n<=20;n++)if(!picked.includes(n))picked.push(n);
+  const criticCandidates=picked.slice(0,5).map(n=>({...candidates[n-1],sourceIndex:n}));
+
+  await markIdeaProgress(5.5,'Creative Critic · глубокая сборка финала');
 
   const criticBase=[
     'ROLE: TikTok Creative Critic + retention editor. Ты отбираешь идею так, будто решаешь, переживёт ли она первые секунды в реальной ленте.',
@@ -1746,8 +1783,9 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'ВНУТРИ ОДНОГО ОТВЕТА проведи ДВЕ независимые проверки финала: (1) TikTok retention editor — хук, curiosity gap, темп, shareability; (2) AI-production director — FACT LOCK, естественность героя, разнообразие proof и генерируемость. После обеих проверок молча исправь найденные слабости и только затем верни результат.',
     context,
     '',
-    'КАНДИДАТЫ:',
-    JSON.stringify(candidates),
+    'ШОРТ-ЛИСТ ИЗ 5 СИЛЬНЕЙШИХ КАНДИДАТОВ:',
+    JSON.stringify(criticCandidates),
+    'Причина отбора: '+String(shortlist?.selectionReason||''),
     '',
     'ОЦЕНИВАЙ финальную усиленную идею по шкале 1–10:',
     'hook, scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, humanNaturalness, proofVariety, shareability, loopPotential, productNecessity, visualClarity, originality, avatarFit, generatability, payoff, factualSafety, conversionPotential, overall.',
@@ -1812,22 +1850,42 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   ].join('\n');
 
   async function criticPass(prompt){
-    let out=await callIdeaAI({prompt,schema:finalSchema,name:'idea_critic',images:[]});
+    async function invoke(name,body,timeoutMs){
+      return await callIdeaAI({
+        prompt:body,schema:finalSchema,name,images:[],
+        effort:'low',maxTokens:6200,timeoutMs
+      });
+    }
+    let out;
+    try{
+      out=await invoke('idea_critic',prompt,120000);
+    }catch(e){
+      const msg=String(e?.message||e);
+      if(!/лимит времени|timeout|abort/i.test(msg))throw e;
+      console.warn('[idea-critic] first pass timeout; retrying compact finalizer');
+      const retryPrompt=[
+        'ROLE: TikTok Creative Critic. Previous finalizer timed out.',
+        context,
+        'Use ONLY this shortlist of 5:',
+        JSON.stringify(criticCandidates),
+        'Return one strongest selected idea plus 4 complete alternatives using the required schema.',
+        'Keep every text field concise: 1–3 short sentences. Be strict on scroll-stop, retention, native TikTok, proof variety, product necessity, factual safety and AI-generatability.',
+        'Do not explain your process outside the JSON.'
+      ].join('\n');
+      out=await invoke('idea_critic_retry',retryPrompt,150000);
+    }
     let idea=normalizeIdeaStage(out,payload);
     idea.quality=out.quality||{};
     let complete=ideaStageComplete(idea);
     if(!complete.ok){
       const repair=[
-        prompt,
-        '',
-        'ТЕХНИЧЕСКАЯ ПРОВЕРКА ФОРМЫ: предыдущий ответ оказался неполным.',
-        'Предыдущий ответ: '+JSON.stringify(out),
-        'Пустые обязательные поля: '+complete.missing.join(', ')+(complete.badAlt?' · альтернативы неполные':'')+'.',
-        'Верни полный объект по той же схеме. КАЖДОЕ текстовое поле selected и всех 4 alternatives должно быть непустым; у каждой alternative должны быть собственные retention/payoff/production/why и quality, а не копии selected.',
-        'Если отдельный CTA не нужен, ctaDirection всё равно заполни формулировкой «без отдельного CTA; финал через визуальный payoff».',
-        'Не сокращай и не удаляй поля ради экономии токенов.'
+        'ROLE: repair a structurally incomplete TikTok idea JSON without changing the core concept.',
+        context,
+        'Current object: '+JSON.stringify(out),
+        'Missing required fields: '+complete.missing.join(', ')+(complete.badAlt?' · alternatives incomplete':'')+'.',
+        'Return the complete object using the same schema. Fill every required field concisely. Do not delete fields.'
       ].join('\n');
-      out=await callIdeaAI({prompt:repair,schema:finalSchema,name:'idea_critic',images:[]});
+      out=await invoke('idea_critic_repair',repair,120000);
       idea=normalizeIdeaStage(out,payload);
       idea.quality=out.quality||{};
       complete=ideaStageComplete(idea);
@@ -1895,7 +1953,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'Return JSON only.'
   ].join('\n');
   try{
-    const hookLab=await callIdeaAI({prompt:hookPrompt,schema:hookLabSchema,name:'hook_lab',images:refs});
+    const hookLab=await callIdeaAI({prompt:hookPrompt,schema:hookLabSchema,name:'hook_lab',images:refs,effort:'low',maxTokens:2600,timeoutMs:90000});
     const variants=Array.isArray(hookLab?.variants)?hookLab.variants:[];
     const selectedIndex=Math.max(1,Math.min(5,Number(hookLab?.selectedIndex)||1));
     idea.hookLab={variants,selectedIndex,selectionReason:String(hookLab?.selectionReason||''),generatedAt:new Date().toISOString()};
