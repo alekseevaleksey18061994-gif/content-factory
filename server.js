@@ -2881,7 +2881,14 @@ function runPipelineStructuralSelfTest(){
     angle:'Нативный UGC',productRole:'Товар участвует в результате',retention:'Новый beat каждые 3 секунды',
     payoff:'Видимый результат',ctaDirection:'Без отдельного CTA — финал через визуальный payoff',
     production:'Один герой, одна локация, простая физика',why:'Есть причина досмотреть',
-    alternatives:[]
+    alternatives:Array.from({length:4},(_,i)=>({
+      title:'Alt '+(i+1),audience:'Дом',hook:'Разный визуальный хук '+(i+1),
+      first3Seconds:'Понятный конфликт '+(i+1),concept:'Альтернативная бытовая механика '+(i+1),
+      mechanic:'hook → proof → payoff',angle:'UGC',productRole:'Товар необходим для результата',
+      retention:'Следующий beat создаёт вопрос',payoff:'Видимый результат',ctaDirection:'Без отдельного CTA — финал через визуальный payoff',
+      production:'Простая генерируемая сцена',why:'Понятная причина досмотреть',
+      quality:{hook:8,retention:8,nativeTikTok:8,proofVariety:8,shareability:8,originality:8,generatability:8,overall:8}
+    }))
   },{productName:'Smoke'});
   if(!ideaStageComplete(baseIdea).ok)throw new Error('idea validator');
 
