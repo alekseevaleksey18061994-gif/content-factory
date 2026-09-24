@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=65" />
+  <link rel="stylesheet" href="/style.css?v=66" />
 </head>
 <body>
   <div class="auth-gate" id="authGate">
@@ -82,7 +82,7 @@
         <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Открыть меню" aria-controls="appSidebar" aria-expanded="false">☰</button>
         <button class="mobile-global-brand" data-go="home">
           <span class="brand-mark">F</span>
-          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · <span id="appVersion">v2.5.1</span></small></span>
+          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · <span id="appVersion">v2.6.0</span></small></span>
         </button>
         <button class="mobile-account-summary" data-go="account" aria-label="Открыть аккаунт">
           <span class="mobile-account-copy"><small>Аккаунт</small><b id="mobileAccountName">Основной</b></span>
@@ -250,7 +250,9 @@
 
         <section class="panel"><div class="panel-title"><div><span class="mini-icon">◫</span><h2>По сервисам</h2><p>Сколько тратится на каждое приложение</p></div></div><div id="expenseProviderCards" class="expense-provider-grid"></div></section>
 
-        <section class="panel"><div class="panel-title"><div><span class="mini-icon">⚙</span><h2>Тарифы и лимиты</h2><p>OpenAI считается автоматически по токенам; остальные тарифы можно указать вручную</p></div></div>
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">↻</span><h2>Подписки и пополнения</h2><p>Оплаченные тарифы, разовые пополнения и текущие кредитные балансы</p></div></div><div id="billingSummary" class="billing-summary"></div></section>
+
+        <section class="panel"><div class="panel-title"><div><span class="mini-icon">⚙</span><h2>Тарифы и лимиты</h2><p>OpenAI считается по токенам; Higgsfield и Runway — автоматически по модели и использованию. Ручной тариф ниже работает как override.</p></div></div>
           <div class="settings-grid">
             <label class="setting form-setting"><small>Курс USD → ₽</small><input id="usdRubRate" type="number" step="0.01" placeholder="Например 95"></label>
             <label class="setting form-setting"><small>Higgsfield, ₽ / генерация</small><input id="higgsfieldRate" type="number" step="0.01" value="0"></label>
