@@ -2141,3 +2141,17 @@ html,body{
 .media-type-tabs button span{opacity:.62;font-size:12px}
 .media-type-tabs button.active{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22)}
 @media (max-width:640px){.media-type-tabs{display:grid;grid-template-columns:1fr 1fr}.media-type-tabs button{justify-content:center}}
+
+
+/* v2.8 auth: email/password only + recovery + password visibility */
+#authForm label[hidden],#authTabs[hidden],#authBack[hidden],#authForgot[hidden]{display:none!important}
+.auth-password-wrap{display:flex;align-items:center;min-height:48px;border:1px solid var(--line,#cfe1ea);border-radius:14px;background:#fff;overflow:hidden}
+#authForm .auth-password-wrap input{min-height:46px;border:0!important;border-radius:0!important;box-shadow:none!important;flex:1;min-width:0}
+.auth-eye{align-self:stretch;border:0;border-left:1px solid #e1ebf1;background:#f8fbfd;color:#4c667e;font-size:11px;font-weight:800;padding:0 14px;cursor:pointer}
+.auth-eye:active{background:#edf6f9}
+.auth-forgot,.auth-back{justify-self:start;border:0;background:transparent;color:#1387a0;font-size:11px;font-weight:800;padding:0;cursor:pointer}
+.auth-back{margin-top:-2px}
+@media(max-width:820px){
+  .auth-eye{font-size:12px;padding:0 12px}
+  .auth-forgot,.auth-back{font-size:12px}
+}

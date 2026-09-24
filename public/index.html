@@ -8,21 +8,27 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=109" />
+  <link rel="stylesheet" href="/style.css?v=110" />
 </head>
 <body>
   <div class="auth-gate" id="authGate">
     <div class="auth-card">
       <div class="auth-brand"><span class="brand-mark">F</span><div><b>Content <em>Factory</em></b><small>Личный кабинет AI-контент-завода</small></div></div>
-      <div class="auth-tabs"><button class="active" type="button" data-auth-mode="login">Вход</button><button type="button" data-auth-mode="register">Регистрация</button></div>
+      <div class="auth-tabs" id="authTabs"><button class="active" type="button" data-auth-mode="login">Вход</button><button type="button" data-auth-mode="register">Регистрация</button></div>
       <form id="authForm">
-        <label id="authNameField" hidden>Имя<input id="authDisplayName" autocomplete="name" placeholder="Алексей"></label>
-        <label>Логин<input id="authLogin" autocomplete="username" placeholder="Ваш логин"></label>
-        <label>Пароль<input id="authPassword" type="password" autocomplete="current-password" placeholder="Минимум 8 символов"></label>
+        <label id="authEmailField">Почта<input id="authLogin" type="text" inputmode="email" autocomplete="email" placeholder="name@example.com" autocapitalize="none" spellcheck="false"></label>
+        <label id="authPasswordField">Пароль
+          <span class="auth-password-wrap">
+            <input id="authPassword" type="password" autocomplete="current-password" placeholder="Минимум 8 символов">
+            <button class="auth-eye" id="authPasswordToggle" type="button" aria-label="Показать пароль">Показать</button>
+          </span>
+        </label>
+        <button class="auth-forgot" id="authForgot" type="button">Забыли пароль?</button>
         <button class="btn primary full" id="authSubmit" type="submit">Войти</button>
+        <button class="auth-back" id="authBack" type="button" hidden>← Назад ко входу</button>
         <div class="message" id="authMessage"></div>
       </form>
-      <p class="auth-note">У каждого пользователя отдельный личный кабинет, аккаунты, товары, аватары и история GPT.</p>
+      <p class="auth-note" id="authNote">Вход и регистрация по почте и паролю. Для каждого пользователя — отдельный личный кабинет.</p>
     </div>
   </div>
   <div class="shell">
@@ -83,7 +89,7 @@
         <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Открыть меню" aria-controls="appSidebar" aria-expanded="false">☰</button>
         <button class="mobile-global-brand" data-go="home">
           <span class="brand-mark">F</span>
-          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · <span id="appVersion">v2.7.4</span></small></span>
+          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · <span id="appVersion">v2.8.0</span></small></span>
         </button>
         <button class="mobile-account-summary" data-go="account" aria-label="Открыть аккаунт">
           <span class="mobile-account-copy"><small>Аккаунт</small><b id="mobileAccountName">Основной</b></span>
@@ -447,6 +453,6 @@
       },true);
     })();
   </script>
-  <script src="/app.js?v=109"></script>
+  <script src="/app.js?v=110"></script>
 </body>
 </html>

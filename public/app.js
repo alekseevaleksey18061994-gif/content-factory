@@ -1884,23 +1884,53 @@ window.addEventListener("pageshow",()=>{window.scrollTo({top:0,left:0,behavior:"
 let authMode='login';
 let currentAuthUser=null;
 function setAuthMode(mode){
-  authMode=mode==='register'?'register':'login';
+  authMode=mode==='register'?'register':mode==='forgot'?'forgot':'login';
   $$("[data-auth-mode]").forEach(b=>b.classList.toggle("active",b.dataset.authMode===authMode));
-  if($("#authNameField"))$("#authNameField").hidden=authMode!=="register";
-  if($("#authSubmit"))$("#authSubmit").textContent=authMode==="register"?"Создать аккаунт":"Войти";
-  if($("#authPassword"))$("#authPassword").autocomplete=authMode==="register"?"new-password":"current-password";
+  if($("#authTabs"))$("#authTabs").hidden=authMode==="forgot";
+  if($("#authPasswordField"))$("#authPasswordField").hidden=authMode==="forgot";
+  if($("#authForgot"))$("#authForgot").hidden=authMode!=="login";
+  if($("#authBack"))$("#authBack").hidden=authMode!=="forgot";
+  if($("#authSubmit"))$("#authSubmit").textContent=authMode==="register"?"Создать аккаунт":authMode==="forgot"?"Отправить ссылку":"Войти";
+  if($("#authPassword")){
+    $("#authPassword").autocomplete=authMode==="register"?"new-password":"current-password";
+    $("#authPassword").required=authMode!=="forgot";
+  }
+  if($("#authLogin")){
+    $("#authLogin").placeholder="name@example.com";
+    $("#authLogin").autocomplete="email";
+  }
+  if($("#authNote"))$("#authNote").textContent=authMode==="forgot"
+    ?"На почту придёт одноразовая ссылка для создания нового пароля."
+    :"Вход и регистрация по почте и паролю. Для каждого пользователя — отдельный личный кабинет.";
   if($("#authMessage"))$("#authMessage").textContent="";
 }
 $$("[data-auth-mode]").forEach(b=>b.addEventListener("click",()=>setAuthMode(b.dataset.authMode)));
+$("#authForgot")?.addEventListener("click",()=>setAuthMode("forgot"));
+$("#authBack")?.addEventListener("click",()=>setAuthMode("login"));
+$("#authPasswordToggle")?.addEventListener("click",()=>{
+  const input=$("#authPassword"),btn=$("#authPasswordToggle");
+  if(!input||!btn)return;
+  const show=input.type==="password";
+  input.type=show?"text":"password";
+  btn.textContent=show?"Скрыть":"Показать";
+  btn.setAttribute("aria-label",show?"Скрыть пароль":"Показать пароль");
+});
 $("#authForm")?.addEventListener("submit",async e=>{
   e.preventDefault();
-  const btn=$("#authSubmit"),msg=$("#authMessage");
-  btn.disabled=true;msg.textContent=authMode==="register"?"Создаю кабинет…":"Вхожу…";
+  const btn=$("#authSubmit"),msg=$("#authMessage"),email=$("#authLogin").value.trim();
+  btn.disabled=true;
+  msg.textContent=authMode==="register"?"Создаю кабинет…":authMode==="forgot"?"Отправляю ссылку…":"Вхожу…";
   try{
+    if(authMode==="forgot"){
+      const r=await fetch("/api/auth/forgot-password",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({email})});
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(data.error||data.detail||"Ошибка восстановления");
+      msg.textContent=data.message||"Если аккаунт существует, ссылка отправлена на почту.";
+      return;
+    }
     const r=await fetch("/api/auth/"+authMode,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
-      login:$("#authLogin").value.trim(),
-      password:$("#authPassword").value,
-      displayName:$("#authDisplayName")?.value.trim()||""
+      email,
+      password:$("#authPassword").value
     })});
     const data=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(data.error||data.detail||"Ошибка авторизации");

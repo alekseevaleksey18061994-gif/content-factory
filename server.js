@@ -75,7 +75,48 @@ const SESSION_COOKIE='cf_session';
 
 
 function normalizeLogin(value){
-  return String(value||'').trim().toLowerCase().replace(/\s+/g,'').slice(0,80);
+  return String(value||'').trim().toLowerCase().replace(/\s+/g,'').slice(0,240);
+}
+function normalizeEmail(value){
+  return normalizeLogin(value);
+}
+function validEmail(value){
+  const email=normalizeEmail(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(email);
+}
+function supabaseAuthBase(){
+  return String(process.env.SUPABASE_URL||'').replace(/\/$/,'')+'/auth/v1';
+}
+async function supabaseAuthRequest(pathname,{method='POST',body=null,accessToken=''}={}){
+  if(!process.env.SUPABASE_URL||!process.env.SUPABASE_PUBLISHABLE_KEY)throw new Error('Email Auth не настроен');
+  const key=process.env.SUPABASE_PUBLISHABLE_KEY;
+  const headers={apikey:key,'content-type':'application/json'};
+  if(accessToken)headers.authorization='Bearer '+accessToken;
+  else headers.authorization='Bearer '+key;
+  const r=await fetch(supabaseAuthBase()+pathname,{
+    method,headers,body:body==null?undefined:JSON.stringify(body)
+  });
+  const raw=await r.text();let data;try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+  if(!r.ok){
+    const err=new Error(data?.msg||data?.message||data?.error_description||data?.error||('Supabase Auth '+r.status));
+    err.status=r.status;err.data=data;throw err;
+  }
+  return data;
+}
+async function ensureSupabaseEmailUser(email,password=null){
+  const clean=normalizeEmail(email);
+  if(!validEmail(clean))throw new Error('Некорректная почта');
+  const pwd=password||('Tmp!'+randomBytes(24).toString('base64url'));
+  try{
+    const data=await supabaseAuthRequest('/signup',{body:{email:clean,password:pwd,data:{app:'content-factory'}}});
+    return {ok:true,userId:data?.user?.id||'',created:true};
+  }catch(e){
+    const msg=String(e?.message||'').toLowerCase();
+    if(e?.status===400||e?.status===422||msg.includes('already')||msg.includes('registered')){
+      return {ok:true,userId:'',created:false};
+    }
+    throw e;
+  }
 }
 function hashPassword(password,salt){
   return scryptSync(String(password||''),salt,64).toString('hex');
@@ -142,7 +183,7 @@ async function sessionUser(req){
   if(!session) return null;
   const registry=await ensureUsersRegistry();
   const user=registry.users.find(u=>u.id===session.uid);
-  return user?{id:user.id,login:user.login,displayName:user.displayName||user.login,createdAt:user.createdAt}:null;
+  return user?{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login,createdAt:user.createdAt}:null;
 }
 async function userOwnsAccount(userId,accountId){
   if(!userId)return false;
@@ -7275,7 +7316,7 @@ const server=http.createServer(async(req,res)=>{
 
 
   if(url.pathname==='/reset-password' && req.method==='GET'){
-    const html='<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Восстановление доступа · Content Factory</title><style>body{margin:0;background:#eef7fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#0c1b3a}.wrap{min-height:100vh;display:grid;place-items:center;padding:24px}.card{width:min(560px,100%);background:#fff;border:2px solid #d5e6ef;border-radius:28px;padding:30px;box-sizing:border-box;box-shadow:0 20px 60px rgba(27,68,96,.08)}h1{font-size:30px;margin:0 0 8px}.brand{color:#0b9a9d}p{color:#6d819c;line-height:1.5}.field{margin-top:22px}label{display:block;font-weight:700;margin-bottom:8px}input{width:100%;box-sizing:border-box;padding:17px;border:2px solid #cfe1ea;border-radius:18px;font-size:18px;outline:none}button{width:100%;margin-top:24px;border:0;border-radius:18px;padding:18px;font-size:20px;font-weight:800;color:#fff;background:linear-gradient(90deg,#1bc6bd,#1692ee)}#msg{min-height:24px;margin-top:16px;font-weight:600}.ok{color:#14855a}.bad{color:#c33}</style></head><body><div class="wrap"><form class="card" id="f"><h1>Content <span class="brand">Factory</span></h1><p>Задай новый пароль. Ссылка одноразовая и действует ограниченное время.</p><div class="field"><label>Новый пароль</label><input id="p1" type="password" minlength="8" autocomplete="new-password" required></div><div class="field"><label>Повторите пароль</label><input id="p2" type="password" minlength="8" autocomplete="new-password" required></div><button id="b">Сохранить пароль и войти</button><div id="msg"></div></form></div><script>const token=location.hash.slice(1);document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const m=document.getElementById("msg"),b=document.getElementById("b"),p1=document.getElementById("p1").value,p2=document.getElementById("p2").value;if(!token){m.className="bad";m.textContent="Ссылка восстановления неполная.";return}if(p1!==p2){m.className="bad";m.textContent="Пароли не совпадают.";return}b.disabled=true;m.className="";m.textContent="Сохраняю…";try{const r=await fetch("/api/auth/reset-password",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,password:p1})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Не удалось изменить пароль");m.className="ok";m.textContent="Пароль изменён. Открываю кабинет…";location.hash="";setTimeout(()=>location.replace("/"),500)}catch(err){m.className="bad";m.textContent=String(err.message||err);b.disabled=false}})</script></body></html>';
+    const html='<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Восстановление доступа · Content Factory</title><style>body{margin:0;background:linear-gradient(145deg,#eef9fb,#f8fbff);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#0c1b3a}.wrap{min-height:100vh;display:grid;place-items:center;padding:24px}.card{width:min(560px,100%);background:#fff;border:2px solid #d5e6ef;border-radius:28px;padding:30px;box-sizing:border-box;box-shadow:0 20px 60px rgba(27,68,96,.08)}h1{font-size:30px;margin:0 0 8px}.brand{color:#0b9a9d}p{color:#6d819c;line-height:1.5}.field{margin-top:22px}label{display:block;font-weight:700;margin-bottom:8px}.pw{display:flex;align-items:center;border:2px solid #cfe1ea;border-radius:18px;background:#fff;overflow:hidden}.pw input{width:100%;box-sizing:border-box;padding:17px;border:0;font-size:18px;outline:none;background:transparent}.eye{width:auto;min-width:88px;margin:0;padding:12px 14px;border:0;background:transparent;color:#56708a;font-size:13px;font-weight:800;cursor:pointer}.submit{width:100%;margin-top:24px;border:0;border-radius:18px;padding:18px;font-size:20px;font-weight:800;color:#fff;background:linear-gradient(90deg,#1bc6bd,#1692ee)}#msg{min-height:24px;margin-top:16px;font-weight:600}.ok{color:#14855a}.bad{color:#c33}</style></head><body><div class="wrap"><form class="card" id="f"><h1>Content <span class="brand">Factory</span></h1><p>Задай новый пароль для своего аккаунта.</p><div class="field"><label>Новый пароль</label><div class="pw"><input id="p1" type="password" minlength="8" autocomplete="new-password" required><button class="eye" type="button" data-eye="p1">Показать</button></div></div><div class="field"><label>Повторите пароль</label><div class="pw"><input id="p2" type="password" minlength="8" autocomplete="new-password" required><button class="eye" type="button" data-eye="p2">Показать</button></div></div><button class="submit" id="b">Сохранить пароль и войти</button><div id="msg"></div></form></div><script>const frag=location.hash.slice(1),params=new URLSearchParams(frag),accessToken=params.get("access_token")||"",legacyToken=accessToken?"":frag;document.querySelectorAll("[data-eye]").forEach(btn=>btn.onclick=()=>{const i=document.getElementById(btn.dataset.eye),show=i.type==="password";i.type=show?"text":"password";btn.textContent=show?"Скрыть":"Показать"});document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const m=document.getElementById("msg"),b=document.getElementById("b"),p1=document.getElementById("p1").value,p2=document.getElementById("p2").value;if(!accessToken&&!legacyToken){m.className="bad";m.textContent="Ссылка восстановления неполная.";return}if(p1!==p2){m.className="bad";m.textContent="Пароли не совпадают.";return}b.disabled=true;m.className="";m.textContent="Сохраняю…";try{const r=await fetch("/api/auth/reset-password",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accessToken,token:legacyToken,password:p1})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Не удалось изменить пароль");m.className="ok";m.textContent="Пароль изменён. Открываю кабинет…";history.replaceState(null,"","/reset-password");setTimeout(()=>location.replace("/"),500)}catch(err){m.className="bad";m.textContent=String(err.message||err);b.disabled=false}})</script></body></html>';
     res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store, no-cache, must-revalidate, max-age=0','pragma':'no-cache'});
     res.end(html);
     return;
@@ -7284,24 +7325,38 @@ const server=http.createServer(async(req,res)=>{
   if(url.pathname==='/api/auth/reset-password' && req.method==='POST'){
     try{
       const body=await readBody(req);
+      const accessToken=String(body?.accessToken||'');
       const token=String(body?.token||'');
       const password=String(body?.password||'');
       if(password.length<8)return json(res,400,{ok:false,error:'Пароль должен быть не короче 8 символов.'});
-      if(token.length<20)return json(res,400,{ok:false,error:'Ссылка восстановления недействительна.'});
       const users=await ensureUsersRegistry();
-      const tokenHash=hashResetToken(token);
-      const now=Date.now();
-      let user=users.users.find(u=>u?.resetTokenHash&&safeHexEqual(tokenHash,u.resetTokenHash)&&Date.parse(String(u.resetTokenExpiresAt||''))>now);
-      if(!user){
-        const recoveryHash=String(process.env.AUTH_RECOVERY_TOKEN_HASH||'');
-        const recoveryLogin=normalizeLogin(process.env.AUTH_RECOVERY_LOGIN||'');
-        const issuedAt=Date.parse(String(process.env.AUTH_RECOVERY_ISSUED_AT||''));
-        const expiresAt=Date.parse(String(process.env.AUTH_RECOVERY_EXPIRES_AT||''));
-        const candidate=users.users.find(u=>u.login===recoveryLogin);
-        const alreadyUsed=Number.isFinite(issuedAt)&&Date.parse(String(candidate?.passwordUpdatedAt||''))>=issuedAt;
-        if(candidate&&recoveryHash&&safeHexEqual(tokenHash,recoveryHash)&&Number.isFinite(expiresAt)&&expiresAt>now&&!alreadyUsed)user=candidate;
+      let user=null;
+
+      if(accessToken){
+        const authUser=await supabaseAuthRequest('/user',{method:'GET',accessToken});
+        const email=normalizeEmail(authUser?.email||'');
+        if(!validEmail(email))return json(res,401,{ok:false,error:'Ссылка восстановления недействительна.'});
+        user=users.users.find(u=>normalizeEmail(u.email||u.login)===email);
+        if(!user)return json(res,404,{ok:false,error:'Аккаунт для этой почты не найден.'});
+        await supabaseAuthRequest('/user',{method:'PUT',accessToken,body:{password}});
+        user.email=email;user.login=email;user.supabaseUserId=authUser?.id||user.supabaseUserId||'';
+      }else{
+        if(token.length<20)return json(res,400,{ok:false,error:'Ссылка восстановления недействительна.'});
+        const tokenHash=hashResetToken(token);
+        const now=Date.now();
+        user=users.users.find(u=>u?.resetTokenHash&&safeHexEqual(tokenHash,u.resetTokenHash)&&Date.parse(String(u.resetTokenExpiresAt||''))>now);
+        if(!user){
+          const recoveryHash=String(process.env.AUTH_RECOVERY_TOKEN_HASH||'');
+          const recoveryLogin=normalizeLogin(process.env.AUTH_RECOVERY_LOGIN||'');
+          const issuedAt=Date.parse(String(process.env.AUTH_RECOVERY_ISSUED_AT||''));
+          const expiresAt=Date.parse(String(process.env.AUTH_RECOVERY_EXPIRES_AT||''));
+          const candidate=users.users.find(u=>u.login===recoveryLogin);
+          const alreadyUsed=Number.isFinite(issuedAt)&&Date.parse(String(candidate?.passwordUpdatedAt||''))>=issuedAt;
+          if(candidate&&recoveryHash&&safeHexEqual(tokenHash,recoveryHash)&&Number.isFinite(expiresAt)&&expiresAt>Date.now()&&!alreadyUsed)user=candidate;
+        }
+        if(!user)return json(res,401,{ok:false,error:'Ссылка восстановления недействительна, уже использована или истекла.'});
       }
-      if(!user)return json(res,401,{ok:false,error:'Ссылка восстановления недействительна, уже использована или истекла.'});
+
       const salt=randomBytes(16).toString('hex');
       user.salt=salt;
       user.passwordHash=hashPassword(password,salt);
@@ -7310,24 +7365,62 @@ const server=http.createServer(async(req,res)=>{
       user.passwordUpdatedAt=new Date().toISOString();
       await writeUsersRegistry(users);
       setSessionCookie(res,makeSessionToken(user.id));
-      return json(res,200,{ok:true,user:{id:user.id,login:user.login,displayName:user.displayName||user.login}});
+      return json(res,200,{ok:true,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось изменить пароль.',detail:String(e?.message||e)});
+    }
+  }
+
+  if(url.pathname==='/api/auth/forgot-password' && req.method==='POST'){
+    const generic={ok:true,message:'Если аккаунт с этой почтой существует, ссылка для восстановления отправлена.'};
+    try{
+      const body=await readBody(req);
+      const email=normalizeEmail(body?.email);
+      if(!validEmail(email))return json(res,200,generic);
+      const users=await ensureUsersRegistry();
+      const user=users.users.find(u=>normalizeEmail(u.email||u.login)===email);
+      if(!user)return json(res,200,generic);
+
+      if(!user.supabaseUserId){
+        try{
+          const created=await ensureSupabaseEmailUser(email,null);
+          if(created?.userId)user.supabaseUserId=created.userId;
+          user.email=email;user.login=email;
+          await writeUsersRegistry(users);
+        }catch(e){
+          console.warn('[auth-recovery-bootstrap] '+String(e?.message||e));
+        }
+      }
+
+      const proto=String(req.headers['x-forwarded-proto']||'https').split(',')[0].trim()||'https';
+      const host=String(req.headers['x-forwarded-host']||req.headers.host||'').split(',')[0].trim();
+      const redirectTo=(host?proto+'://'+host:'')+'/reset-password';
+      await supabaseAuthRequest('/recover',{body:{email,redirect_to:redirectTo}});
+      return json(res,200,generic);
+    }catch(e){
+      console.warn('[auth-forgot] '+String(e?.message||e));
+      return json(res,200,generic);
     }
   }
 
   if(url.pathname==='/api/auth/register' && req.method==='POST'){
     try{
       const body=await readBody(req);
-      const login=normalizeLogin(body?.login);
+      const email=normalizeEmail(body?.email||body?.login);
       const password=String(body?.password||'');
-      const displayName=String(body?.displayName||login).trim().slice(0,120)||login;
-      if(login.length<3) return json(res,400,{ok:false,error:'Логин должен быть не короче 3 символов.'});
+      if(!validEmail(email)) return json(res,400,{ok:false,error:'Укажи корректную почту.'});
       if(password.length<8) return json(res,400,{ok:false,error:'Пароль должен быть не короче 8 символов.'});
       const users=await ensureUsersRegistry();
-      if(users.users.some(u=>u.login===login)) return json(res,409,{ok:false,error:'Такой логин уже зарегистрирован.'});
+      if(users.users.some(u=>normalizeEmail(u.email||u.login)===email)) return json(res,409,{ok:false,error:'Аккаунт с этой почтой уже зарегистрирован.'});
+
+      const auth=await ensureSupabaseEmailUser(email,password);
       const salt=randomBytes(16).toString('hex');
-      const user={id:'usr_'+randomBytes(10).toString('hex'),login,displayName,salt,passwordHash:hashPassword(password,salt),createdAt:new Date().toISOString()};
+      const displayName=email.split('@')[0]||'Пользователь';
+      const user={
+        id:'usr_'+randomBytes(10).toString('hex'),
+        login:email,email,displayName,salt,passwordHash:hashPassword(password,salt),
+        supabaseUserId:auth?.userId||'',authType:'email',createdAt:new Date().toISOString()
+      };
       const isFirst=users.users.length===0;
       users.users.push(user);
       await writeUsersRegistry(users);
@@ -7336,42 +7429,59 @@ const server=http.createServer(async(req,res)=>{
       if(isFirst){
         let claimed=false;
         for(const account of accounts.accounts){
-          if(!account.ownerUserId){account.ownerUserId=user.id;claimed=true}
+          if(!account.ownerUserId){account.ownerUserId=user.id;account.email=email;claimed=true}
         }
         if(!claimed){
           const id='acc_'+user.id+'_main';
-          accounts.accounts.push({id,name:'Основной аккаунт',owner:displayName,company:'',email:'',phone:'',notes:'',memory:'',avatarUrl:'',avatarPath:'',ownerUserId:user.id,createdAt:new Date().toISOString()});
+          accounts.accounts.push({id,name:'Основной аккаунт',owner:'',company:'',email,phone:'',notes:'',memory:'',avatarUrl:'',avatarPath:'',ownerUserId:user.id,createdAt:new Date().toISOString()});
           await writeAppState(blankFactoryState(),id);
         }
       }else{
         const id='acc_'+user.id+'_main';
-        accounts.accounts.push({id,name:'Основной аккаунт',owner:displayName,company:'',email:'',phone:'',notes:'',memory:'',avatarUrl:'',avatarPath:'',ownerUserId:user.id,createdAt:new Date().toISOString()});
+        accounts.accounts.push({id,name:'Основной аккаунт',owner:'',company:'',email,phone:'',notes:'',memory:'',avatarUrl:'',avatarPath:'',ownerUserId:user.id,createdAt:new Date().toISOString()});
         await writeAppState(blankFactoryState(),id);
       }
       await writeAccountsRegistry(accounts);
       setSessionCookie(res,makeSessionToken(user.id));
-      return json(res,201,{ok:true,user:{id:user.id,login:user.login,displayName:user.displayName}});
+      return json(res,201,{ok:true,user:{id:user.id,login:user.login,email:user.email,displayName:user.displayName}});
     }catch(e){
-      return json(res,502,{ok:false,error:'Не удалось зарегистрироваться.',detail:String(e?.message||e)});
+      return json(res,502,{ok:false,error:'Не удалось зарегистрироваться по почте.',detail:String(e?.message||e)});
     }
   }
 
   if(url.pathname==='/api/auth/login' && req.method==='POST'){
     try{
       const body=await readBody(req);
-      const login=normalizeLogin(body?.login);
+      const identifier=normalizeLogin(body?.email||body?.login);
       const password=String(body?.password||'');
       const users=await ensureUsersRegistry();
-      const user=users.users.find(u=>u.login===login);
-      if(!user) return json(res,401,{ok:false,error:'Неверный логин или пароль.'});
-      const actual=Buffer.from(hashPassword(password,user.salt),'hex');
-      const expected=Buffer.from(String(user.passwordHash||''),'hex');
-      if(actual.length!==expected.length||!timingSafeEqual(actual,expected)){
-        console.warn('[auth-login] password mismatch for existing login '+login);
-        return json(res,401,{ok:false,error:'Неверный логин или пароль.'});
+      const user=users.users.find(u=>normalizeLogin(u.email||u.login)===identifier||normalizeLogin(u.login)===identifier);
+      if(!user) return json(res,401,{ok:false,error:'Неверная почта или пароль.'});
+      let passwordOk=false;
+      try{
+        const actual=Buffer.from(hashPassword(password,user.salt),'hex');
+        const expected=Buffer.from(String(user.passwordHash||''),'hex');
+        passwordOk=actual.length===expected.length&&timingSafeEqual(actual,expected);
+      }catch{}
+
+      if(!passwordOk&&validEmail(identifier)){
+        try{
+          const auth=await supabaseAuthRequest('/token?grant_type=password',{body:{email:identifier,password}});
+          if(auth?.access_token){
+            passwordOk=true;
+            user.email=identifier;user.login=identifier;user.supabaseUserId=auth?.user?.id||user.supabaseUserId||'';
+            const salt=randomBytes(16).toString('hex');
+            user.salt=salt;user.passwordHash=hashPassword(password,salt);user.passwordUpdatedAt=new Date().toISOString();
+            await writeUsersRegistry(users);
+          }
+        }catch{}
+      }
+      if(!passwordOk){
+        console.warn('[auth-login] password mismatch for '+identifier);
+        return json(res,401,{ok:false,error:'Неверная почта или пароль.'});
       }
       setSessionCookie(res,makeSessionToken(user.id));
-      return json(res,200,{ok:true,user:{id:user.id,login:user.login,displayName:user.displayName||user.login}});
+      return json(res,200,{ok:true,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось войти.',detail:String(e?.message||e)});
     }
@@ -7447,6 +7557,27 @@ const server=http.createServer(async(req,res)=>{
       if(!account.name) account.name='Аккаунт';
       account.updatedAt=new Date().toISOString();
       await writeAccountsRegistry(registry);
+
+      if(body?.email!==undefined&&validEmail(account.email)){
+        try{
+          const users=await ensureUsersRegistry();
+          const user=users.users.find(u=>u.id===req.cfUser?.id);
+          if(user){
+            const email=normalizeEmail(account.email);
+            const duplicate=users.users.some(u=>u.id!==user.id&&normalizeEmail(u.email||u.login)===email);
+            if(!duplicate){
+              if(!user.supabaseUserId){
+                try{
+                  const auth=await ensureSupabaseEmailUser(email,null);
+                  if(auth?.userId)user.supabaseUserId=auth.userId;
+                }catch(e){console.warn('[auth-email-link] '+String(e?.message||e))}
+              }
+              user.email=email;user.login=email;user.authType='email';user.emailLinkedAt=new Date().toISOString();
+              await writeUsersRegistry(users);
+            }
+          }
+        }catch(e){console.warn('[auth-email-sync] '+String(e?.message||e))}
+      }
       return json(res,200,{ok:true,account});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось сохранить аккаунт.',detail:String(e?.message||e)});
