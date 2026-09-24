@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.14';
+const APP_VERSION='2.6.15';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -174,16 +174,17 @@ async function readStateRow(rowId){
 async function writeStateRow(rowId,data){
   if(!supabaseConfigured()) return {configured:false};
   const base=process.env.SUPABASE_URL.replace(/\/$/,'');
+  const updatedAt=new Date().toISOString();
   const r=await fetch(base+'/rest/v1/app_state?on_conflict=id',{
     method:'POST',
     headers:supabaseHeaders({'prefer':'resolution=merge-duplicates,return=minimal'}),
-    body:JSON.stringify([{id:rowId,data,updated_at:new Date().toISOString()}])
+    body:JSON.stringify([{id:rowId,data,updated_at:updatedAt}])
   });
   if(!r.ok){
     const detail=await r.text();
     throw new Error('Supabase write failed: '+r.status+' '+detail);
   }
-  return {configured:true};
+  return {configured:true,updatedAt};
 }
 
 async function deleteStateRow(rowId){
@@ -200,12 +201,73 @@ async function deleteStateRow(rowId){
   return {configured:true};
 }
 
+function stateEntityTime(item){
+  const raw=item?.updatedAt||item?.updated_at||item?.finishedAt||item?.failedAt||item?.createdAt||item?.created||'';
+  const ts=Date.parse(String(raw||''));
+  return Number.isFinite(ts)?ts:0;
+}
+function mergeNewestById(existing=[],incoming=[],limit=5000){
+  const map=new Map();
+  for(const item of (Array.isArray(existing)?existing:[])){
+    if(item&&item.id!=null)map.set(String(item.id),item);
+  }
+  for(const item of (Array.isArray(incoming)?incoming:[])){
+    if(!item||item.id==null)continue;
+    const key=String(item.id),prev=map.get(key);
+    if(!prev){map.set(key,item);continue}
+    const prevTs=stateEntityTime(prev),nextTs=stateEntityTime(item);
+    if(prevTs&&(!nextTs||nextTs<prevTs))continue;
+    map.set(key,{...prev,...item});
+  }
+  return [...map.values()].slice(-limit);
+}
+function markStateSnapshot(data,updatedAt){
+  if(data&&typeof data==='object'){
+    try{
+      Object.defineProperty(data,'__stateUpdatedAt',{value:String(updatedAt||''),writable:true,configurable:true,enumerable:false});
+    }catch{}
+  }
+  return data;
+}
 async function readAppState(accountId=DEFAULT_ACCOUNT_ID){
-  return readStateRow(accountStateRowId(accountId));
+  const state=await readStateRow(accountStateRowId(accountId));
+  if(state?.data)markStateSnapshot(state.data,state.updatedAt);
+  return state;
 }
 
 async function writeAppState(data,accountId=DEFAULT_ACCOUNT_ID){
-  return writeStateRow(accountStateRowId(accountId),data);
+  const rowId=accountStateRowId(accountId);
+  const baseUpdatedAt=String(data?.__stateUpdatedAt||'');
+  const current=await readStateRow(rowId).catch(()=>({configured:false,data:null,updatedAt:null}));
+  let output=data;
+  const stale=Boolean(
+    current?.data&&
+    baseUpdatedAt&&
+    current?.updatedAt&&
+    String(current.updatedAt)!==baseUpdatedAt
+  );
+  if(stale){
+    // A long-running media job may be holding an old full-state snapshot.
+    // Merge versioned entities instead of rolling newer neighboring runs/products/ideas back.
+    output={...current.data,...data};
+    output.runs=mergeNewestById(current.data.runs,data?.runs,5000);
+    output.products=mergeNewestById(current.data.products,data?.products,2000);
+    output.characters=mergeNewestById(current.data.characters,data?.characters,1000);
+    output.savedIdeas=mergeNewestById(current.data.savedIdeas,data?.savedIdeas,5000);
+    output.expenses=mergeNewestById(current.data.expenses,data?.expenses,5000);
+    output.journal=mergeNewestById(current.data.journal,data?.journal,1000);
+    output.scripts=mergeNewestById(current.data.scripts,data?.scripts,3000);
+    output.videoAnalyses=mergeNewestById(current.data.videoAnalyses,data?.videoAnalyses,500);
+    output.campaigns=mergeNewestById(current.data.campaigns,data?.campaigns,1000);
+    // Chat/settings are not background-pipeline outputs. Preserve the freshest server copy
+    // when this writer is known to be stale.
+    output.chatHistory=current.data.chatHistory??data?.chatHistory;
+    output.settings=current.data.settings??data?.settings;
+    Object.assign(data,output);
+  }
+  const written=await writeStateRow(rowId,output);
+  markStateSnapshot(data,written?.updatedAt||current?.updatedAt||'');
+  return written;
 }
 
 function blankFactoryState(){
@@ -2230,8 +2292,8 @@ async function processRunPrevis(accountId,runId){
     run.previsResult={
       completed:Boolean(expected&&ready>=expected),
       totalFrames:ready,totalScenes:plan.totalScenes,
-      generator:'Nano Banana Pro',
-      fallback:'GPT Image',
+      generator:'OpenAI GPT Image',
+      fallback:'',
       completedAt:ready>=expected?new Date().toISOString():null
     };
     run.references={
@@ -2242,7 +2304,7 @@ async function processRunPrevis(accountId,runId){
       avatar:(run.avatarReferences||run.character?.media||[]).map(x=>x?.url).filter(Boolean)
     };
     run.updatedAt=new Date().toISOString();
-    appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+ready+'/'+expected+' кадров · Nano Banana Pro → GPT Image fallback');
+    appendFactoryJournal(data,'Превиз готов',(run.productName||run.id)+' · '+ready+'/'+expected+' кадров · OpenAI GPT Image');
 
     if(run.mode==='manual'){
       run.status='На проверке';run.stage='Превиз-кадры';run.progress=36;run.awaitingApproval=true;
@@ -3112,7 +3174,6 @@ async function launchSavedIdea(accountId,savedIdeaId){
   return run;
 }
 
-const storyboardSceneQueues=new Map();
 function invalidateAfterStoryboardSceneChange(run,sceneNo){
   const n=Number(sceneNo);
   if(run.previsPlan?.frames){
@@ -3131,13 +3192,10 @@ function invalidateAfterStoryboardSceneChange(run,sceneNo){
 }
 function enqueueStoryboardSceneTask(accountId,runId,sceneNo,note=''){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
-  const key=account+'::'+String(runId)+'::storyboard-scene-'+String(sceneNo);
-  const previous=storyboardSceneQueues.get(key)||Promise.resolve();
-  let next;
-  next=previous.catch(()=>{}).then(async()=>{
+  const scene=Math.max(1,Math.min(30,Number(sceneNo)||1));
+  return enqueueAccountBackground(account,'storyboard-scene:'+String(runId)+':'+scene,async()=>{
     let state=await readAppState(account),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
     if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
-    const scene=Math.max(1,Math.min(30,Number(sceneNo)||1));
     run.storyboardSceneJobs=run.storyboardSceneJobs&&typeof run.storyboardSceneJobs==='object'?run.storyboardSceneJobs:{};
     const jobId=factoryId('job');
     run.storyboardSceneJobs[scene]={id:jobId,status:'processing',startedAt:new Date().toISOString(),note:String(note||'').slice(0,2000)};
@@ -3169,11 +3227,8 @@ function enqueueStoryboardSceneTask(accountId,runId,sceneNo,note=''){
       }
       return {ok:false,error:String(e?.message||e)};
     }
-  }).finally(()=>{if(storyboardSceneQueues.get(key)===next)storyboardSceneQueues.delete(key)});
-  storyboardSceneQueues.set(key,next);
-  return next;
+  },'storyboard-scene');
 }
-
 
 function stageTaskName(task){
   return task==='idea'?'Идея':task==='script'?'Сценарий':task==='storyboard'?'Storyboard':String(task||'Этап');
