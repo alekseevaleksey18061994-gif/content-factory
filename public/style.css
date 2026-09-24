@@ -2067,3 +2067,9 @@ html,body{
   #assistant{padding-bottom:18px!important}
   #assistant .chat-form{display:grid!important}
 }
+
+
+/* v2.5.0: regenerate a single storyboard scene */
+.storyboard-report-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px}
+.storyboard-head-copy{min-width:0}.storyboard-scene-regen{border:1px solid #cfe3ea;border-radius:11px;background:#f8fcfe;color:#138f96;padding:9px 11px;font-size:10px;font-weight:850;cursor:pointer;white-space:nowrap}.storyboard-scene-regen:disabled{opacity:.58;cursor:wait}
+@media(max-width:820px){.storyboard-report-head{grid-template-columns:auto minmax(0,1fr)}.storyboard-scene-regen{grid-column:1/-1;width:100%;min-height:42px;font-size:11px}}
