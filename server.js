@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.0.0';
+const APP_VERSION='2.0.1';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -893,11 +893,27 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   ].join('\n');
 
   async function criticPass(prompt){
-    const out=await callIdeaAI({prompt,schema:finalSchema,name:'idea_critic',images:[]});
-    const idea=normalizeIdeaStage(out,payload);
+    let out=await callIdeaAI({prompt,schema:finalSchema,name:'idea_critic',images:[]});
+    let idea=normalizeIdeaStage(out,payload);
     idea.quality=out.quality||{};
-    const complete=ideaStageComplete(idea);
-    if(!complete.ok)throw new Error('Creative Critic вернул неполную идею');
+    let complete=ideaStageComplete(idea);
+    if(!complete.ok){
+      const repair=[
+        prompt,
+        '',
+        'ТЕХНИЧЕСКАЯ ПРОВЕРКА ФОРМЫ: предыдущий ответ оказался неполным.',
+        'Предыдущий ответ: '+JSON.stringify(out),
+        'Пустые обязательные поля: '+complete.missing.join(', ')+(complete.badAlt?' · альтернативы неполные':'')+'.',
+        'Верни полный объект по той же схеме. КАЖДОЕ текстовое поле selected и всех 4 alternatives должно быть непустым.',
+        'Если отдельный CTA не нужен, ctaDirection всё равно заполни формулировкой «без отдельного CTA; финал через визуальный payoff».',
+        'Не сокращай и не удаляй поля ради экономии токенов.'
+      ].join('\n');
+      out=await callIdeaAI({prompt:repair,schema:finalSchema,name:'idea_critic',images:[]});
+      idea=normalizeIdeaStage(out,payload);
+      idea.quality=out.quality||{};
+      complete=ideaStageComplete(idea);
+    }
+    if(!complete.ok)throw new Error('Creative Critic вернул неполную идею: '+complete.missing.join(', ')+(complete.badAlt?' · alternatives':''));
     return idea;
   }
 
