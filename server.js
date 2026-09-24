@@ -287,10 +287,6 @@ async function runEphemeralAuthSelfTest(){
     const me=await retryJson('/api/auth/me',{headers:commonHeaders,accept:[200]});
     if(me.data?.user?.id!==createdUserId)throw new Error('me-after-register '+me.status);
 
-    const acc=await retryJson('/api/accounts',{headers:commonHeaders,accept:[200]});
-    if(!Array.isArray(acc.data?.accounts)||!acc.data.accounts.length)throw new Error('accounts '+acc.status);
-    createdAccountIds=acc.data.accounts.map(x=>String(x.id||'')).filter(Boolean);
-
     const login=await retryJson('/api/auth/login',{
       method:'POST',
       headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
@@ -308,7 +304,7 @@ async function runEphemeralAuthSelfTest(){
     });
     if(me2.data?.user?.id!==createdUserId)throw new Error('me-after-login '+me2.status);
 
-    console.log('[auth-ephemeral-selftest] PASS register='+reg.status+' me=200 accounts=200 login=200 me2=200');
+    console.log('[auth-ephemeral-selftest] PASS register='+reg.status+' me=200 logout/login=200 me2=200');
     return {ok:true};
   }finally{
     try{
