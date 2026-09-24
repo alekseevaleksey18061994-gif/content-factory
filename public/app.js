@@ -1049,42 +1049,124 @@ function renderCosts(){
   settings.costRates=settings.costRates||{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0};
   const nowD=new Date(),month=nowD.getMonth(),year=nowD.getFullYear(),todayKey=nowD.toISOString().slice(0,10);
   const all=Array.isArray(expenses)?expenses:[];
-  const totalRub=all.reduce((s,e)=>s+expenseRubValue(e),0);
+  const totalRub=all.reduce((sum,e)=>sum+expenseRubValue(e),0);
   const chat=all.filter(e=>e.provider==="OpenAI"&&e.category==="chat");
-  const chatRub=chat.reduce((s,e)=>s+expenseRubValue(e),0);
-  const monthRub=all.filter(e=>{const d=expenseDate(e);return d&&d.getMonth()===month&&d.getFullYear()===year}).reduce((s,e)=>s+expenseRubValue(e),0);
-  const monthlyFixed=all.filter(e=>e.recurring==="monthly").reduce((s,e)=>s+expenseRubValue(e),0);
-  $("#costStats").innerHTML=stat("₽","Всего",fmtMoney(totalRub)+" ₽")+stat("✦","ChatGPT",fmtMoney(chatRub)+" ₽","blue")+stat("◷","Этот месяц",fmtMoney(monthRub)+" ₽","purple")+stat("↻","Постоянные / мес.",fmtMoney(monthlyFixed)+" ₽","warn");
+  const chatRub=chat.reduce((sum,e)=>sum+expenseRubValue(e),0);
+  const monthRub=all
+    .filter(e=>{const d=expenseDate(e);return d&&d.getMonth()===month&&d.getFullYear()===year})
+    .reduce((sum,e)=>sum+expenseRubValue(e),0);
+  const monthlyFixed=all
+    .filter(e=>e.recurring==="monthly")
+    .reduce((sum,e)=>sum+expenseRubValue(e),0);
+
+  const costStats=$("#costStats");
+  if(costStats){
+    costStats.innerHTML=
+      stat("₽","Всего",fmtMoney(totalRub)+" ₽")+
+      stat("✦","ChatGPT",fmtMoney(chatRub)+" ₽","blue")+
+      stat("◷","Этот месяц",fmtMoney(monthRub)+" ₽","purple")+
+      stat("↻","Постоянные / мес.",fmtMoney(monthlyFixed)+" ₽","warn");
+  }
 
   const providers=["OpenAI","Higgsfield","Runway","Descript","Railway","Supabase","n8n","Google Drive","Другое"];
-  $("#expenseProviderCards").innerHTML=providers.map(p=>{
-    const rows=all.filter(e=>e.provider===p),rub=rows.reduce((s,e)=>s+expenseRubValue(e),0);
-    const usd=rows.reduce((s,e)=>s+(Number(e.amountUsd)||0),0);
-    const usage=rows.filter(e=>!["subscription","topup"].includes(String(e.category||""))).length;
-    return '<div class="expense-provider-card"><div><b>'+esc(p)+'</b><small>'+usage+' операций</small></div><strong>'+fmtMoney(rub)+' ₽</strong>'+(usd?'<em>
+  const providerCards=$("#expenseProviderCards");
+  if(providerCards){
+    providerCards.innerHTML=providers.map(provider=>{
+      const rows=all.filter(e=>e.provider===provider);
+      const rub=rows.reduce((sum,e)=>sum+expenseRubValue(e),0);
+      const usd=rows.reduce((sum,e)=>sum+(Number(e.amountUsd)||0),0);
+      const usage=rows.filter(e=>!["subscription","topup","payment-fee"].includes(String(e.category||""))).length;
+      return '<div class="expense-provider-card">'+
+        '<div><b>'+esc(provider)+'</b><small>'+usage+' операций</small></div>'+
+        '<strong>'+fmtMoney(rub)+' ₽</strong>'+
+        (usd?'<em>$'+usd.toFixed(2)+'</em>':'')+
+      '</div>';
+    }).join("");
+  }
 
-  $("#usdRubRate").value=settings.costRates.usdRub||"";
-  $("#usdRubRate").title=settings.costRates.usdRubSource?("Авто: "+settings.costRates.usdRubSource+(settings.costRates.usdRubUpdatedAt?" · "+settings.costRates.usdRubUpdatedAt:"")):"";
-  $("#higgsfieldRate").value=settings.costRates.higgsfieldRubPerGeneration||0;
-  $("#runwayRate").value=settings.costRates.runwayRubPerSecond||0;
-  $("#descriptRate").value=settings.costRates.descriptRubPerAction||0;
-  $("#budgetCampaign").value=settings.budgetCampaign||5000;
-  $("#budgetAttempts").value=settings.budgetAttempts||3;
-  $("#budgetApproval").value=settings.budgetApproval||100;
+  const billing=settings.providerBilling&&typeof settings.providerBilling==="object"?settings.providerBilling:{};
+  const funding=all.filter(e=>["subscription","topup","payment-fee"].includes(String(e.category||"")));
+  const billingSummary=$("#billingSummary");
+  if(billingSummary){
+    const fundingHtml=funding.slice().reverse().map(e=>{
+      const rub=expenseRubValue(e);
+      const recurring=e.recurring==="monthly"?" / мес.":"";
+      return '<div class="billing-item">'+
+        '<div><b>'+esc(e.provider||"Сервис")+'</b><small>'+esc(e.description||"")+'</small></div>'+
+        '<div><strong>'+fmtMoney(rub)+' ₽</strong>'+
+          (Number(e.amountUsd)?'<small>$'+Number(e.amountUsd).toFixed(2)+recurring+'</small>':'')+
+        '</div>'+
+      '</div>';
+    }).join("");
+
+    const balanceParts=[];
+    if(billing.higgsfield){
+      balanceParts.push(
+        '<div class="billing-balance"><b>Higgsfield</b><span>'+
+        esc(billing.higgsfield.plan||"")+' · '+esc(billing.higgsfield.credits||0)+' кредитов'+
+        '</span></div>'
+      );
+    }
+    if(billing.runway){
+      balanceParts.push(
+        '<div class="billing-balance"><b>Runway</b><span>'+
+        esc(billing.runway.plan||"")+' · '+esc(billing.runway.totalCredits||0)+' кредитов ('+
+        esc(billing.runway.planCredits||0)+' тариф + '+esc(billing.runway.purchasedCredits||0)+' куплено)'+
+        '</span></div>'
+      );
+    }
+
+    billingSummary.innerHTML=
+      (fundingHtml||'<div class="empty compact-empty">Подписок и пополнений пока нет.</div>')+
+      (balanceParts.length?'<div class="billing-balances">'+balanceParts.join("")+'</div>':'');
+  }
+
+  const usdRate=$("#usdRubRate");
+  if(usdRate){
+    usdRate.value=settings.costRates.usdRub||"";
+    usdRate.title=settings.costRates.usdRubSource
+      ?("Авто: "+settings.costRates.usdRubSource+(settings.costRates.usdRubUpdatedAt?" · "+settings.costRates.usdRubUpdatedAt:""))
+      :"";
+  }
+  if($("#higgsfieldRate"))$("#higgsfieldRate").value=settings.costRates.higgsfieldRubPerGeneration||0;
+  if($("#runwayRate"))$("#runwayRate").value=settings.costRates.runwayRubPerSecond||0;
+  if($("#descriptRate"))$("#descriptRate").value=settings.costRates.descriptRubPerAction||0;
+  if($("#budgetCampaign"))$("#budgetCampaign").value=settings.budgetCampaign||5000;
+  if($("#budgetAttempts"))$("#budgetAttempts").value=settings.budgetAttempts||3;
+  if($("#budgetApproval"))$("#budgetApproval").value=settings.budgetApproval||100;
 
   const pf=$("#costProviderFilter");
-  if(pf&&pf.options.length<=1)providers.forEach(p=>pf.insertAdjacentHTML("beforeend",'<option value="'+esc(p)+'">'+esc(p)+'</option>'));
-  const provider=pf?.value||"",period=$("#costPeriodFilter")?.value||"all";
+  if(pf&&pf.options.length<=1){
+    providers.forEach(provider=>pf.insertAdjacentHTML("beforeend",'<option value="'+esc(provider)+'">'+esc(provider)+'</option>'));
+  }
+  const provider=pf?.value||"";
+  const period=$("#costPeriodFilter")?.value||"all";
   let rows=all.slice();
   if(provider)rows=rows.filter(e=>e.provider===provider);
   if(period==="month")rows=rows.filter(e=>{const d=expenseDate(e);return d&&d.getMonth()===month&&d.getFullYear()===year});
   if(period==="today")rows=rows.filter(e=>(e.createdAt||"").slice(0,10)===todayKey);
-  $("#costRows").innerHTML=rows.slice().reverse().slice(0,200).map(e=>{
-    const d=expenseDate(e),rub=expenseRubValue(e);
-    const usage=e.usage?Object.entries(e.usage).filter(([,v])=>typeof v!=="object").map(([k,v])=>k+": "+v).join(" · "):"";
-    return '<div class="expense-row"><div class="expense-main"><span class="expense-provider-badge">'+esc(e.provider||"Другое")+'</span><div><h3>'+esc(e.description||"Расход")+'</h3><p>'+esc((d?d.toLocaleString("ru-RU"):"")+(e.model?" · "+e.model:"")+(usage?" · "+usage:""))+'</p></div></div><div class="expense-amount"><b>'+fmtMoney(rub)+' ₽</b>'+(e.amountUsd?'<small>$'+Number(e.amountUsd).toFixed(5)+'</small>':'')+'<button class="tiny-btn danger-mini" onclick="deleteExpense(\''+e.id+'\')">Удалить</button></div></div>'
-  }).join("")||'<div class="empty">Расходов пока нет.</div>';
+
+  const costRows=$("#costRows");
+  if(costRows){
+    costRows.innerHTML=rows.slice().reverse().slice(0,200).map(e=>{
+      const d=expenseDate(e),rub=expenseRubValue(e);
+      const usage=e.usage
+        ?Object.entries(e.usage).filter(([,v])=>typeof v!=="object").map(([k,v])=>k+": "+v).join(" · ")
+        :"";
+      return '<div class="expense-row">'+
+        '<div class="expense-main"><span class="expense-provider-badge">'+esc(e.provider||"Другое")+'</span>'+
+          '<div><h3>'+esc(e.description||"Расход")+'</h3><p>'+
+          esc((d?d.toLocaleString("ru-RU"):"")+(e.model?" · "+e.model:"")+(usage?" · "+usage:""))+
+          '</p></div></div>'+
+        '<div class="expense-amount"><b>'+fmtMoney(rub)+' ₽</b>'+
+          (Number(e.amountUsd)?'<small>$'+Number(e.amountUsd).toFixed(5)+'</small>':'')+
+          '<button class="tiny-btn danger-mini" onclick="deleteExpense(\''+e.id+'\')">Удалить</button>'+
+        '</div>'+
+      '</div>';
+    }).join("")||'<div class="empty">Расходов пока нет.</div>';
+  }
 }
+
 $("#saveBudget").onclick=()=>{
   settings.costRates=settings.costRates||{};
   settings.costRates.usdRub=Number($("#usdRubRate").value)||0;
