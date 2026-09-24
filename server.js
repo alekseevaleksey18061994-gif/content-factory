@@ -843,7 +843,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '- если товар можно заменить любым похожим предметом без потери сюжета — productNecessity максимум 6.',
     '- если второе/третье доказательство повторяет тот же жест и отличается только реквизитом — proofVariety максимум 6;',
     '- если герой проговаривает монтажную механику («сейчас покажу/повторю/проверю») вместо естественной реакции — humanNaturalness максимум 6;',
-    '- если ролик полезный, но в нём нет ни одного узнаваемого/удивляющего/satisfying момента — shareability максимум 6.'
+    '- если ролик полезный, но в нём нет ни одного узнаваемого/удивляющего/satisfying момента — shareability максимум 6.',
     '',
     'КРИТИЧЕСКИЙ ПОРОГ >=8:',
     'scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, humanNaturalness, proofVariety, shareability, productNecessity, originality и generatability.',
