@@ -5870,18 +5870,55 @@ function analysisImageParts(frameSamples=[]){
   }
   return parts;
 }
-async function transcribeAudio(audioPath){
-  if(!audioPath||!fs.existsSync(audioPath))return '';
+async function transcribeAudioDetailed(audioPath){
+  if(!audioPath||!fs.existsSync(audioPath))return {text:'',timedText:'',segments:[],status:'no-audio',model:''};
   const stat=fs.statSync(audioPath);
-  if(stat.size>25*1024*1024)return '';
-  const form=new FormData();
-  form.append('model','gpt-transcribe');
-  form.append('file',new Blob([fs.readFileSync(audioPath)],{type:'audio/mpeg'}),'audio.mp3');
-  const r=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY},body:form});
-  const text=await r.text();
-  let data;try{data=text?JSON.parse(text):{}}catch{data={}}
-  if(!r.ok)throw new Error(data?.error?.message||('Transcription error '+r.status));
-  return String(data?.text||'').trim();
+  if(stat.size>25*1024*1024)return {text:'',timedText:'',segments:[],status:'too-large',model:''};
+  const call=async(model,responseFormat)=>{
+    const form=new FormData();
+    form.append('model',model);
+    form.append('file',new Blob([fs.readFileSync(audioPath)],{type:'audio/mpeg'}),'audio.mp3');
+    form.append('response_format',responseFormat);
+    if(model==='gpt-4o-transcribe-diarize')form.append('chunking_strategy','auto');
+    if(model==='whisper-1'){
+      form.append('timestamp_granularities[]','segment');
+      form.append('temperature','0');
+    }
+    const r=await fetch('https://api.openai.com/v1/audio/transcriptions',{
+      method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY},body:form
+    });
+    const txt=await r.text();let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
+    if(!r.ok){
+      const e=new Error(data?.error?.message||('Transcription error '+r.status));
+      e.status=r.status;e.code=data?.error?.code||'';throw e;
+    }
+    return data;
+  };
+  let data=null,model='gpt-4o-transcribe-diarize',fallback='';
+  try{
+    data=await call(model,'diarized_json');
+  }catch(e){
+    fallback=String(e?.message||e);
+    model='whisper-1';
+    data=await call(model,'verbose_json');
+  }
+  const rawSegments=Array.isArray(data?.segments)?data.segments:[];
+  const segments=rawSegments.map((x,i)=>({
+    index:i+1,
+    start:Number(x?.start)||0,
+    end:Number(x?.end)||0,
+    speaker:String(x?.speaker||''),
+    text:String(x?.text||'').trim()
+  })).filter(x=>x.text);
+  const text=String(data?.text||segments.map(x=>x.text).join(' ')).trim();
+  const timedText=segments.map(x=>{
+    const speaker=x.speaker?(' '+x.speaker):'';
+    return '['+x.start.toFixed(2)+'–'+x.end.toFixed(2)+'s'+speaker+'] '+x.text;
+  }).join('\n');
+  return {text,timedText,segments,status:text?'ready':'no-speech',model,fallback};
+}
+async function transcribeAudio(audioPath){
+  return (await transcribeAudioDetailed(audioPath)).text;
 }
 async function analyzeReferenceMaterial(opts){
   const accountId=opts.accountId;
