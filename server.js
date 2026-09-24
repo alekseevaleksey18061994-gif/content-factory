@@ -208,6 +208,32 @@ async function writeUsersRegistry(registry){
   usersRegistryCacheAt=Date.now();
   return cloneRegistry(registry);
 }
+async function freshUsersRegistry(){
+  const row=await readStateRow(USERS_REGISTRY_ID);
+  const registry=row.data?.users?row.data:{version:1,users:[]};
+  usersRegistryCache=cloneRegistry(registry);
+  usersRegistryCacheAt=Date.now();
+  return cloneRegistry(registry);
+}
+function passwordInputCandidates(value){
+  const raw=String(value??'');
+  const cleaned=raw.normalize('NFKC').replace(/[\u200B-\u200D\u2060\uFEFF]/g,'');
+  const trimmed=cleaned.trim();
+  return [...new Set([raw,cleaned,trimmed])];
+}
+function passwordMatchesUser(user,password){
+  if(!user?.salt||!user?.passwordHash)return {ok:false,variant:-1};
+  const expected=Buffer.from(String(user.passwordHash||''),'hex');
+  let i=0;
+  for(const candidate of passwordInputCandidates(password)){
+    try{
+      const actual=Buffer.from(hashPassword(candidate,user.salt),'hex');
+      if(actual.length===expected.length&&timingSafeEqual(actual,expected))return {ok:true,variant:i,password:candidate};
+    }catch{}
+    i++;
+  }
+  return {ok:false,variant:-1};
+}
 async function sessionUser(req){
   const session=readSessionToken(parseCookies(req)[SESSION_COOKIE]);
   if(!session) return null;
@@ -7703,71 +7729,79 @@ const server=http.createServer(async(req,res)=>{
       const body=await readBody(req);
       const identifier=normalizeLogin(body?.email||body?.login);
       const password=String(body?.password||'');
-      const users=await ensureUsersRegistry();
-      let user=users.users.find(u=>
+      const findUser=registry=>(registry?.users||[]).find(u=>
         normalizeLogin(u.email||u.login)===identifier||
         normalizeLogin(u.login)===identifier||
         normalizeLogin(u.legacyLogin||'')===identifier
       );
-      let migratedLegacy=false;
 
-      // Safe one-time migration path for the original pre-email account:
-      // if the entered email is not yet indexed but there is exactly one legacy user,
-      // only claim it after the submitted password cryptographically matches that user's existing hash.
-      if(!user&&validEmail(identifier)&&users.users.length===1){
-        const candidate=users.users[0];
+      let users=await ensureUsersRegistry();
+      let user=findUser(users);
+      let match=user?passwordMatchesUser(user,password):{ok:false,variant:-1};
+      let source='cache';
+
+      // A login failure must always re-check the authoritative registry before returning 401.
+      if(!user||!match.ok){
         try{
-          const actual=Buffer.from(hashPassword(password,candidate.salt),'hex');
-          const expected=Buffer.from(String(candidate.passwordHash||''),'hex');
-          if(actual.length===expected.length&&timingSafeEqual(actual,expected)){
-            user=candidate;
-            user.email=identifier;
-            user.login=identifier;
-            user.authType='email';
-            user.emailLinkedAt=new Date().toISOString();
-            migratedLegacy=true;
-            await writeUsersRegistry(users);
-            try{
-              const accounts=await ensureAccountsRegistry();
-              let touched=false;
-              for(const account of (accounts.accounts||[])){
-                if(account.ownerUserId===user.id){
-                  account.email=identifier;
-                  account.updatedAt=new Date().toISOString();
-                  touched=true;
-                }
-              }
-              if(touched)await writeAccountsRegistry(accounts);
-            }catch(e){console.warn('[auth-login-account-sync] '+String(e?.message||e))}
-          }
-        }catch{}
+          users=await freshUsersRegistry();
+          user=findUser(users);
+          match=user?passwordMatchesUser(user,password):{ok:false,variant:-1};
+          source='fresh-db';
+        }catch(e){
+          console.warn('[auth-login-fresh-read] '+String(e?.message||e));
+        }
       }
 
-      if(!user) return json(res,401,{ok:false,error:'Неверная почта или пароль.',code:'AUTH_USER_NOT_FOUND'});
+      // One-user legacy migration: only after the submitted password matches that legacy account.
+      if(!user&&validEmail(identifier)&&(users?.users||[]).length===1){
+        const candidate=users.users[0];
+        const candidateMatch=passwordMatchesUser(candidate,password);
+        if(candidateMatch.ok){
+          user=candidate;match=candidateMatch;
+          user.legacyLogin=user.legacyLogin||normalizeLogin(user.login);
+          user.email=identifier;user.login=identifier;user.authType='email';user.emailLinkedAt=new Date().toISOString();
+          await writeUsersRegistry(users);
+          try{
+            const accounts=await ensureAccountsRegistry();
+            let touched=false;
+            for(const account of (accounts.accounts||[])){
+              if(account.ownerUserId===user.id){account.email=identifier;account.updatedAt=new Date().toISOString();touched=true}
+            }
+            if(touched)await writeAccountsRegistry(accounts);
+          }catch(e){console.warn('[auth-login-account-sync] '+String(e?.message||e))}
+          source='legacy-migration';
+        }
+      }
 
-      let passwordOk=false;
-      try{
-        const actual=Buffer.from(hashPassword(password,user.salt),'hex');
-        const expected=Buffer.from(String(user.passwordHash||''),'hex');
-        passwordOk=actual.length===expected.length&&timingSafeEqual(actual,expected);
-      }catch{}
+      if(!user){
+        console.warn('[auth-login] reject=user-not-found source='+source+' users='+(users?.users?.length||0)+' idfp='+createHash('sha256').update(identifier).digest('hex').slice(0,10));
+        return json(res,401,{ok:false,error:'Неверная почта или пароль.',code:'AUTH_USER_NOT_FOUND'});
+      }
 
-      if(!passwordOk&&validEmail(identifier)){
+      if(!match.ok&&validEmail(identifier)){
         try{
           const auth=await supabaseAuthRequest('/token?grant_type=password',{body:{email:identifier,password}});
           if(auth?.access_token){
-            passwordOk=true;
+            match={ok:true,variant:99,password};
             user.email=identifier;user.login=identifier;user.supabaseUserId=auth?.user?.id||user.supabaseUserId||'';
             const salt=randomBytes(16).toString('hex');
             user.salt=salt;user.passwordHash=hashPassword(password,salt);user.passwordUpdatedAt=new Date().toISOString();
             await writeUsersRegistry(users);
+            source='supabase';
           }
         }catch{}
       }
 
-      if(!passwordOk){
-        console.warn('[auth-login] credentials rejected · userFound=true · passwordHashPresent='+Boolean(user.passwordHash));
+      if(!match.ok){
+        console.warn('[auth-login] reject=password source='+source+' inputLen='+password.length+' users='+(users?.users?.length||0)+' idfp='+createHash('sha256').update(identifier).digest('hex').slice(0,10));
         return json(res,401,{ok:false,error:'Неверная почта или пароль.',code:'AUTH_PASSWORD_MISMATCH'});
+      }
+
+      // If a harmless copy/paste artifact was removed, persist the cleaned password form once.
+      if(match.variant>0&&match.variant<99&&match.password!==password){
+        const salt=randomBytes(16).toString('hex');
+        user.salt=salt;user.passwordHash=hashPassword(match.password,salt);user.passwordUpdatedAt=new Date().toISOString();
+        await writeUsersRegistry(users);
       }
 
       if(validEmail(identifier)&&(normalizeEmail(user.email)!==identifier||normalizeLogin(user.login)!==identifier)){
@@ -7776,7 +7810,8 @@ const server=http.createServer(async(req,res)=>{
       }
 
       setSessionCookie(res,makeSessionToken(user));
-      return json(res,200,{ok:true,migratedLegacy,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
+      console.log('[auth-login] PASS source='+source+' variant='+match.variant+' user='+user.id);
+      return json(res,200,{ok:true,user:{id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login}});
     }catch(e){
       console.warn('[auth-login-error] '+String(e?.message||e));
       return json(res,502,{ok:false,error:'Не удалось войти.',detail:String(e?.message||e)});
