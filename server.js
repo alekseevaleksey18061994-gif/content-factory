@@ -236,19 +236,41 @@ function passwordMatchesUser(user,password){
 }
 async function sessionUser(req){
   const session=readSessionToken(parseCookies(req)[SESSION_COOKIE]);
-  if(!session) return null;
-  const registry=await ensureUsersRegistry();
-  const user=registry.users.find(u=>u.id===session.uid);
-  if(user)return {id:user.id,login:user.login,email:user.email||'',displayName:user.displayName||user.email||user.login,createdAt:user.createdAt};
-  // Fresh registrations can be briefly invisible through the external state API.
-  // A signed token minted by this server carries the same identity as a short read-after-write fallback.
-  if(session.email&&validEmail(session.email)){
+  if(!session)return null;
+
+  let registry=null;
+  try{registry=await freshUsersRegistry()}
+  catch{
+    try{registry=await ensureUsersRegistry()}
+    catch{return null}
+  }
+
+  const sessionEmail=normalizeEmail(session.email||'');
+  const sessionLogin=normalizeLogin(session.login||'');
+  let user=null;
+
+  // Email is canonical. This repairs cookies minted under a transient duplicate uid.
+  if(validEmail(sessionEmail)){
+    user=(registry.users||[]).find(u=>normalizeEmail(u.email||u.login)===sessionEmail);
+  }
+  if(!user&&sessionLogin){
+    user=(registry.users||[]).find(u=>
+      normalizeLogin(u.login)===sessionLogin||
+      normalizeLogin(u.legacyLogin||'')===sessionLogin
+    );
+  }
+  if(!user)user=(registry.users||[]).find(u=>u.id===session.uid);
+
+  if(user){
+    const canonicalized=String(session.uid)!==String(user.id);
+    if(canonicalized)console.log('[auth-session] canonicalized stale uid '+String(session.uid).slice(0,14)+'… -> '+user.id);
     return {
-      id:String(session.uid),
-      login:normalizeLogin(session.login||session.email),
-      email:normalizeEmail(session.email),
-      displayName:String(session.displayName||session.email).slice(0,120),
-      transientSession:true
+      id:user.id,
+      login:user.login,
+      email:user.email||'',
+      displayName:user.displayName||user.email||user.login,
+      createdAt:user.createdAt,
+      canonicalized
     };
   }
   return null;
@@ -396,12 +418,22 @@ async function runLocalAuthSelfTest(){
 
 async function userOwnsAccount(userId,accountId){
   if(!userId)return false;
-  const registry=await ensureAccountsRegistry();
-  return registry.accounts.some(a=>a.id===sanitizeAccountId(accountId)&&a.ownerUserId===userId);
+  const id=sanitizeAccountId(accountId);
+  let registry=await ensureAccountsRegistry();
+  if((registry.accounts||[]).some(a=>a.id===id&&a.ownerUserId===userId))return true;
+  try{
+    registry=await freshAccountsRegistry();
+    return (registry.accounts||[]).some(a=>a.id===id&&a.ownerUserId===userId);
+  }catch{return false}
 }
 async function firstUserAccount(userId){
-  const registry=await ensureAccountsRegistry();
-  return registry.accounts.find(a=>a.ownerUserId===userId)||null;
+  let registry=await ensureAccountsRegistry();
+  let account=(registry.accounts||[]).find(a=>a.ownerUserId===userId)||null;
+  if(account)return account;
+  try{
+    registry=await freshAccountsRegistry();
+    return (registry.accounts||[]).find(a=>a.ownerUserId===userId)||null;
+  }catch{return null}
 }
 
 function sanitizeAccountId(value){
@@ -609,6 +641,13 @@ async function writeAccountsRegistry(registry){
   registry.version=1;
   registry.accounts=Array.isArray(registry.accounts)?registry.accounts:[];
   await writeStateRow(ACCOUNTS_REGISTRY_ID,registry);
+  accountsRegistryCache=cloneRegistry(registry);
+  accountsRegistryCacheAt=Date.now();
+  return cloneRegistry(registry);
+}
+async function freshAccountsRegistry(){
+  const row=await readStateRow(ACCOUNTS_REGISTRY_ID);
+  const registry=row.data?.accounts?row.data:{version:1,accounts:[]};
   accountsRegistryCache=cloneRegistry(registry);
   accountsRegistryCacheAt=Date.now();
   return cloneRegistry(registry);
@@ -7630,7 +7669,8 @@ const server=http.createServer(async(req,res)=>{
       const password=String(body?.password||'');
       if(!validEmail(email)) return json(res,400,{ok:false,error:'Укажи корректную почту.'});
       if(password.length<8) return json(res,400,{ok:false,error:'Пароль должен быть не короче 8 символов.'});
-      const users=await ensureUsersRegistry();
+      let users;
+      try{users=await freshUsersRegistry()}catch{users=await ensureUsersRegistry()}
       const existing=users.users.find(u=>normalizeEmail(u.email||u.login)===email);
       if(existing){
         let currentPasswordOk=false;
@@ -7837,8 +7877,13 @@ const server=http.createServer(async(req,res)=>{
 
   if(url.pathname==='/api/accounts' && req.method==='GET'){
     try{
-      const registry=await ensureAccountsRegistry();
-      return json(res,200,{ok:true,accounts:(registry.accounts||[]).filter(a=>a.ownerUserId===req.cfUser?.id)});
+      let registry=await ensureAccountsRegistry();
+      let owned=(registry.accounts||[]).filter(a=>a.ownerUserId===req.cfUser?.id);
+      if(!owned.length){
+        registry=await freshAccountsRegistry();
+        owned=(registry.accounts||[]).filter(a=>a.ownerUserId===req.cfUser?.id);
+      }
+      return json(res,200,{ok:true,accounts:owned});
     }catch(e){
       return json(res,502,{ok:false,error:'Не удалось загрузить аккаунты.',detail:String(e?.message||e)});
     }
@@ -8373,10 +8418,12 @@ server.listen(port,'0.0.0.0',async()=>{
   }catch(e){
     console.error('[auth-selftest] FAIL '+String(e?.message||e));
   }
-  try{
-    await runEphemeralAuthSelfTest();
-  }catch(e){
-    console.error('[auth-ephemeral-selftest] FAIL '+String(e?.message||e));
+  if(process.env.AUTH_EPHEMERAL_SELFTEST==='true'){
+    try{
+      await runEphemeralAuthSelfTest();
+    }catch(e){
+      console.error('[auth-ephemeral-selftest] FAIL '+String(e?.message||e));
+    }
   }
   setTimeout(async()=>{
     try{
