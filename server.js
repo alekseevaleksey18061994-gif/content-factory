@@ -1800,8 +1800,10 @@ async function generateScriptStage(payload,accountId,feedback=''){
 }
 
 const STORYBOARD_REQUIRED_FIELDS=[
-  'title','duration','purpose','shot','framing','camera','lens','angle','environment','lighting',
-  'characters','product','action','startFrame','endFrame','continuity','sound','transition','negative','promptEn'
+  'title','duration','purpose','shot','framing','camera','lens','angle','cameraHeight','focus','depth','motionTiming',
+  'environment','setDesign','foreground','midground','background','props','materials','colorPalette','lighting','practicalLights',
+  'characters','performance','blocking','product','action','startFrame','endFrame','continuity','retentionMechanic','patternInterrupt','microPayoff',
+  'sound','soundDesign','transition','editorNote','negative','promptEn'
 ];
 function storyboardSceneMissing(scene){
   return STORYBOARD_REQUIRED_FIELDS.filter(k=>!String(scene?.[k]||'').trim());
@@ -1815,15 +1817,16 @@ function storyboardStageComplete(board,expectedCount){
 function storyboardSceneJsonSchema(){
   return {
     type:'object',additionalProperties:false,
-    required:['scene','title','duration','purpose','shot','framing','camera','lens','angle','environment','lighting','characters','product','action','startFrame','endFrame','continuity','dialogue','voiceover','onscreen','sound','transition','negative','promptEn'],
+    required:['scene','title','duration','purpose','shot','framing','camera','lens','angle','cameraHeight','focus','depth','motionTiming','environment','setDesign','foreground','midground','background','props','materials','colorPalette','lighting','practicalLights','characters','performance','blocking','product','action','startFrame','endFrame','continuity','retentionMechanic','patternInterrupt','microPayoff','dialogue','voiceover','onscreen','sound','soundDesign','transition','editorNote','negative','promptEn'],
     properties:{
       scene:{type:'integer',minimum:1,maximum:30},
       title:{type:'string'},duration:{type:'string'},purpose:{type:'string'},shot:{type:'string'},
-      framing:{type:'string'},camera:{type:'string'},lens:{type:'string'},angle:{type:'string'},
-      environment:{type:'string'},lighting:{type:'string'},characters:{type:'string'},product:{type:'string'},
-      action:{type:'string'},startFrame:{type:'string'},endFrame:{type:'string'},continuity:{type:'string'},
-      dialogue:{type:'string'},voiceover:{type:'string'},onscreen:{type:'string'},sound:{type:'string'},
-      transition:{type:'string'},negative:{type:'string'},promptEn:{type:'string'}
+      framing:{type:'string'},camera:{type:'string'},lens:{type:'string'},angle:{type:'string'},cameraHeight:{type:'string'},focus:{type:'string'},depth:{type:'string'},motionTiming:{type:'string'},
+      environment:{type:'string'},setDesign:{type:'string'},foreground:{type:'string'},midground:{type:'string'},background:{type:'string'},props:{type:'string'},materials:{type:'string'},colorPalette:{type:'string'},lighting:{type:'string'},practicalLights:{type:'string'},
+      characters:{type:'string'},performance:{type:'string'},blocking:{type:'string'},product:{type:'string'},
+      action:{type:'string'},startFrame:{type:'string'},endFrame:{type:'string'},continuity:{type:'string'},retentionMechanic:{type:'string'},patternInterrupt:{type:'string'},microPayoff:{type:'string'},
+      dialogue:{type:'string'},voiceover:{type:'string'},onscreen:{type:'string'},sound:{type:'string'},soundDesign:{type:'string'},
+      transition:{type:'string'},editorNote:{type:'string'},negative:{type:'string'},promptEn:{type:'string'}
     }
   };
 }
@@ -1836,24 +1839,43 @@ function normalizeStoryboardScene(raw,scriptScene={},index=0){
     duration:String(x.duration||x.time||sc.time||'').slice(0,120),
     purpose:String(x.purpose||sc.purpose||'').slice(0,1800),
     shot:String(x.shot||x.framing||sc.visual||'').slice(0,3500),
-    framing:String(x.framing||'').slice(0,1200),
-    camera:String(x.camera||'').slice(0,2000),
-    lens:String(x.lens||'').slice(0,600),
-    angle:String(x.angle||'').slice(0,1200),
-    environment:String(x.environment||x.location||'').slice(0,2500),
-    lighting:String(x.lighting||'').slice(0,1800),
-    characters:String(x.characters||'').slice(0,3500),
-    product:String(x.product||'').slice(0,3000),
+    framing:String(x.framing||'').slice(0,1800),
+    camera:String(x.camera||'').slice(0,3000),
+    lens:String(x.lens||'').slice(0,1000),
+    angle:String(x.angle||'').slice(0,1800),
+    cameraHeight:String(x.cameraHeight||'').slice(0,1200),
+    focus:String(x.focus||'').slice(0,1600),
+    depth:String(x.depth||'').slice(0,1600),
+    motionTiming:String(x.motionTiming||'').slice(0,1800),
+    environment:String(x.environment||x.location||'').slice(0,4500),
+    setDesign:String(x.setDesign||'').slice(0,5000),
+    foreground:String(x.foreground||'').slice(0,2500),
+    midground:String(x.midground||'').slice(0,2500),
+    background:String(x.background||'').slice(0,2500),
+    props:String(x.props||'').slice(0,3500),
+    materials:String(x.materials||'').slice(0,2500),
+    colorPalette:String(x.colorPalette||'').slice(0,2200),
+    lighting:String(x.lighting||'').slice(0,3200),
+    practicalLights:String(x.practicalLights||'').slice(0,2200),
+    characters:String(x.characters||'').slice(0,4500),
+    performance:String(x.performance||'').slice(0,3000),
+    blocking:String(x.blocking||'').slice(0,3000),
+    product:String(x.product||'').slice(0,4000),
     action:String(x.action||sc.action||'').slice(0,4500),
     startFrame:String(x.startFrame||'').slice(0,3000),
     endFrame:String(x.endFrame||'').slice(0,3000),
-    continuity:String(x.continuity||sc.continuity||'').slice(0,4000),
+    continuity:String(x.continuity||sc.continuity||'').slice(0,5000),
+    retentionMechanic:String(x.retentionMechanic||sc.retentionMechanic||'').slice(0,2400),
+    patternInterrupt:String(x.patternInterrupt||sc.patternInterrupt||'').slice(0,2400),
+    microPayoff:String(x.microPayoff||sc.microPayoff||'').slice(0,2400),
     voiceover:String(x.voiceover??sc.voiceover??'').slice(0,4500),
     dialogue:String(x.dialogue??sc.dialogue??'').slice(0,4500),
     onscreen:String(x.onscreen??sc.onscreen??'').slice(0,2500),
-    sound:String(x.sound||sc.sound||'').slice(0,2000),
-    transition:String(x.transition||sc.transition||'').slice(0,1600),
-    negative:String(x.negative||'').slice(0,3500),
+    sound:String(x.sound||sc.sound||'').slice(0,2500),
+    soundDesign:String(x.soundDesign||sc.soundBridge||'').slice(0,3000),
+    transition:String(x.transition||sc.transition||'').slice(0,2200),
+    editorNote:String(x.editorNote||'').slice(0,3000),
+    negative:String(x.negative||'').slice(0,4500),
     prompt:String(x.promptEn||x.prompt||'').slice(0,9000),
     promptEn:String(x.promptEn||x.prompt||'').slice(0,9000)
   };
@@ -1868,7 +1890,7 @@ function normalizeStoryboardStage(raw,payload={}){
 async function callStoryboardAI(accountId,{prompt,schema,name,images=[],effort='medium'}){
   const model=process.env.OPENAI_MODEL||'gpt-6-astra';
   const controller=new AbortController();
-  const timeoutMs=85000;
+  const timeoutMs=125000;
   const timer=setTimeout(()=>controller.abort(),timeoutMs);
   let r;
   try{
@@ -1881,7 +1903,7 @@ async function callStoryboardAI(accountId,{prompt,schema,name,images=[],effort='
           {type:'input_text',text:prompt},
           ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
         ]}],
-        reasoning:{effort},max_output_tokens:7600,
+        reasoning:{effort},max_output_tokens:12000,
         text:{format:{type:'json_schema',name,strict:true,schema}}
       })
     });
@@ -1926,8 +1948,15 @@ function storyboardContext(payload,script,idea,feedback=''){
     'Locks персонажа: '+String(payload.character?.locks||''),
     'Формат: вертикальный 9:16. Стиль: '+String(payload.style||'UGC')+'.',
     feedback?('Комментарий пользователя: '+feedback):'',
-    'В каждой сцене ОБЯЗАТЕЛЬНО конкретно заполни location/environment, lighting, characters, product, startFrame и endFrame. Нельзя оставлять эти поля пустыми или ставить прочерк.',
-    'Также обязательно заполни framing, camera, lens, angle, negative и promptEn.',
+    'В каждой сцене ОБЯЗАТЕЛЬНО конкретно заполни ВСЮ production-дирекцию: environment, setDesign, foreground, midground, background, props, materials, colorPalette, lighting, practicalLights, characters, performance, blocking, product, startFrame, endFrame. Нельзя оставлять эти поля пустыми или ставить прочерк.',
+    'SET DESIGN должен быть как production bible: точный тип комнаты/зоны, стиль, мебель и её положение, поверхности/фактуры, стены/пол, бытовые следы жизни, 4–8 уместных предметов, окна/двери, глубина пространства. Не пиши просто «современная кухня/ванная».',
+    'FOREGROUND/MIDGROUND/BACKGROUND: опиши отдельными слоями, что находится перед камерой, в зоне действия и позади героя. Это создаёт глубину и не даёт генератору делать пустую студию.',
+    'PROPS: перечисли только логичные предметы, закрепи их положение и не меняй без причины между соседними сценами. MATERIALS/COLOR PALETTE должны быть конкретными, физически правдоподобными и непротиворечивыми.',
+    'LIGHTING: укажи источник, направление, мягкость, цветовую температуру/время суток, practicals в кадре, fill/negative fill, highlight roll-off и характер теней. Свет обязан иметь физическую причину.',
+    'PERFORMANCE/BLOCKING: микро-игра героя, взгляд, лицо, плечи, руки, точка внимания, где он стоит/сидит, траектория движения и связь с товаром. Без театральной рекламы.',
+    'Также обязательно заполни framing, camera, lens, angle, cameraHeight, focus, depth, motionTiming, retentionMechanic, patternInterrupt, microPayoff, soundDesign, editorNote, negative и promptEn.',
+    'CAMERA: конкретный старт камеры, высота, угол, траектория, скорость, acceleration/ease и финальная позиция. LENS: конкретное фокусное расстояние и причина выбора. FOCUS/DEPTH: что резко, что уходит в bokeh, как меняется focus при движении.',
+    'MOTION TIMING: разложи действие внутри сцены примерно по времени, например 0.0–0.7s start tension → 0.7–2.1s hand action → 2.1–3.4s reveal → 3.4–4.2s reaction. Не пихай несколько сложных действий одновременно.',
     'dialogue/voiceover/onscreen переноси из сценария без сочинения новых реплик; они могут быть пустой строкой, если речи/текста в сцене нет.',
     'Локация и свет должны быть физически конкретными и совместимыми между соседними сценами.',
     'characters должен повторять ключевые identity-признаки аватара в каждой сцене, где он виден.',
@@ -1940,7 +1969,7 @@ function storyboardContext(payload,script,idea,feedback=''){
     'При этом сохраняй continuity: тот же персонаж, одежда, реальный товар и его геометрия, локация, свет и направление действия.',
     'Между соседними сценами разнообразь киноязык: wide/medium/close-up/detail, front/3/4/side; не повторяй одну и ту же композицию без сюжетной причины.',
     'endFrame одной сцены должен логично готовить startFrame следующей сцены.',
-    'promptEn — подробный английский prompt для ВИДЕО всей сцены от START к END: опиши движение между двумя состояниями, camera motion, realistic hands, identity lock, product geometry lock, no baked-in text.'
+    'promptEn — ОЧЕНЬ подробный английский production prompt для ВИДЕО всей сцены от START к END. Структура: SUBJECT/PRODUCT IDENTITY → EXACT SET DESIGN AND SPATIAL LAYERS → LIGHTING → CAMERA/LENS/HEIGHT/FOCUS → START STATE → TIMED ACTION BEATS → END STATE → PERFORMANCE/BLOCKING → PHYSICS → SOUND INTENT → CONTINUITY → NEGATIVE CONSTRAINTS. Он должен быть самодостаточным и конкретным, но не противоречить исходным фото товара.'
   ].filter(Boolean).join('\n');
 }
 async function generateStoryboardStage(payload,accountId,feedback=''){
@@ -1974,12 +2003,12 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
       'Номера scene должны быть '+chunkScenes.map((_,i)=>from+i+1).join(', ')+'.',
       'Для каждой сцены заранее спроектируй ровно 2 превиз-кадра через startFrame и endFrame.',
       'START и END — разные моменты действия; минимум 2 заметных визуальных отличия при сохранении continuity.',
-      'Пиши конкретно, но компактно: каждое техническое поле 1 короткое предложение. Не повторяй одинаковое описание в нескольких полях.',
+      'Пиши production-ready подробно. Для environment/setDesign/lighting/camera/action/startFrame/endFrame/promptEn допускаются 2–5 насыщенных предложений. Не повторяй текст механически: каждое поле отвечает за свой слой постановки.',
       'Все обязательные поля должны быть непустыми.',
       'Верни JSON по заданной схеме.'
     ].filter(Boolean).join('\n\n');
 
-    let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_chunk',images:refs,effort:'medium'});
+    let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_chunk',images:refs,effort:'high'});
     let arr=Array.isArray(raw?.storyboard)?raw.storyboard:[];
     let normalized=chunkScenes.map((sc,i)=>normalizeStoryboardScene(arr[i],sc,from+i));
     let missing=normalized.map((x,i)=>({scene:from+i+1,fields:storyboardSceneMissing(x)})).filter(x=>x.fields.length);
@@ -2041,7 +2070,7 @@ async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
     'START и END должны визуально отличаться минимум по 2 признакам, сохраняя continuity и точную геометрию товара.',
     'Если комментарий пользователя пустой, улучшай сцену без изменения её смысла.'
   ].filter(Boolean).join('\n\n');
-  let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_scene',images:refs,effort:'medium'});
+  let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_scene',images:refs,effort:'high'});
   let scene=normalizeStoryboardScene(raw.scene||raw,scriptScene,index);
   let missing=storyboardSceneMissing(scene);
   if(missing.length){
