@@ -6,7 +6,7 @@ import { createHiggsfieldClient } from '@higgsfield/client/v2';
 import RunwayML, { TaskFailedError as RunwayTaskFailedError } from '@runwayml/sdk';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { randomBytes, scryptSync, timingSafeEqual, createHmac } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual, createHmac, createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { fetchTranscript } from 'youtube-transcript';
 
@@ -79,6 +79,15 @@ function normalizeLogin(value){
 }
 function hashPassword(password,salt){
   return scryptSync(String(password||''),salt,64).toString('hex');
+}
+function hashResetToken(token){
+  return createHash('sha256').update(String(token||'')).digest('hex');
+}
+function safeHexEqual(a,b){
+  try{
+    const x=Buffer.from(String(a||''),'hex'),y=Buffer.from(String(b||''),'hex');
+    return x.length>0&&x.length===y.length&&timingSafeEqual(x,y);
+  }catch{return false}
 }
 function parseCookies(req){
   const raw=String(req.headers.cookie||'');
@@ -7265,6 +7274,39 @@ const server=http.createServer(async(req,res)=>{
   }
 
 
+  if(url.pathname==='/reset-password' && req.method==='GET'){
+    const html='<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Восстановление доступа · Content Factory</title><style>body{margin:0;background:#eef7fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#0c1b3a}.wrap{min-height:100vh;display:grid;place-items:center;padding:24px}.card{width:min(560px,100%);background:#fff;border:2px solid #d5e6ef;border-radius:28px;padding:30px;box-sizing:border-box;box-shadow:0 20px 60px rgba(27,68,96,.08)}h1{font-size:30px;margin:0 0 8px}.brand{color:#0b9a9d}p{color:#6d819c;line-height:1.5}.field{margin-top:22px}label{display:block;font-weight:700;margin-bottom:8px}input{width:100%;box-sizing:border-box;padding:17px;border:2px solid #cfe1ea;border-radius:18px;font-size:18px;outline:none}button{width:100%;margin-top:24px;border:0;border-radius:18px;padding:18px;font-size:20px;font-weight:800;color:#fff;background:linear-gradient(90deg,#1bc6bd,#1692ee)}#msg{min-height:24px;margin-top:16px;font-weight:600}.ok{color:#14855a}.bad{color:#c33}</style></head><body><div class="wrap"><form class="card" id="f"><h1>Content <span class="brand">Factory</span></h1><p>Задай новый пароль. Ссылка одноразовая и действует ограниченное время.</p><div class="field"><label>Новый пароль</label><input id="p1" type="password" minlength="8" autocomplete="new-password" required></div><div class="field"><label>Повторите пароль</label><input id="p2" type="password" minlength="8" autocomplete="new-password" required></div><button id="b">Сохранить пароль и войти</button><div id="msg"></div></form></div><script>const token=location.hash.slice(1);document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();const m=document.getElementById("msg"),b=document.getElementById("b"),p1=document.getElementById("p1").value,p2=document.getElementById("p2").value;if(!token){m.className="bad";m.textContent="Ссылка восстановления неполная.";return}if(p1!==p2){m.className="bad";m.textContent="Пароли не совпадают.";return}b.disabled=true;m.className="";m.textContent="Сохраняю…";try{const r=await fetch("/api/auth/reset-password",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,password:p1})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Не удалось изменить пароль");m.className="ok";m.textContent="Пароль изменён. Открываю кабинет…";location.hash="";setTimeout(()=>location.replace("/"),500)}catch(err){m.className="bad";m.textContent=String(err.message||err);b.disabled=false}})</script></body></html>';
+    res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store, no-cache, must-revalidate, max-age=0','pragma':'no-cache'});
+    res.end(html);
+    return;
+  }
+
+  if(url.pathname==='/api/auth/reset-password' && req.method==='POST'){
+    try{
+      const body=await readBody(req);
+      const token=String(body?.token||'');
+      const password=String(body?.password||'');
+      if(password.length<8)return json(res,400,{ok:false,error:'Пароль должен быть не короче 8 символов.'});
+      if(token.length<20)return json(res,400,{ok:false,error:'Ссылка восстановления недействительна.'});
+      const users=await ensureUsersRegistry();
+      const tokenHash=hashResetToken(token);
+      const now=Date.now();
+      const user=users.users.find(u=>u?.resetTokenHash&&safeHexEqual(tokenHash,u.resetTokenHash)&&Date.parse(String(u.resetTokenExpiresAt||''))>now);
+      if(!user)return json(res,401,{ok:false,error:'Ссылка восстановления недействительна или уже истекла.'});
+      const salt=randomBytes(16).toString('hex');
+      user.salt=salt;
+      user.passwordHash=hashPassword(password,salt);
+      delete user.resetTokenHash;
+      delete user.resetTokenExpiresAt;
+      user.passwordUpdatedAt=new Date().toISOString();
+      await writeUsersRegistry(users);
+      setSessionCookie(res,makeSessionToken(user.id));
+      return json(res,200,{ok:true,user:{id:user.id,login:user.login,displayName:user.displayName||user.login}});
+    }catch(e){
+      return json(res,502,{ok:false,error:'Не удалось изменить пароль.',detail:String(e?.message||e)});
+    }
+  }
+
   if(url.pathname==='/api/auth/register' && req.method==='POST'){
     try{
       const body=await readBody(req);
@@ -7314,8 +7356,11 @@ const server=http.createServer(async(req,res)=>{
       const user=users.users.find(u=>u.login===login);
       if(!user) return json(res,401,{ok:false,error:'Неверный логин или пароль.'});
       const actual=Buffer.from(hashPassword(password,user.salt),'hex');
-      const expected=Buffer.from(user.passwordHash,'hex');
-      if(actual.length!==expected.length||!timingSafeEqual(actual,expected)) return json(res,401,{ok:false,error:'Неверный логин или пароль.'});
+      const expected=Buffer.from(String(user.passwordHash||''),'hex');
+      if(actual.length!==expected.length||!timingSafeEqual(actual,expected)){
+        console.warn('[auth-login] password mismatch for existing login '+login);
+        return json(res,401,{ok:false,error:'Неверный логин или пароль.'});
+      }
       setSessionCookie(res,makeSessionToken(user.id));
       return json(res,200,{ok:true,user:{id:user.id,login:user.login,displayName:user.displayName||user.login}});
     }catch(e){
