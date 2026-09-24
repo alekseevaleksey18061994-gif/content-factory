@@ -111,7 +111,7 @@ async function ensureSupabaseEmailUser(email,password=null){
     return {ok:true,userId:data?.user?.id||'',created:true};
   }catch(e){
     const msg=String(e?.message||'').toLowerCase();
-    if(e?.status===400||e?.status===422||msg.includes('already')||msg.includes('registered')){
+    if(msg.includes('already')||msg.includes('registered')||msg.includes('user already exists')){
       return {ok:true,userId:'',created:false};
     }
     console.warn('[supabase-auth] '+String(e?.status||'')+' '+String(e?.message||e));
@@ -7475,7 +7475,59 @@ const server=http.createServer(async(req,res)=>{
       if(!validEmail(email)) return json(res,400,{ok:false,error:'Укажи корректную почту.'});
       if(password.length<8) return json(res,400,{ok:false,error:'Пароль должен быть не короче 8 символов.'});
       const users=await ensureUsersRegistry();
-      if(users.users.some(u=>normalizeEmail(u.email||u.login)===email)) return json(res,409,{ok:false,error:'Аккаунт с этой почтой уже существует. Перейди во «Вход» → «Забыли пароль?».'});
+      const existing=users.users.find(u=>normalizeEmail(u.email||u.login)===email);
+      if(existing){
+        let currentPasswordOk=false;
+        try{
+          const actual=Buffer.from(hashPassword(password,existing.salt),'hex');
+          const expected=Buffer.from(String(existing.passwordHash||''),'hex');
+          currentPasswordOk=actual.length===expected.length&&timingSafeEqual(actual,expected);
+        }catch{}
+        const setupUntil=Date.parse(String(existing.passwordSetupAllowedUntil||''));
+        const setupAllowed=existing.passwordSetupRequired===true&&Number.isFinite(setupUntil)&&setupUntil>Date.now();
+
+        if(currentPasswordOk||setupAllowed){
+          if(!currentPasswordOk){
+            const salt=randomBytes(16).toString('hex');
+            existing.salt=salt;
+            existing.passwordHash=hashPassword(password,salt);
+            existing.passwordUpdatedAt=new Date().toISOString();
+          }
+          existing.email=email;
+          existing.login=email;
+          existing.authType='email';
+          existing.passwordSetupRequired=false;
+          delete existing.passwordSetupAllowedUntil;
+          existing.emailActivatedAt=new Date().toISOString();
+          await writeUsersRegistry(users);
+
+          try{
+            const accounts=await ensureAccountsRegistry();
+            let touched=false;
+            for(const account of (accounts.accounts||[])){
+              if(account.ownerUserId===existing.id){
+                account.email=email;
+                account.updatedAt=new Date().toISOString();
+                touched=true;
+              }
+            }
+            if(touched)await writeAccountsRegistry(accounts);
+          }catch(e){console.warn('[auth-register-account-sync] '+String(e?.message||e))}
+
+          try{
+            const auth=await ensureSupabaseEmailUser(email,password);
+            if(auth?.userId){
+              existing.supabaseUserId=auth.userId;
+              await writeUsersRegistry(users);
+            }
+          }catch(e){console.warn('[auth-register-bootstrap] '+String(e?.message||e))}
+
+          setSessionCookie(res,makeSessionToken(existing.id));
+          return json(res,200,{ok:true,activated:true,user:{id:existing.id,login:existing.login,email:existing.email,displayName:existing.displayName||email}});
+        }
+
+        return json(res,409,{ok:false,error:'Аккаунт с этой почтой уже существует. Используй «Вход» или «Забыли пароль?».',code:'AUTH_EMAIL_EXISTS'});
+      }
 
       let auth={ok:false,userId:'',created:false};
       let authBootstrapError='';
