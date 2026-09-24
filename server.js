@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.31';
+const APP_VERSION='2.6.32';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -567,7 +567,7 @@ function runwayUsageUsd(model,seconds){
 }
 
 function openAIUsageCost(model,usage={}){
-  const name=String(model||'gpt-5.6-luna').toLowerCase();
+  const name=String(model||'gpt-5.6-sol').toLowerCase();
   let inputRate=0.20,cachedRate=0.02,outputRate=1.20;
   if(name.includes('gpt-5.6-terra')){inputRate=2;cachedRate=.2;outputRate=12}
   else if(name.includes('gpt-5.6-sol')){inputRate=4;cachedRate=.4;outputRate=20}
@@ -834,7 +834,7 @@ async function analyzeProductDNA(product,accountId){
     {type:'input_text',text:prompt},
     ...refs.map(url=>({type:'input_image',image_url:String(url),detail:'high'}))
   ]}];
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -930,7 +930,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[])
     .map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,2);
   const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   async function markIdeaProgress(progress,step){
     if(!payload?.id)return;
     try{
@@ -1428,7 +1428,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
   const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
   const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   async function markScriptProgress(progress,step){
     if(!payload?.id)return;
     try{
@@ -1815,7 +1815,7 @@ function normalizeStoryboardStage(raw,payload={}){
   return scriptScenes.map((sc,i)=>normalizeStoryboardScene(arr[i],sc,i));
 }
 async function callStoryboardAI(accountId,{prompt,schema,name,images=[],effort='medium'}){
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const controller=new AbortController();
   const timeoutMs=85000;
   const timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -2153,7 +2153,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'Верни ТОЛЬКО JSON:',
     '{"previsPlan":{"totalScenes":'+board.length+',"totalFrames":'+(board.length*2)+',"logic":"","frames":[{"id":"s1f1","scene":1,"frame":1,"frameType":"start","timecode":"","durationHint":"0.8s","goal":"","storyFunction":"","continuityRole":"","composition":"","framing":"","cameraAngle":"","cameraPosition":"","lensFeel":"","cameraMotion":"","depth":"","focus":"","location":"","environment":"","lighting":"","mood":"","colorMood":"","avatarInFrame":false,"avatarDescription":"","expression":"","pose":"","action":"","productInFrame":true,"productRole":"","productPlacement":"","productVisibility":"","productConsistency":"","dialogue":"","voiceover":"","onscreenText":"","soundCue":"","previousAnchor":"","nextIntent":"","continuityNotes":"","referenceMode":"identity-led","identityRefs":[],"anchorFrames":[],"continuityFrames":[],"imagePromptRu":"","imagePromptEn":"","negativePrompt":"","qualityNotes":""}]}}'
   ].filter(Boolean).join('\n');
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -2262,7 +2262,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
       detail:sourceProductSet.has(url)?'high':'low'
     }))
   ]}];
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const body={
     model,input,
     tools:[{type:'image_generation',model:'gpt-image-2',action:'auto',size:'1024x1536',quality:frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'medium':'low'),output_format:'png'}],
@@ -2470,7 +2470,7 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
     content.push({type:'input_text',text:'PREVIOUS GENERATED FRAME — только continuity/composition reference:'});
     content.push({type:'input_image',image_url:previousUrl,detail:'low'});
   }
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
     body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'low'},max_output_tokens:1200})
@@ -2532,7 +2532,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
     for(const f of [previs[0],previs[previs.length-1]].filter(Boolean)){
       content.push({type:'input_text',text:'APPROVED PREVIZ ANCHOR:'},{type:'input_image',image_url:f.url,detail:'low'});
     }
-    const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+    const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
       body:JSON.stringify({model,input:[{role:'user',content}],reasoning:{effort:'low'},max_output_tokens:1400})
@@ -3061,7 +3061,7 @@ async function runFinalQc(run,finalPath,accountId){
     ].join('\n')},...(evidence.frames||[]).slice(0,8)];
     if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
-    const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+    const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -3308,7 +3308,7 @@ async function buildSceneRouting(run,accountId){
     'Return one route per scene, in scene order.'
   ].join('\n');
   try{
-    const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+    const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
     const r=await fetch('https://api.openai.com/v1/responses',{
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
@@ -4946,7 +4946,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
     body:JSON.stringify({
-      model:process.env.OPENAI_MODEL||'gpt-5.6-luna',
+      model:process.env.OPENAI_MODEL||'gpt-5.6-sol',
       input,
       tools:factoryTools,
       tool_choice:'auto',
@@ -4985,7 +4985,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
       method:'POST',
       headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
       body:JSON.stringify({
-        model:process.env.OPENAI_MODEL||'gpt-5.6-luna',
+        model:process.env.OPENAI_MODEL||'gpt-5.6-sol',
         previous_response_id:data.id,
         input:outputs,
         tools:factoryTools,
@@ -5000,7 +5000,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     addUsage(data.usage);
   }
 
-  const usedModel=data?.model||process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const usedModel=data?.model||process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const priced=openAIUsageCost(usedModel,usageTotal);
   if(priced.amountUsd>0){
     await recordExpense(accountId,{
@@ -5022,7 +5022,7 @@ async function callOpenAIChat(message,history=[],accountId=DEFAULT_ACCOUNT_ID,at
     actions,
     images,
     responseId:data?.id||null,
-    model:data?.model||process.env.OPENAI_MODEL||'gpt-5.6-luna'
+    model:data?.model||process.env.OPENAI_MODEL||'gpt-5.6-sol'
   };
 }
 
@@ -5485,7 +5485,7 @@ async function analyzeReferenceMaterial(opts){
   if(pm?.url)extraImages.push({type:'input_image',image_url:pm.url,detail:'low'});
   const am=(avatar?.media||[]).find(m=>m.isPrimary)||(avatar?.media||[])[0];
   if(am?.url)extraImages.push({type:'input_image',image_url:am.url,detail:'low'});
-  const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const r=await fetch('https://api.openai.com/v1/responses',{
     method:'POST',
     headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
