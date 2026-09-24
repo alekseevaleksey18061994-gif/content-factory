@@ -2385,14 +2385,23 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   ].filter(Boolean).join('\n').slice(0,15000);
   const sourceProductRefs=previsFrameShowsProduct(frame,{})?productIdentityUrls(run,3):[];
   const sourceProductSet=new Set(sourceProductRefs);
-  const input=[{role:'user',content:[
-    {type:'input_text',text:prompt},
-    ...referenceUrls.map(url=>({
-      type:'input_image',
-      image_url:url,
-      detail:sourceProductSet.has(url)?'high':'low'
-    }))
-  ]}];
+  const sourceAvatarSet=new Set(frame.avatarInFrame?avatarIdentityUrls(run,1):[]);
+  const referenceContent=[];
+  for(let i=0;i<referenceUrls.length;i++){
+    const url=referenceUrls[i];
+    const isProduct=sourceProductSet.has(url);
+    const isAvatar=sourceAvatarSet.has(url);
+    referenceContent.push({
+      type:'input_text',
+      text:isProduct
+        ? ('REFERENCE '+(i+1)+' = ORIGINAL SOURCE PRODUCT PHOTO. AUTHORITATIVE identity/geometry; never alter it.')
+        : isAvatar
+          ? ('REFERENCE '+(i+1)+' = ORIGINAL AVATAR IDENTITY PHOTO. Preserve face/person identity.')
+          : ('REFERENCE '+(i+1)+' = GENERATED CONTINUITY/COMPOSITION ANCHOR. Use for continuity only; it must never override source product identity.')
+    });
+    referenceContent.push({type:'input_image',image_url:url,detail:isProduct?'high':'low'});
+  }
+  const input=[{role:'user',content:[{type:'input_text',text:prompt},...referenceContent]}];
   const model=process.env.OPENAI_MODEL||'gpt-6-astra';
   const imageModel=frame?.hookLab?'gpt-image-2.5-flare':'gpt-image-2.5-sunburst';
   const imageSize='1152x2048';
@@ -2822,6 +2831,30 @@ function previsSceneReferenceUrls(run,sceneNo){
     ? [frames[0]?.url,frames[Math.floor((frames.length-1)/2)]?.url,frames[frames.length-1]?.url].filter(Boolean)
     : [];
   return [...new Set([...anchors.slice(0,2),...identity])].slice(0,6);
+}
+async function ensureSceneProductAnchorGate(run,sceneNo,accountId){
+  const sourceProducts=productIdentityUrls(run,3);
+  if(!sourceProducts.length)return {ok:true,skipped:'no-source-product-refs'};
+  const scene=(Array.isArray(run?.storyboard)?run.storyboard:[])[Number(sceneNo)-1]||{};
+  const frames=(Array.isArray(run?.previsFrames)?run.previsFrames:[])
+    .filter(x=>Number(x?.scene)===Number(sceneNo)&&x?.url)
+    .sort((a,b)=>Number(a?.frame||0)-Number(b?.frame||0));
+  let previousUrl='';
+  for(const frame of frames){
+    if(!previsFrameShowsProduct(frame,scene)){previousUrl=frame.url;continue}
+    let qc=frame.qc&&typeof frame.qc==='object'?frame.qc:null;
+    const productStatus=String(qc?.checks?.product||'').toLowerCase();
+    if(!qc||qc.passed===null||!productStatus){
+      qc=await runPrevisFrameQc(run,{...frame,productInFrame:true},frame.url,accountId,previousUrl);
+      frame.qc=qc;
+    }
+    const status=String(qc?.checks?.product||'').toLowerCase();
+    if(qc?.passed===false||status!=='ok'){
+      throw new Error('PRE-VIDEO PRODUCT GATE: сцена '+sceneNo+', '+String(frame.frameType||('кадр '+frame.frame))+' не совпадает с исходным товаром. Видео не будет генерироваться из неправильного превиза. '+String((qc?.issues||[]).join('; ')||qc?.summary||'нужна перегенерация превиза'));
+    }
+    previousUrl=frame.url;
+  }
+  return {ok:true,checked:frames.length};
 }
 async function processAutoPipeline(accountId,runId){
   let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
@@ -3444,7 +3477,7 @@ function cinemaBibleText(run){
 }
 function positiveProductMotionLock(run,scene={}){
   const parts=[
-    'The physical product remains the exact same physical model throughout the shot: same visible geometry, proportions, construction, material, color, texture, markings and number/placement of every visible part.',
+    'The physical product remains the exact same physical model throughout the entire shot, including every intermediate frame: same visible geometry, proportions, construction, number and placement of parts, ends, openings, mounts, material, texture, markings and color. Never morph, mirror, detach, add or remove any product part while it moves.',
     productDNAText(run).slice(0,1800)
   ];
   const holder=paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' '));
@@ -3639,8 +3672,11 @@ async function processRunGeneration(accountId,runId){
       }
       const scene=board[i]||{};
       const sceneNo=i+1;
-      const refs=previsSceneReferenceUrls(run,sceneNo);
       if(run.sceneResults?.[sceneNo]?.ok&&run.sceneResults?.[sceneNo]?.urls?.length&&run.sceneResults?.[sceneNo]?.qc?.passed!==false)continue;
+      await ensureSceneProductAnchorGate(run,sceneNo,accountId);
+      run.updatedAt=new Date().toISOString();
+      await writeAppState(data,accountId);
+      const refs=previsSceneReferenceUrls(run,sceneNo);
       const prompt=[
         'Вертикальный рекламный ролик 9:16. ОДНА утверждённая сцена, не меняй её смысл.',
         'Товар: '+String(run.productName||''),
