@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.23';
+const APP_VERSION='2.6.24';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -160,15 +160,28 @@ function accountStateRowId(accountId=DEFAULT_ACCOUNT_ID){
 async function readStateRow(rowId){
   if(!supabaseConfigured()) return {configured:false,data:null};
   const base=process.env.SUPABASE_URL.replace(/\/$/,'');
-  const r=await fetch(base+'/rest/v1/app_state?id=eq.'+encodeURIComponent(rowId)+'&select=data,updated_at&limit=1',{
-    headers:supabaseHeaders()
-  });
-  if(!r.ok){
-    const detail=await r.text();
-    throw new Error('Supabase read failed: '+r.status+' '+detail);
+  let lastError=null;
+  for(let attempt=1;attempt<=3;attempt++){
+    try{
+      const r=await fetch(base+'/rest/v1/app_state?id=eq.'+encodeURIComponent(rowId)+'&select=data,updated_at&limit=1',{
+        headers:supabaseHeaders()
+      });
+      if(r.ok){
+        const rows=await r.json();
+        return {configured:true,data:rows?.[0]?.data??null,updatedAt:rows?.[0]?.updated_at??null};
+      }
+      const detail=await r.text();
+      const retryable=r.status>=500||/57014|statement timeout|canceling statement/i.test(detail);
+      lastError=new Error('Supabase read failed: '+r.status+' '+detail);
+      if(!retryable||attempt===3)throw lastError;
+    }catch(e){
+      lastError=e;
+      const retryable=/57014|statement timeout|canceling statement|fetch failed|ECONNRESET|ETIMEDOUT/i.test(String(e?.message||e));
+      if(!retryable||attempt===3)throw e;
+    }
+    await new Promise(resolve=>setTimeout(resolve,attempt===1?500:1500));
   }
-  const rows=await r.json();
-  return {configured:true,data:rows?.[0]?.data??null,updatedAt:rows?.[0]?.updated_at??null};
+  throw lastError||new Error('Supabase read failed');
 }
 
 async function writeStateRow(rowId,data){
@@ -5147,7 +5160,7 @@ async function recoverPendingPrevisAndAutopilot(){
           }
           continue;
         }
-        if(run.mode==='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&(run.previsRunning===true||run.status==='В работе')){
+        if(run.mode==='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&(run.previsRunning===true||['В работе','Ошибка'].includes(String(run.status||'')))){
           run.previsRunning=false;run.status='В работе';run.stage='Превиз-кадры';run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
           await writeAppState(data,accountId);
           enqueueRunPrevis(accountId,run.id,'previs-recovery');
