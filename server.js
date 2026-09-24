@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.32';
+const APP_VERSION='2.6.33';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -2112,6 +2112,13 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'Для КАЖДОЙ storyboard-сцены сделай ровно 2 ключевых кадра: START и END.',
     'При '+board.length+' сценах итог должен быть '+(board.length*2)+' кадров.',
     'START и END — это два момента ОДНОГО микро-действия, а не два варианта одной и той же фотографии.',
+    'CINEMA BIBLE: строй ролик как оператор-постановщик, а не как генератор красивых картинок. Для каждой сцены фиксируй физически понятную камеру, оптику, свет и движение.',
+    'Указывай конкретную оптику: 24–35mm только для среды/широких кадров; 50–65mm для естественного medium/product shot; 85–100mm macro/close-up для деталей товара без широкоугольной деформации.',
+    'Указывай depth/aperture feel (например f/2.8 shallow, f/4 moderate), мотивированный источник света и направление: окно/практикал/key слева или справа, мягкий fill/negative fill, правдоподобный falloff.',
+    'cameraMotion должен задавать старт, траекторию, скорость и конец движения: например slow 10% dolly-in with ease-in/ease-out, subtle handheld micro-drift, locked tripod, short lateral track.',
+    'В одной локации сохраняй одинаковую цветовую температуру, направление ключевого света, характер оптики и общий contrast/color palette между сценами.',
+    'SHOT VARIETY: соседние сцены не должны повторять одинаковые крупность+угол+движение камеры. Чередуй macro/detail, close-up, medium, POV/OTS/top-down/wide только когда это помогает истории.',
+    'REALISM: свет всегда имеет понятный источник; движение тела и рук ощущает вес, контакт, инерцию и трение; камера не должна выглядеть стерильно-плавающей без причины.'
     '',
     'КРИТИЧЕСКО: ДИНАМИКА И ВИЗУАЛЬНОЕ РАЗЛИЧИЕ:',
     '- START показывает исходное состояние и начало движения; END показывает заметно продвинувшееся действие или его результат;',
@@ -2145,7 +2152,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'ДЛЯ КАЖДОГО КАДРА ВЕРНИ:',
     'scene, frame, frameType, timecode, durationHint, goal, storyFunction, continuityRole, composition, framing, cameraAngle, cameraPosition, lensFeel, cameraMotion, depth, focus, location, environment, lighting, mood, colorMood, avatarInFrame, avatarDescription, expression, pose, action, productInFrame, productRole, productPlacement, productVisibility, productConsistency, dialogue, voiceover, onscreenText, soundCue, previousAnchor, nextIntent, continuityNotes, referenceMode, identityRefs, anchorFrames, continuityFrames, imagePromptRu, imagePromptEn, negativePrompt, qualityNotes.',
     '',
-    'imagePromptEn должен быть подробным cinematic prompt для ОДНОГО статичного 9:16 keyframe: realistic commercial film still, exact composition, lighting, camera, action phase, character/product continuity. No baked-in text, no random logo, no product deformation.',
+    'imagePromptEn должен быть подробным cinematic prompt для ОДНОГО статичного 9:16 keyframe: realistic commercial film still, exact composition, motivated light source/direction, camera body feel, exact focal length, aperture/depth, action phase, character/product continuity. Описывай желаемое позитивно и физически конкретно, а не общими словами cinematic/beautiful. No baked-in text, no random logo, no product deformation.'
     'Кадры START/END одной сцены обязаны показывать разные фазы действия и заметное визуальное развитие.',
     'END кадр сцены должен визуально готовить START следующей сцены.',
     'Не показывай внутренние рассуждения.',
@@ -2263,9 +2270,12 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     }))
   ]}];
   const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
+  const imageModel=frame?.hookLab?'gpt-image-2.5-flare':'gpt-image-2.5-sunburst';
+  const imageSize='1152x2048';
+  const imageQuality=frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'high':'medium');
   const body={
     model,input,
-    tools:[{type:'image_generation',model:'gpt-image-2',action:'auto',size:'1024x1536',quality:frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'medium':'low'),output_format:'png'}],
+    tools:[{type:'image_generation',model:imageModel,action:'auto',size:imageSize,quality:imageQuality,output_format:'png'}],
     tool_choice:'required'
   };
   const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},body:JSON.stringify(body)});
@@ -2278,13 +2288,13 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   const uploaded=await callProductMedia({action:'upload',productId:scoped,fileName:'previs-s'+frame.scene+'-f'+frame.frame+'-'+Date.now()+'.png',mimeType:'image/png',dataBase64:'data:image/png;base64,'+b64});
   if(!uploaded?.media?.url)throw new Error('Не удалось сохранить превиз-кадр');
   const priced=openAIUsageCost(data?.model||model,data?.usage||{});
-  const previewQuality=frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'medium':'low');
-  const amountUsd=priced.amountUsd>0?priced.amountUsd:imageGenerationFallbackUsd(previewQuality,'1024x1536');
-  await recordExpense(accountId,{provider:'OpenAI',category:frame?.hookLab?'hook-preview':'previs-image',description:(frame?.hookLab?'Hook Lab превиз ':'Превиз-кадр сцены '+frame.scene+' · ')+frame.frame,amountUsd,model:'gpt-image-2',usage:{size:'1024x1536',quality:previewQuality,references:referenceUrls.length},source:'auto'}).catch(()=>{});
+  const previewQuality=imageQuality;
+  const amountUsd=priced.amountUsd>0?priced.amountUsd:imageGenerationFallbackUsd(previewQuality,imageSize);
+  await recordExpense(accountId,{provider:'OpenAI',category:frame?.hookLab?'hook-preview':'previs-image',description:(frame?.hookLab?'Hook Lab превиз ':'Превиз-кадр сцены '+frame.scene+' · ')+frame.frame,amountUsd,model:imageModel,usage:{size:imageSize,quality:previewQuality,references:referenceUrls.length},source:'auto'}).catch(()=>{});
   return {
     url:uploaded.media.url,
     path:uploaded.media.path||'',
-    model:'gpt-image-2',
+    model:imageModel,
     references:referenceUrls,
     productLockVersion:previsFrameShowsProduct(frame,{})?'source-v2':''
   };
@@ -2526,7 +2536,7 @@ async function runGeneratedSceneQc(run,scene,sceneNo,videoUrl,accountId){
       'Не требуй буквального покадрового совпадения с текстом storyboard. Storyboard задаёт смысл START→END и continuity, а не пиксельную хореографию.',
       'Среда должна выглядеть естественно и достаточно живо для рекламного ролика, но без случайного визуального мусора.',
       'Верни ТОЛЬКО JSON: {"passed":true,"critical":false,"score":10,"summary":"","checks":{"product":"ok|warn|fail","storyAction":"ok|warn|fail","avatar":"ok|warn|fail","continuity":"ok|warn|fail","environment":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
-    ].join('\n')},...(evidence?.frames||[]).slice(0,4)];
+    ].join('\n')},...(evidence?.frames||[]).slice(0,8)];
     if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
     if(identity.avatar){content.push({type:'input_text',text:'SOURCE AVATAR IDENTITY:'},{type:'input_image',image_url:identity.avatar,detail:'low'})}
     for(const f of [previs[0],previs[previs.length-1]].filter(Boolean)){
@@ -3057,6 +3067,7 @@ async function runFinalQc(run,finalPath,accountId){
       'Сценарий: '+JSON.stringify(run.script||{}),
       'CRITICAL FAIL: любое заметное изменение исходного товара — геометрии, пропорций, количества/расположения деталей, креплений, торцов, материала, цвета или конструкции; также потеря ключевого действия/payoff, грубая смена персонажа/локации, серьёзные артефакты, пропущенная/дублированная сцена, неправильный формат.',
       'Оцени также живость окружения, монтажную связность, понятность проблемы→решения, естественность рекламы и соответствие 9:16.',
+      'CINEMA QC: оцени физическую мотивированность света, естественность camera movement, отсутствие стерильно-плавающей камеры, правдоподобный вес/контакт движений, разнообразие крупностей и углов, цветовую/световую continuity между соседними сценами. Эти пункты дают WARN/снижают score, но становятся critical только если реально ломают сцену.'
       'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"productConsistency":"ok|warn|fail","scriptCompliance":"ok|warn|fail","storyboardCompliance":"ok|warn|fail","avatarConsistency":"ok|warn|fail","environment":"ok|warn|fail","visualArtifacts":"ok|warn|fail","continuity":"ok|warn|fail","verticalFormat":"ok|warn|fail","payoff":"ok|warn|fail"},"issues":[""]}'
     ].join('\n')},...(evidence.frames||[]).slice(0,8)];
     if(identity.product){content.push({type:'input_text',text:'SOURCE PRODUCT IDENTITY:'},{type:'input_image',image_url:identity.product,detail:'high'})}
@@ -3234,6 +3245,55 @@ async function processSpecificPostStage(accountId,runId,stage){
   }
 }
 
+function positiveProductMotionLock(run,scene={}){
+  const parts=[
+    'The physical product keeps exactly the same visible shape, proportions, construction, material and color as the approved start frame for the entire shot.',
+    productDNAText(run)
+  ];
+  const holder=paperTowelHolderLock(run,[scene.action,scene.startFrame,scene.endFrame,scene.shot].filter(Boolean).join(' '));
+  if(holder)parts.push('For this holder, the base stays fixed on the left, the continuous free loading side stays on the right, and a paper roll moves from right to left toward the base during installation.');
+  return parts.filter(Boolean).join(' ');
+}
+function cleanMotionText(value=''){
+  return String(value||'').replace(/\s+/g,' ').trim();
+}
+function buildRunwayMotionPrompt(run,scene,qcCorrection=''){
+  const camera=cleanMotionText(scene.camera||scene.cameraMotion||scene.shot||'');
+  const action=cleanMotionText(scene.action||'');
+  const end=cleanMotionText(scene.endFrame||'');
+  const environment=cleanMotionText(scene.environment||'');
+  const motionStyle=/ugc|натив|phone|handheld/i.test(String(run.style||'')+' '+String(scene.shot||''))
+    ? 'Natural handheld camera with subtle human micro-drift and believable inertia.'
+    : 'Controlled cinematic camera motion with natural acceleration and deceleration.';
+  return [
+    'Continuous seamless single shot.',
+    camera?('Camera movement: '+camera+'.'):'Camera remains intentionally composed with only subtle natural drift.',
+    action?('The subject performs one clear physical action: '+action+'.'):'',
+    end?('The motion resolves clearly into this end state: '+end+'.'):'',
+    environment?('The surrounding scene reacts naturally to the action in '+environment+'.'):'',
+    motionStyle,
+    'Body, hand and object movement has believable weight, contact, friction and inertia.',
+    positiveProductMotionLock(run,scene),
+    qcCorrection?('Correction for this take: '+cleanMotionText(qcCorrection)+'.'):''
+  ].filter(Boolean).join(' ').slice(0,900);
+}
+function buildSeedanceMotionPrompt(run,scene,qcCorrection=''){
+  return [
+    'ONE continuous cinematic shot. Preserve temporal continuity from START to END.',
+    'START: '+cleanMotionText(scene.startFrame||scene.shot||''),
+    'ACTION: '+cleanMotionText(scene.action||''),
+    'END: '+cleanMotionText(scene.endFrame||''),
+    'CAMERA: '+cleanMotionText(scene.camera||scene.shot||'subtle controlled handheld motion'),
+    'FRAMING: '+cleanMotionText(scene.framing||''),
+    'LIGHTING: '+cleanMotionText(scene.lighting||'motivated practical light with physically believable shadows and falloff'),
+    'ENVIRONMENT: '+cleanMotionText(scene.environment||''),
+    'PHYSICS: realistic weight transfer, contact, inertia, friction and material response. Hands interact with the object using plausible grip and pressure.',
+    positiveProductMotionLock(run,scene),
+    'The first frame and last frame are hard visual anchors; create a physically plausible transition between them.',
+    qcCorrection?('RETRY CORRECTION: '+cleanMotionText(qcCorrection)):''
+  ].filter(Boolean).join('\n').slice(0,1800);
+}
+
 function providerCreditError(error){
   const msg=String(error?.message||error||'').toLowerCase();
   return /not enough credits|insufficient credits|credit balance is too low|out of credits|low credit balance/.test(msg);
@@ -3398,28 +3458,30 @@ async function processRunGeneration(accountId,runId){
       let preferred=manualSceneProvider(run,sceneNo)||(providerMode==='runway-only'?'runway':providerMode==='higgsfield-only'?'seedance':String(route?.provider||'runway'));
       let escalatedFrom='';
       const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
-      const generateByProvider=async(provider,attemptPrompt)=>{
+      const generateByProvider=async(provider,providerPrompt)=>{
         if(provider==='seedance'){
           return await generateHiggsfieldScene({
-            accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),
-            aspectRatio:'9:16',resolution:'720p',generateAudio:true,
-            model:'bytedance/seedance-2.0/reference-to-video'
+            accountId,prompt:providerPrompt,referenceMedia:refs,
+            startImageUrl:refs[0]||'',endImageUrl:refs[1]||'',useKeyframes:true,
+            duration:sceneDurationSeconds(scene),aspectRatio:'9:16',resolution:'720p',bitrateMode:'high',generateAudio:true,
+            model:'bytedance/seedance-2.5/image-to-video'
           });
         }
         if(!process.env.RUNWAYML_API_SECRET)throw new Error('Runway API is not configured');
         return await generateRunwayScene({
-          accountId,prompt:attemptPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280'
+          accountId,prompt:providerPrompt,referenceMedia:refs,duration:sceneDurationSeconds(scene),ratio:'720:1280',model:'gen4.5'
         });
       };
       for(let attempt=1;attempt<=maxAttempts;attempt++){
         let candidate=null;
-        const attemptPrompt=(prompt+(qcCorrection?'\nQC CORRECTION FOR THIS RETRY: '+qcCorrection:'')).slice(0,950);
+        const runwayPrompt=buildRunwayMotionPrompt(run,scene,qcCorrection);
+        const seedancePrompt=buildSeedanceMotionPrompt(run,scene,qcCorrection);
         const order=preferred==='seedance'?['seedance','runway']:['runway','seedance'];
         for(const provider of order){
           if(provider==='seedance'&&!higgsfieldConfigured())continue;
           if(provider==='runway'&&!process.env.RUNWAYML_API_SECRET)continue;
           try{
-            candidate=await generateByProvider(provider,attemptPrompt);
+            candidate=await generateByProvider(provider,provider==='seedance'?seedancePrompt:runwayPrompt);
             if(candidate?.ok&&candidate?.urls?.length){
               candidate.routerProvider=provider;
               candidate.routerReason=String(route?.reason||'');
@@ -5078,7 +5140,9 @@ async function generateHiggsfieldScene(body){
   if(!prompt) throw new Error('Scene prompt is required');
 
   const refs=normalizeReferenceUrls(body?.referenceMedia || body?.references || body?.imageUrls || []);
-  const duration=clampNumber(body?.duration,4,15,5);
+  const startImageUrl=String(body?.startImageUrl||refs[0]||'').trim();
+  const endImageUrl=String(body?.endImageUrl||refs[1]||'').trim();
+  const duration=clampNumber(body?.duration,4,30,5);
   const aspectRatio=String(body?.aspectRatio || '9:16');
   const generateAudio=body?.generateAudio !== false;
 
@@ -5092,9 +5156,10 @@ async function generateHiggsfieldScene(body){
     maxPollTime:360000
   });
 
+  const useKeyframes=body?.useKeyframes!==false&&Boolean(startImageUrl);
   const model=String(
     body?.model ||
-    (refs.length ? 'bytedance/seedance-2.0/reference-to-video' : 'bytedance/seedance-2.0/text-to-video')
+    (useKeyframes ? 'bytedance/seedance-2.5/image-to-video' : (refs.length ? 'bytedance/seedance-2.5/reference-to-video' : 'bytedance/seedance-2.5/text-to-video'))
   );
 
   const input={
@@ -5102,9 +5167,14 @@ async function generateHiggsfieldScene(body){
     duration,
     resolution:String(body?.resolution || '720p'),
     aspect_ratio:aspectRatio,
+    output_format:'mp4',
+    bitrate_mode:String(body?.bitrateMode||'high'),
     generate_audio:generateAudio
   };
-  if(refs.length) input.image_urls=refs;
+  if(useKeyframes){
+    input.image_url=startImageUrl;
+    if(endImageUrl&&endImageUrl!==startImageUrl)input.end_image_url=endImageUrl;
+  }else if(refs.length) input.image_urls=refs;
 
   const result=await client.subscribe(model,{input,withPolling:true});
   const jobs=Array.isArray(result?.jobs)?result.jobs:[];
@@ -5188,7 +5258,7 @@ async function generateRunwayScene(body){
   try{
     const pending=client.imageToVideo.create({
       model,
-      ...(refs[0]?{promptImage:refs[0]}:{}),
+      ...(refs[0]?{promptImage:(refs[1]&&refs[1]!==refs[0]?[{uri:refs[0],position:'first'},{uri:refs[1],position:'last'}]:refs[0])}:{}),
       promptText:prompt.slice(0,950),
       ratio,
       duration
