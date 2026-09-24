@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.0.2';
+const APP_VERSION='2.0.3';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1036,11 +1036,21 @@ async function generateScriptStage(payload,accountId,feedback=''){
   if(!idea.title&&!idea.concept)throw new Error('Сначала нужна утверждённая идея');
   const target=scenarioTargetCount(payload);
   const ctx=await recentIdeaContext(accountId,payload.productId||payload.product?.id);
-  const refs=[
-    ...(payload.media||payload.product?.media||[]).map(x=>x?.url),
-    ...(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url)
-  ].filter(x=>/^https:\/\//i.test(String(x||''))).slice(0,5);
+  const productRefs=(payload.media||payload.product?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
+  const avatarRefs=(payload.avatarReferences||payload.character?.media||[]).map(x=>x?.url).filter(x=>/^https:\/\//i.test(String(x||'')));
+  const refs=[productRefs[0],avatarRefs[0]].filter(Boolean);
   const model=process.env.OPENAI_MODEL||'gpt-5.6-luna';
+  async function markScriptProgress(progress,step){
+    if(!payload?.id)return;
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(!run||run.stage!=='Сценарий')return;
+      run.progress=Math.max(Number(run.progress)||0,Number(progress)||0);
+      run.backgroundTask={...(run.backgroundTask||{}),step:String(step||''),heartbeatAt:new Date().toISOString()};
+      run.updatedAt=new Date().toISOString();
+      await writeAppState(data,accountId);
+    }catch{}
+  }
 
   const sceneProperties={
     scene:{type:'integer',minimum:1,maximum:10},
@@ -1109,14 +1119,24 @@ async function generateScriptStage(payload,accountId,feedback=''){
       {type:'input_text',text:prompt},
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
     ]}];
-    const r=await fetch('https://api.openai.com/v1/responses',{
-      method:'POST',
-      headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
-      body:JSON.stringify({
-        model,input,reasoning:{effort},max_output_tokens:7600,
-        text:{format:{type:'json_schema',name,strict:true,schema}}
-      })
-    });
+    const controller=new AbortController();
+    const timeoutMs=name==='script_draft'?80000:75000;
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    let r;
+    try{
+      r=await fetch('https://api.openai.com/v1/responses',{
+        method:'POST',
+        signal:controller.signal,
+        headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY,'content-type':'application/json'},
+        body:JSON.stringify({
+          model,input,reasoning:{effort},max_output_tokens:name==='script_draft'?7000:6500,
+          text:{format:{type:'json_schema',name,strict:true,schema}}
+        })
+      });
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error('OpenAI превысил лимит времени на этапе '+name+' ('+Math.round(timeoutMs/1000)+' сек)');
+      throw e;
+    }finally{clearTimeout(timer)}
     const txt=await r.text();
     let data;try{data=txt?JSON.parse(txt):{}}catch{data={raw:txt}}
     if(!r.ok)throw new Error(data?.error?.message||('OpenAI script error '+r.status));
@@ -1194,10 +1214,32 @@ async function generateScriptStage(payload,accountId,feedback=''){
     'Перед ответом внутренне проверь: scroll-stop, open loop, смену beats, второй proof/twist, естественность речи, звук с начала, FACT LOCK, continuity, тайминг и финальный payoff. Не показывай внутренние рассуждения.'
   ].join('\n');
 
-  const draftData=await callScriptAI({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
+  await markScriptProgress(13,'Пишу черновик сценария');
+  let draftData=await callScriptAI({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
   let script=normalizeScriptStage(draftData,payload);
-  const complete=scriptStageComplete(script);
-  if(!complete.ok)throw new Error('Черновик сценария неполный');
+  let complete=scriptStageComplete(script);
+  if(!complete.ok){
+    await markScriptProgress(14,'Автоматически дополняю черновик');
+    const repairDraftPrompt=[
+      master,
+      '',
+      'ТЕХНИЧЕСКИЙ REPAIR. Предыдущий черновик вернулся неполным.',
+      'Текущий черновик: '+JSON.stringify(script),
+      complete.missing.length?('Пустые обязательные поля верхнего уровня: '+complete.missing.join(', ')+'.'):'',
+      complete.badScenes?'Есть неполные сцены или меньше 5 сцен.':'',
+      'Не меняй утверждённую идею. Сохрани сильные части черновика и ДОПОЛНИ всё недостающее.',
+      'Каждая сцена обязана иметь непустые time, purpose, visual, action, sound, continuity, productRole.',
+      'dialogue, voiceover и onscreen могут быть пустыми только если они реально не нужны в конкретной сцене.',
+      'Нумерация сцен строго 1..N, тайминги непрерывны, 5–10 сцен.',
+      'Если отдельный CTA не нужен, поле cta заполни: «Без отдельного CTA — финал через визуальный payoff».',
+      'Верни полный script по схеме.'
+    ].filter(Boolean).join('\n');
+    draftData=await callScriptAI({prompt:repairDraftPrompt,schema:draftSchema,name:'script_draft_repair',images:[],effort:'medium'});
+    script=normalizeScriptStage(draftData,payload);
+    complete=scriptStageComplete(script);
+  }
+  if(!complete.ok)throw new Error('Черновик сценария не удалось автоматически восстановить: '+complete.missing.join(', ')+(complete.badScenes?' · неполные сцены':''));
+  await markScriptProgress(15,'Черновик готов — запускаю проверки');
 
   const reviewRoles=[
     {
@@ -1217,6 +1259,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     }
   ];
   let lastReview=null;
+  await markScriptProgress(15,'Запускаю 3 независимые проверки сценария');
   for(let i=0;i<reviewRoles.length;i++){
     const rv=reviewRoles[i];
     const prompt=[
@@ -1235,19 +1278,41 @@ async function generateScriptStage(payload,accountId,feedback=''){
       'Запрещено менять ключевую механику утверждённой идеи. Разрешено менять тайминг, количество сцен в пределах 5–10, порядок микро-beats, реплики, SFX, onscreen, переходы и способ визуального доказательства.',
       'Верни issues и changes кратко, а в script — полную улучшенную версию.'
     ].join('\n');
+    await markScriptProgress(16+i,'Проверка '+(i+1)+' из '+reviewRoles.length+': '+rv.name);
     lastReview=await callScriptAI({
       prompt,schema:reviewSchema,name:'script_review_'+rv.name,images:[],effort:'high'
     });
     script=normalizeScriptStage(lastReview?.script||{},payload);
     script.quality=lastReview?.scores||{};
-    const check=scriptStageComplete(script);
-    if(!check.ok)throw new Error('AI-проверка сценария вернула неполную версию');
+    let check=scriptStageComplete(script);
+    if(!check.ok){
+      await markScriptProgress(15+i,'Исправляю структуру после проверки '+(i+1));
+      const repairReviewPrompt=[
+        'ROLE: технический script repair editor.',
+        context,
+        '',
+        'После редакторской проверки структура сценария стала неполной.',
+        'Текущая версия: '+JSON.stringify(script),
+        check.missing.length?('Пустые поля: '+check.missing.join(', ')+'.'):'',
+        check.badScenes?'Есть неполные/неправильно пронумерованные сцены.':'',
+        'Сохрани все улучшения предыдущего редактора и восстанови только недостающее.',
+        'Каждая сцена: time, purpose, visual, action, sound, continuity, productRole — непустые; сцены 1..N; 5–10 сцен.',
+        'Верни полный сценарий и честные scores.'
+      ].filter(Boolean).join('\n');
+      lastReview=await callScriptAI({prompt:repairReviewPrompt,schema:reviewSchema,name:'script_review_structure_repair',images:[],effort:'medium'});
+      script=normalizeScriptStage(lastReview?.script||{},payload);
+      script.quality=lastReview?.scores||script.quality||{};
+      check=scriptStageComplete(script);
+    }
+    if(!check.ok)throw new Error('AI-проверка сценария не восстановилась автоматически');
+    await markScriptProgress(16+i,'Проверка '+(i+1)+' из '+reviewRoles.length+' завершена');
   }
 
   const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','hookSpecificity','beatVariety','proofVariety','speechEconomy','productIntegration','audioPlan','continuity','factualSafety','generatability','payoff','overall'];
   const failed=()=>criticalKeys.filter(k=>Number(script?.quality?.[k]||0)<8);
   let passes=reviewRoles.length;
   if(failed().length){
+    await markScriptProgress(19,'Финальный Script Doctor исправляет оценки ниже 8');
     const repairPrompt=[
       'ROLE: финальный emergency script doctor.',
       'Ниже сценарий уже прошёл три независимые AI-проверки, но часть критических критериев всё ещё ниже 8/10.',
@@ -1266,7 +1331,8 @@ async function generateScriptStage(payload,accountId,feedback=''){
   }
 
   const finalCheck=scriptStageComplete(script);
-  if(!finalCheck.ok)throw new Error('Финальный сценарий неполный');
+  if(!finalCheck.ok)throw new Error('Финальный сценарий неполный после всех автоматических восстановлений');
+  await markScriptProgress(20,'Сценарий готов');
   const finalFailed=failed();
   script.reviewProcess={
     passes,
