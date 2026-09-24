@@ -1478,7 +1478,7 @@ function renderJournal(){$("#journalList").innerHTML=journal.length?journal.slic
 async function renderConnections(){
   let s={services:{},details:{}};
   try{s=await (await fetch("/api/status",{cache:"no-store"})).json()}catch{}
-  if($("#appVersion"))$("#appVersion").textContent="v"+String(s.version||"1.7.0")+(s.build&&s.build!=="dev"?" · "+String(s.build):"");
+  if($("#appVersion")&&s.version)$("#appVersion").textContent="v"+String(s.version)+(s.build&&s.build!=="dev"?" · "+String(s.build):"");
   const D=s.details||{};
   const R=[
     ["Railway","railway"],
