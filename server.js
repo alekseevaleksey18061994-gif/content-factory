@@ -15,6 +15,8 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
+const APP_VERSION='1.6.0';
+const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
   '.html':'text/html; charset=utf-8',
@@ -3848,7 +3850,7 @@ const server=http.createServer(async(req,res)=>{
         databaseError=String(e?.message||e);
       }
     }
-    return json(res,200,{ok:true,service:'Content Factory',version:'1.5.2',database,databaseError,time:new Date().toISOString()});
+    return json(res,200,{ok:true,service:'Content Factory',version:APP_VERSION,build:BUILD_ID,database,databaseError,time:new Date().toISOString()});
   }
 
   if(url.pathname==='/api/status' && req.method==='GET'){
@@ -3948,7 +3950,7 @@ const server=http.createServer(async(req,res)=>{
       }
     };
 
-    return json(res,200,{ok:true,services:{
+    return json(res,200,{ok:true,version:APP_VERSION,build:BUILD_ID,services:{
       database,n8nServer,n8nWorkflow,higgsfield,n8nGeneration,runway,descript,drive,
       railway,github,n8nPostgres,openai,chatgptControl,ffmpeg,remotion,tiktok,instagram,youtube
     },details});
