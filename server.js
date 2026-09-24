@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.4';
+const APP_VERSION='2.6.5';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1967,7 +1967,8 @@ async function runPrevisFrameQc(run,frame,imageUrl,accountId,previousUrl=''){
       'Композиция: '+String(frame.composition||''),
       'Локация: '+String(frame.environment||frame.location||''),
       'CRITICAL: если товар есть в кадре, его геометрия, пропорции, крепёжные элементы, цвет и материал должны совпадать с SOURCE PRODUCT IMAGE. Generated anchors не имеют права переопределять форму товара.',
-      'CRITICAL: START и END должны отражать разные фазы действия. Если END выглядит как почти тот же кадр/поза/композиция без заметного продвижения действия — FAIL.',\n      'Для END при наличии PREVIOUS GENERATED FRAME требуй минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Identity и continuity при этом должны сохраниться.',
+      'CRITICAL: START и END должны отражать разные фазы действия. Если END выглядит как почти тот же кадр/поза/композиция без заметного продвижения действия — FAIL.',
+      'Для END при наличии PREVIOUS GENERATED FRAME требуй минимум 2 заметных отличия из: действие/состояние товара, руки/поза, положение товара, крупность, угол камеры, взаимодействие с окружением. Identity и continuity при этом должны сохраниться.',
       'Локация должна выглядеть правдоподобно и обжито, если storyboard не требует стерильной студии.',
       'Не наказывай за небольшие художественные различия. FAIL только за заметную ошибку товара, неверное действие/фазу, серьёзный артефакт, неправильного персонажа или явное нарушение storyboard.',
       'Верни ТОЛЬКО JSON: {"passed":true,"score":10,"summary":"","checks":{"product":"ok|warn|fail","actionPhase":"ok|warn|fail","environment":"ok|warn|fail","avatar":"ok|warn|fail","artifacts":"ok|warn|fail"},"issues":[""]}'
