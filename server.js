@@ -5166,7 +5166,6 @@ async function generateHiggsfieldScene(body){
     prompt,
     duration,
     resolution:String(body?.resolution || '720p'),
-    aspect_ratio:aspectRatio,
     output_format:'mp4',
     bitrate_mode:String(body?.bitrateMode||'high'),
     generate_audio:generateAudio
@@ -5174,7 +5173,10 @@ async function generateHiggsfieldScene(body){
   if(useKeyframes){
     input.image_url=startImageUrl;
     if(endImageUrl&&endImageUrl!==startImageUrl)input.end_image_url=endImageUrl;
-  }else if(refs.length) input.image_urls=refs;
+  }else{
+    input.aspect_ratio=aspectRatio;
+    if(refs.length) input.image_urls=refs;
+  }
 
   const result=await client.subscribe(model,{input,withPolling:true});
   const jobs=Array.isArray(result?.jobs)?result.jobs:[];
@@ -5250,7 +5252,7 @@ async function generateRunwayScene(body){
 
   const refs=normalizeReferenceUrls(body?.referenceMedia || body?.references || body?.imageUrls || []);
   const requested=Number(body?.duration)||5;
-  const duration=requested>=8?10:5;
+  const duration=Math.max(2,Math.min(10,Math.round(requested)));
   const ratio=String(body?.ratio||'720:1280');
   const client=new RunwayML({apiKey:process.env.RUNWAYML_API_SECRET});
   const model=normalizedRunwayModel(body?.model||process.env.RUNWAY_MODEL);
