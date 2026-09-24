@@ -1516,6 +1516,20 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       await writeAppState(data,accountId);
     }catch{}
   }
+  const ideaCheckpoint=payload?.ideaCheckpoint&&typeof payload.ideaCheckpoint==='object'
+    ? JSON.parse(JSON.stringify(payload.ideaCheckpoint))
+    : {};
+  async function saveIdeaCheckpoint(patch={}){
+    Object.assign(ideaCheckpoint,patch,{updatedAt:new Date().toISOString()});
+    if(!payload?.id)return;
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(!run)return;
+      run.ideaCheckpoint={...(run.ideaCheckpoint||{}),...ideaCheckpoint};
+      run.updatedAt=new Date().toISOString();
+      await writeAppState(data,accountId);
+    }catch(e){console.warn('[idea-checkpoint] '+String(e?.message||e))}
+  }
 
   function candidateSchemaFor(count){
     return {
@@ -1729,15 +1743,21 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     'ПАРТИЯ B: верни РОВНО 10 кандидатов и используй только FORMAT PATTERNS 11–20, по одному разу каждый. Не создавай кандидаты 1–10.'
   ].join('\n');
   const batchSchema=candidateSchemaFor(10);
-  const [batchA,batchB]=await Promise.all([
-    callIdeaAI({prompt:batchAPrompt,schema:batchSchema,name:'idea_candidates_a',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000}),
-    callIdeaAI({prompt:batchBPrompt,schema:batchSchema,name:'idea_candidates_b',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000})
-  ]);
-  const candidates=[
-    ...(Array.isArray(batchA?.candidates)?batchA.candidates:[]),
-    ...(Array.isArray(batchB?.candidates)?batchB.candidates:[])
-  ];
-  if(candidates.length!==20)throw new Error('Генератор идеи вернул '+candidates.length+' из 20 концепций');
+  let candidates=Array.isArray(ideaCheckpoint?.candidates)&&ideaCheckpoint.candidates.length===20
+    ? ideaCheckpoint.candidates
+    : null;
+  if(!candidates){
+    const [batchA,batchB]=await Promise.all([
+      callIdeaAI({prompt:batchAPrompt,schema:batchSchema,name:'idea_candidates_a',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000}),
+      callIdeaAI({prompt:batchBPrompt,schema:batchSchema,name:'idea_candidates_b',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000})
+    ]);
+    candidates=[
+      ...(Array.isArray(batchA?.candidates)?batchA.candidates:[]),
+      ...(Array.isArray(batchB?.candidates)?batchB.candidates:[])
+    ];
+    if(candidates.length!==20)throw new Error('Генератор идеи вернул '+candidates.length+' из 20 концепций');
+    await saveIdeaCheckpoint({candidates});
+  }
   await markIdeaProgress(5,'Creative Critic · быстрый шорт-лист 5 из 20');
 
   const shortlistSchema={
@@ -1758,14 +1778,19 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     JSON.stringify(candidates.map((x,i)=>({index:i+1,title:x.title,formatPattern:x.formatPattern,hook:x.hook,mechanic:x.mechanic,payoff:x.payoff}))),
     'Верни JSON only.'
   ].join('\n');
-  let shortlist={topIndices:[1,2,3,4,5],selectionReason:'fallback'};
-  try{
-    shortlist=await callIdeaAI({
-      prompt:shortlistPrompt,schema:shortlistSchema,name:'idea_shortlist',
-      images:[],effort:'low',maxTokens:1200,timeoutMs:60000
-    });
-  }catch(e){
-    console.warn('[idea-shortlist] fallback '+String(e?.message||e));
+  let shortlist=ideaCheckpoint?.shortlist&&typeof ideaCheckpoint.shortlist==='object'
+    ? ideaCheckpoint.shortlist
+    : {topIndices:[1,2,3,4,5],selectionReason:'fallback'};
+  if(!ideaCheckpoint?.shortlist){
+    try{
+      shortlist=await callIdeaAI({
+        prompt:shortlistPrompt,schema:shortlistSchema,name:'idea_shortlist',
+        images:[],effort:'low',maxTokens:1200,timeoutMs:60000
+      });
+    }catch(e){
+      console.warn('[idea-shortlist] fallback '+String(e?.message||e));
+    }
+    await saveIdeaCheckpoint({shortlist});
   }
   const picked=[];
   for(const raw of (Array.isArray(shortlist?.topIndices)?shortlist.topIndices:[])){
@@ -1894,7 +1919,15 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     return idea;
   }
 
-  let idea=await criticPass(criticBase);
+  let idea=null;
+  if(ideaCheckpoint?.criticIdea&&typeof ideaCheckpoint.criticIdea==='object'){
+    const restored=normalizeIdeaStage(ideaCheckpoint.criticIdea,payload);
+    if(ideaStageComplete(restored).ok)idea=restored;
+  }
+  if(!idea){
+    idea=await criticPass(criticBase);
+    await saveIdeaCheckpoint({criticIdea:idea});
+  }
   await markIdeaProgress(7,'Проверяю вирусность и производственную реализуемость');
   const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','humanNaturalness','proofVariety','shareability','productNecessity','originality','generatability'];
 
@@ -1969,6 +2002,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       'Return one complete selected idea plus 4 complete, genuinely different alternatives with honest quality scores. Do not lower scores artificially; actually fix the concept.'
     ].filter(Boolean).join('\n');
     idea=promoteBestCriticalOption(await criticPass(repairPrompt));
+    await saveIdeaCheckpoint({criticIdea:idea,repairPassesUsed});
   }
 
   const finalFailed=criticalFailures(idea);
@@ -2069,6 +2103,18 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     autoPromotion:true,
     evaluatedAt:new Date().toISOString()
   };
+  await saveIdeaCheckpoint({finalIdea:idea,completed:true});
+  if(payload?.id){
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(run&&!run.idea){
+        run.idea=idea;
+        run.progress=Math.max(8,Number(run.progress)||0);
+        run.updatedAt=new Date().toISOString();
+        await writeAppState(data,accountId);
+      }
+    }catch(e){console.warn('[idea-final-persist] '+String(e?.message||e))}
+  }
   return idea;
 }
 
@@ -2160,6 +2206,20 @@ async function generateScriptStage(payload,accountId,feedback=''){
       run.updatedAt=new Date().toISOString();
       await writeAppState(data,accountId);
     }catch{}
+  }
+  const scriptCheckpoint=payload?.scriptCheckpoint&&typeof payload.scriptCheckpoint==='object'
+    ? JSON.parse(JSON.stringify(payload.scriptCheckpoint))
+    : {};
+  async function saveScriptCheckpoint(patch={}){
+    Object.assign(scriptCheckpoint,patch,{updatedAt:new Date().toISOString()});
+    if(!payload?.id)return;
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(!run)return;
+      run.scriptCheckpoint={...(run.scriptCheckpoint||{}),...scriptCheckpoint};
+      run.updatedAt=new Date().toISOString();
+      await writeAppState(data,accountId);
+    }catch(e){console.warn('[script-checkpoint] '+String(e?.message||e))}
   }
 
   const sceneProperties={
@@ -2371,9 +2431,19 @@ async function generateScriptStage(payload,accountId,feedback=''){
   ].join('\n');
 
   await markScriptProgress(13,'Пишу черновик сценария');
-  let draftData=await callScriptAIResilient({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
-  let script=normalizeScriptStage(draftData,payload);
-  let complete=scriptStageComplete(script);
+  let draftData=null;
+  let script=null;
+  let complete={ok:false,missing:[],badScenes:true};
+  if(scriptCheckpoint?.draft&&typeof scriptCheckpoint.draft==='object'){
+    script=normalizeScriptStage(scriptCheckpoint.draft,payload);
+    complete=scriptStageComplete(script);
+  }
+  if(!complete.ok){
+    draftData=await callScriptAIResilient({prompt:master,schema:draftSchema,name:'script_draft',images:refs,effort:'high'});
+    script=normalizeScriptStage(draftData,payload);
+    complete=scriptStageComplete(script);
+    if(complete.ok)await saveScriptCheckpoint({draft:script});
+  }
   if(!complete.ok){
     await markScriptProgress(14,'Автоматически дополняю черновик');
     const repairDraftPrompt=[
@@ -2393,6 +2463,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     draftData=await callScriptAIResilient({prompt:repairDraftPrompt,schema:draftSchema,name:'script_draft_repair',images:[],effort:'medium'});
     script=normalizeScriptStage(draftData,payload);
     complete=scriptStageComplete(script);
+    if(complete.ok)await saveScriptCheckpoint({draft:script});
   }
   if(!complete.ok)throw new Error('Черновик сценария не удалось автоматически восстановить: '+complete.missing.join(', ')+(complete.badScenes?' · неполные сцены':''));
   await markScriptProgress(15,'Черновик готов — запускаю проверки');
@@ -2420,8 +2491,17 @@ async function generateScriptStage(payload,accountId,feedback=''){
     }
   ];
   let lastReview=null;
+  let reviewStart=0;
+  if(scriptCheckpoint?.reviewedScript&&typeof scriptCheckpoint.reviewedScript==='object'){
+    const restored=normalizeScriptStage(scriptCheckpoint.reviewedScript,payload);
+    const restoredCheck=scriptStageComplete(restored);
+    if(restoredCheck.ok){
+      script=restored;
+      reviewStart=Math.max(0,Math.min(reviewRoles.length,Number(scriptCheckpoint.reviewIndex)||0));
+    }
+  }
   await markScriptProgress(15,'Запускаю 4 независимые проверки сценария');
-  for(let i=0;i<reviewRoles.length;i++){
+  for(let i=reviewStart;i<reviewRoles.length;i++){
     const rv=reviewRoles[i];
     const prompt=[
       rv.role,
@@ -2466,6 +2546,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       check=scriptStageComplete(script);
     }
     if(!check.ok)throw new Error('AI-проверка сценария не восстановилась автоматически');
+    await saveScriptCheckpoint({reviewedScript:script,reviewIndex:i+1});
     await markScriptProgress(16+i,'Проверка '+(i+1)+' из '+reviewRoles.length+' завершена');
   }
 
@@ -2505,6 +2586,18 @@ async function generateScriptStage(payload,accountId,feedback=''){
     finalChanges:Array.isArray(lastReview?.changes)?lastReview.changes.slice(0,12):[],
     evaluatedAt:new Date().toISOString()
   };
+  await saveScriptCheckpoint({finalScript:script,completed:true,reviewIndex:reviewRoles.length});
+  if(payload?.id){
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(run&&!run.script){
+        run.script=script;
+        run.progress=Math.max(20,Number(run.progress)||0);
+        run.updatedAt=new Date().toISOString();
+        await writeAppState(data,accountId);
+      }
+    }catch(e){console.warn('[script-final-persist] '+String(e?.message||e))}
+  }
   return script;
 }
 
@@ -2692,11 +2785,30 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
   const refs=[...productRefs.slice(0,4),...avatarRefs.slice(0,2)].filter(Boolean);
   const sceneSchema=storyboardSceneJsonSchema();
   const chunkSize=3;
-  const board=[];
+  const storyboardCheckpoint=payload?.storyboardCheckpoint&&typeof payload.storyboardCheckpoint==='object'
+    ? JSON.parse(JSON.stringify(payload.storyboardCheckpoint))
+    : {};
+  async function saveStoryboardCheckpoint(scenes){
+    storyboardCheckpoint.scenes=scenes;
+    storyboardCheckpoint.updatedAt=new Date().toISOString();
+    if(!payload?.id)return;
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(!run)return;
+      run.storyboardCheckpoint={...(run.storyboardCheckpoint||{}),...storyboardCheckpoint};
+      run.updatedAt=new Date().toISOString();
+      await writeAppState(data,accountId);
+    }catch(e){console.warn('[storyboard-checkpoint] '+String(e?.message||e))}
+  }
+  const board=Array.isArray(storyboardCheckpoint?.scenes)
+    ? storyboardCheckpoint.scenes.slice(0,scriptScenes.length).map((x,i)=>normalizeStoryboardScene(x,scriptScenes[i]||{},i))
+    : [];
 
   for(let from=0;from<scriptScenes.length;from+=chunkSize){
     const chunkScenes=scriptScenes.slice(from,from+chunkSize);
     const to=from+chunkScenes.length;
+    const existingChunk=chunkScenes.map((_,i)=>board[from+i]).filter(Boolean);
+    if(existingChunk.length===chunkScenes.length&&existingChunk.every(storyboardSceneComplete))continue;
     const chunkScript={...script,scenes:chunkScenes,sceneCount:chunkScenes.length};
     const schema={
       type:'object',additionalProperties:false,required:['storyboard'],
@@ -2740,13 +2852,76 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
     if(missing.length){
       throw new Error('Storyboard неполный после автодокрутки: '+missing.map(x=>'сцена '+x.scene+' ['+x.fields.join(', ')+']').join('; '));
     }
-    board.push(...normalized);
+    for(let i=0;i<normalized.length;i++)board[from+i]=normalized[i];
+    await saveStoryboardCheckpoint(board);
   }
 
   const check=storyboardStageComplete(board,scriptScenes.length);
   if(!check.ok)throw new Error('Storyboard неполный: '+check.missing.map(x=>'сцена '+x.scene+' ['+x.fields.join(', ')+']').join('; '));
+  await saveStoryboardCheckpoint(board);
+  if(payload?.id){
+    try{
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,payload.id);
+      if(run&&(!Array.isArray(run.storyboard)||!run.storyboard.length)){
+        run.storyboard=board;
+        run.sceneCount=board.length;
+        run.sceneVersions=Object.fromEntries(board.map((_,i)=>[i+1,1]));
+        run.progress=Math.max(26,Number(run.progress)||0);
+        run.updatedAt=new Date().toISOString();
+        await writeAppState(data,accountId);
+      }
+    }catch(e){console.warn('[storyboard-final-persist] '+String(e?.message||e))}
+  }
   return board;
 }
+function runPipelineStructuralSelfTest(){
+  const baseIdea=normalizeIdeaStage({
+    title:'Smoke test',audience:'Дом',hook:'Визуальный конфликт',first3Seconds:'Проблема видна сразу',
+    concept:'Короткий бытовой тест товара',mechanic:'hook → proof → second proof → payoff',
+    angle:'Нативный UGC',productRole:'Товар участвует в результате',retention:'Новый beat каждые 3 секунды',
+    payoff:'Видимый результат',ctaDirection:'Без отдельного CTA — финал через визуальный payoff',
+    production:'Один герой, одна локация, простая физика',why:'Есть причина досмотреть',
+    alternatives:[]
+  },{productName:'Smoke'});
+  if(!ideaStageComplete(baseIdea).ok)throw new Error('idea validator');
+
+  const scene=(n)=>({
+    scene:n,time:(n-1)*3+'-'+n*3+'s',purpose:'Beat '+n,visual:'Конкретный визуальный beat '+n,
+    action:'Одно физическое действие '+n,dialogue:'',voiceover:'',onscreen:'',sound:'Natural foley',
+    transition:'Action cut',continuity:'Same product/person/location',productRole:'Product causally present',
+    retentionMechanic:'Open loop',openLoop:'Next beat question',patternInterrupt:'Change framing',
+    visualContrast:'Different scale',microConflict:'Small friction',microPayoff:'Visible progress',
+    environmentStory:'Lived-in home environment',performanceBeat:'Natural micro reaction',
+    soundBridge:'Foley continues over cut',nextQuestion:'What changes next?'
+  });
+  const rawScript={
+    title:'Smoke',logline:'Pipeline smoke',hook:'Conflict',structure:'hook-proof-payoff',
+    cta:'Без отдельного CTA — финал через визуальный payoff',tone:'UGC',duration:'15 сек',
+    characters:[],globalContinuity:'same world',subtitleRules:'safe zone',productRules:'exact source product',
+    scenes:[1,2,3,4,5].map(scene)
+  };
+  const normalizedScript=normalizeScriptStage(rawScript,{idea:baseIdea,productName:'Smoke',duration:'15 сек'});
+  if(!scriptStageComplete(normalizedScript).ok)throw new Error('script validator');
+
+  const board=normalizedScript.scenes.map((sc,i)=>normalizeStoryboardScene({
+    title:'Shot '+(i+1),duration:sc.time,purpose:sc.purpose,shot:'medium',framing:'vertical 9:16 medium',
+    camera:'locked with subtle micro drift',lens:'50mm',angle:'eye level',cameraHeight:'eye level',
+    focus:'product and hands',depth:'moderate f/4',motionTiming:'single clear move',
+    environment:'home kitchen',setDesign:'lived-in kitchen',foreground:'counter edge',midground:'product and hands',
+    background:'soft kitchen detail',props:'only approved everyday props',materials:'realistic',colorPalette:'natural neutral',
+    lighting:'soft window key',practicalLights:'warm practical',characters:'same approved avatar',
+    performance:'natural micro reaction',blocking:'simple hand action',product:'exact source product',
+    action:sc.action,startFrame:'clear start state',endFrame:'visibly advanced end state',
+    continuity:'same wardrobe/product/location',retentionMechanic:sc.retentionMechanic,
+    patternInterrupt:sc.patternInterrupt,microPayoff:sc.microPayoff,dialogue:'',voiceover:'',
+    onscreen:'',sound:sc.sound,soundDesign:'natural foley',transition:'motivated cut',
+    editorNote:'cut on action',negative:'no product redesign',promptEn:'photorealistic vertical commercial frame'
+  },sc,i));
+  if(!storyboardStageComplete(board,normalizedScript.scenes.length).ok)throw new Error('storyboard validator');
+  if(!providerCreditError('You have no credits remaining. Add credits to continue using the API.'))throw new Error('credit classifier');
+  return {idea:true,script:true,storyboard:true,creditClassifier:true};
+}
+
 async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
   if(!openaiConfigured())throw new Error('OpenAI API is not configured');
   const idea=normalizeIdeaStage(payload.idea||{},payload);
@@ -3556,8 +3731,13 @@ async function processRunPrevis(accountId,runId){
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     if(run){
-      run.previsRunning=false;run.previsStartedAt=null;run.previsHeartbeatAt=new Date().toISOString();run.status='Ошибка';run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.error='Превиз: '+run.previsError;run.updatedAt=run.previsHeartbeatAt;
-      appendFactoryJournal(data,'Ошибка превиза',(run.productName||run.id)+' · '+run.previsError);
+      run.previsRunning=false;run.previsStartedAt=null;run.previsHeartbeatAt=new Date().toISOString();run.stage='Превиз-кадры';run.previsError=String(e?.message||e);run.updatedAt=run.previsHeartbeatAt;
+      if(setProviderBlocked(run,e,'Превиз-кадры')){
+        appendFactoryJournal(data,'Превиз ждёт пополнения',(run.productName||run.id)+' · '+run.providerBlock.provider+' · готовые кадры сохранены');
+      }else{
+        run.status='Ошибка';run.error='Превиз: '+run.previsError;
+        appendFactoryJournal(data,'Ошибка превиза',(run.productName||run.id)+' · '+run.previsError);
+      }
       await writeAppState(data,accountId);
     }
     return {ok:false,error:String(e?.message||e)};
@@ -3643,8 +3823,15 @@ async function processAutoPipeline(accountId,runId){
     return await processRunPrevis(accountId,runId);
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-    if(run){run.status='Ошибка';run.error='Автопилот: '+String(e?.message||e);run.updatedAt=new Date().toISOString();await writeAppState(data,accountId)}
-    return {ok:false,error:String(e?.message||e)};
+    if(run){
+      if(setProviderBlocked(run,e,run.stage)){
+        appendFactoryJournal(data,'Процесс ждёт пополнения',run.productName+' · '+run.providerBlock.provider+' · прогресс сохранён');
+      }else{
+        run.status='Ошибка';run.error='Автопилот: '+String(e?.message||e);run.updatedAt=new Date().toISOString();
+      }
+      await writeAppState(data,accountId);
+    }
+    return {ok:false,error:String(e?.message||e),blocked:Boolean(run?.providerBlock)};
   }
 }
 function enqueueAutoPipeline(accountId,runId){
@@ -4325,9 +4512,34 @@ function buildSeedanceMotionPrompt(run,scene,qcCorrection=''){
   ].filter(Boolean).join('\n').slice(0,2200);
 }
 
+function providerCreditInfo(error){
+  const msg=String(error?.message||error||'');
+  const low=msg.toLowerCase();
+  const quota=/not enough credits|insufficient credits|credit balance is too low|out of credits|low credit balance|no credits remaining|insufficient_quota|billing[_ -]?hard[_ -]?limit|add credits to continue|you do not have enough credits/i.test(msg);
+  if(!quota)return null;
+  let provider='AI provider';
+  if(/openai|platform\.openai\.com|insufficient_quota|no credits remaining/i.test(low))provider='OpenAI';
+  else if(/higgsfield|seedance/i.test(low))provider='Higgsfield / Seedance';
+  else if(/runway/i.test(low))provider='Runway';
+  return {provider,message:msg.slice(0,1200),code:'CREDITS_REQUIRED'};
+}
 function providerCreditError(error){
-  const msg=String(error?.message||error||'').toLowerCase();
-  return /not enough credits|insufficient credits|credit balance is too low|out of credits|low credit balance/.test(msg);
+  return Boolean(providerCreditInfo(error));
+}
+function setProviderBlocked(run,error,stage=''){
+  const info=providerCreditInfo(error);
+  if(!info||!run)return false;
+  run.status='Ждёт пополнения';
+  run.providerBlock={
+    provider:info.provider,
+    code:info.code,
+    stage:String(stage||run.stage||''),
+    message:info.message,
+    blockedAt:new Date().toISOString()
+  };
+  run.error=info.provider+': недостаточно API-кредитов. Прогресс сохранён; после пополнения нажми «Проверить и продолжить».';
+  run.updatedAt=new Date().toISOString();
+  return true;
 }
 
 function videoProviderMode(run){
@@ -4624,8 +4836,13 @@ async function processRunGeneration(accountId,runId){
   }catch(e){
     state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
     if(run){
-      run.backendGenerationRunning=false;run.status='Ошибка';run.stage='Генерация';run.generationError=String(e?.message||e);run.error=run.generationError;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Ошибка генерации',run.generationError);
+      run.backendGenerationRunning=false;run.stage='Генерация';run.generationError=String(e?.message||e);run.updatedAt=new Date().toISOString();
+      if(setProviderBlocked(run,e,'Генерация')){
+        appendFactoryJournal(data,'Генерация ждёт пополнения',(run.productName||run.id)+' · '+run.providerBlock.provider+' · готовые сцены сохранены');
+      }else{
+        run.status='Ошибка';run.error=run.generationError;
+        appendFactoryJournal(data,'Ошибка генерации',run.generationError);
+      }
       await writeAppState(data,accountId);
     }
     return {ok:false,error:String(e?.message||e)};
@@ -5446,7 +5663,7 @@ async function runControlAction(body,accountId){
     throw new Error('Переход для этапа «'+current+'» ещё не настроен');
   }
   if(action==='start'||action==='resume'){
-    run.paused=false;run.error='';run.updatedAt=new Date().toISOString();
+    run.paused=false;run.error='';run.providerBlock=null;run.updatedAt=new Date().toISOString();
     if(run.mode!=='manual'){
       run.status='В работе';run.awaitingApproval=false;
       await writeAppState(data,accountId);
@@ -8532,6 +8749,12 @@ const server=http.createServer(async(req,res)=>{
 
 server.listen(port,'0.0.0.0',async()=>{
   console.log(`Content Factory запущен на порту ${port}`);
+  try{
+    const smoke=runPipelineStructuralSelfTest();
+    console.log('[pipeline-selftest] PASS '+JSON.stringify(smoke));
+  }catch(e){
+    console.error('[pipeline-selftest] FAIL '+String(e?.message||e));
+  }
   try{
     await applyOneTimeAuthMigration();
   }catch(e){
