@@ -5689,56 +5689,91 @@ async function waitDescriptJob(jobId,timeoutMs=240000){
   }
   throw new Error('Descript превысил время ожидания');
 }
-function videoAnalysisPrompt({sourceName='',sourceType='video',product=null,avatar=null,metadata={},transcript=''}) {
+function videoAnalysisJsonSchema(){
+  const shotProps={
+    shot:{type:'integer',minimum:1,maximum:30},
+    start:{type:'number',minimum:0},end:{type:'number',minimum:0},duration:{type:'number',minimum:0},
+    purpose:{type:'string'},frameSummary:{type:'string'},framing:{type:'string'},cameraAngle:{type:'string'},cameraHeight:{type:'string'},
+    lensEstimate:{type:'string'},cameraMotion:{type:'string'},focusDepth:{type:'string'},lighting:{type:'string'},
+    environment:{type:'string'},setDesign:{type:'string'},foreground:{type:'string'},midground:{type:'string'},background:{type:'string'},
+    props:{type:'string'},materials:{type:'string'},colorPalette:{type:'string'},characterBlocking:{type:'string'},handAction:{type:'string'},
+    productStateStart:{type:'string'},action:{type:'string'},productStateEnd:{type:'string'},spokenLine:{type:'string'},onscreenText:{type:'string'},
+    sfx:{type:'string'},music:{type:'string'},transitionIn:{type:'string'},transitionOut:{type:'string'},
+    retentionMechanic:{type:'string'},openLoop:{type:'string'},microPayoff:{type:'string'},whyWorks:{type:'string'},weakness:{type:'string'},improvement:{type:'string'}
+  };
+  const adaptSceneProps={
+    scene:{type:'integer',minimum:1,maximum:30},time:{type:'string'},duration:{type:'number',minimum:0},
+    purpose:{type:'string'},shot:{type:'string'},environment:{type:'string'},setDesign:{type:'string'},camera:{type:'string'},lens:{type:'string'},
+    lighting:{type:'string'},avatarAction:{type:'string'},productAction:{type:'string'},voiceover:{type:'string'},onscreen:{type:'string'},
+    sound:{type:'string'},transition:{type:'string'},retentionMechanic:{type:'string'},productLock:{type:'string'}
+  };
+  return {
+    type:'object',additionalProperties:false,
+    required:['summary','hook','whyWorks','weaknesses','sourceBlueprint','adaptation'],
+    properties:{
+      summary:{type:'string'},hook:{type:'string'},
+      whyWorks:{type:'array',maxItems:20,items:{type:'string'}},
+      weaknesses:{type:'array',maxItems:20,items:{type:'string'}},
+      sourceBlueprint:{
+        type:'object',additionalProperties:false,
+        required:['durationSeconds','sourceHook','scriptSummary','exactVoiceover','onscreenTextTimeline','visualDNA','cameraGrammar','lightingGrammar','setGrammar','editingGrammar','audioGrammar','shots'],
+        properties:{
+          durationSeconds:{type:'number',minimum:0},sourceHook:{type:'string'},scriptSummary:{type:'string'},exactVoiceover:{type:'string'},
+          onscreenTextTimeline:{type:'array',maxItems:30,items:{type:'string'}},
+          visualDNA:{type:'string'},cameraGrammar:{type:'string'},lightingGrammar:{type:'string'},setGrammar:{type:'string'},
+          editingGrammar:{type:'string'},audioGrammar:{type:'string'},
+          shots:{type:'array',minItems:1,maxItems:30,items:{type:'object',additionalProperties:false,required:Object.keys(shotProps),properties:shotProps}}
+        }
+      },
+      adaptation:{
+        type:'object',additionalProperties:false,
+        required:['concept','hook','structure','voiceover','productionBible','differencesFromSource','scenes','cta'],
+        properties:{
+          concept:{type:'string'},hook:{type:'string'},structure:{type:'string'},voiceover:{type:'string'},productionBible:{type:'string'},
+          differencesFromSource:{type:'array',maxItems:20,items:{type:'string'}},
+          scenes:{type:'array',minItems:1,maxItems:30,items:{type:'object',additionalProperties:false,required:Object.keys(adaptSceneProps),properties:adaptSceneProps}},
+          cta:{type:'string'}
+        }
+      }
+    }
+  };
+}
+function videoAnalysisPrompt({sourceName='',sourceType='video',product=null,avatar=null,metadata={},transcript='',timedTranscript='',shotMap=[]}) {
   return [
-    'ROLE: forensic short-form video analyst + performance creative director + editor + cinematographer.',
-    'Сначала ВОССТАНОВИ ИСХОДНИК максимально точно по доступным кадрам, таймкодам и аудио. Только после этого создай улучшенную самостоятельную версию.',
-    'Ничего в проекте не редактируй. Не выдумывай то, чего не видно/не слышно. Явно разделяй OBSERVED и INFERRED.',
+    'ROLE: forensic video reverse-engineering director + performance creative strategist.',
+    'Задача состоит из ДВУХ последовательных частей. Сначала максимально точно восстанови устройство ИСХОДНОГО ролика. Только после этого создай улучшенную самостоятельную адаптацию.',
     '',
-    'Верни ТОЛЬКО валидный JSON без markdown со структурой:',
-    '{',
-    ' "summary":{"description":"","mechanic":"","durationSeconds":0,"limitations":""},',
-    ' "sourceReconstruction":{',
-    '   "spokenTranscript":"","voiceoverScript":"","dialogueScript":"","onscreenText":[],"musicAndSfx":"","',
-    '   "sourceScript":[{"time":"","visual":"","action":"","spoken":"","onscreen":"","sound":"","purpose":""}],',
-    '   "shots":[{"shot":1,"start":"","end":"","duration":"","framing":"","angle":"","cameraMovement":"","lensFeel":"","action":"","avatarAction":"","productAction":"","handsAndPhysics":"","environment":"","setDesign":"","lighting":"","onscreenText":"","spoken":"","sound":"","transition":"","retentionMechanic":"","confidence":"high|medium|low"}]',
-    ' },',
-    ' "hook":{"observation":"","mechanism":"","limitation":""},',
-    ' "hookFamily":"","retentionMap":[],"patternInterrupts":[],"visualContrasts":[],"soundDesign":"","cameraLanguage":"","setDesign":"","microPayoffs":[],',
-    ' "scenes":[],"editing":{},"whyWorks":[],"weaknesses":[],',
-    ' "adaptation":{"status":"ready|needs_product","concept":{"title":"","idea":"","durationSeconds":0,"location":"","avatar":"","productStatus":""},"hook":{"visual":"","voiceover":"","onscreen":""},"scenes":[],"cta":{"text":"","productionNotes":""}}',
-    '}',
+    'PART 1 — SOURCE BLUEPRINT. Не пересказывай ролик общими словами. Восстанови его как монтажный проект:',
+    '- таймкод каждой склейки и длительность каждого shot;',
+    '- START/MID/END состояние действия в shot;',
+    '- крупность, ракурс, высоту камеры, приблизительное focal-length feel, движение камеры, focus/depth;',
+    '- точный интерьер: тип помещения, мебель, поверхности, foreground/midground/background, props и их положение, материалы, цветовую палитру;',
+    '- свет: источник, направление, мягкость, цветовую температуру, practicals, характер теней и highlights;',
+    '- положение героя, рук и товара; хват, траекторию и физическую последовательность действий;',
+    '- весь видимый текст на экране с примерным временем;',
+    '- речь/озвучку из транскрипта с таймингами; если речи нет — прямо укажи это;',
+    '- foley/SFX/music/silence/J-cut/L-cut только там, где это реально подтверждается данными. Не выдумывай звук;',
+    '- тип входящей/исходящей склейки, cut-on-action/match-on-action если видимо;',
+    '- retention mechanic, open loop и micro-payoff каждого shot;',
+    '- почему конкретный shot работает и что в нём можно улучшить.',
+    'SOURCE BLUEPRINT должен позволять другому режиссёру восстановить структуру ролика без просмотра оригинала.',
     '',
-    'КРИТИЧЕСКИ ВАЖНО ДЛЯ sourceReconstruction:',
-    '1) spokenTranscript = дословная речь/озвучка ТОЛЬКО если она реально получена из транскрипта/аудио. Если речи нет или аудио недоступно — пустая строка, не фантазируй.',
-    '2) voiceoverScript отдельно от dialogueScript. Если нельзя уверенно отличить — укажи это в limitations.',
-    '3) sourceScript = хронологический сценарий исходника: таймкод → что видно → действие → речь → экранный текст → звук → функция.',
-    '4) shots = максимально подробный shot-by-shot разбор: границы кадра/склейки, крупность, ракурс, camera movement, приблизительная оптика, действие рук и товара, интерьер/фон/props, свет, текст, звук, переход, retention-механика.',
-    '5) Если точная граница склейки неизвестна, ставь приблизительный таймкод и confidence medium/low.',
-    '6) Не объединяй разные кадры в одну сцену только ради краткости. Цель — получить production blueprint, из которого можно построить улучшенную версию.',
+    'PART 2 — IMPROVED COPY. Создай НОВУЮ версию под наш товар и AI-аватара.',
+    'Сохраняй рабочую механику, ритм, порядок доказательств и типы визуальных beats, но НЕ копируй дословные чужие реплики, брендинг, музыку, водяные знаки или уникальную художественную постановку.',
+    'Улучшенная версия должна быть сильнее исходника: более быстрый scroll-stop, понятнее open loop, больше визуального контраста, точнее proof, насыщеннее set design, естественнее герой, лучше sound bridges и более сильный payoff.',
+    'Если наш товар отличается по конструкции — адаптируй ДЕЙСТВИЕ под реальный товар. Никогда не изменяй товар ради повторения исходника.',
+    'Каждая adaptation.scenes должна быть production-ready: time, duration, purpose, shot, environment, setDesign, camera, lens, lighting, avatarAction, productAction, voiceover, onscreen, sound, transition, retentionMechanic, productLock.',
     '',
-    'RETENTION/CREATIVE РАЗБОР:',
-    'retentionMap — по временным отрезкам: что удерживает, какой вопрос открыт, какой payoff закрывает его, что заставляет смотреть дальше.',
-    'patternInterrupts — смены масштаба/POV/движения/эмоции/звука/состояния предмета с временем.',
-    'visualContrasts — контраст между соседними кадрами.',
-    'cameraLanguage — крупности, ракурсы, движения, вероятная оптика и их функция.',
-    'setDesign — интерьер, слои глубины, props, материалы, practical lights, бытовая правдоподобность.',
-    'soundDesign — речь, музыка, foley, SFX, тишина, J/L-cuts и роль звука.',
-    'microPayoffs — маленькие награды зрителю до финального payoff.',
-    '',
-    'ADAPTATION = улучшенная САМОСТОЯТЕЛЬНАЯ версия, а не shot-for-shot копия.',
-    'Сохраняй общую маркетинговую механику, сильный темп и тип доказательства, но меняй формулировки, постановку, композиции и конкретные creative choices.',
-    'Каждая adaptation.scenes должна содержать duration, purpose, shot, camera, environment, avatarAction, productAction, voiceover, onscreen, sound, retentionMechanic, patternInterrupt, microPayoff.',
-    'Если конкретный наш товар НЕ выбран, adaptation.status="needs_product": можно предложить только общую механику и черновой план; нельзя придумывать геометрию, крепление или свойства.',
-    'Если товар выбран — строго использовать его Product DNA/правила, а не конструкцию товара из видео-конкурента.',
-    'Не копируй чужой брендинг, музыку, уникальные реплики или точную последовательность выразительных кадров.',
-    '',
+    'КЛЮЧЕВОЕ ПРАВИЛО КАДРОВ: изображения после этого текста подписаны SOURCE VIDEO · SHOT N · START/MID/END с точным timestamp. Используй их как доказательства, а не как вдохновение. Не смешивай разные shots.',
+    'Автоматически найденные shot ranges: '+JSON.stringify(shotMap||[]),
     'Источник: '+String(sourceType)+'. Название: '+String(sourceName||'без названия')+'.',
     'Метаданные: '+JSON.stringify(metadata||{}),
-    transcript?('РАСПОЗНАННАЯ РЕЧЬ/АУДИО: '+String(transcript).slice(0,45000)):'РАСПОЗНАННАЯ РЕЧЬ: отсутствует или не извлечена.',
-    'Наш товар: '+(product?JSON.stringify({name:product.name,category:product.category,utp:product.utp,rules:product.rules,productDNA:product.productDNA||null}):'не выбран')+'.',
+    timedTranscript?('ТОЧНЫЙ ТРАНСКРИПТ С ТАЙМКОДАМИ:\n'+String(timedTranscript).slice(0,45000)):(transcript?('ТРАНСКРИПТ:\n'+String(transcript).slice(0,45000)):'Речь не извлечена или в ролике нет речи. Не придумывай точные реплики.'),
+    'Наш товар: '+(product?JSON.stringify({name:product.name,category:product.category,utp:product.utp,rules:product.rules,productDNA:product.productDNA||null}):'НЕ ВЫБРАН — Source Blueprint делай полностью, а adaptation пометь как предварительную без конкретных неподтверждённых свойств товара')+'.',
     'Наш AI-аватар: '+(avatar?JSON.stringify({name:avatar.name,age:avatar.age,look:avatar.look,voice:avatar.voice,topics:avatar.topics,locks:avatar.locks}):'не выбран')+'.',
-    'Если данных недостаточно, не угадывай — зафиксируй ограничение.'
+    product?universalProductIdentityLock({product,productDNA:product.productDNA}):'',
+    'Не выдумывай то, чего не видно/не слышно. Lens — только оценка типа 24–35mm feel / 50mm feel / 85mm macro feel, а не утверждение о реальной камере.',
+    'Верни только JSON по заданной схеме.'
   ].filter(Boolean).join('\n');
 }
 async function saveVideoAnalysisResult(opts,analysis,provider,extra={}){
