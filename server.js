@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.5';
+const APP_VERSION='2.6.6';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -1527,8 +1527,14 @@ function storyboardContext(payload,script,idea,feedback=''){
     'Локация и свет должны быть физически конкретными и совместимыми между соседними сценами.',
     'characters должен повторять ключевые identity-признаки аватара в каждой сцене, где он виден.',
     'product должен явно описывать положение реального товара и его видимые детали, без изменения конструкции.',
-    'startFrame и endFrame должны описывать именно первый и последний видимый кадр сцены и стыковаться с соседними сценами.',
-    'promptEn — подробный английский prompt только для одной сцены, no baked-in text, realistic hands, identity lock, product geometry lock.'
+    'Storyboard сразу является планом превиза: на КАЖДУЮ сцену планируй ровно 2 ключевых изображения — START и END.',
+    'startFrame = точный план первого превиз-кадра сцены: исходное состояние, начало микро-действия, конкретная композиция, поза, положение рук/товара и камера.',
+    'endFrame = точный план второго превиз-кадра сцены: действие заметно продвинулось или завершилось; это не дубль START.',
+    'START и END должны отличаться с первого взгляда минимум по 2 признакам из: фаза действия, положение рук/тела, положение товара, крупность, угол камеры, взаимодействие с окружением.',
+    'При этом сохраняй continuity: тот же персонаж, одежда, реальный товар и его геометрия, локация, свет и направление действия.',
+    'Между соседними сценами разнообразь киноязык: wide/medium/close-up/detail, front/3/4/side; не повторяй одну и ту же композицию без сюжетной причины.',
+    'endFrame одной сцены должен логично готовить startFrame следующей сцены.',
+    'promptEn — подробный английский prompt для ВИДЕО всей сцены от START к END: опиши движение между двумя состояниями, camera motion, realistic hands, identity lock, product geometry lock, no baked-in text.'
   ].filter(Boolean).join('\n');
 }
 async function generateStoryboardStage(payload,accountId,feedback=''){
@@ -1549,6 +1555,8 @@ async function generateStoryboardStage(payload,accountId,feedback=''){
     'ROLE: senior storyboard director, cinematographer and AI-video prompt engineer.',
     storyboardContext(payload,script,idea,feedback),
     'Сделай ровно '+scriptScenes.length+' сцен. Сцена N storyboard = сцена N сценария.',
+    'Для каждой сцены заранее спроектируй ровно 2 превиз-кадра через поля startFrame и endFrame.',
+    'Не делай START и END почти одинаковыми: это два разных момента одного действия, между которыми ролик должен ощущаться живым и динамичным.',
     'Каждая сцена должна быть production-ready: ни одного пустого технического поля.',
     'Верни JSON по заданной схеме.'
   ].join('\n\n');
@@ -1599,6 +1607,8 @@ async function generateStoryboardScene(payload,accountId,sceneNo,feedback=''){
     prev?('Предыдущая сцена для continuity: '+JSON.stringify(prev)):'',
     next?('Следующая сцена для continuity: '+JSON.stringify(next)):'',
     'Верни одну полностью заполненную production-ready сцену. Все технические поля обязаны быть конкретными; никаких "—", "не задано" или пустых location/light/character/product/start/end.',
+    'Обязательно перепроектируй пару START/END как 2 разных ключевых превиз-кадра одной сцены: START — начало действия, END — заметно продвинутый или завершённый момент.',
+    'START и END должны визуально отличаться минимум по 2 признакам, сохраняя continuity и точную геометрию товара.',
     'Если комментарий пользователя пустой, улучшай сцену без изменения её смысла.'
   ].filter(Boolean).join('\n\n');
   let raw=await callStoryboardAI(accountId,{prompt,schema,name:'storyboard_scene',images:refs,effort:'medium'});
