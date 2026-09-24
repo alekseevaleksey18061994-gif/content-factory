@@ -893,13 +893,24 @@ async function recentIdeaContext(accountId,productId){
       }));
     const analyses=(Array.isArray(data.videoAnalyses)?data.videoAnalyses:[])
       .slice(-12)
-      .map(v=>({
-        title:String(v?.title||v?.name||'').slice(0,200),
-        summary:String(v?.summary||v?.analysis?.summary||v?.result?.summary||'').slice(0,1600),
-        hooks:Array.isArray(v?.hooks)?v.hooks.slice(0,8):[],
-        patterns:Array.isArray(v?.patterns)?v.patterns.slice(0,8):[],
-        scenes:Array.isArray(v?.scenes)?v.scenes.slice(0,8):[]
-      }));
+      .map(v=>{
+        const a=v?.analysis&&typeof v.analysis==='object'?v.analysis:{};
+        return {
+          title:String(v?.title||v?.name||v?.sourceName||'').slice(0,200),
+          summary:String(v?.summary||a?.summary||v?.result?.summary||'').slice(0,1800),
+          hook:String(a?.hook||'').slice(0,1200),
+          hookFamily:String(a?.hookFamily||'').slice(0,600),
+          retentionMap:Array.isArray(a?.retentionMap)?a.retentionMap.slice(0,10):[],
+          patternInterrupts:Array.isArray(a?.patternInterrupts)?a.patternInterrupts.slice(0,10):[],
+          visualContrasts:Array.isArray(a?.visualContrasts)?a.visualContrasts.slice(0,10):[],
+          microPayoffs:Array.isArray(a?.microPayoffs)?a.microPayoffs.slice(0,10):[],
+          cameraLanguage:a?.cameraLanguage||'',
+          setDesign:a?.setDesign||'',
+          soundDesign:a?.soundDesign||'',
+          scenes:Array.isArray(a?.scenes)?a.scenes.slice(0,10):[],
+          whyWorks:Array.isArray(a?.whyWorks)?a.whyWorks.slice(0,10):[]
+        };
+      });
     const performanceRuns=allRuns
       .filter(r=>(!productId||r.productId===productId)&&r?.idea&&r?.metrics&&typeof r.metrics==='object')
       .map(r=>{
@@ -1711,7 +1722,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     }
   ];
   let lastReview=null;
-  await markScriptProgress(15,'Запускаю 3 независимые проверки сценария');
+  await markScriptProgress(15,'Запускаю 4 независимые проверки сценария');
   for(let i=0;i<reviewRoles.length;i++){
     const rv=reviewRoles[i];
     const prompt=[
@@ -1767,7 +1778,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     await markScriptProgress(19,'Финальный Script Doctor исправляет оценки ниже 8');
     const repairPrompt=[
       'ROLE: финальный emergency script doctor.',
-      'Ниже сценарий уже прошёл три независимые AI-проверки, но часть критических критериев всё ещё ниже 8/10.',
+      'Ниже сценарий уже прошёл несколько независимых AI-проверок, но часть критических критериев всё ещё ниже 8/10.',
       'НЕ меняй утверждённую идею. Исправь именно проваленные критерии глубокой правкой, а не косметикой.',
       context,
       '',
@@ -5591,8 +5602,13 @@ function videoAnalysisPrompt({sourceName='',sourceType='video',product=null,avat
   return [
     'Проанализируй короткое рекламное видео как performance creative director.',
     'Ничего в проекте не редактируй. Нужен только аналитический ответ.',
-    'Верни ТОЛЬКО валидный JSON без markdown с полями summary, hook, scenes, editing, whyWorks, weaknesses, adaptation.',
-    'scenes — массив исходных сцен: duration, shot, action, dialogueOrVoice, retentionMechanic.',
+    'Верни ТОЛЬКО валидный JSON без markdown с полями summary, hook, hookFamily, retentionMap, patternInterrupts, visualContrasts, soundDesign, cameraLanguage, setDesign, microPayoffs, scenes, editing, whyWorks, weaknesses, adaptation.',
+    'scenes — массив исходных сцен: duration, shot, action, dialogueOrVoice, retentionMechanic, openLoop, patternInterrupt, microPayoff, visualContrast, camera, environment, soundBridge.',
+    'retentionMap — по временным отрезкам объясни: что удерживает, какой вопрос открыт, какой payoff закрывает его и что заставляет смотреть дальше.',
+    'patternInterrupts — все осмысленные смены масштаба/POV/движения/эмоции/звука/состояния предмета с примерным временем.',
+    'visualContrasts — как соседние кадры отличаются по крупности, движению, эмоции, свету или состоянию.',
+    'cameraLanguage — фокусные/ракурсы/движение камеры и почему они работают. setDesign — интерьер, слои глубины, props, материалы, practical lights и бытовая правдоподобность.',
+    'soundDesign — diegetic/foley/SFX/music/тишина/J-cut/L-cut и их роль в удержании. microPayoffs — маленькие награды зрителю до финала.',
     'adaptation — НОВАЯ самостоятельная адаптация под наш товар и AI-аватара: concept, hook, scenes, cta.',
     'Каждая adaptation.scenes: duration, shot, avatarAction, productAction, voiceover, onscreen.',
     'Не копируй чужие точные реплики, брендинг, музыку или уникальную постановку. Переноси только общие механики удержания, темп, структуру и типы кадров.',
