@@ -916,9 +916,7 @@ window.markReady=async id=>{try{await runServerAction({runId:id,action:"approve_
 function renderScripts(){$("#scriptsList").innerHTML=scripts.length?scripts.slice().reverse().map(s=>'<article class="library-item"><div><h3>'+esc(s.title)+'</h3><p><b>Хук:</b> '+esc(s.hook||"—")+"\n"+esc(s.body||"")+"\n<b>CTA:</b> "+esc(s.cta||"—")+'</p><div class="library-meta"><span class="chip">Использован: '+(s.used||0)+' раз</span></div></div><div class="library-actions"><button class="secondary" onclick="useScript(\''+s.id+'\')">Использовать</button><button class="danger-btn" onclick="deleteScript(\''+s.id+'\')">Удалить</button></div></article>').join(""):'<div class="empty">Сценариев пока нет.</div>';const P=[["UGC-хук","Разговорное начало от лица покупателя"],["Проблема → решение","Боль → демонстрация → результат → CTA"],["Демонстрация","Максимум продукта в кадре"]];$("#promptLibrary").innerHTML=P.map((p,i)=>'<div class="prompt-card"><b>'+p[0]+'</b><small>'+p[1]+'</small><div class="dup-meter"><strong>Защита от повторов: включена</strong><div class="progress"><i style="width:'+(18+i*7)+'%"></i></div></div></div>').join("")}
 $("#addScript").onclick=()=>openM("scriptModal");$("#saveScript").onclick=()=>{const n=$("#scriptTitle").value.trim();if(!n)return;scripts.push({id:uid("s"),title:n,hook:$("#scriptHook").value.trim(),body:$("#scriptBody").value.trim(),cta:$("#scriptCta").value.trim(),used:0,created:now()});log("Сохранён сценарий",n);closeM("scriptModal");persist()};
 window.useScript=id=>{const s=scripts.find(x=>x.id===id);if(!s)return;s.used=(s.used||0)+1;$("#brief").value=[s.hook,s.body,s.cta].filter(Boolean).join("\n");openCreate();persist()};
-let mediaLibraryView=localStorage.getItem('cf_media_view')||'photos';
-window.setMediaLibraryView=view=>{mediaLibraryView=view==='videos'?'videos':'photos';localStorage.setItem('cf_media_view',mediaLibraryView);renderScenes()};
-function renderScenes(){
+function collectGeneratedMedia(){
   const r=runs.find(x=>x.id===selectedRunId)||runs.at(-1);
   const archived=(Array.isArray(mediaLibrary)?mediaLibrary:[]).slice().reverse();
   const activePhotos=[],activeVideos=[];
@@ -935,14 +933,15 @@ function renderScenes(){
       });
     }
     for(const [sceneNo,sr] of Object.entries(r.sceneResults||{})){
-      const u=Array.isArray(sr?.urls)?sr.urls[0]:'';
-      if(!u)continue;
-      activeVideos.push({
-        id:'active-scene-'+sceneNo,kind:'video',url:u,productName:pname(r),
-        sourceStage:'Текущий процесс · Видео-сцена',scene:Number(sceneNo),
-        provider:sr.routerProvider||sr.provider||sr.model||'',fileName:'scene-'+sceneNo+'.mp4',
-        active:true,activeType:'scene',runId:r.id
-      });
+      for(const [idx,u] of (Array.isArray(sr?.urls)?sr.urls:[]).entries()){
+        if(!u)continue;
+        activeVideos.push({
+          id:'active-scene-'+sceneNo+'-'+idx,kind:'video',url:u,productName:pname(r),
+          sourceStage:'Текущий процесс · Видео-сцена',scene:Number(sceneNo),
+          provider:sr.routerProvider||sr.provider||sr.model||'',fileName:'scene-'+sceneNo+(idx?'-'+(idx+1):'')+'.mp4',
+          active:true,activeType:'scene',runId:r.id
+        });
+      }
     }
     const finalUrl=r.montageResult?.url||r.finalMedia?.url||'';
     if(finalUrl){
@@ -955,38 +954,47 @@ function renderScenes(){
     }
   }
 
-  const photos=[...activePhotos,...archived.filter(m=>m.kind!=="video")];
-  const videos=[...activeVideos,...archived.filter(m=>m.kind==="video")];
-
-  const mediaCard=m=>{
-    const title=[m.productName,m.sourceStage,m.scene?("сцена "+m.scene):""].filter(Boolean).join(" · ");
-    const preview=m.kind==="video"
-      ? '<video controls playsinline preload="metadata" src="'+esc(m.url||"")+'"></video>'
-      : '<img src="'+esc(m.url||"")+'" alt="'+esc(title||"Медиа")+'">';
-    const ext=m.kind==="video"?".mp4":".png";
-    let del='';
-    if(m.activeType==="previs") del='<button class="tiny-btn danger-mini" onclick="deletePrevisFrame(\''+esc(m.runId)+'\',\''+esc(m.frameId||"")+'\','+Number(m.scene||1)+','+Number(m.frame||1)+')">Удалить фото</button>';
-    else if(m.activeType==="scene") del='<button class="tiny-btn danger-mini" onclick="deleteSceneVideo(\''+esc(m.runId)+'\','+Number(m.scene||1)+')">Удалить видео</button>';
-    else if(m.activeType==="final") del='<button class="tiny-btn danger-mini" onclick="deleteFinalVideo(\''+esc(m.runId)+'\')">Удалить видео</button>';
-    else del='<button class="tiny-btn danger-mini" onclick="deleteLibraryMedia(\''+esc(m.id||"")+'\')">Удалить</button>';
-
-    return '<article class="archive-media-card '+(m.active?'active-media-card':'')+'"><div class="archive-media-preview">'+preview+'</div><div class="archive-media-copy"><b>'+esc(title||"Сохранённый файл")+'</b><small>'+(m.active?'<span class="chip">Текущий</span> ':'')+esc(m.provider||m.model||"")+(m.archivedAt?' · сохранено '+esc(new Date(m.archivedAt).toLocaleString("ru-RU")):'')+'</small><div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url||"")+'\',\''+esc(m.fileName||("media-"+m.id+ext))+'\')">↓ Скачать</button>'+del+'</div></div></article>';
+  return {
+    run:r,
+    photos:[...activePhotos,...archived.filter(m=>m.kind!=="video")],
+    videos:[...activeVideos,...archived.filter(m=>m.kind==="video")]
   };
-
-  const section=(title,subtitle,items,icon)=>'<section class="panel media-library-panel"><div class="panel-title"><div><span class="mini-icon">'+icon+'</span><h2>'+title+'</h2><p>'+subtitle+'</p></div><span class="chip">'+items.length+' файлов</span></div>'+(items.length?'<div class="archive-media-grid">'+items.map(mediaCard).join("")+'</div>':'<div class="empty compact-empty">Пока пусто.</div>')+'</section>';
-
-  const tabs='<div class="media-type-tabs"><button class="'+(mediaLibraryView==='photos'?'active':'')+'" onclick="setMediaLibraryView(\'photos\')">▧ Фото <span>'+photos.length+'</span></button><button class="'+(mediaLibraryView==='videos'?'active':'')+'" onclick="setMediaLibraryView(\'videos\')">▶ Видео <span>'+videos.length+'</span></button></div>';
-  const mediaHtml='<div class="media-library-split">'+tabs+(mediaLibraryView==='videos'
-    ? section('Видео','Видео-сцены, финальные ролики и архив. Каждое видео скачивается и удаляется отдельно.',videos,'▶')
-    : section('Фото','Превиз-кадры и архивные изображения. Каждое фото скачивается и удаляется отдельно.',photos,'▧'))+
-  '</div>';
-
-  const currentHtml=r
-    ? '<section class="panel"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(pname(r))+'</h2><p>'+esc(r.style||"")+' · '+esc(r.duration||"")+'</p></div><button class="text-btn" onclick="openRun(\''+r.id+'\')">Открыть ролик ›</button></div><div class="storyboard">'+scenes(r)+'</div></section>'
-    : '<div class="panel empty">Активных процессов нет. Сохранённые файлы остаются в медиатеке выше.</div>';
-
-  $("#scenesWorkspace").innerHTML=mediaHtml+currentHtml;
 }
+
+function generatedMediaCard(m){
+  const title=[m.productName,m.sourceStage,m.scene?("сцена "+m.scene):""].filter(Boolean).join(" · ");
+  const preview=m.kind==="video"
+    ? '<video controls playsinline preload="metadata" src="'+esc(m.url||"")+'"></video>'
+    : '<img src="'+esc(m.url||"")+'" alt="'+esc(title||"Медиа")+'">';
+  const ext=m.kind==="video"?".mp4":".png";
+  let del='';
+  if(m.activeType==="previs") del='<button class="tiny-btn danger-mini" onclick="deletePrevisFrame(\''+esc(m.runId)+'\',\''+esc(m.frameId||"")+'\','+Number(m.scene||1)+','+Number(m.frame||1)+')">Удалить фото</button>';
+  else if(m.activeType==="scene") del='<button class="tiny-btn danger-mini" onclick="deleteSceneVideo(\''+esc(m.runId)+'\','+Number(m.scene||1)+')">Удалить видео</button>';
+  else if(m.activeType==="final") del='<button class="tiny-btn danger-mini" onclick="deleteFinalVideo(\''+esc(m.runId)+'\')">Удалить видео</button>';
+  else del='<button class="tiny-btn danger-mini" onclick="deleteLibraryMedia(\''+esc(m.id||"")+'\')">Удалить</button>';
+
+  return '<article class="archive-media-card '+(m.active?'active-media-card':'')+'">'+
+    '<div class="archive-media-preview">'+preview+'</div>'+
+    '<div class="archive-media-copy"><b>'+esc(title||"Сохранённый файл")+'</b>'+
+    '<small>'+(m.active?'<span class="chip">Текущий</span> ':'')+esc(m.provider||m.model||"")+(m.archivedAt?' · сохранено '+esc(new Date(m.archivedAt).toLocaleString("ru-RU")):'')+'</small>'+
+    '<div class="media-actions"><button class="tiny-btn" onclick="downloadMedia(\''+esc(m.url||"")+'\',\''+esc(m.fileName||("media-"+m.id+ext))+'\')">↓ Скачать</button>'+del+'</div></div></article>';
+}
+
+function renderMediaSection(targetId,type){
+  const box=$("#"+targetId);if(!box)return;
+  const media=collectGeneratedMedia();
+  const items=type==="videos"?media.videos:media.photos;
+  const title=type==="videos"?"Видео":"Фото";
+  const subtitle=type==="videos"
+    ?"Все сгенерированные видео-сцены, финальные ролики и архив. Любое видео можно скачать или удалить отдельно."
+    :"Все сгенерированные превиз-кадры и архивные изображения. Любое фото можно скачать или удалить отдельно.";
+  box.innerHTML='<section class="panel media-library-panel"><div class="panel-title"><div><span class="mini-icon">'+(type==="videos"?"▶":"▧")+'</span><h2>'+title+'</h2><p>'+subtitle+'</p></div><span class="chip">'+items.length+' файлов</span></div>'+
+    (items.length?'<div class="archive-media-grid">'+items.map(generatedMediaCard).join("")+'</div>':'<div class="empty compact-empty">Пока ничего не сгенерировано.</div>')+
+    '</section>';
+}
+function renderPhotos(){renderMediaSection("photosWorkspace","photos")}
+function renderVideos(){renderMediaSection("videosWorkspace","videos")}
+function renderScenes(){renderPhotos();renderVideos()}
 window.deleteLibraryMedia=async id=>{
   if(!id||!confirm("Удалить только этот файл из медиатеки? Остальные фото и видео останутся."))return;
   const r=await fetch("/api/entities/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,type:"media",id,confirmed:true})});
