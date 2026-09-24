@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='1.9.0';
+const APP_VERSION='2.0.0';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -696,7 +696,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       },
       quality:{
         type:'object',additionalProperties:false,
-        required:['hook','scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','loopPotential','productNecessity','visualClarity','originality','avatarFit','generatability','payoff','factualSafety','conversionPotential','overall'],
+        required:['hook','scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','humanNaturalness','proofVariety','shareability','loopPotential','productNecessity','visualClarity','originality','avatarFit','generatability','payoff','factualSafety','conversionPotential','overall'],
         properties:{
           hook:{type:'integer',minimum:1,maximum:10},
           scrollStop:{type:'integer',minimum:1,maximum:10},
@@ -705,6 +705,9 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
           pacing:{type:'integer',minimum:1,maximum:10},
           nativeTikTok:{type:'integer',minimum:1,maximum:10},
           dialogueNaturalness:{type:'integer',minimum:1,maximum:10},
+          humanNaturalness:{type:'integer',minimum:1,maximum:10},
+          proofVariety:{type:'integer',minimum:1,maximum:10},
+          shareability:{type:'integer',minimum:1,maximum:10},
           loopPotential:{type:'integer',minimum:1,maximum:10},
           productNecessity:{type:'integer',minimum:1,maximum:10},
           visualClarity:{type:'integer',minimum:1,maximum:10},
@@ -797,6 +800,11 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '16. Концепция должна быть реально генерируема покадрово: без невозможной физики, толпы, сложных рук, чрезмерных проливов/разрушений и длинного читаемого текста.',
     '17. Используй анализы конкурентов только как источник ПАТТЕРНОВ удержания. Не копируй чужой сюжет, формулировки и визуальную последовательность.',
     '18. Недавние идеи для этого товара не повторяй. Если механика уже использовалась — придумай другую причину досмотреть.',
+    '19. ВТОРОЕ ДОКАЗАТЕЛЬСТВО должно быть визуально и физически другим, а не тем же действием с другим предметом в руке. Меняй контекст, цель действия, масштаб, реакцию или последствие.',
+    '20. Не придумывай комментарии зрителей, отзывы, реакции покупателей, цифры продаж и социальные доказательства, которых нет во входных данных.',
+    '21. Запрещены мета-реплики ведущего вроде «сейчас покажу», «сейчас повторю», «давайте проверим», если без них история понятна. Герой реагирует как живой человек, а не объясняет структуру ролика.',
+    '22. В каждой концепции должен быть хотя бы один social-native момент: узнаваемый микро-провал, неожиданное визуальное следствие, короткая эмоция или satisfying-результат, которым хочется поделиться/пересмотреть.',
+    '23. Payoff — действие или видимый результат, а не статичный beauty-shot товара. Финальные 2–3 секунды должны оставаться частью истории.',
     '',
     'ПОЛЯ:',
     '- hook и first3Seconds должны описывать конкретный первый кадр/действие, а не маркетинговую фразу;',
@@ -824,7 +832,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     JSON.stringify(candidates),
     '',
     'ОЦЕНИВАЙ финальную усиленную идею по шкале 1–10:',
-    'hook, scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, loopPotential, productNecessity, visualClarity, originality, avatarFit, generatability, payoff, factualSafety, conversionPotential, overall.',
+    'hook, scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, humanNaturalness, proofVariety, shareability, loopPotential, productNecessity, visualClarity, originality, avatarFit, generatability, payoff, factualSafety, conversionPotential, overall.',
     '',
     'КАЛИБРОВКА ОЦЕНОК:',
     '- 9–10 ставь только если качество реально исключительное; не завышай оценки, чтобы пройти фильтр;',
@@ -833,9 +841,12 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '- если 30 секунд держатся на одном действии — pacing/retention максимум 6;',
     '- если ролик можно понять как «показали товар и перечислили плюсы» — nativeTikTok максимум 5;',
     '- если товар можно заменить любым похожим предметом без потери сюжета — productNecessity максимум 6.',
+    '- если второе/третье доказательство повторяет тот же жест и отличается только реквизитом — proofVariety максимум 6;',
+    '- если герой проговаривает монтажную механику («сейчас покажу/повторю/проверю») вместо естественной реакции — humanNaturalness максимум 6;',
+    '- если ролик полезный, но в нём нет ни одного узнаваемого/удивляющего/satisfying момента — shareability максимум 6.'
     '',
     'КРИТИЧЕСКИЙ ПОРОГ >=8:',
-    'scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, productNecessity, originality и generatability.',
+    'scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, humanNaturalness, proofVariety, shareability, productNecessity, originality и generatability.',
     '',
     'АНТИСКУКА — ФИНАЛ НЕ ПРОХОДИТ, ЕСЛИ:',
     '- первые 1–2 сек можно вырезать без потери ролика;',
@@ -846,6 +857,8 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '- герой объясняет словами то, что уже видно;',
     '- ролик выглядит как карточка маркетплейса, перенесённая в видео;',
     '- есть длинный статичный beauty-shot вместо события;',
+    '- второй proof фактически повторяет первый тем же движением;',
+    '- герой объясняет зрителю структуру видео вместо естественной реакции;',
     '- финал — только CTA/логотип без визуального результата.',
     '',
     'ТАЙМИНГ ДЛЯ 25–35 СЕК:',
@@ -889,7 +902,23 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   }
 
   let idea=await criticPass(criticBase);
-  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','productNecessity','originality','generatability'];
+  const editorialPrompt=[
+    criticBase,
+    '',
+    'ВТОРАЯ НЕЗАВИСИМАЯ РЕДАКТОРСКАЯ ПРОВЕРКА.',
+    'Предыдущая версия уже отобрана первым критиком:',
+    JSON.stringify({selected:idea,quality:idea.quality}),
+    '',
+    'Не доверяй предыдущим оценкам. Проверь как старший TikTok showrunner:',
+    '- не повторяются ли proof-сцены одним и тем же жестом;',
+    '- нет ли постановочных мета-реплик «сейчас покажу/проверю/повторю»;',
+    '- есть ли хотя бы один момент, который ощущается нативным для ленты, а не демонстрацией товара;',
+    '- достаточно ли сильный payoff, чтобы финал не превращался в beauty-shot/CTA;',
+    '- реально ли всё сгенерировать с устойчивыми руками, товаром и continuity.',
+    'Сразу перепиши слабые места. Верни полную улучшенную идею + 4 альтернативы + новые честные quality scores.'
+  ].join('\n');
+  idea=await criticPass(editorialPrompt);
+  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','humanNaturalness','proofVariety','shareability','productNecessity','originality','generatability'];
   const failed=()=>criticalKeys.filter(k=>Number(idea?.quality?.[k]||0)<8);
 
   if(failed().length){
@@ -911,6 +940,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   idea.creativeProcess={
     generatedCandidates:10,
     critic:true,
+    criticPasses:2,
     refined:true,
     criticalThreshold:8,
     evaluatedAt:new Date().toISOString()
@@ -1027,6 +1057,10 @@ async function generateScriptStage(payload,accountId,feedback=''){
     pacing:{type:'integer',minimum:1,maximum:10},
     nativeTikTok:{type:'integer',minimum:1,maximum:10},
     dialogueNaturalness:{type:'integer',minimum:1,maximum:10},
+    hookSpecificity:{type:'integer',minimum:1,maximum:10},
+    beatVariety:{type:'integer',minimum:1,maximum:10},
+    proofVariety:{type:'integer',minimum:1,maximum:10},
+    speechEconomy:{type:'integer',minimum:1,maximum:10},
     visualStorytelling:{type:'integer',minimum:1,maximum:10},
     productIntegration:{type:'integer',minimum:1,maximum:10},
     audioPlan:{type:'integer',minimum:1,maximum:10},
@@ -1104,6 +1138,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     '5) После первого доказательства обязательно второй proof, twist, новый бытовой контекст или усиление результата.',
     '6) Последние секунды — визуальный payoff. Beauty-shot максимум короткий; CTA не должен съедать финал.',
     '7) По возможности финальный кадр создаёт естественный loop к первому, но не натягивай его.',
+    '7a) Для 25–35 секунд хотя бы 2 ключевых proof/beats должны быть РАЗНЫМИ по действию или результату; одинаковый жест с миской/лопаткой/тарелкой считается одним и тем же proof.',
     '',
     'РЕЧЬ И ЗВУК:',
     '8) Реплики короткие, бытовые, живые. Никаких «Проверим один и тот же жест», «идеальное решение», «организуйте пространство» и другого рекламного канцелярита.',
@@ -1112,6 +1147,8 @@ async function generateScriptStage(payload,accountId,feedback=''){
     '11) Экранный текст не дублирует длинную озвучку. Короткая фраза — максимум одна мысль.',
     '12) Звук начинается осознанно с первых 0–2 сек: голос, бытовой звук или SFX. Не допускай случайной тишины и ситуации, когда голос появляется только в середине ролика.',
     '13) Для ролика 25–35 секунд, если выбран голосовой формат, распределяй речь минимум по 3 смысловым точкам: начало, развитие, payoff.',
+    '13a) Не используй мета-реплики «сейчас покажу», «сейчас повторю», «давайте проверим». Если зритель видит действие, герой не должен объяснять монтажную механику.',
+    '13b) Не повторяй один и тот же proof 3 раза с разным реквизитом. После первого доказательства второй beat должен отличаться целью действия, контекстом или визуальным последствием.',
     '',
     'AI-ГЕНЕРИРУЕМОСТЬ И CONTINUITY:',
     '14) Одна сцена = одно главное физическое действие. Избегай сложной хореографии рук, невозможной физики, толпы, большого пролива и мелкого читаемого текста.',
@@ -1142,17 +1179,17 @@ async function generateScriptStage(payload,accountId,feedback=''){
     {
       name:'retention',
       role:'Ты TikTok retention editor. Ищи места, где зритель свайпнет: слабый первый кадр, отсутствие curiosity gap, длинные сцены без нового beat, раннее раскрытие всего решения, повторяющиеся доказательства, затянутый CTA.',
-      focus:'Перепиши исполнение так, чтобы каждые 2–4 секунды происходило новое осмысленное событие. Для 25–35 сек должны ощущаться 7–10 beats. Не меняй утверждённую идею.'
+      focus:'Перепиши исполнение так, чтобы каждые 2–4 секунды происходило новое осмысленное событие. Для 25–35 сек должны ощущаться 7–10 beats. Запрещай три одинаковых proof-жеста с разным реквизитом: минимум два доказательства должны отличаться физически и визуально. Не меняй утверждённую идею.'
     },
     {
       name:'native_audio',
       role:'Ты UGC dialogue director и sound editor. Ищи рекламные формулировки, дикторский тон, дублирование картинки словами, неестественные реплики, тишину в начале, голос только в середине и перегруженные субтитры.',
-      focus:'Сделай речь бытовой и короткой, звук драматургически непрерывным, а onscreen-текст минимальным. Видео должно работать без звука, но со звуком становиться лучше.'
+      focus:'Сделай речь бытовой и короткой, звук драматургически непрерывным, а onscreen-текст минимальным. Удали мета-фразы «сейчас покажу/проверю/повторю» и всё, что просто проговаривает видимое действие. Видео должно работать без звука, но со звуком становиться лучше.'
     },
     {
       name:'showrunner',
       role:'Ты финальный showrunner и supervisor AI-production. Проверяй FACT LOCK, continuity, физическую реализуемость, продуктовую необходимость, два доказательства/pivot, тайминг, визуальный payoff и отсутствие скучного beauty-shot.',
-      focus:'Собери финальную версию, которую можно без ручной починки передавать в storyboard и AI-превиз. Не завышай оценки ради прохождения порога.'
+      focus:'Собери финальную версию, которую можно без ручной починки передавать в storyboard и AI-превиз. Проверь, что второй proof отличается от первого, финал остаётся действием, а не beauty-shot/CTA, и нет сложной физики рук. Не завышай оценки ради прохождения порога.'
     }
   ];
   let lastReview=null;
@@ -1169,7 +1206,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
       JSON.stringify(script),
       '',
       'ПРОВЕРЬ И СРАЗУ ПЕРЕПИШИ СЦЕНАРИЙ. Не ограничивайся комментариями.',
-      'Оцени честно по 1–10: scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, visualStorytelling, productIntegration, audioPlan, continuity, factualSafety, generatability, payoff, overall.',
+      'Оцени честно по 1–10: scrollStop, curiosityGap, retention, pacing, nativeTikTok, dialogueNaturalness, hookSpecificity, beatVariety, proofVariety, speechEconomy, visualStorytelling, productIntegration, audioPlan, continuity, factualSafety, generatability, payoff, overall.',
       '9–10 — только действительно сильный результат. Если критерий ниже 8, исправь причину прямо в revised script.',
       'Запрещено менять ключевую механику утверждённой идеи. Разрешено менять тайминг, количество сцен в пределах 5–10, порядок микро-beats, реплики, SFX, onscreen, переходы и способ визуального доказательства.',
       'Верни issues и changes кратко, а в script — полную улучшенную версию.'
@@ -1183,7 +1220,7 @@ async function generateScriptStage(payload,accountId,feedback=''){
     if(!check.ok)throw new Error('AI-проверка сценария вернула неполную версию');
   }
 
-  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','productIntegration','audioPlan','continuity','factualSafety','generatability','payoff','overall'];
+  const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','hookSpecificity','beatVariety','proofVariety','speechEconomy','productIntegration','audioPlan','continuity','factualSafety','generatability','payoff','overall'];
   const failed=()=>criticalKeys.filter(k=>Number(script?.quality?.[k]||0)<8);
   let passes=reviewRoles.length;
   if(failed().length){
@@ -2512,23 +2549,122 @@ async function processRunGeneration(accountId,runId){
 }
 async function dispatchExistingRun(accountId,run){
   const payload={...run,action:'create_batch',accountId,batchId:run.batchId,runId:run.id,runIds:[run.id]};
-  const archive=await notifyN8nArchive(payload);
-  const state=await readAppState(accountId);
-  const data=state?.data||blankFactoryState();
-  const current=findRunById(data,run.id);
-  if(current){
-    current.workflow={
-      sentAt:new Date().toISOString(),
-      archiveStatus:archive.status||0,
-      generationStatus:'backend-direct',
-      ok:true
-    };
-    current.updatedAt=new Date().toISOString();
-    await writeAppState(data,accountId);
-  }
   enqueueRunGeneration(accountId,run.id,'backend-generation');
-  return {ok:true,data:{archive,generation:{ok:true,status:'backend-direct'}}};
+  notifyN8nArchive(payload).then(async archive=>{
+    try{
+      const state=await readAppState(accountId);
+      const data=state?.data||blankFactoryState();
+      const current=findRunById(data,run.id);
+      if(current){
+        current.workflow={sentAt:new Date().toISOString(),archiveStatus:archive.status||0,generationStatus:'backend-direct',ok:true};
+        current.updatedAt=new Date().toISOString();
+        await writeAppState(data,accountId);
+      }
+    }catch(e){console.error('[archive-background] '+run.id+' '+String(e?.message||e))}
+  }).catch(e=>console.error('[archive-background] '+run.id+' '+String(e?.message||e)));
+  return {ok:true,data:{archive:{ok:true,status:'background'},generation:{ok:true,status:'backend-direct'}}};
 }
+
+
+const stageTaskQueues=new Map();
+function stageTaskName(task){
+  return task==='idea'?'Идея':task==='script'?'Сценарий':task==='storyboard'?'Storyboard':String(task||'Этап');
+}
+function stageTaskProgress(task){
+  return task==='idea'?3:task==='script'?12:task==='storyboard'?21:3;
+}
+async function queueRunStageTask(accountId,runId,task,note=''){
+  accountId=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
+  const state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run)throw new Error('Ролик не найден');
+  const jobId=factoryId('job');
+  run.status='В работе';run.stage=stageTaskName(task);run.awaitingApproval=false;run.error='';
+  run.backgroundTask={id:jobId,type:task,status:'queued',queuedAt:new Date().toISOString(),note:String(note||'').slice(0,2000)};
+  run.progress=Math.max(stageTaskProgress(task),Number(run.progress)||0);
+  run.updatedAt=new Date().toISOString();
+  appendFactoryJournal(data,'Этап поставлен в фон',(run.productName||run.id)+' · '+stageTaskName(task));
+  await writeAppState(data,accountId);
+  enqueueStageTask(accountId,runId,task,note,jobId);
+  return run;
+}
+async function processStageTask(accountId,runId,task,note='',jobId=''){
+  let state=await readAppState(accountId),data=state?.data||blankFactoryState(),run=findRunById(data,runId);
+  if(!run||run.paused||run.status==='Остановлено')return {ok:false,stopped:true};
+  if(jobId&&run.backgroundTask?.id&&run.backgroundTask.id!==jobId)return {ok:false,superseded:true};
+  run.status='В работе';run.stage=stageTaskName(task);run.awaitingApproval=false;run.error='';
+  run.backgroundTask={...(run.backgroundTask||{}),id:jobId||run.backgroundTask?.id||factoryId('job'),type:task,status:'processing',startedAt:new Date().toISOString()};
+  run.updatedAt=new Date().toISOString();
+  await writeAppState(data,accountId);
+  const activeJobId=run.backgroundTask.id;
+  try{
+    let result;
+    if(task==='idea'){
+      result=await generateIdeaStage(run,accountId,run.variant||1,String(note||''));
+    }else if(task==='script'){
+      if(!run.idea)throw new Error('Нельзя создать сценарий: утверждённая идея отсутствует');
+      result=await generateScriptStage(run,accountId,String(note||''));
+    }else if(task==='storyboard'){
+      if(!run.idea)throw new Error('Нельзя создать Storyboard: идея отсутствует');
+      if(!run.script)throw new Error('Нельзя создать Storyboard: сценарий ещё не создан');
+      result=await generateStoryboardStage(run,accountId,String(note||''));
+    }else{
+      throw new Error('Неизвестный фоновый этап: '+task);
+    }
+
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(!run)return {ok:false,error:'Ролик удалён во время генерации'};
+    if(run.backgroundTask?.id&&run.backgroundTask.id!==activeJobId)return {ok:false,superseded:true};
+
+    if(task==='idea'){
+      run.idea=result;
+      run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
+      run.progress=8;
+      appendFactoryJournal(data,'Идея готова',(run.productName||run.id)+' · '+String(result?.title||''));
+    }else if(task==='script'){
+      const complete=scriptStageComplete(result);
+      if(!complete.ok)throw new Error('Сценарий не прошёл структурную проверку');
+      run.script=result;
+      run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
+      run.progress=18;
+      appendFactoryJournal(data,'Сценарий готов',(run.productName||run.id)+' · '+String(result?.title||''));
+    }else if(task==='storyboard'){
+      if(!Array.isArray(result)||!result.length)throw new Error('Storyboard пустой');
+      run.storyboard=result;run.sceneCount=result.length;
+      run.sceneVersions=Object.fromEntries(result.map((_,i)=>[i+1,1]));
+      run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;
+      run.progress=26;
+      appendFactoryJournal(data,'Storyboard готов',(run.productName||run.id)+' · '+result.length+' сцен');
+    }
+    run.status='На проверке';run.stage=stageTaskName(task);run.awaitingApproval=true;run.error='';
+    run.backgroundTask={...(run.backgroundTask||{}),status:'done',finishedAt:new Date().toISOString()};
+    run.updatedAt=new Date().toISOString();
+    await writeAppState(data,accountId);
+    return {ok:true,stage:run.stage};
+  }catch(e){
+    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
+    if(run&&(!run.backgroundTask?.id||run.backgroundTask.id===activeJobId)){
+      run.status='Ошибка';run.stage=stageTaskName(task);run.awaitingApproval=false;
+      run.error=stageTaskName(task)+': '+String(e?.message||e);
+      run.backgroundTask={...(run.backgroundTask||{}),status:'failed',failedAt:new Date().toISOString(),error:String(e?.message||e)};
+      run.updatedAt=new Date().toISOString();
+      appendFactoryJournal(data,'Ошибка фонового этапа',(run.productName||run.id)+' · '+run.error);
+      await writeAppState(data,accountId);
+    }
+    console.error('[stage-task] '+accountId+' '+runId+' '+task+' '+String(e?.message||e));
+    return {ok:false,error:String(e?.message||e)};
+  }
+}
+function enqueueStageTask(accountId,runId,task,note='',jobId=''){
+  const key=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID)+'::'+String(runId);
+  const previous=stageTaskQueues.get(key)||Promise.resolve();
+  let next;
+  next=previous.catch(()=>{}).then(()=>processStageTask(sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID),runId,task,note,jobId))
+    .catch(e=>{console.error('[stage-queue] '+runId+' '+String(e?.message||e));return {ok:false,error:String(e?.message||e)}})
+    .finally(()=>{if(stageTaskQueues.get(key)===next)stageTaskQueues.delete(key)});
+  stageTaskQueues.set(key,next);
+  return next;
+}
+
 async function createBatchRuns(payload,accountId){
   const state=await readAppState(accountId);
   const data=state?.data||blankFactoryState();
@@ -2540,27 +2676,24 @@ async function createBatchRuns(payload,accountId){
   const productMedia=(Array.isArray(product.media)?product.media:[]).map(m=>({id:m?.id,url:m?.url,path:m?.path,fileName:m?.fileName,isPrimary:!!m?.isPrimary})).filter(m=>m.url);
   const basePayload={
     ...payload,
-    productId:product.id,
-    productName:product.name,
-    productUtp:product.utp||'',
-    productRules:product.rules||'',
+    productId:product.id,productName:product.name,productUtp:product.utp||'',productRules:product.rules||'',
     media:productMedia,
     product:{id:product.id,name:product.name,category:product.category||'',utp:product.utp||'',rules:product.rules||'',media:productMedia,defaultCharacterId:product.defaultCharacterId||null},
-    characterId:character?.id||null,
-    character,
-    avatarReferences:character?.media||[],
+    characterId:character?.id||null,character,avatarReferences:character?.media||[],
     characterSource:character?(String(payload.characterId||payload.character?.id||'')?'launch-selection':'product-default'):'none'
   };
   const count=Math.max(1,Math.min(20,parseInt(payload.count)||1));
   const batchId=String(payload.batchId||factoryId('batch'));
   const created=[];
   for(let i=1;i<=count;i++){
+    const id=factoryId('r');
+    const jobId=factoryId('job');
     const run={
-      id:factoryId('r'),...basePayload,
-      accountId,batchId,
-      variant:count>1?i:null,status:'В работе',stage:'Идея',progress:3,attempt:1,
+      id,...basePayload,accountId,batchId,variant:count>1?i:null,
+      status:'В работе',stage:'Идея',progress:3,attempt:1,awaitingApproval:false,
+      backgroundTask:payload.mode==='manual'?{id:jobId,type:'idea',status:'queued',queuedAt:new Date().toISOString()}:null,
       sceneCount:0,sceneVersions:{},acceptedScenes:[],
-      pipelineVersion:'previs-v2-audio',idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,generationResult:null,
+      pipelineVersion:'previs-v3-background',idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,generationResult:null,
       created:payload.created||new Date().toISOString(),updatedAt:new Date().toISOString()
     };
     data.runs.push(run);created.push(run);
@@ -2569,23 +2702,10 @@ async function createBatchRuns(payload,accountId){
   await writeAppState(data,accountId);
 
   for(const run of created){
-    if(run.mode==='manual'){
-      try{
-        const idea=await generateIdeaStage(run,accountId,run.variant||1);
-        const fresh=await readAppState(accountId),fd=fresh?.data||blankFactoryState(),rr=findRunById(fd,run.id);
-        if(!rr)continue;
-        rr.idea=idea;rr.status='На проверке';rr.stage='Идея';rr.progress=8;rr.awaitingApproval=true;rr.updatedAt=new Date().toISOString();
-        appendFactoryJournal(fd,'Идея готова',product.name+' · '+idea.title+(character?' · '+character.name:''));
-        await writeAppState(fd,accountId);
-      }catch(e){
-        await saveRunPatch(accountId,run.id,{status:'Ошибка',stage:'Идея',error:'Ошибка идеи: '+String(e?.message||e)});
-      }
-    }else{
-      enqueueAutoPipeline(accountId,run.id);
-    }
+    if(run.mode==='manual')enqueueStageTask(accountId,run.id,'idea','',run.backgroundTask?.id||'');
+    else enqueueAutoPipeline(accountId,run.id);
   }
-  const final=await readAppState(accountId);
-  return {batchId,runs:(final?.data?.runs||[]).filter(r=>r.batchId===batchId)};
+  return {batchId,runs:created};
 }
 
 async function createIdeaDraft(body,accountId){
@@ -2604,13 +2724,17 @@ async function createIdeaDraft(body,accountId){
     format:'9:16',mode:'manual',modelMode:'Авто — умный выбор',budget:Number(body.budget)||500,maxAttempts:3,
     created:new Date().toISOString()
   };
-  const idea=await generateIdeaStage(payload,accountId,1);
-  const fresh=await readAppState(accountId);
-  const fd=fresh?.data||blankFactoryState();fd.runs=Array.isArray(fd.runs)?fd.runs:[];
-  const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),pipelineVersion:'previs-v2-audio',status:'Черновик',stage:'Идея',progress:8,attempt:0,
-    idea,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,sceneCount:0,
+  const jobId=factoryId('job');
+  const run={id:factoryId('r'),...payload,batchId:factoryId('batch'),pipelineVersion:'previs-v3-background',
+    status:'В работе',stage:'Идея',progress:3,attempt:0,awaitingApproval:false,
+    backgroundTask:{id:jobId,type:'idea',status:'queued',queuedAt:new Date().toISOString()},
+    idea:null,script:null,storyboard:[],references:null,previsPlan:null,previsFrames:[],previsResult:null,sceneCount:0,
     sceneVersions:{},acceptedScenes:[],generationResult:null,updatedAt:new Date().toISOString()};
-  fd.runs.push(run);appendFactoryJournal(fd,'Создана идея',product.name+' · '+idea.title+(character?' · аватар '+character.name:''));await writeAppState(fd,accountId);
+  data.runs=Array.isArray(data.runs)?data.runs:[];
+  data.runs.push(run);
+  appendFactoryJournal(data,'Создана фоновая идея',product.name+(character?' · аватар '+character.name:''));
+  await writeAppState(data,accountId);
+  enqueueStageTask(accountId,run.id,'idea','',jobId);
   return run;
 }
 
@@ -2763,30 +2887,20 @@ async function runControlAction(body,accountId){
   if(action==='advance_stage'){
     const current=String(run.stage||'Идея');
     if(current==='Идея'){
-      run.status='В работе';run.stage='Сценарий';run.progress=12;run.updatedAt=new Date().toISOString();
-      await writeAppState(data,accountId);
-      const script=await generateScriptStage(run,accountId,String(body?.note||''));
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.script=script;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
-      run.status='На проверке';run.stage='Сценарий';run.progress=18;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Сценарий готов',(run.productName||run.id)+' · '+String(script.title||''));
-      await writeAppState(data,accountId);return run;
+      if(!run.idea)throw new Error('Идея ещё не готова');
+      return await queueRunStageTask(accountId,runId,'script',String(body?.note||''));
     }
     if(current==='Сценарий'){
-      run.status='В работе';run.stage='Storyboard';run.progress=21;run.updatedAt=new Date().toISOString();
-      await writeAppState(data,accountId);
-      const storyboard=await generateStoryboardStage(run,accountId,String(body?.note||''));
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.storyboard=storyboard;run.sceneCount=storyboard.length;
-      run.sceneVersions=Object.fromEntries(storyboard.map((_,i)=>[i+1,1]));
-      run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;
-      run.status='На проверке';run.stage='Storyboard';run.progress=26;run.awaitingApproval=true;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Storyboard готов',(run.productName||run.id)+' · '+storyboard.length+' сцен');
-      await writeAppState(data,accountId);return run;
+      if(!run.script)throw new Error('Сценарий ещё не готов — Storyboard запускать нельзя');
+      const complete=scriptStageComplete(run.script);
+      if(!complete.ok)throw new Error('Сценарий не прошёл проверку полноты');
+      return await queueRunStageTask(accountId,runId,'storyboard',String(body?.note||''));
     }
     if(current==='Storyboard'){
+      if(!run.script)throw new Error('Нельзя запускать превиз: сценарий отсутствует');
+      if(!Array.isArray(run.storyboard)||!run.storyboard.length)throw new Error('Storyboard ещё не готов');
       run.status='В работе';run.stage='Превиз-кадры';run.progress=28;run.awaitingApproval=false;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Запущен превиз',(run.productName||run.id)+' · генерирую 3 кадра на сцену');
+      appendFactoryJournal(data,'Запущен превиз',(run.productName||run.id)+' · фоновая генерация');
       await writeAppState(data,accountId);
       enqueueRunPrevis(accountId,run.id,'manual-previs');
       return run;
@@ -2794,12 +2908,14 @@ async function runControlAction(body,accountId){
     if(current==='Превиз-кадры'||current==='Референсы'){
       const expected=Number(run.previsPlan?.totalFrames)||((run.storyboard||[]).length*3);
       const ready=(Array.isArray(run.previsFrames)?run.previsFrames:[]).filter(x=>x?.url).length;
+      if(!run.script)throw new Error('Нельзя запускать видео: сценарий отсутствует');
+      if(!Array.isArray(run.storyboard)||!run.storyboard.length)throw new Error('Нельзя запускать видео: Storyboard отсутствует');
       if(!run.previsResult?.completed||!expected||ready<expected)throw new Error('Превиз ещё не готов полностью: '+ready+' из '+expected+' кадров');
       run.status='В работе';run.stage='Генерация';run.progress=38;run.awaitingApproval=false;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Превиз утверждён',(run.productName||run.id)+' · запускаю видео по превиз-кадрам');
+      appendFactoryJournal(data,'Превиз утверждён',(run.productName||run.id)+' · запускаю видео в фоне');
       await writeAppState(data,accountId);
-      await dispatchExistingRun(accountId,run);
-      return (await readAppState(accountId)).data.runs.find(x=>x.id===runId);
+      dispatchExistingRun(accountId,run).catch(e=>console.error('[dispatch-existing] '+run.id+' '+String(e?.message||e)));
+      return run;
     }
     throw new Error('Переход для этапа «'+current+'» ещё не настроен');
   }
@@ -2812,13 +2928,21 @@ async function runControlAction(body,accountId){
       return run;
     }
     if(!run.idea){
-      run.status='В работе';run.stage='Идея';run.progress=5;await writeAppState(data,accountId);
-      const idea=await generateIdeaStage(run,accountId,run.variant||1,String(body?.note||''));
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.idea=idea;
+      await writeAppState(data,accountId);
+      return await queueRunStageTask(accountId,runId,'idea',String(body?.note||''));
+    }
+    if(!run.script&&['Сценарий','Storyboard'].includes(String(run.stage||''))){
+      await writeAppState(data,accountId);
+      return await queueRunStageTask(accountId,runId,'script',String(body?.note||''));
+    }
+    if(run.script&&(!Array.isArray(run.storyboard)||!run.storyboard.length)&&run.stage==='Storyboard'){
+      await writeAppState(data,accountId);
+      return await queueRunStageTask(accountId,runId,'storyboard',String(body?.note||''));
     }
     if(run.stage==='Генерация'){
-      run.status='В работе';run.awaitingApproval=false;await writeAppState(data,accountId);await dispatchExistingRun(accountId,run);return run;
+      run.status='В работе';run.awaitingApproval=false;await writeAppState(data,accountId);
+      dispatchExistingRun(accountId,run).catch(e=>console.error('[resume-generation] '+run.id+' '+String(e?.message||e)));
+      return run;
     }
     if(run.stage==='Превиз-кадры'&&!run.previsResult?.completed){
       run.status='В работе';run.awaitingApproval=false;await writeAppState(data,accountId);enqueueRunPrevis(accountId,run.id,'resume-previs');return run;
@@ -2828,33 +2952,25 @@ async function runControlAction(body,accountId){
   }
   if(action==='regenerate'){
     const stage=String(body?.stage||'Идея');
+    const note=String(body?.note||'');
     if(stage==='Идея'){
-      const idea=await generateIdeaStage(run,accountId,run.variant||1,String(body?.note||''));
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.idea=idea;run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
-      run.status='Черновик';run.stage='Идея';run.progress=8;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Идея переделана',(run.productName||run.id)+' · '+idea.title);
-      await writeAppState(data,accountId);return run;
+      run.idea=null;run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
+      await writeAppState(data,accountId);
+      return await queueRunStageTask(accountId,runId,'idea',note);
     }
     if(stage==='Сценарий'){
-      const script=await generateScriptStage(run,accountId,String(body?.note||''));
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.script=script;run.storyboard=[];run.references=null;run.sceneCount=0;
-      run.status='На проверке';run.stage='Сценарий';run.progress=18;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Сценарий переделан',(run.productName||run.id)+' · '+String(script.title||''));
-      await writeAppState(data,accountId);return run;
+      if(!run.idea)throw new Error('Сначала нужна утверждённая идея');
+      run.script=null;run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
+      await writeAppState(data,accountId);
+      return await queueRunStageTask(accountId,runId,'script',note);
     }
     if(stage==='Storyboard'){
-      const storyboard=await generateStoryboardStage(run,accountId,String(body?.note||''));
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-      run.storyboard=storyboard;run.sceneCount=storyboard.length;
-      run.sceneVersions=Object.fromEntries(storyboard.map((_,i)=>[i+1,(Number(run.sceneVersions?.[i+1])||0)+1]));
-      run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.status='На проверке';run.stage='Storyboard';run.progress=26;run.updatedAt=new Date().toISOString();
-      appendFactoryJournal(data,'Storyboard переделан',(run.productName||run.id)+' · '+storyboard.length+' сцен');
-      await writeAppState(data,accountId);return run;
+      if(!run.script)throw new Error('Сначала нужен готовый сценарий');
+      run.storyboard=[];run.references=null;run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.sceneCount=0;
+      await writeAppState(data,accountId);
+      return await queueRunStageTask(accountId,runId,'storyboard',note);
     }
     if(stage==='Превиз-кадры'||stage==='Референсы'){
-      state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       run.previsPlan=null;run.previsFrames=[];run.previsResult=null;run.previsError='';run.error='';run.status='В работе';run.stage='Превиз-кадры';run.progress=28;run.awaitingApproval=false;run.updatedAt=new Date().toISOString();
       appendFactoryJournal(data,'Превиз переделывается',run.productName||run.id);
       await writeAppState(data,accountId);
@@ -2862,19 +2978,12 @@ async function runControlAction(body,accountId){
       return run;
     }
     if(stage==='Генерация'){
-      run.status='В работе';run.stage='Генерация';run.progress=Math.max(38,Number(run.progress)||0);run.attempt=(Number(run.attempt)||0)+1;
-      await writeAppState(data,accountId);await dispatchExistingRun(accountId,run);
-      return (await readAppState(accountId)).data.runs.find(r=>r.id===runId);
+      run.status='В работе';run.stage='Генерация';run.progress=Math.max(38,Number(run.progress)||0);run.attempt=(Number(run.attempt)||0)+1;run.awaitingApproval=false;
+      await writeAppState(data,accountId);
+      dispatchExistingRun(accountId,run).catch(e=>console.error('[regen-generation] '+run.id+' '+String(e?.message||e)));
+      return run;
     }
-    const plan=await buildRunPlan(run,accountId,run.variant||1,(stage+'; '+String(body?.note||'')).trim());
-    state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
-    if(stage==='Идея')run.idea=plan.idea;
-    else if(stage==='Сценарий')run.script=plan.script;
-    else if(stage==='Storyboard')run.storyboard=plan.storyboard;
-    else if(stage==='Референсы')run.references=plan.references;
-    else {run.idea=plan.idea;run.script=plan.script;run.storyboard=plan.storyboard;run.references=plan.references}
-    run.status='На проверке';run.stage=stage;run.progress=Math.max(8,Math.min(Number(run.progress)||8,35));run.updatedAt=new Date().toISOString();
-    appendFactoryJournal(data,'Этап переделан',(run.productName||run.id)+' · '+stage);await writeAppState(data,accountId);return run;
+    throw new Error('Переделка этапа «'+stage+'» не поддерживается');
   }
   throw new Error('Неизвестное действие');
 }
@@ -4047,20 +4156,40 @@ async function recoverPendingPrevisAndAutopilot(){
       for(const run of (data.runs||[])){
         if(!run||run.paused||run.status==='Остановлено')continue;
         const stage=String(run.stage||'');
-        if(run.pipelineVersion==='previs-v1'&&run.mode!=='manual'&&['Идея','Сценарий','Storyboard','Превиз-кадры'].includes(stage)&&!run.generationResult?.completed){
-          run.previsRunning=false;run.status='В работе';run.error='';run.updatedAt=new Date().toISOString();
-          await writeAppState(data,accountId);
-          enqueueAutoPipeline(accountId,run.id);
-          continue;
+        if(run.mode!=='manual'){
+          if(['Идея','Сценарий','Storyboard'].includes(stage)&&(!run.idea||!run.script||!Array.isArray(run.storyboard)||!run.storyboard.length)&&!run.generationResult?.completed){
+            run.status='В работе';run.error='';run.updatedAt=new Date().toISOString();
+            await writeAppState(data,accountId);
+            enqueueAutoPipeline(accountId,run.id);
+            continue;
+          }
+        }else{
+          const pending=run.status==='В работе'||['queued','processing'].includes(String(run.backgroundTask?.status||''));
+          if(pending){
+            let task='';
+            if(!run.idea)task='idea';
+            else if(!run.script&&['Сценарий','Storyboard'].includes(stage))task='script';
+            else if(run.script&&(!Array.isArray(run.storyboard)||!run.storyboard.length)&&stage==='Storyboard')task='storyboard';
+            if(task){
+              const jobId=factoryId('job');
+              run.stage=stageTaskName(task);run.status='В работе';run.awaitingApproval=false;run.error='';
+              run.backgroundTask={id:jobId,type:task,status:'queued',queuedAt:new Date().toISOString(),recovered:true};
+              run.updatedAt=new Date().toISOString();
+              appendFactoryJournal(data,'Восстановлен фоновый этап',(run.productName||run.id)+' · '+stageTaskName(task));
+              await writeAppState(data,accountId);
+              enqueueStageTask(accountId,run.id,task,'Автовосстановление после перезапуска',jobId);
+              continue;
+            }
+          }
         }
-        if(run.pipelineVersion==='previs-v1'&&run.mode==='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&run.previsRunning===true){
+        if(run.mode==='manual'&&stage==='Превиз-кадры'&&!run.previsResult?.completed&&(run.previsRunning===true||run.status==='В работе')){
           run.previsRunning=false;run.status='В работе';run.stage='Превиз-кадры';run.error='';run.previsError='';run.updatedAt=new Date().toISOString();
           await writeAppState(data,accountId);
           enqueueRunPrevis(accountId,run.id,'previs-recovery');
         }
       }
     }
-  }catch(e){console.error('[previs-recovery] '+String(e?.message||e))}
+  }catch(e){console.error('[pipeline-recovery] '+String(e?.message||e))}
 }
 
 async function recoverPendingBackendGenerations(){
