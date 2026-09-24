@@ -13,7 +13,7 @@ const starter=[
 let activeAccountId=load("cf_active_account","main"),accounts=[];
 const accountLocalKey=key=>activeAccountId==="main"?key:key+"__"+activeAccountId;
 const chatLocalKey=()=>activeAccountId==="main"?"cf_chat_history":"cf_chat_history__"+activeAccountId;
-let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
+let products=load(accountLocalKey("cf_products"),[]),runs=load(accountLocalKey("cf_runs"),[]),campaigns=load(accountLocalKey("cf_campaigns"),[]),scripts=load(accountLocalKey("cf_scripts"),[]),savedIdeas=load(accountLocalKey("cf_saved_ideas"),[]),characters=load(accountLocalKey("cf_characters"),[]),journal=load(accountLocalKey("cf_journal"),[]),expenses=load(accountLocalKey("cf_expenses"),[]),videoAnalyses=load(accountLocalKey("cf_video_analyses"),[]),settings=load(accountLocalKey("cf_settings"),{mode:"auto",budgetCampaign:5000,budgetAttempts:3,budgetApproval:100,costRates:{usdRub:0,higgsfieldRubPerGeneration:0,runwayRubPerSecond:0,descriptRubPerAction:0}});
 let selectedProductId=products[0]?.id||null,selectedRunId=runs.at(-1)?.id||null,createMode=settings.mode||"auto",editingProductId=null;
 const ST=["Идея","Сценарий","Storyboard","Превиз-кадры","Генерация","Озвучка","Монтаж","AI-проверка","На проверке","Готово","Запланировано","Опубликовано"];
 const prod=id=>products.find(x=>x.id===id),camp=id=>campaigns.find(x=>x.id===id);
@@ -27,6 +27,7 @@ function saveLocalState(){
   save(accountLocalKey("cf_runs"),runs);
   save(accountLocalKey("cf_campaigns"),campaigns);
   save(accountLocalKey("cf_scripts"),scripts);
+  save(accountLocalKey("cf_saved_ideas"),savedIdeas);
   save(accountLocalKey("cf_characters"),characters);
   save(accountLocalKey("cf_journal"),journal.slice(-500));
   save(accountLocalKey("cf_expenses"),expenses.slice(-3000));
@@ -34,7 +35,7 @@ function saveLocalState(){
   save(accountLocalKey("cf_settings"),settings);
 }
 function stateSnapshot(){
-  return {version:1,products,runs,campaigns,scripts,characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),videoAnalyses:videoAnalyses.slice(-100),settings};
+  return {version:1,products,runs,campaigns,scripts,savedIdeas,characters,journal:journal.slice(-500),expenses:expenses.slice(-3000),videoAnalyses:videoAnalyses.slice(-100),settings};
 }
 let syncTimer=null;
 let localMutationDepth=0;
@@ -60,6 +61,7 @@ async function syncFromServer(){
       runs=Array.isArray(data.runs)?data.runs:[];
       campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
       scripts=Array.isArray(data.scripts)?data.scripts:[];
+      savedIdeas=Array.isArray(data.savedIdeas)?data.savedIdeas:[];
       characters=Array.isArray(data.characters)?data.characters:[];
       journal=Array.isArray(data.journal)?data.journal:[];
       expenses=Array.isArray(data.expenses)?data.expenses:[];
@@ -322,12 +324,22 @@ const L=[["production","⌁","Производство","Конвейер"],["id
 }
 function renderIdeas(){
   const list=$("#ideaList");if(!list)return;
-  const items=runs.filter(r=>r.idea).slice().reverse();
-  list.innerHTML=items.length?items.map(r=>{
-    const idea=r.idea||{};
-    return '<article class="idea-card"><div><span class="kicker">'+esc(r.status==="Черновик"?"ЧЕРНОВИК":"РОЛИК")+'</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Первые 3 секунды</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div>'+(idea.mechanic?'<div class="idea-hook"><b>Механика</b><span>'+esc(idea.mechanic)+'</span></div>':'')+'</div><div class="idea-actions"><button class="secondary" onclick="openStageDetail(\''+r.id+'\',\'Идея\')">Открыть идею</button><button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\'Идея\')">↻ Другая идея</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">'+(r.status==="Черновик"?"▶ В сценарий":"▶ Продолжить")+'</button><button class="danger-btn" onclick="deleteRun(\''+r.id+'\')">Удалить</button></div></article>';
-  }).join(""):'<div class="empty">Идей пока нет. Выбери товар и нажми «Сгенерировать идею».</div>';
+  const items=savedIdeas.slice().reverse();
+  if(!items.length){
+    const legacy=runs.filter(r=>r.idea).slice().reverse();
+    list.innerHTML=legacy.length?legacy.map(r=>{
+      const idea=r.idea||{};
+      return '<article class="idea-card"><div><span class="kicker">РОЛИК · ИДЕЯ</span><h3>'+esc(idea.title||pname(r))+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Первые 3 секунды</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div></div><div class="idea-actions"><button class="secondary" onclick="openStageDetail(\''+r.id+'\',\'Идея\')">Открыть</button><button class="btn primary" onclick="runAction(\''+r.id+'\',\'advance_stage\')">▶ В сценарий</button></div></article>';
+    }).join(""):'<div class="empty">Идей пока нет. Выбери товар и нажми «Сгенерировать идею».</div>';
+    return;
+  }
+  list.innerHTML='<div class="saved-ideas-head"><div><span class="kicker">БИБЛИОТЕКА</span><h2>Сохранённые идеи</h2><p>Каждый вариант сохраняется отдельно. Любую идею можно запустить позже как новый процесс.</p></div><b>'+items.length+'</b></div>'+
+    items.map(x=>{
+      const idea=x.idea||{},source=runs.find(r=>r.id===x.sourceRunId);
+      return '<article class="idea-card saved-idea-card '+(x.selected?'selected':'')+'"><div><span class="kicker">ВАРИАНТ '+esc(x.index||"")+(x.selected?' · ВЫБРАН':'')+'</span><h3>'+esc(idea.title||x.productName||"Идея")+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-hook"><b>Хук</b><span>'+esc(idea.first3Seconds||idea.hook||"—")+'</span></div><small class="saved-idea-product">'+esc(x.productName||"")+'</small></div><div class="idea-actions">'+(source?'<button class="secondary" onclick="openStageDetail(\''+source.id+'\',\'Идея\')">Открыть исходный процесс</button>':'')+'<button class="btn primary" onclick="launchSavedIdea(\''+esc(x.id)+'\')">▶ Запустить эту идею</button></div></article>';
+    }).join("");
 }
+
 $("#generateIdeaBtn")?.addEventListener("click",async()=>{
   const btn=$("#generateIdeaBtn"),status=$("#ideaStatus");btn.disabled=true;status.textContent="Ищу 10 разных механик, дважды проверяю и докручиваю идею…";
   try{
@@ -530,7 +542,7 @@ function stageReportHtml(r,stage){
   if(stage==="Идея"){
     const alternatives=Array.isArray(idea.alternatives)?idea.alternatives:[];
     body='<div class="idea-master-report">'+
-      '<div class="idea-master-hero"><span class="kicker">ВЫБРАННАЯ ИДЕЯ</span><h3>'+esc(idea.title||"Идея ещё не создана")+'</h3><p>'+esc(idea.concept||"")+'</p></div>'+
+      '<div class="idea-master-hero"><div class="idea-selected-head"><span class="kicker">ВЫБРАННАЯ ИДЕЯ</span><span class="idea-selected-badge">✓ Активна</span></div><h3>'+esc(idea.title||"Идея ещё не создана")+'</h3><p>'+esc(idea.concept||"")+'</p><div class="idea-master-actions"><button class="secondary" onclick="launchIdeaOption(\''+r.id+'\',1)">▶ Запустить копию отдельно</button></div></div>'+
       '<div class="idea-master-grid">'+
         '<div><small>Целевая аудитория</small><p>'+esc(idea.audience||"—")+'</p></div>'+
         '<div><small>Хук</small><p>'+esc(idea.hook||"—")+'</p></div>'+
@@ -544,7 +556,7 @@ function stageReportHtml(r,stage){
         '<div><small>Сложность</small><p>'+esc(idea.production||"—")+'</p></div>'+
       '</div>'+
       '<div class="idea-why"><small>Почему эта идея выбрана</small><p>'+esc(idea.why||"—")+'</p></div>'+
-      (alternatives.length?'<div class="idea-alt-wrap"><h3>Запасные идеи</h3><div class="idea-alt-list">'+alternatives.map((x,i)=>'<article><span>'+String(i+1)+'</span><div><b>'+esc(x.title||"Вариант")+'</b><small>'+esc(x.hook||"")+'</small><p>'+esc(x.concept||"")+'</p></div></article>').join("")+'</div></div>':'')+
+      (alternatives.length?'<div class="idea-alt-wrap"><div class="idea-alt-head"><div><h3>Другие сохранённые идеи</h3><p>Выбери любую вместо текущей или запусти её отдельным процессом.</p></div><span>'+alternatives.length+' варианта</span></div><div class="idea-alt-list">'+alternatives.map((x,i)=>'<article><span>'+String(i+1)+'</span><div class="idea-alt-copy"><b>'+esc(x.title||"Вариант")+'</b><small>'+esc(x.hook||"")+'</small><p>'+esc(x.concept||"")+'</p><div class="idea-alt-actions"><button class="btn primary" onclick="selectIdeaOption(\''+r.id+'\','+(i+2)+')">✓ Выбрать эту идею</button><button class="secondary" onclick="launchIdeaOption(\''+r.id+'\','+(i+2)+')">▶ Запустить отдельно</button></div></div></article>').join("")+'</div></div>':'')+
     '</div>';
   }
   else if(stage==="Сценарий"){
@@ -659,6 +671,22 @@ function stageReportHtml(r,stage){
   return '<section class="panel stage-report" id="stageReport"><div class="panel-title"><div><span class="mini-icon">▤</span><h2>'+esc(stage)+'</h2><p>'+(manual?'Ручной режим · этап ждёт подтверждения после готовности':'Автопилот · этапы проходят автоматически')+'</p></div><span class="status '+(stageDone(r,stage)?"done":"wait")+'">'+(stageDone(r,stage)?"Готово":"Не готово")+'</span></div>'+body+'<div class="stage-report-actions">'+nextAction+(canRegen?'<button class="secondary" onclick="runAction(\''+r.id+'\',\'regenerate\',\''+stage+'\')">↻ Переделать этап</button>':'')+(r.status==="Ошибка"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">↻ Повторить этап</button>':r.status==="Остановлено"?'<button class="btn primary" onclick="runAction(\''+r.id+'\',\'resume\')">▶ Продолжить</button>':'<button class="danger-btn" onclick="runAction(\''+r.id+'\',\'stop\')">■ Остановить</button>')+'</div></section>';
 }
 window.openStageDetail=(id,stage)=>{selectedRunId=id;runStageOpen=stage;renderRunDetail();setTimeout(()=>document.getElementById("stageReport")?.scrollIntoView({behavior:"smooth",block:"start"}),40)};
+window.selectIdeaOption=async(runId,optionIndex)=>{
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"select_idea_option",optionIndex})});
+  const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Не удалось выбрать идею");return}
+  await syncFromServer();selectedRunId=runId;runStageOpen="Идея";renderRunDetail();
+  setTimeout(()=>document.getElementById("stageReport")?.scrollIntoView({behavior:"smooth",block:"start"}),40);
+};
+window.launchIdeaOption=async(runId,optionIndex)=>{
+  const r=await fetch("/api/runs/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,runId,action:"launch_idea_option",optionIndex})});
+  const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Не удалось запустить идею");return}
+  await syncFromServer();selectedRunId=data.run?.id||selectedRunId;runStageOpen="Идея";renderRunDetail();go("runDetail");
+};
+window.launchSavedIdea=async(ideaId)=>{
+  const r=await fetch("/api/ideas/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({accountId:activeAccountId,action:"launch_saved",ideaId})});
+  const data=await r.json().catch(()=>({}));if(!r.ok){alert(data.detail||data.error||"Не удалось запустить идею");return}
+  await syncFromServer();selectedRunId=data.run?.id||selectedRunId;runStageOpen="Идея";renderRunDetail();go("runDetail");
+};
 window.runAction=async(id,action,stage="")=>{
   let note="";
   if(action==="regenerate"){const v=prompt("Что изменить в этапе «"+stage+"»?","");if(v===null)return;note=v}
