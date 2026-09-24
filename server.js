@@ -244,6 +244,11 @@ async function runEphemeralAuthSelfTest(){
       createdAt:new Date().toISOString()
     });
     await writeUsersRegistry(users);createdUser=true;
+    for(let attempt=0;attempt<8;attempt++){
+      const check=await ensureUsersRegistry();
+      if((check.users||[]).some(u=>u.id===userId))break;
+      await new Promise(r=>setTimeout(r,150));
+    }
 
     const accounts=await ensureAccountsRegistry();
     accounts.accounts.push({
@@ -251,6 +256,12 @@ async function runEphemeralAuthSelfTest(){
       avatarUrl:'',avatarPath:'',ownerUserId:userId,createdAt:new Date().toISOString()
     });
     await writeAccountsRegistry(accounts);createdAccount=true;
+    for(let attempt=0;attempt<8;attempt++){
+      const check=await ensureAccountsRegistry();
+      if((check.accounts||[]).some(a=>a.id===accountId))break;
+      await new Promise(r=>setTimeout(r,150));
+    }
+    await new Promise(r=>setTimeout(r,250));
 
     const base='http://127.0.0.1:'+port;
     const reg=await fetch(base+'/api/auth/register',{
