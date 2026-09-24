@@ -1530,6 +1530,11 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   const ideaCheckpoint=payload?.ideaCheckpoint&&typeof payload.ideaCheckpoint==='object'
     ? JSON.parse(JSON.stringify(payload.ideaCheckpoint))
     : {};
+  if(ideaCheckpoint?.completed===true&&ideaCheckpoint?.finalIdea&&typeof ideaCheckpoint.finalIdea==='object'){
+    const restoredFinal=normalizeIdeaStage(ideaCheckpoint.finalIdea,payload);
+    const restoredCheck=ideaStageComplete(restoredFinal);
+    if(restoredCheck.ok)return restoredFinal;
+  }
   async function saveIdeaCheckpoint(patch={}){
     Object.assign(ideaCheckpoint,patch,{updatedAt:new Date().toISOString()});
     if(!payload?.id)return;
@@ -2226,6 +2231,11 @@ async function generateScriptStage(payload,accountId,feedback=''){
   const scriptCheckpoint=payload?.scriptCheckpoint&&typeof payload.scriptCheckpoint==='object'
     ? JSON.parse(JSON.stringify(payload.scriptCheckpoint))
     : {};
+  if(scriptCheckpoint?.completed===true&&scriptCheckpoint?.finalScript&&typeof scriptCheckpoint.finalScript==='object'){
+    const restoredFinal=normalizeScriptStage(scriptCheckpoint.finalScript,payload);
+    const restoredCheck=scriptStageComplete(restoredFinal);
+    if(restoredCheck.ok)return restoredFinal;
+  }
   async function saveScriptCheckpoint(patch={}){
     Object.assign(scriptCheckpoint,patch,{updatedAt:new Date().toISOString()});
     if(!payload?.id)return;
