@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='2.6.9';
+const APP_VERSION='2.6.10';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -4845,7 +4845,7 @@ async function recoverPendingPrevisAndAutopilot(){
           run.previsError='';
           if(wasError){
             run.previsPlan=null;
-            run.previsFrames=[];
+            run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
             run.previsResult=null;
           }
           run.updatedAt=new Date().toISOString();
@@ -4872,6 +4872,38 @@ async function recoverPendingPrevisAndAutopilot(){
       }
     }
   }catch(e){console.error('[pipeline-recovery] '+String(e?.message||e))}
+}
+
+async function recoverFailedAutoPrevisRuns(){
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const snapshot=await readAppState(accountId);
+      const candidateIds=(Array.isArray(snapshot?.data?.runs)?snapshot.data.runs:[])
+        .filter(run=>run&&run.mode!=='manual'&&!run.paused&&run.status==='Ошибка'&&String(run.stage||'')==='Превиз-кадры'&&!run.previsResult?.completed)
+        .map(run=>String(run.id||'')).filter(Boolean);
+      for(const runId of candidateIds){
+        const fresh=await readAppState(accountId);
+        const data=fresh?.data||blankFactoryState();
+        const run=findRunById(data,runId);
+        if(!run||run.paused||run.status!=='Ошибка'||String(run.stage||'')!=='Превиз-кадры'||run.previsResult?.completed)continue;
+        run.previsRunning=false;
+        run.status='В работе';
+        run.error='';
+        run.previsError='';
+        run.previsPlan=null;
+        run.previsFrames=Array.isArray(run.previsFrames)?run.previsFrames:[];
+        run.previsResult=null;
+        run.updatedAt=new Date().toISOString();
+        appendFactoryJournal(data,'Автовосстановление превиза',(run.productName||run.id)+' · продолжаю с сохранением готовых кадров');
+        await writeAppState(data,accountId);
+        enqueueRunPrevis(accountId,run.id,'failed-previs-recovery');
+      }
+    }
+  }catch(e){
+    console.error('[failed-previs-recovery] '+String(e?.message||e));
+  }
 }
 
 async function recoverPendingBackendGenerations(){
@@ -5752,6 +5784,11 @@ server.listen(port,'0.0.0.0',async()=>{
       await recoverPendingPrevisAndAutopilot();
     }catch(e){
       console.error('[startup-recovery] previs '+String(e?.message||e));
+    }
+    try{
+      await recoverFailedAutoPrevisRuns();
+    }catch(e){
+      console.error('[startup-recovery] failed-previs '+String(e?.message||e));
     }
     try{
       await recoverPendingBackendGenerations();
