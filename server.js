@@ -224,6 +224,79 @@ async function applyOneTimeAuthMigration(){
   console.log('[auth-migration] PASS id='+migrationId+' user='+userId);
   return {ok:true};
 }
+async function runEphemeralAuthSelfTest(){
+  if(process.env.AUTH_EPHEMERAL_SELFTEST!=='1')return {skipped:true};
+  const marker=randomBytes(6).toString('hex');
+  const email='auth-selftest-'+marker+'@example.invalid';
+  const oldPassword='Old!'+randomBytes(12).toString('base64url');
+  const newPassword='New!'+randomBytes(12).toString('base64url');
+  const userId='usr_selftest_'+marker;
+  const accountId='acc_selftest_'+marker;
+  let createdUser=false,createdAccount=false;
+  try{
+    const users=await ensureUsersRegistry();
+    const salt=randomBytes(16).toString('hex');
+    users.users.push({
+      id:userId,login:email,email,displayName:'Auth Selftest',
+      salt,passwordHash:hashPassword(oldPassword,salt),
+      authType:'email',passwordSetupRequired:true,
+      passwordSetupAllowedUntil:new Date(Date.now()+10*60*1000).toISOString(),
+      createdAt:new Date().toISOString()
+    });
+    await writeUsersRegistry(users);createdUser=true;
+
+    const accounts=await ensureAccountsRegistry();
+    accounts.accounts.push({
+      id:accountId,name:'Auth Selftest',owner:'',company:'',email,phone:'',notes:'',memory:'',
+      avatarUrl:'',avatarPath:'',ownerUserId:userId,createdAt:new Date().toISOString()
+    });
+    await writeAccountsRegistry(accounts);createdAccount=true;
+
+    const base='http://127.0.0.1:'+port;
+    const reg=await fetch(base+'/api/auth/register',{
+      method:'POST',headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
+      body:JSON.stringify({email,password:newPassword})
+    });
+    const regData=await reg.json().catch(()=>({}));
+    if(!reg.ok||regData?.activated!==true)throw new Error('activation '+reg.status+' '+String(regData?.code||regData?.error||''));
+
+    const cookie=String(reg.headers.get('set-cookie')||'').split(';')[0];
+    if(!cookie)throw new Error('activation cookie missing');
+    const me=await fetch(base+'/api/auth/me',{headers:{cookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
+    const meData=await me.json().catch(()=>({}));
+    if(!me.ok||meData?.user?.id!==userId)throw new Error('me '+me.status);
+
+    const acc=await fetch(base+'/api/accounts',{headers:{cookie,'user-agent':'content-factory-auth-ephemeral-selftest'}});
+    const accData=await acc.json().catch(()=>({}));
+    if(!acc.ok||!Array.isArray(accData?.accounts)||!accData.accounts.some(x=>x.id===accountId))throw new Error('accounts '+acc.status);
+
+    const login=await fetch(base+'/api/auth/login',{
+      method:'POST',headers:{'content-type':'application/json','user-agent':'content-factory-auth-ephemeral-selftest'},
+      body:JSON.stringify({email,password:newPassword})
+    });
+    const loginData=await login.json().catch(()=>({}));
+    if(!login.ok||loginData?.user?.id!==userId)throw new Error('relogin '+login.status+' '+String(loginData?.code||loginData?.error||''));
+
+    console.log('[auth-ephemeral-selftest] PASS activation=200 me=200 accounts=200 relogin=200');
+    return {ok:true};
+  }finally{
+    try{
+      if(createdUser){
+        const users=await ensureUsersRegistry();
+        users.users=(users.users||[]).filter(u=>u.id!==userId);
+        await writeUsersRegistry(users);
+      }
+    }catch(e){console.error('[auth-ephemeral-selftest] cleanup-user '+String(e?.message||e))}
+    try{
+      if(createdAccount){
+        const accounts=await ensureAccountsRegistry();
+        accounts.accounts=(accounts.accounts||[]).filter(a=>a.id!==accountId);
+        await writeAccountsRegistry(accounts);
+      }
+    }catch(e){console.error('[auth-ephemeral-selftest] cleanup-account '+String(e?.message||e))}
+  }
+}
+
 async function runLocalAuthSelfTest(){
   const email=normalizeLogin(process.env.AUTH_SELFTEST_EMAIL||'');
   const password=String(process.env.AUTH_SELFTEST_PASSWORD||'');
@@ -8207,6 +8280,11 @@ server.listen(port,'0.0.0.0',async()=>{
     await runLocalAuthSelfTest();
   }catch(e){
     console.error('[auth-selftest] FAIL '+String(e?.message||e));
+  }
+  try{
+    await runEphemeralAuthSelfTest();
+  }catch(e){
+    console.error('[auth-ephemeral-selftest] FAIL '+String(e?.message||e));
   }
   setTimeout(async()=>{
     try{
