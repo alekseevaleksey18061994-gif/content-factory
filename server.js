@@ -3487,11 +3487,13 @@ async function processRunGeneration(accountId,runId){
         'Без случайных надписей, логотипов, лишних деталей товара, деформированных рук.'
       ].filter(Boolean).join('\n').slice(0,1000);
       let result=null,lastError=null,sceneQc=null,qcCorrection='',creditBlock=null;
+      let bestCandidate=null,bestQc=null,bestScore=-Infinity;
       const route=(run.sceneRouting&&run.sceneRouting[sceneNo])||heuristicSceneRoute(scene);
       const providerMode=videoProviderMode(run);
       let preferred=manualSceneProvider(run,sceneNo)||(providerMode==='runway-only'?'runway':providerMode==='higgsfield-only'?'seedance':String(route?.provider||'runway'));
       let escalatedFrom='';
       const maxAttempts=Math.max(1,Math.min(3,Number(run.maxAttempts)||2));
+      const targetQcScore=sceneNo===1?9.2:(String(route?.risk||'').toLowerCase()==='high'?9.0:String(route?.risk||'').toLowerCase()==='medium'?8.8:8.6);
       const generateByProvider=async(provider,providerPrompt)=>{
         if(provider==='seedance'){
           return await generateHiggsfieldScene({
@@ -3538,7 +3540,14 @@ async function processRunGeneration(accountId,runId){
         }catch(e){
           sceneQc={passed:null,score:null,summary:'QC недоступен: '+String(e?.message||e),issues:[]};
         }
-        if(sceneQc.passed!==false){result=candidate;break}
+        if(sceneQc.passed!==false){
+          const candidateScore=Number.isFinite(Number(sceneQc.score))?Number(sceneQc.score):8.5;
+          if(candidateScore>bestScore){bestScore=candidateScore;bestCandidate=candidate;bestQc=sceneQc}
+          if(candidateScore>=targetQcScore||attempt===maxAttempts){result=bestCandidate;sceneQc=bestQc;break}
+          qcCorrection=((sceneQc.issues||[]).join('; ')||('Сцена допустима, но cinematic score '+candidateScore+'/10. Улучши естественность камеры, свет, физику движения, материалы и композицию без изменения товара/действия.')).slice(0,1400);
+          console.warn('[scene-best-of-n] '+runId+' scene '+sceneNo+' score '+candidateScore+' < '+targetQcScore+'; генерирую ещё дубль');
+          continue;
+        }
         qcCorrection=((sceneQc.issues||[]).join('; ')||sceneQc.summary||'Исправь критическое несоответствие действию/товару').slice(0,1400);
         lastError=new Error('AI-QC сцены: '+qcCorrection);
         if((candidate.routerProvider||preferred)==='runway'&&providerMode==='auto'&&!manualSceneProvider(run,sceneNo)){
@@ -3551,13 +3560,14 @@ async function processRunGeneration(accountId,runId){
         }
         console.warn('[scene-qc-retry] '+runId+' scene '+sceneNo+' attempt '+attempt+' '+String(lastError.message));
       }
+      if(!result&&bestCandidate){result=bestCandidate;sceneQc=bestQc}
       state=await readAppState(accountId);data=state?.data||blankFactoryState();run=findRunById(data,runId);
       if(!run)return {ok:false,error:'Ролик удалён во время генерации'};
       run.sceneResults=run.sceneResults&&typeof run.sceneResults==='object'?run.sceneResults:{};
       if(result?.ok&&result?.urls?.length){
         const persisted=await persistRunVideoUrls(accountId,run.id,result.urls,'scene-'+sceneNo).catch(e=>({urls:result.urls,media:[],failed:[{error:String(e?.message||e)}]}));
         const savedUrls=persisted.urls?.length?persisted.urls:result.urls;
-        run.sceneResults[sceneNo]={ok:true,urls:savedUrls,persistedMedia:persisted.media||[],storageWarnings:persisted.failed||[],provider:result.provider,model:result.model,routerProvider:result.routerProvider||'',routerReason:result.routerReason||'',escalatedFrom:result.escalatedFrom||'',requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,completedAt:new Date().toISOString()};
+        run.sceneResults[sceneNo]={ok:true,urls:savedUrls,persistedMedia:persisted.media||[],storageWarnings:persisted.failed||[],provider:result.provider,model:result.model,routerProvider:result.routerProvider||'',routerReason:result.routerReason||'',escalatedFrom:result.escalatedFrom||'',requestId:result.requestId||result.taskId||null,fallbackFrom:result.fallbackFrom||'',qc:sceneQc,bestOfN:{targetScore:targetQcScore,bestScore:Number.isFinite(bestScore)?bestScore:null,maxAttempts},completedAt:new Date().toISOString()};
         appendFactoryJournal(data,'Сцена готова',(run.productName||run.id)+' · сцена '+sceneNo+'/'+total+(sceneQc?.score?' · QC '+sceneQc.score+'/10':'')+(persisted.failed?.length?' · резервная копия: частично':' · сохранена в медиатеке'));
       }else{
         const err=creditBlock
