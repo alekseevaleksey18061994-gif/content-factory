@@ -15,7 +15,7 @@ const execFile=promisify(execFileCb);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
-const APP_VERSION='1.6.0';
+const APP_VERSION='1.6.1';
 const BUILD_ID=String(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.GIT_COMMIT_SHA||'dev').slice(0,7);
 
 const mime = {
@@ -4479,15 +4479,34 @@ const server=http.createServer(async(req,res)=>{
     if(st.isDirectory()) filePath=path.join(filePath,'index.html');
     const ext=path.extname(filePath);
     const noCache=['.html','.js','.css','.webmanifest'].includes(ext)||url.pathname==='/sw.js';
-    res.writeHead(200,{
+    const headers={
       'content-type':mime[ext]||'application/octet-stream',
-      'cache-control':noCache?'no-store, max-age=0':'public, max-age=3600'
-    });
+      'cache-control':noCache?'no-store, no-cache, must-revalidate, max-age=0':'public, max-age=3600'
+    };
+    if(noCache){
+      headers['pragma']='no-cache';
+      headers['expires']='0';
+      headers['surrogate-control']='no-store';
+    }
+    if(path.basename(filePath)==='index.html'){
+      let html=fs.readFileSync(filePath,'utf8');
+      html=html.replace(/<span id="appVersion">[\s\S]*?<\/span>/,'<span id="appVersion">v'+APP_VERSION+' · '+BUILD_ID+'</span>');
+      res.writeHead(200,headers);
+      res.end(html);
+      return;
+    }
+    res.writeHead(200,headers);
     fs.createReadStream(filePath).pipe(res);
   }catch{
     const index=path.join(publicDir,'index.html');
-    res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store, max-age=0'});
-    fs.createReadStream(index).pipe(res);
+    let html=fs.readFileSync(index,'utf8');
+    html=html.replace(/<span id="appVersion">[\s\S]*?<\/span>/,'<span id="appVersion">v'+APP_VERSION+' · '+BUILD_ID+'</span>');
+    res.writeHead(200,{
+      'content-type':'text/html; charset=utf-8',
+      'cache-control':'no-store, no-cache, must-revalidate, max-age=0',
+      'pragma':'no-cache','expires':'0','surrogate-control':'no-store'
+    });
+    res.end(html);
   }
 });
 
