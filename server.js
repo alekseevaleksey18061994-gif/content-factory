@@ -569,7 +569,9 @@ function runwayUsageUsd(model,seconds){
 function openAIUsageCost(model,usage={}){
   const name=String(model||'gpt-5.6-sol').toLowerCase();
   let inputRate=0.20,cachedRate=0.02,outputRate=1.20;
-  if(name.includes('gpt-5.6-terra')){inputRate=2;cachedRate=.2;outputRate=12}
+  if(name.includes('gpt-6-astra')){inputRate=10;cachedRate=1;outputRate=50}
+  else if(name.includes('gpt-6-sol')){inputRate=2;cachedRate=.2;outputRate=10}
+  else if(name.includes('gpt-5.6-terra')){inputRate=2;cachedRate=.2;outputRate=12}
   else if(name.includes('gpt-5.6-sol')){inputRate=4;cachedRate=.4;outputRate=20}
   const input=Number(usage.input_tokens)||0;
   const output=Number(usage.output_tokens)||0;
@@ -2094,10 +2096,22 @@ function normalizePrevisPlan(raw,payload={}){
       });
     }
   }
+  const b=src.cinemaBible&&typeof src.cinemaBible==='object'?src.cinemaBible:{};
+  const cinemaBible={
+    cameraSystem:String(b.cameraSystem||'natural digital cinema, realistic perspective').slice(0,800),
+    lensPackage:String(b.lensPackage||'28mm / 50mm / 85mm macro-like detail, selected by shot purpose').slice(0,1000),
+    lightingBible:String(b.lightingBible||'motivated practical lighting with one consistent key direction per location').slice(0,1400),
+    colorBible:String(b.colorBible||'natural skin and materials, controlled contrast, protected highlights, coherent palette').slice(0,1200),
+    motionBible:String(b.motionBible||'intentional camera movement, natural acceleration/deceleration, believable inertia').slice(0,1200),
+    textureBible:String(b.textureBible||'real skin pores and material texture; no waxy/plastic surfaces').slice(0,1000),
+    continuityRules:Array.isArray(b.continuityRules)?b.continuityRules.slice(0,12).map(x=>String(x).slice(0,500)):[],
+    shotVarietyRules:Array.isArray(b.shotVarietyRules)?b.shotVarietyRules.slice(0,12).map(x=>String(x).slice(0,500)):[]
+  };
   return {
     totalScenes:board.length,
     totalFrames:frames.length,
     logic:String(src.logic||'2 превиз-кадра на сцену: START и END. Кадры должны показывать заметное развитие действия, а не два почти одинаковых фото. Исходные фото используются для identity, generated anchors — для continuity.').slice(0,3000),
+    cinemaBible,
     frames
   };
 }
@@ -2119,6 +2133,9 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'В одной локации сохраняй одинаковую цветовую температуру, направление ключевого света, характер оптики и общий contrast/color palette между сценами.',
     'SHOT VARIETY: соседние сцены не должны повторять одинаковые крупность+угол+движение камеры. Чередуй macro/detail, close-up, medium, POV/OTS/top-down/wide только когда это помогает истории.',
     'REALISM: свет всегда имеет понятный источник; движение тела и рук ощущает вес, контакт, инерцию и трение; камера не должна выглядеть стерильно-плавающей без причины.',
+    '',
+    'СНАЧАЛА СОЗДАЙ ЕДИНЫЙ cinemaBible на весь ролик: cameraSystem, lensPackage, lightingBible, colorBible, motionBible, textureBible, continuityRules[], shotVarietyRules[]. Он должен быть конкретным и применимым ко всем сценам.',
+    'Все кадры обязаны следовать этому cinemaBible; меняй крупность/угол, но не меняй визуальную вселенную, характер света и материализацию людей/товара.',
     '',
     'КРИТИЧЕСКО: ДИНАМИКА И ВИЗУАЛЬНОЕ РАЗЛИЧИЕ:',
     '- START показывает исходное состояние и начало движения; END показывает заметно продвинувшееся действие или его результат;',
@@ -2158,7 +2175,7 @@ async function generatePrevisPlan(payload,accountId,feedback=''){
     'Не показывай внутренние рассуждения.',
     '',
     'Верни ТОЛЬКО JSON:',
-    '{"previsPlan":{"totalScenes":'+board.length+',"totalFrames":'+(board.length*2)+',"logic":"","frames":[{"id":"s1f1","scene":1,"frame":1,"frameType":"start","timecode":"","durationHint":"0.8s","goal":"","storyFunction":"","continuityRole":"","composition":"","framing":"","cameraAngle":"","cameraPosition":"","lensFeel":"","cameraMotion":"","depth":"","focus":"","location":"","environment":"","lighting":"","mood":"","colorMood":"","avatarInFrame":false,"avatarDescription":"","expression":"","pose":"","action":"","productInFrame":true,"productRole":"","productPlacement":"","productVisibility":"","productConsistency":"","dialogue":"","voiceover":"","onscreenText":"","soundCue":"","previousAnchor":"","nextIntent":"","continuityNotes":"","referenceMode":"identity-led","identityRefs":[],"anchorFrames":[],"continuityFrames":[],"imagePromptRu":"","imagePromptEn":"","negativePrompt":"","qualityNotes":""}]}}'
+    '{"previsPlan":{"totalScenes":'+board.length+',"totalFrames":'+(board.length*2)+',"logic":"","cinemaBible":{"cameraSystem":"","lensPackage":"","lightingBible":"","colorBible":"","motionBible":"","textureBible":"","continuityRules":[],"shotVarietyRules":[]},"frames":[{"id":"s1f1","scene":1,"frame":1,"frameType":"start","timecode":"","durationHint":"0.8s","goal":"","storyFunction":"","continuityRole":"","composition":"","framing":"","cameraAngle":"","cameraPosition":"","lensFeel":"","cameraMotion":"","depth":"","focus":"","location":"","environment":"","lighting":"","mood":"","colorMood":"","avatarInFrame":false,"avatarDescription":"","expression":"","pose":"","action":"","productInFrame":true,"productRole":"","productPlacement":"","productVisibility":"","productConsistency":"","dialogue":"","voiceover":"","onscreenText":"","soundCue":"","previousAnchor":"","nextIntent":"","continuityNotes":"","referenceMode":"identity-led","identityRefs":[],"anchorFrames":[],"continuityFrames":[],"imagePromptRu":"","imagePromptEn":"","negativePrompt":"","qualityNotes":""}]}}'
   ].filter(Boolean).join('\n');
   const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const r=await fetch('https://api.openai.com/v1/responses',{
@@ -2247,6 +2264,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
     'Camera angle/position/lens: '+[frame.cameraAngle,frame.cameraPosition,frame.lensFeel].filter(Boolean).join('; '),
     'Environment: '+String(frame.environment||frame.location||''),
     'Lighting: '+String(frame.lighting||''),
+    'CINEMA BIBLE FOR THIS FILM: '+JSON.stringify(run.previsPlan?.cinemaBible||{}),
     'Action phase: '+String(frame.action||''),
     'Avatar: '+String(frame.avatarDescription||''),
     'Product placement: '+String(frame.productPlacement||frame.productRole||''),
@@ -2272,7 +2290,7 @@ async function generateOpenAIPrevisImage(accountId,run,frame,referenceUrls=[]){
   const model=process.env.OPENAI_MODEL||'gpt-5.6-sol';
   const imageModel=frame?.hookLab?'gpt-image-2.5-flare':'gpt-image-2.5-sunburst';
   const imageSize='1152x2048';
-  const imageQuality=frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'high':'medium');
+  const imageQuality=frame?.hookLab?'low':(previsFrameShowsProduct(frame,{})?'xhigh':'high');
   const body={
     model,input,
     tools:[{type:'image_generation',model:imageModel,action:'auto',size:imageSize,quality:imageQuality,output_format:'png'}],
@@ -2874,11 +2892,19 @@ function runReferenceUrls(run){
 }
 function sceneDurationSeconds(scene){
   const nums=String(scene?.duration||'').match(/\d+(?:[.,]\d+)?/g)||[];
+  let base=5;
   if(nums.length>=2){
     const a=Number(nums[0].replace(',','.')),b=Number(nums[1].replace(',','.'));
-    if(Number.isFinite(a)&&Number.isFinite(b)&&b>a)return Math.max(4,Math.min(15,Math.round(b-a)));
+    if(Number.isFinite(a)&&Number.isFinite(b)&&b>a)base=Math.max(4,Math.min(15,Math.round(b-a)));
+  }else if(nums.length===1){
+    const n=Number(nums[0].replace(',','.'));if(Number.isFinite(n))base=Math.max(4,Math.min(15,Math.round(n)));
   }
-  return 5;
+  const text=[scene?.action,scene?.startFrame,scene?.endFrame,scene?.shot].filter(Boolean).join(' ').toLowerCase();
+  const physical=(text.match(/рук|кист|пальц|hand|встав|надев|сним|устанав|закреп|тян|вращ|скольз|налив|pour|attach|install|remove|slide|twist/g)||[]).length;
+  const multi=(text.match(/затем|после|потом|одновременно|then|while|and then/g)||[]).length;
+  if(physical>=2)base=Math.max(base,6);
+  if(physical>=3||multi>=2)base=Math.max(base,7);
+  return Math.max(4,Math.min(15,base));
 }
 function enqueueRunGeneration(accountId,runId,label='backend-generation'){
   const account=sanitizeAccountId(accountId||DEFAULT_ACCOUNT_ID);
