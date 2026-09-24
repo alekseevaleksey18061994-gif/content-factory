@@ -1477,6 +1477,9 @@ html,body,button,input,select,textarea{
 .run-layout>*{min-width:0}
 #runDetail .panel{overflow:visible}
 .run-top-actions,.stage-report-actions,.idea-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.run-mode-control{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:14px;padding:12px 14px;border:1px solid #d5e6ef;border-radius:15px;background:#f8fcfe}
+.run-mode-control>span{min-width:0}.run-mode-control>span b{display:block;font-size:12px;color:#12233d}.run-mode-control>span small{display:block;margin-top:3px;color:#71849b;font-size:10px;line-height:1.35}
+.run-mode-buttons{display:flex;gap:8px;flex:0 0 auto}.run-mode-buttons button{min-width:108px}
 .stage-report{scroll-margin-top:150px}
 .stage-report h3{margin:5px 0 8px}
 .artifact-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -1519,6 +1522,8 @@ html,body,button,input,select,textarea{
 @media(max-width:820px){
   .run-layout{display:block!important}
   .run-layout>section,.run-layout>aside>section{margin-bottom:12px}
+  .run-mode-control{align-items:stretch;flex-direction:column}
+  .run-mode-buttons{width:100%}.run-mode-buttons button{flex:1;min-width:0}
   .stage{grid-template-columns:34px minmax(0,1fr) auto!important;gap:9px!important;padding:11px 2px!important}
   .stage b{font-size:14px!important}
   .stage small{font-size:10px!important}
