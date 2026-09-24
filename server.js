@@ -1897,27 +1897,81 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   let idea=await criticPass(criticBase);
   await markIdeaProgress(7,'Проверяю вирусность и производственную реализуемость');
   const criticalKeys=['scrollStop','curiosityGap','retention','pacing','nativeTikTok','dialogueNaturalness','humanNaturalness','proofVariety','shareability','productNecessity','originality','generatability'];
-  const failed=()=>criticalKeys.filter(k=>Number(idea?.quality?.[k]||0)<8);
-  const textCheck=[idea.hook,idea.first3Seconds,idea.concept,idea.retention,idea.payoff,idea.ctaDirection].join(' ');
-  const heuristicIssues=[];
-  if(/сейчас\s+(покаж|провер|повтор)|давайте\s+(провер|посмотр)/i.test(textCheck))heuristicIssues.push('мета-реплика вместо естественной реакции');
-  if(/beauty[- ]?shot|бьюти[- ]?шот/i.test(String(idea.payoff||'')))heuristicIssues.push('финал уходит в beauty-shot');
-  if(failed().length||heuristicIssues.length){
-    await markIdeaProgress(7,'Докручиваю слабые места');
-    const repairPrompt=[
-      criticBase,
-      '',
-      'ФИНАЛЬНАЯ ДОКРУТКА НУЖНА ТОЛЬКО ПО ПРОБЛЕМАМ:',
-      'Текущая версия: '+JSON.stringify({selected:idea,quality:idea.quality}),
-      failed().length?('Критерии ниже 8: '+failed().join(', ')):'',
-      heuristicIssues.length?('Структурные замечания: '+heuristicIssues.join('; ')):'',
-      'Исправь эти проблемы глубоко, но не меняй товар, FACT LOCK и привязанного аватара. Верни полную финальную идею + 4 альтернативы + честные quality scores.'
-    ].filter(Boolean).join('\n');
-    idea=await criticPass(repairPrompt);
+
+  function criticalFailures(item){
+    return criticalKeys.filter(k=>Number(item?.quality?.[k]||0)<8);
   }
-  const finalFailed=failed();
-  if(finalFailed.length){
-    throw new Error('Идея не прошла Creative Critic: '+finalFailed.join(', ')+' ниже 8/10');
+  function optionRank(item){
+    const scores=criticalKeys.map(k=>Number(item?.quality?.[k]||0));
+    const failures=scores.filter(x=>x<8).length;
+    const min=scores.length?Math.min(...scores):0;
+    const avg=scores.length?scores.reduce((a,b)=>a+b,0)/scores.length:0;
+    const overall=Number(item?.quality?.overall||0);
+    return {failures,min,avg,overall};
+  }
+  function promoteBestCriticalOption(current){
+    const selected={...current,quality:current?.quality||{},_origin:'selected'};
+    const alts=(Array.isArray(current?.alternatives)?current.alternatives:[]).map((x,i)=>({...x,_origin:'alternative-'+(i+1)}));
+    const pool=[selected,...alts].filter(x=>x&&String(x.title||'').trim());
+    pool.sort((a,b)=>{
+      const A=optionRank(a),B=optionRank(b);
+      return A.failures-B.failures || B.min-A.min || B.avg-A.avg || B.overall-A.overall;
+    });
+    const best=pool[0]||selected;
+    if(best._origin==='selected')return current;
+    const previousSelected={
+      title:current.title,audience:current.audience,hook:current.hook,first3Seconds:current.first3Seconds,
+      concept:current.concept,mechanic:current.mechanic,angle:current.angle,productRole:current.productRole,
+      retention:current.retention,payoff:current.payoff,ctaDirection:current.ctaDirection,production:current.production,
+      why:current.why,quality:current.quality||{}
+    };
+    const remaining=(current.alternatives||[]).filter(x=>String(x?.title||'')!==String(best.title||'')).slice(0,3);
+    return {
+      ...current,
+      title:best.title,audience:best.audience,hook:best.hook,first3Seconds:best.first3Seconds,
+      concept:best.concept,mechanic:best.mechanic,angle:best.angle,productRole:best.productRole,
+      retention:best.retention,payoff:best.payoff,ctaDirection:best.ctaDirection,production:best.production,
+      why:best.why,quality:best.quality||{},
+      alternatives:[previousSelected,...remaining].slice(0,4),
+      promotedFromAlternative:best._origin
+    };
+  }
+
+  idea=promoteBestCriticalOption(idea);
+
+  function currentHeuristicIssues(){
+    const textCheck=[idea.hook,idea.first3Seconds,idea.concept,idea.retention,idea.payoff,idea.ctaDirection].join(' ');
+    const issues=[];
+    if(/сейчас\s+(покаж|провер|повтор)|давайте\s+(провер|посмотр)/i.test(textCheck))issues.push('мета-реплика вместо естественной реакции');
+    if(/beauty[- ]?shot|бьюти[- ]?шот/i.test(String(idea.payoff||'')))issues.push('финал уходит в beauty-shot');
+    return issues;
+  }
+
+  // Up to two focused repair passes. Before each pass use the strongest of selected + alternatives,
+  // so a good alternative can save the run without paying for unnecessary regeneration.
+  for(let repairAttempt=1;repairAttempt<=2;repairAttempt++){
+    const failedNow=criticalFailures(idea);
+    const heuristicIssues=currentHeuristicIssues();
+    if(!failedNow.length&&!heuristicIssues.length)break;
+    await markIdeaProgress(7,'Докручиваю слабые места · попытка '+repairAttempt+'/2');
+    const repairPrompt=[
+      'ROLE: senior TikTok Creative Critic + AI production director.',
+      context,
+      'Current best concept: '+JSON.stringify({selected:idea,quality:idea.quality}),
+      failedNow.length?('MANDATORY SCORES TO FIX TO >=8/10: '+failedNow.join(', ')):'',
+      heuristicIssues.length?('STRUCTURAL ISSUES TO REMOVE: '+heuristicIssues.join('; ')):'',
+      failedNow.includes('productNecessity')?'PRODUCT NECESSITY FIX: redesign the physical action so the exact product is causally necessary for the result; the story must stop working if the product is removed. Do not invent unconfirmed properties.':'',
+      failedNow.includes('generatability')?'GENERATABILITY FIX: simplify hands, object interactions, camera motion and environment while keeping a strong visual payoff. Use one clear action per beat and realistic physics.':'',
+      'You may change the mechanism substantially if needed. Preserve FACT LOCK, source-product identity and the approved avatar.',
+      'Return one complete selected idea plus 4 complete, genuinely different alternatives with honest quality scores. Do not lower scores artificially; actually fix the concept.'
+    ].filter(Boolean).join('\n');
+    idea=promoteBestCriticalOption(await criticPass(repairPrompt));
+  }
+
+  const finalFailed=criticalFailures(idea);
+  const finalHeuristics=currentHeuristicIssues();
+  if(finalFailed.length||finalHeuristics.length){
+    throw new Error('Идея не прошла Creative Critic после 2 автодокруток: '+[...finalFailed,...finalHeuristics].join(', '));
   }
 
   await markIdeaProgress(7.5,'Hook Lab: тестирую 5 разных первых 3 секунд');
