@@ -1,0 +1,3 @@
+Content Factory production deployment trigger
+Release: v2.10.3
+Purpose: force Railway GitHub integration to deploy current main HEAD instead of redeploying the previous snapshot.
