@@ -1,4 +1,4 @@
-const fs=require('fs');
+import fs from 'node:fs';
 
 function replaceOnce(file,from,to){
   const src=fs.readFileSync(file,'utf8');
