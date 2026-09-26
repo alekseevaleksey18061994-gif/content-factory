@@ -8,7 +8,8 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <title>Content Factory</title>
   <link rel="manifest" href="/manifest.webmanifest?v=15" />
-  <link rel="stylesheet" href="/style.css?v=127" />
+  <link rel="stylesheet" href="/style.css?v=128" />
+  <link rel="stylesheet" href="/ui-polish.css?v=128" />
 </head>
 <body>
   <div class="auth-gate" id="authGate">
@@ -71,12 +72,10 @@
           <button class="nav" data-go="costs"><span>₽</span><b>Расходы</b></button>
           <button class="nav" data-go="journal"><span>☷</span><b>Журнал</b></button>
           <button class="nav" data-go="assistant"><span>✦</span><b>ChatGPT-пульт</b></button>
-          <button class="nav" data-go="account"><span>◎</span><b>Аккаунт</b></button>
-          <button class="nav" data-go="profile"><span>⚙</span><b>Подключения</b></button>
         </nav>
       </div>
 
-      <div class="side-status"><span class="online"></span><div><b id="accountSideName">Основной аккаунт</b><small>Система запущена</small></div></div>
+      <div class="sidebar-footer"><button class="nav" data-go="account"><span>◎</span><b>Аккаунт</b></button><button class="nav" data-go="profile"><span>⚙</span><b>Подключения</b></button><small class="release-label">Версия 2.11.0</small></div><div class="side-status"><span class="online"></span><div><b id="accountSideName">Основной аккаунт</b><small>Система запущена</small></div></div>
     </aside>
 
     <main class="main">
@@ -89,7 +88,7 @@
         <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Открыть меню" aria-controls="appSidebar" aria-expanded="false">☰</button>
         <button class="mobile-global-brand" data-go="home">
           <span class="brand-mark">F</span>
-          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · <span id="appVersion">v2.10.2</span></small></span>
+          <span class="brand-copy"><b>Content <em>Factory</em></b><small>AI-контент-завод · <span id="appVersion">v2.11.0</span></small></span>
         </button>
         <button class="mobile-account-summary" data-go="account" aria-label="Открыть аккаунт">
           <span class="mobile-account-copy"><small>Аккаунт</small><b id="mobileAccountName">Основной</b></span>
@@ -114,6 +113,11 @@
 
         <section class="attention panel" id="attentionPanel"></section>
 
+        <section class="panel">
+          <div class="panel-title"><div><span class="mini-icon">☷</span><h2>Продолжить работу</h2><p>Последние запуски и статусы</p></div><button class="text-btn" data-go="generations">Все ролики ›</button></div>
+          <div class="runs-list" id="latestRuns"></div>
+        </section>
+
         <div class="stats wide-stats" id="dashboardStats"></div>
 
         <section class="panel">
@@ -131,10 +135,7 @@
           <div class="products-strip" id="homeProducts"></div>
         </section>
 
-        <section class="panel">
-          <div class="panel-title"><div><span class="mini-icon">☷</span><h2>Последние ролики</h2><p>Последние запуски и статусы</p></div><button class="text-btn" data-go="generations">Все ролики ›</button></div>
-          <div class="runs-list" id="latestRuns"></div>
-        </section>
+
 
         <section class="panel mobile-all-sections">
           <div class="panel-title"><div><span class="mini-icon">▦</span><h2>Все разделы</h2><p>Полный контроль завода</p></div></div>
@@ -143,7 +144,7 @@
       </section>
 
       <section class="page" id="production">
-        <header class="section-head"><div><span class="kicker">ПРОИЗВОДСТВО</span><h1>Конвейер</h1><p>Порядок: Идея → Сценарий → Storyboard → Превиз 15–20 кадров → Генерация → Озвучка → Монтаж → AI-проверка → Проверка → Готово</p></div><button class="btn primary" data-create>＋ Новый ролик</button></header>
+        <header class="section-head"><div><span class="kicker">ПРОИЗВОДСТВО</span><h1>Конвейер</h1><p>От идеи до готового ролика — все этапы и результаты</p></div><button class="btn primary" data-create>＋ Новый ролик</button></header>
         <div class="kanban" id="kanban"></div>
       </section>
 
@@ -453,6 +454,7 @@
       },true);
     })();
   </script>
-  <script src="/app.js?v=127"></script>
+  <script src="/ui-polish.js?v=128"></script>
+  <script src="/app.js?v=128"></script>
 </body>
 </html>
