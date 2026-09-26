@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { randomBytes, scryptSync, timingSafeEqual, createHmac, createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { fetchTranscript } from 'youtube-transcript';
+import { callClaudeStructured, claudeUsageCost, claudeConfigured } from './lib/claude.js';
 
 const execFile=promisify(execFileCb);
 
@@ -888,6 +889,19 @@ function openAIStageModel(stage='balanced'){
   if(/final-qc|director-cut|quality-final/.test(s))return quality;
   return balanced;
 }
+// TEXT_AI_PROVIDER=claude переключает генерацию Идеи/Сценария с OpenAI на Claude (см. callIdeaAI/
+// callScriptAI). Storyboard/превиз/видео этот флаг не затрагивает — там остаётся OpenAI.
+function textAiProvider(){
+  return String(process.env.TEXT_AI_PROVIDER||'').toLowerCase()==='claude'&&claudeConfigured()?'claude':'openai';
+}
+function claudeStageModel(stage='balanced'){
+  const s=String(stage||'').toLowerCase();
+  const cheap=process.env.ANTHROPIC_CHEAP_MODEL||'claude-sonnet-5';
+  const quality=process.env.ANTHROPIC_QUALITY_MODEL||process.env.ANTHROPIC_MODEL||'claude-opus-5-5';
+  if(/candidate|shortlist|hook|audio|previs-qc|scene-qc|chat|light|scene-router|previs-image/.test(s))return cheap;
+  if(/final-qc|director-cut|quality-final/.test(s))return quality;
+  return quality;
+}
 function openAIUsageCost(model,usage={}){
   const name=String(model||'gpt-5.6-terra').toLowerCase();
   let inputRate=2,cachedRate=.2,outputRate=12;
@@ -1643,6 +1657,18 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
   };
 
   async function callIdeaAI({prompt,schema,name,images=[],effort='medium',maxTokens=4800,timeoutMs=90000,modelOverride=''}){
+    if(textAiProvider()==='claude'){
+      const model=modelOverride||claudeStageModel(
+        name.startsWith('idea_candidates')||name==='idea_shortlist'||name==='hook_lab'?name:'idea-final'
+      );
+      const res=await callClaudeStructured({prompt,schema,name,images,model,maxTokens,timeoutMs});
+      const priced=claudeUsageCost(res.model,res.usage);
+      if(priced.amountUsd>0)await recordExpense(accountId,{
+        provider:'Anthropic',category:'idea',description:name.startsWith('idea_candidates')?'TikTok-концепции идеи · партия 10 (Claude)':name==='idea_shortlist'?'Creative Critic · shortlist 5/20 (Claude)':name==='hook_lab'?'Hook Lab · 5 хуков (Claude)':'TikTok Creative Critic идеи (Claude)',
+        amountUsd:priced.amountUsd,model:res.model,usage:priced.details,source:'auto'
+      }).catch(()=>{});
+      return res.json;
+    }
     const input=[{role:'user',content:[
       {type:'input_text',text:prompt},
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
@@ -2331,12 +2357,22 @@ async function generateScriptStage(payload,accountId,feedback=''){
   };
 
   async function callScriptAI({prompt,schema,name,images=[],effort='high'}){
+    const timeoutMs=name==='script_draft'?90000:(String(name).startsWith('script_review_')?105000:90000);
+    if(textAiProvider()==='claude'){
+      const claudeModel=claudeStageModel('quality-final');
+      const res=await callClaudeStructured({prompt,schema,name,images,model:claudeModel,maxTokens:name==='script_draft'?7000:6500,timeoutMs});
+      const priced=claudeUsageCost(res.model,res.usage);
+      if(priced.amountUsd>0)await recordExpense(accountId,{
+        provider:'Anthropic',category:'script',description:'Сценарий · '+name+' (Claude)',
+        amountUsd:priced.amountUsd,model:res.model,usage:priced.details,source:'auto'
+      }).catch(()=>{});
+      return res.json;
+    }
     const input=[{role:'user',content:[
       {type:'input_text',text:prompt},
       ...images.map(url=>({type:'input_image',image_url:String(url),detail:'low'}))
     ]}];
     const controller=new AbortController();
-    const timeoutMs=name==='script_draft'?90000:(String(name).startsWith('script_review_')?105000:90000);
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     let r;
     try{
