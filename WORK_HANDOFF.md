@@ -7,6 +7,19 @@ Continue development of Alexey's private AI content factory for product videos f
 
 Do NOT rebuild from scratch unless explicitly requested. Preserve the existing UI, backend contracts, data model and working integrations.
 
+## Changelog (recent fixes)
+- 2026-09-26 (commit f11ff31, by Claude via direct GitHub push): Idea stage reliability.
+  `candidateSchemaFor()` no longer forces exact minItems=maxItems=10 on the two 10-candidate
+  batches — this was failing the whole idea run on any shortfall ("Генератор идеи вернул N из
+  20 концепций"). Added a one-shot top-up call per short batch instead. Also added
+  `recoverStuckManualStageRuns()`, called at startup: previously only autopilot-mode runs were
+  resumed after a Railway restart (`recoverPendingAutoPipelines()` explicitly skips
+  mode==='manual'), so a manual-mode run mid-Идея/Сценарий/Storyboard during a restart was stuck
+  in "В работе" forever with no error. NOT yet verified against a live OpenAI key or production
+  Railway logs — code-reviewed + `node --check` only.
+  NOTE: this doc's "Current app version / UI" section below says v1.4 and looks stale — the
+  live app reports v2.10.2 (bc142bc). Treat version/nav claims below with caution until refreshed.
+
 ## Current production
 - Main site: https://content-factory-live-production.up.railway.app
 - GitHub repo: https://github.com/alekseevaleksey18061994-gif/content-factory
