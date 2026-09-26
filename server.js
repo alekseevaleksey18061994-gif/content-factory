@@ -1547,14 +1547,14 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     }catch(e){console.warn('[idea-checkpoint] '+String(e?.message||e))}
   }
 
-  function candidateSchemaFor(count){
+  function candidateSchemaFor(min,max=min){
     return {
       type:'object',
       additionalProperties:false,
       required:['candidates'],
       properties:{
         candidates:{
-          type:'array',minItems:count,maxItems:count,
+          type:'array',minItems:min,maxItems:max,
           items:{
             type:'object',additionalProperties:false,
             required:['title','formatPattern','hook','concept','mechanic','payoff'],
@@ -1763,7 +1763,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
     '',
     'ПАРТИЯ B: верни РОВНО 10 кандидатов и используй только FORMAT PATTERNS 11–20, по одному разу каждый. Не создавай кандидаты 1–10.'
   ].join('\n');
-  const batchSchema=candidateSchemaFor(10);
+  const batchSchema=candidateSchemaFor(6,10);
   let candidates=Array.isArray(ideaCheckpoint?.candidates)&&ideaCheckpoint.candidates.length===20
     ? ideaCheckpoint.candidates
     : null;
@@ -1772,11 +1772,32 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
       callIdeaAI({prompt:batchAPrompt,schema:batchSchema,name:'idea_candidates_a',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000}),
       callIdeaAI({prompt:batchBPrompt,schema:batchSchema,name:'idea_candidates_b',images:refs,effort:'low',maxTokens:3800,timeoutMs:90000})
     ]);
-    candidates=[
-      ...(Array.isArray(batchA?.candidates)?batchA.candidates:[]),
-      ...(Array.isArray(batchB?.candidates)?batchB.candidates:[])
-    ];
-    if(candidates.length!==20)throw new Error('Генератор идеи вернул '+candidates.length+' из 20 концепций');
+    let listA=Array.isArray(batchA?.candidates)?batchA.candidates:[];
+    let listB=Array.isArray(batchB?.candidates)?batchB.candidates:[];
+    // Top-up pass: раньше нехватка даже на 1 кандидата в партии валила весь запуск идеи
+    // ("Генератор идеи вернул N из 20 концепций"). Теперь при недоборе (но не полном провале
+    // партии) делаем один точечный добор вместо немедленного падения.
+    async function topUp(list,prompt,label){
+      if(list.length>=10||list.length===0)return list;
+      const missing=10-list.length;
+      try{
+        const extra=await callIdeaAI({
+          prompt:[prompt,'','Уже получено '+list.length+' кандидатов из этой партии. Дошли РОВНО '+missing+' новых концепций с form patterns, которые ещё не использованы выше в этой партии. Не повторяй уже занятые formatPattern.'].join('\n'),
+          schema:candidateSchemaFor(missing,missing),
+          name:label,images:refs,effort:'low',maxTokens:2200,timeoutMs:60000
+        });
+        if(Array.isArray(extra?.candidates))return list.concat(extra.candidates);
+      }catch(e){
+        console.error('[idea-topup] '+label+' failed: '+String(e?.message||e));
+      }
+      return list;
+    }
+    [listA,listB]=await Promise.all([
+      topUp(listA,batchAPrompt,'idea_candidates_a_topup'),
+      topUp(listB,batchBPrompt,'idea_candidates_b_topup')
+    ]);
+    candidates=[...listA,...listB];
+    if(candidates.length!==20)throw new Error('Генератор идеи вернул '+candidates.length+' из 20 концепций (после добивки)');
     await saveIdeaCheckpoint({candidates});
   }
   await markIdeaProgress(5,'Creative Critic · быстрый шорт-лист 5 из 20');
@@ -7502,6 +7523,39 @@ async function recoverPendingAutoPipelines(){
   }catch(e){console.error('[autopilot-recovery] '+String(e?.message||e))}
 }
 
+async function recoverStuckManualStageRuns(){
+  // recoverPendingAutoPipelines() ниже намеренно пропускает run.mode==='manual'.
+  // Из-за этого ролик, который обрабатывался вручную (Идея/Сценарий/Storyboard) в момент
+  // рестарта Railway, оставался в статусе "В работе" навсегда — без ошибки, без ретрая,
+  // просто зависшим. Здесь мы дожимаем ровно ОДИН текущий этап через enqueueStageTask
+  // (не enqueueAutoPipeline), чтобы не нарушить логику ручного подтверждения между этапами.
+  try{
+    const registry=await ensureAccountsRegistry();
+    for(const account of (registry.accounts||[])){
+      const accountId=sanitizeAccountId(account.id||DEFAULT_ACCOUNT_ID);
+      const state=await readAppState(accountId),data=state?.data||blankFactoryState();
+      const toResume=[];
+      for(const run of (data.runs||[])){
+        if(!run||run.mode!=='manual'||run.paused||run.status!=='В работе')continue;
+        const stage=String(run.stage||'');
+        const needsIdea=!run.idea;
+        const needsScript=!!run.idea&&!run.script;
+        const needsStoryboard=!!run.script&&(!Array.isArray(run.storyboard)||!run.storyboard.length);
+        let task=null;
+        if(stage==='Идея'&&needsIdea)task='idea';
+        else if(stage==='Сценарий'&&(needsIdea||needsScript))task=needsIdea?'idea':'script';
+        else if(stage==='Storyboard'&&(needsIdea||needsScript||needsStoryboard))task=needsIdea?'idea':needsScript?'script':'storyboard';
+        if(task)toResume.push({id:String(run.id),task});
+      }
+      if(!toResume.length)continue;
+      for(const item of toResume){
+        enqueueStageTask(accountId,item.id,item.task,'Восстановление после перезапуска');
+      }
+      console.log('[manual-stage-recovery] queued '+accountId+' '+toResume.map(x=>x.id+':'+x.task).join(','));
+    }
+  }catch(e){console.error('[manual-stage-recovery] '+String(e?.message||e))}
+}
+
 async function recoverLegacyPlaceholderRuns(){
   try{
     const registry=await ensureAccountsRegistry();
@@ -8820,6 +8874,11 @@ server.listen(port,'0.0.0.0',async()=>{
       await recoverPendingAutoPipelines();
     }catch(e){
       console.error('[startup-recovery] autopilot '+String(e?.message||e));
+    }
+    try{
+      await recoverStuckManualStageRuns();
+    }catch(e){
+      console.error('[startup-recovery] manual-stage '+String(e?.message||e));
     }
     try{
       await recoverPendingPrevisAndAutopilot();
