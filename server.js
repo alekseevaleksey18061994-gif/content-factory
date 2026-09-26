@@ -1026,7 +1026,12 @@ function ideaStageComplete(idea){
   const alternatives=Array.isArray(idea?.alternatives)?idea.alternatives:[];
   const altRequired=['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why'];
   const altQualityRequired=['hook','retention','nativeTikTok','proofVariety','shareability','originality','generatability','overall'];
-  const badAlt=alternatives.length<4||alternatives.slice(0,4).some(x=>
+  // Раньше требовалось РОВНО 4 полностью заполненные альтернативы, иначе Creative Critic
+  // считал идею неполной и после неудачного repair-прохода валил весь запуск идеи
+  // ("Creative Critic вернул неполную идею: ... alternatives"). Основная "selected" идея —
+  // единственное, что реально нужно для перехода к сценарию; alternatives — это просто
+  // дополнительные варианты на выбор, поэтому достаточно 2 качественных вместо 4.
+  const badAlt=alternatives.length<2||alternatives.slice(0,4).some(x=>
     altRequired.some(k=>!String(x?.[k]||'').trim()) ||
     altQualityRequired.some(k=>!Number.isFinite(Number(x?.quality?.[k])))
   );
@@ -1583,7 +1588,7 @@ async function generateIdeaStage(payload,accountId,variant=1,feedback=''){
         }
       },
       alternatives:{
-        type:'array',minItems:4,maxItems:4,
+        type:'array',minItems:2,maxItems:4,
         items:{
           type:'object',additionalProperties:false,
           required:['title','audience','hook','first3Seconds','concept','mechanic','angle','productRole','retention','payoff','ctaDirection','production','why','quality'],
