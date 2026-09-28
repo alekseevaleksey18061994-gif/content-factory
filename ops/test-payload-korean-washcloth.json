@@ -1,0 +1,21 @@
+{
+  "action": "create_content",
+  "product": {
+    "id": "fixture-korean-washcloth",
+    "name": "Корейская мочалка",
+    "description": "Тестовый товар для проверки сценарного этапа Content Factory. Не использовать для финальной видеогенерации без реальных референсных фото.",
+    "facts": {
+      "size": "100×30 см",
+      "hardness": "8/10"
+    },
+    "media": []
+  },
+  "platforms": [
+    "TikTok",
+    "Reels",
+    "Shorts"
+  ],
+  "variants": 2,
+  "durationSeconds": 20,
+  "language": "ru"
+}
