@@ -74,6 +74,8 @@ const defaultState = {
     targetPerDay: 10,
     maxPerDay: 12,
     minIntervalMinutes: 60,
+    assignments: {},
+    suppressed: {},
     slots: [
       { time: "00:00", kind: "reserve", label: "Резервное окно" },
       { time: "03:00", kind: "reserve", label: "Резервное окно" },
@@ -106,6 +108,109 @@ function normalizeDate(value) {
   if (d.getTime() > Date.now() + 24 * 60 * 60 * 1000) return "";
   return d.toISOString();
 }
+
+function moscowDateKey(date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date || new Date());
+  const map = {};
+  parts.forEach(function(p){ map[p.type] = p.value; });
+  return map.year + "-" + map.month + "-" + map.day;
+}
+
+function moscowMinutes(date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Moscow",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date || new Date());
+  const map = {};
+  parts.forEach(function(p){ map[p.type] = p.value; });
+  return Number(map.hour || 0) * 60 + Number(map.minute || 0);
+}
+
+function slotMinutes(time) {
+  const parts = String(time || "00:00").split(":").map(Number);
+  return Number(parts[0] || 0) * 60 + Number(parts[1] || 0);
+}
+
+function ensureScheduleShape(targetState) {
+  if (!targetState.publicationSchedule) targetState.publicationSchedule = structuredClone(defaultState.publicationSchedule);
+  const schedule = targetState.publicationSchedule;
+  if (!schedule.assignments || typeof schedule.assignments !== "object") schedule.assignments = {};
+  if (!schedule.suppressed || typeof schedule.suppressed !== "object") schedule.suppressed = {};
+  return schedule;
+}
+
+function cleanupScheduleAssignments(targetState) {
+  const schedule = ensureScheduleShape(targetState);
+  const validIds = new Set((targetState.queue || []).map(function(item){ return item && item.id; }).filter(Boolean));
+  Object.keys(schedule.assignments).forEach(function(day) {
+    const byTime = schedule.assignments[day];
+    if (!byTime || typeof byTime !== "object") {
+      delete schedule.assignments[day];
+      return;
+    }
+    Object.keys(byTime).forEach(function(time) {
+      if (!validIds.has(byTime[time])) delete byTime[time];
+    });
+    if (!Object.keys(byTime).length) delete schedule.assignments[day];
+  });
+
+  const today = moscowDateKey(new Date());
+  Object.keys(schedule.suppressed).forEach(function(day) {
+    if (day < today) delete schedule.suppressed[day];
+  });
+}
+
+function ensureScheduleAssignments(targetState, dayKey) {
+  const schedule = ensureScheduleShape(targetState);
+  cleanupScheduleAssignments(targetState);
+  const today = moscowDateKey(new Date());
+  const day = dayKey || today;
+  if (day !== today) return 0;
+
+  if (!schedule.assignments[day]) schedule.assignments[day] = {};
+  if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
+
+  const used = new Set();
+  Object.keys(schedule.assignments).forEach(function(d) {
+    Object.values(schedule.assignments[d] || {}).forEach(function(id){ if (id) used.add(id); });
+  });
+
+  const candidates = (targetState.queue || [])
+    .filter(function(item){ return item && item.id && item.newsId && !used.has(item.id); })
+    .sort(function(a,b){ return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime(); });
+
+  const nowMin = moscowMinutes(new Date());
+  let assigned = 0;
+  (schedule.slots || []).filter(function(slot){ return slot.kind === "regular"; }).forEach(function(slot) {
+    if (schedule.suppressed[day][slot.time]) return;
+    if (schedule.assignments[day][slot.time]) return;
+    if (slotMinutes(slot.time) < nowMin - 30) return;
+    const next = candidates.shift();
+    if (!next) return;
+    schedule.assignments[day][slot.time] = next.id;
+    used.add(next.id);
+    assigned += 1;
+  });
+  return assigned;
+}
+
+function removeQueueIdFromSchedule(targetState, queueId) {
+  const schedule = ensureScheduleShape(targetState);
+  Object.keys(schedule.assignments).forEach(function(day) {
+    Object.keys(schedule.assignments[day] || {}).forEach(function(time) {
+      if (schedule.assignments[day][time] === queueId) delete schedule.assignments[day][time];
+    });
+    if (!Object.keys(schedule.assignments[day] || {}).length) delete schedule.assignments[day];
+  });
+}
+
 
 function pruneQueueItems(targetState) {
   if (!targetState || !Array.isArray(targetState.queue)) return { removed: 0, expired: 0, overflow: 0 };
@@ -153,6 +258,8 @@ function pruneQueueItems(targetState) {
     queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
     queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
   };
+  cleanupScheduleAssignments(targetState);
+  ensureScheduleAssignments(targetState);
   return { removed: removed, expired: expired, overflow: overflow };
 }
 
@@ -190,6 +297,12 @@ function loadState() {
       loaded.migrations.push(freshnessMigrationId);
     }
 
+    const dashboardCalendarMigrationId = "v0.11.0-dashboard-calendar-actions";
+    if (!loaded.migrations.includes(dashboardCalendarMigrationId)) {
+      ensureScheduleShape(loaded);
+      loaded.migrations.push(dashboardCalendarMigrationId);
+    }
+
     pruneQueueItems(loaded);
 
     const scheduleMigrationId = "v0.9.0-publication-calendar";
@@ -208,6 +321,7 @@ function loadState() {
     fresh.migrations.push("v0.8.0-curated-sources-20");
     fresh.migrations.push("v0.9.0-publication-calendar");
     fresh.migrations.push("v0.10.0-freshness-engine");
+    fresh.migrations.push("v0.11.0-dashboard-calendar-actions");
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2), "utf8"); } catch {}
     return fresh;
   }
@@ -1350,6 +1464,58 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, state: state });
     }
 
+    if (req.method === "POST" && p === "/api/calendar/assign") {
+      const body = await readJson(req);
+      const day = String(body.date || "");
+      const time = String(body.time || "");
+      const queueId = String(body.queueId || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
+      const schedule = ensureScheduleShape(state);
+      if (!(schedule.slots || []).some(function(slot){ return slot.time === time; })) {
+        return sendJson(res, 400, { ok: false, error: "Некорректное время" });
+      }
+      const item = (state.queue || []).find(function(x){ return x.id === queueId; });
+      if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
+
+      Object.keys(schedule.assignments).forEach(function(d) {
+        Object.keys(schedule.assignments[d] || {}).forEach(function(t) {
+          if (schedule.assignments[d][t] === queueId) delete schedule.assignments[d][t];
+        });
+      });
+
+      if (!schedule.assignments[day]) schedule.assignments[day] = {};
+      if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
+      schedule.assignments[day][time] = queueId;
+      delete schedule.suppressed[day][time];
+      saveState();
+      return sendJson(res, 200, { ok: true, assignment: { date: day, time: time, queueId: queueId } });
+    }
+
+    if (req.method === "POST" && p === "/api/calendar/remove") {
+      const body = await readJson(req);
+      const day = String(body.date || "");
+      const time = String(body.time || "");
+      const schedule = ensureScheduleShape(state);
+      if (schedule.assignments[day]) delete schedule.assignments[day][time];
+      if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
+      schedule.suppressed[day][time] = true;
+      saveState();
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && p === "/api/calendar/auto") {
+      const body = await readJson(req);
+      const day = String(body.date || moscowDateKey(new Date()));
+      const time = String(body.time || "");
+      const schedule = ensureScheduleShape(state);
+      if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
+      delete schedule.suppressed[day][time];
+      if (schedule.assignments[day]) delete schedule.assignments[day][time];
+      ensureScheduleAssignments(state, day);
+      saveState();
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (req.method === "GET" && p === "/api/status") {
       const force = url.searchParams.get("refresh") === "1";
       const status = await buildSystemStatus(force);
@@ -1508,6 +1674,8 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "POST" && p === "/api/queue/remove") {
       const body = await readJson(req);
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
+      removeQueueIdFromSchedule(state, body.id);
+      ensureScheduleAssignments(state);
       saveState();
       return sendJson(res, 200, { ok: true });
     }
@@ -1551,6 +1719,8 @@ const server = http.createServer(async function(req, res) {
         videoUrl: media.videoUrl
       });
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
+      removeQueueIdFromSchedule(state, body.id);
+      ensureScheduleAssignments(state);
       state.history.unshift({
         id: newId("hist"),
         title: item.title,
