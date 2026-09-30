@@ -91,6 +91,7 @@ const defaultState = {
     ]
   },
   queue: [],
+  newsVisibleAfter: "",
   history: [],
   stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 },
   migrations: [],
@@ -304,6 +305,16 @@ function loadState() {
       loaded.migrations.push(dashboardCalendarMigrationId);
     }
 
+    const clearOldNewsMigrationId = "v0.14.1-clear-old-news";
+    if (!loaded.migrations.includes(clearOldNewsMigrationId)) {
+      loaded.newsVisibleAfter = new Date().toISOString();
+      loaded.queue = [];
+      ensureScheduleShape(loaded);
+      loaded.publicationSchedule.assignments = {};
+      loaded.publicationSchedule.suppressed = {};
+      loaded.migrations.push(clearOldNewsMigrationId);
+    }
+
     pruneQueueItems(loaded);
 
     const scheduleMigrationId = "v0.9.0-publication-calendar";
@@ -323,6 +334,7 @@ function loadState() {
     fresh.migrations.push("v0.9.0-publication-calendar");
     fresh.migrations.push("v0.10.0-freshness-engine");
     fresh.migrations.push("v0.11.0-dashboard-calendar-actions");
+    fresh.migrations.push("v0.14.1-clear-old-news");
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2), "utf8"); } catch {}
     return fresh;
   }
@@ -693,13 +705,24 @@ async function saveNewsItem(item) {
 async function listNewsItems(limit) {
   const safeLimit = Math.max(1, Math.min(100, Number(limit || 30)));
   if (db && dbReady) {
-    const r = await db.query(
-      `SELECT id, source_id AS "sourceId", source_name AS "sourceName", source_url AS "sourceUrl",
-      original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
-      rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
-      telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
-      FROM news_items ORDER BY detected_at DESC LIMIT $1`, [safeLimit]
-    );
+    const cutoff = normalizeDate(state.newsVisibleAfter || "");
+    const r = cutoff
+      ? await db.query(
+          `SELECT id, source_id AS "sourceId", source_name AS "sourceName", source_url AS "sourceUrl",
+          original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
+          rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
+          telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
+          FROM news_items WHERE detected_at >= $1 ORDER BY detected_at DESC LIMIT $2`,
+          [cutoff, safeLimit]
+        )
+      : await db.query(
+          `SELECT id, source_id AS "sourceId", source_name AS "sourceName", source_url AS "sourceUrl",
+          original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
+          rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
+          telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
+          FROM news_items ORDER BY detected_at DESC LIMIT $1`,
+          [safeLimit]
+        );
     return r.rows;
   }
   return [];
