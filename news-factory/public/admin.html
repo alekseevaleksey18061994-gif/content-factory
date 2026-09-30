@@ -29,6 +29,14 @@ button{border:1px solid #303849;background:var(--panel2);color:var(--text);borde
 .system-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.system-box{border:1px solid var(--line);background:#0d1016;border-radius:13px;padding:13px}.system-box b{display:block;font-size:20px}.system-box small{display:block;color:var(--muted);font-size:10px;margin-top:4px}.system-box.good b{color:var(--green)}.system-box.warn b{color:var(--amber)}.system-box.muted b{color:#9aa4b3}
 input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:white;border-radius:12px;padding:12px;outline:none}textarea{min-height:138px;resize:vertical}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.source,.queueItem,.hist{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px 0;border-top:1px solid #232a36}.source-toggle{min-width:122px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;padding:8px 11px;font-weight:800}.source-toggle .switch-knob{width:18px;height:18px;border-radius:50%;background:#7d8797;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.source-toggle.on{color:#dffff0;border-color:rgba(75,208,139,.38);background:rgba(75,208,139,.12)}.source-toggle.on .switch-knob{background:var(--green);box-shadow:0 0 12px rgba(75,208,139,.45)}.source-toggle.off{color:#a9b2c1;background:#111722}.source-toggle b{font-size:11px}.source:first-child,.queueItem:first-child,.hist:first-child{border-top:0}.name{font-weight:700}.url,.meta{font-size:12px;color:var(--muted);word-break:break-all;margin-top:3px;line-height:1.4}.chip{display:inline-block;border:1px solid #303849;border-radius:99px;padding:4px 8px;font-size:11px;color:var(--muted)}.empty{color:var(--muted);padding:14px 0}.notice{font-size:13px;color:#98a2b3;line-height:1.45}.toast{position:fixed;left:calc(50% + var(--side)/2);bottom:26px;transform:translateX(-50%) translateY(110px);background:#fff;color:#0a0c10;padding:12px 16px;border-radius:12px;font-weight:750;transition:.25s;z-index:80;box-shadow:0 14px 40px #0008}.toast.show{transform:translateX(-50%) translateY(0)}
 .calendar-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.calendar-day-nav{display:flex;align-items:center;gap:8px}.calendar-day-title{font-size:15px;font-weight:850;min-width:170px;text-align:center}.calendar-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.calendar-summary-box{background:#0d1016;border:1px solid #222937;border-radius:14px;padding:13px}.calendar-summary-box b{display:block;font-size:22px}.calendar-summary-box span{display:block;color:var(--muted);font-size:11px;margin-top:4px}.calendar-slots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.calendar-slot{border:1px solid #252d3a;background:#0d1317;border-radius:15px;padding:13px;display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:12px;align-items:center}.calendar-time{font-size:22px;font-weight:900;letter-spacing:-.02em}.calendar-slot-title{font-size:13px;font-weight:800}.calendar-slot-meta{font-size:10px;color:var(--muted);margin-top:4px}.slot-chip{border:1px solid #303849;border-radius:999px;padding:5px 8px;font-size:9px;font-weight:850;white-space:nowrap}.slot-chip.done{color:var(--green);border-color:rgba(75,208,139,.3);background:rgba(75,208,139,.08)}.slot-chip.wait{color:#9db5ff;border-color:rgba(157,181,255,.28)}.slot-chip.reserve{color:var(--amber);border-color:rgba(255,190,85,.28);background:rgba(255,190,85,.06)}.slot-chip.missed{color:#ff8d94;border-color:rgba(255,107,115,.28)}.calendar-note{margin-top:12px;padding:12px;border:1px solid #263043;background:#111722;border-radius:13px;color:#aeb7c7;font-size:12px;line-height:1.5}
+
+.news-card,.queue-card{cursor:pointer;transition:border-color .18s ease,transform .18s ease}.news-card:hover,.queue-card:hover{border-color:#3d4b63;transform:translateY(-1px)}
+.preview-button{margin-top:9px;padding:7px 10px;font-size:11px}.card-click-note{font-size:10px;color:#718096;margin-top:6px}
+.modal-backdrop{display:none;position:fixed;inset:0;z-index:100;background:rgba(3,5,9,.76);backdrop-filter:blur(8px);padding:18px;overflow:auto}.modal-backdrop.open{display:flex;align-items:flex-start;justify-content:center}.modal-card{width:min(720px,100%);margin:auto;background:#10151e;border:1px solid #303a4a;border-radius:20px;box-shadow:0 30px 90px #000a;overflow:hidden}.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:15px 16px;border-bottom:1px solid #252d39}.modal-head b{font-size:16px}.modal-head small{display:block;color:var(--muted);font-size:11px;margin-top:4px}.modal-head button{font-size:21px;line-height:1;padding:6px 10px}.telegram-preview{max-width:570px;margin:16px auto;padding:0 14px 18px}.telegram-bubble{background:#18232f;border:1px solid #2a3949;border-radius:16px;overflow:hidden}.telegram-media{width:100%;max-height:420px;object-fit:cover;background:#0b0f15;display:block}.telegram-video{width:100%;max-height:420px;background:#000}.telegram-copy{padding:14px 15px}.telegram-copy h3{font-size:17px;line-height:1.35;margin:0 0 10px}.telegram-copy p{font-size:14px;line-height:1.55;margin:0;white-space:pre-wrap;color:#e4e9f0}.telegram-source{display:block;margin-top:12px;font-size:12px;color:#8fb0ff;text-decoration:none}.telegram-foot{font-size:10px;color:#718096;margin-top:10px;text-align:right}
+.picker-card{max-width:780px}.picker-list{padding:12px;display:grid;gap:9px;max-height:70vh;overflow:auto}.picker-item{display:grid;grid-template-columns:68px minmax(0,1fr) auto;gap:11px;align-items:center;border:1px solid #27303d;border-radius:14px;background:#0c1118;padding:10px}.picker-thumb{width:68px;height:48px;border-radius:9px;object-fit:cover;background:#18233a}.picker-title{font-size:12px;font-weight:800;line-height:1.35}.picker-meta{font-size:10px;color:var(--muted);margin-top:4px}
+.calendar-slot{grid-template-columns:72px minmax(0,1fr)!important;align-items:start!important}.calendar-slot-main{min-width:0}.calendar-slot-top{display:flex;gap:8px;justify-content:space-between;align-items:flex-start}.calendar-news-title{font-size:13px;font-weight:850;line-height:1.4;cursor:pointer}.calendar-news-title:hover{color:#a9bcff}.calendar-slot-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}.calendar-slot-actions button{padding:6px 8px;font-size:10px}.dashboard-calendar{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.dash-slot{border:1px solid #26303f;background:#0d1219;border-radius:14px;padding:12px;min-width:0;cursor:pointer}.dash-slot:hover{border-color:#41506a}.dash-slot-time{font-weight:900;font-size:18px}.dash-slot-title{font-size:11px;font-weight:750;line-height:1.35;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.dash-slot-meta{font-size:9px;color:var(--muted);margin-top:5px}
+@media(max-width:900px){.dashboard-calendar{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.dashboard-calendar{grid-template-columns:1fr 1fr}.modal-backdrop{padding:8px}.modal-card{border-radius:16px}.picker-item{grid-template-columns:54px minmax(0,1fr)}.picker-thumb{width:54px;height:44px}.picker-item button{grid-column:1/-1;width:100%}}
 @media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.dash-two,.ai-layout{grid-template-columns:1fr}.quick{grid-template-columns:repeat(2,1fr)}.collector-head{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:900px){
   .side{transform:translateX(-105%);width:min(86vw,320px);box-shadow:24px 0 70px rgba(0,0,0,.5)}.side.mobile-open{transform:translateX(0)}.drawer-backdrop.open{display:block}.mobile-close{display:grid;place-items:center}.main{margin-left:0}.menu-toggle{display:grid;place-items:center}.shell{padding:14px}.span8,.span7,.span6,.span5,.span4{grid-column:span 12}.stats,.system-grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.top{align-items:flex-start}.health{margin-top:8px}.stack{align-items:stretch;flex-direction:column}.toast{left:50%}body.drawer-open{overflow:hidden}.conn{align-items:flex-start}.status{margin-top:1px}.hero-main{align-items:flex-start;flex-direction:column}.conn-group-head{align-items:flex-start}.conn-group-count{margin-top:2px}
@@ -63,8 +71,7 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
 
     <div class="side-group">
       <div class="side-title">Система</div>
-      <button class="nav" data-page="connectionsPage"><span class="ico">⚙</span><b>Подключения</b></button>
-      <button class="nav" data-page="systemPage"><span class="ico">●</span><b>Статус системы</b></button>
+      <button class="nav" data-page="connectionsPage"><span class="ico">⚙</span><b>Система и подключения</b></button>
     </div>
 
     <div class="side-spacer"></div>
@@ -104,6 +111,11 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
           <div class="kpi"><b id="dashSkipped">0</b><span>Пропущено</span><small>Дубли / нерелевантное</small></div>
         </div>
 
+        <section class="card dashboard-calendar-card" style="margin-top:14px">
+          <div class="panel-title"><div><h3>Календарь публикаций</h3><p>Ближайшие публикации сегодня · Москва</p></div><button class="primary" onclick="goPage('calendarPage')">Открыть календарь</button></div>
+          <div id="dashCalendar" class="dashboard-calendar"><div class="empty">Формирую план…</div></div>
+        </section>
+
         <div class="dash-two" style="margin-top:14px">
           <section class="card">
             <div class="panel-title"><div><h3>Последние события</h3><p>Очередь и последние публикации</p></div><button onclick="goPage('historyPage')">История</button></div>
@@ -125,10 +137,6 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
           </div>
         </section>
 
-        <section class="card" style="margin-top:14px">
-          <div class="panel-title"><div><h3>Pipeline</h3><p>Фактическая готовность этапов</p></div></div>
-          <div id="dashPipeline"></div>
-        </section>
       </section>
 
       <section class="page" id="sourcesPage">
@@ -243,27 +251,43 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
       </section>
 
       <section class="page" id="connectionsPage">
-        <div class="page-head"><div><h2>Подключения</h2><p>Живые статусы сервисов News Factory.</p></div><button onclick="refreshConnections()">Обновить статусы</button></div>
-        <section class="card"><div id="connections" class="connections"><div class="empty">Проверяю подключения…</div></div></section>
-      </section>
-
-      <section class="page" id="systemPage">
-        <div class="page-head"><div><h2>Статус системы</h2><p>Production, runtime и готовность интеграций.</p></div><span class="chip" id="statusCheckedAt">Проверка…</span></div>
-        <section class="card"><div class="system-grid"><div class="system-box good"><b id="statusConnected">—</b><small>Подключено</small></div><div class="system-box warn"><b id="statusPartial">—</b><small>Частично</small></div><div class="system-box muted"><b id="statusMissing">—</b><small>Не подключено</small></div><div class="system-box"><b id="statusMode">—</b><small>Текущий режим</small></div></div><div class="notice" id="statusRuntime" style="margin-top:12px">Загружаю runtime status…</div></section>
+        <div class="page-head"><div><h2>Система и подключения</h2><p>Состояние News Factory, интеграции и хранение данных.</p></div><button onclick="refreshConnections()">Обновить статусы</button></div>
+        <section class="card">
+          <div class="row"><div><div class="label">Состояние системы</div><div class="notice" id="statusRuntime">Загружаю runtime status…</div></div><span class="chip" id="statusCheckedAt">Проверка…</span></div>
+          <div class="system-grid" style="margin-top:12px">
+            <div class="system-box good"><b id="statusConnected">—</b><small>Подключено</small></div>
+            <div class="system-box warn"><b id="statusPartial">—</b><small>Частично</small></div>
+            <div class="system-box muted"><b id="statusMissing">—</b><small>Не подключено</small></div>
+            <div class="system-box"><b id="statusMode">—</b><small>Текущий режим</small></div>
+          </div>
+        </section>
+        <section class="card" style="margin-top:14px"><div id="connections" class="connections"><div class="empty">Проверяю подключения…</div></div></section>
         <section class="card" style="margin-top:14px">
-          <div class="panel-title"><div><h3>Хранение данных</h3><p>Чтобы наработки не пропадали при обновлениях и перезапусках.</p></div></div>
-          <div class="pipeline-row"><div class="row"><b>PostgreSQL</b><span class="chip">Основная база</span></div><small>Новости, история запусков collector и резервные снимки состояния.</small></div>
-          <div class="pipeline-row"><div class="row"><b>Railway Volume /data</b><span class="chip">Резерв MVP</span></div><small>Локальное состояние, очередь и настройки сохраняются между деплоями.</small></div>
-          <div class="pipeline-row"><div class="row"><b>GitHub</b><span class="chip">Код</span></div><small>Все версии сайта и backend хранятся отдельно от данных.</small></div>
+          <div class="panel-title"><div><h3>Хранение данных</h3><p>Где сохраняются новости, очередь и код.</p></div></div>
+          <div class="pipeline-row"><div class="row"><b>PostgreSQL</b><span class="chip">Основная база</span></div><small>Новости, история запусков и снимки состояния.</small></div>
+          <div class="pipeline-row"><div class="row"><b>Railway Volume /data</b><span class="chip">Постоянные данные</span></div><small>Очередь, настройки и сгенерированные медиа сохраняются между деплоями.</small></div>
+          <div class="pipeline-row"><div class="row"><b>GitHub</b><span class="chip">Код и версии</span></div><small>Backend и интерфейс News Factory.</small></div>
         </section>
       </section>
     </div>
   </main>
 </div>
+<div id="previewModal" class="modal-backdrop" onclick="modalBackdropClose(event,'previewModal')">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-head"><div><b>Предпросмотр публикации</b><small id="previewMeta"></small></div><button onclick="closeModal('previewModal')">×</button></div>
+    <div id="previewBody"></div>
+  </div>
+</div>
+<div id="calendarPickerModal" class="modal-backdrop" onclick="modalBackdropClose(event,'calendarPickerModal')">
+  <div class="modal-card picker-card" onclick="event.stopPropagation()">
+    <div class="modal-head"><div><b>Выбрать новость</b><small id="pickerMeta">Для слота календаря</small></div><button onclick="closeModal('calendarPickerModal')">×</button></div>
+    <div id="calendarPickerList" class="picker-list"></div>
+  </div>
+</div>
 <div id="toast" class="toast"></div>
 
 <script>
-var state={},systemStatus={};
+var state={},systemStatus={},newsItems=[],calendarPickerTarget=null;
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -305,8 +329,7 @@ var pageRoutes={
   calendarPage:'calendar',
   historyPage:'history',
   modePage:'mode',
-  connectionsPage:'connections',
-  systemPage:'system'
+  connectionsPage:'connections'
 };
 var routePages=Object.fromEntries(Object.keys(pageRoutes).map(function(id){return [pageRoutes[id],id]}));
 function goPage(id,options){
@@ -316,7 +339,7 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',connectionsPage:'Подключения',systemPage:'Статус системы'};
+  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
@@ -325,6 +348,7 @@ function goPage(id,options){
 }
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
+  if(route==='system')route='connections';
   goPage(routePages[route]||'homePage',{fromHash:true,instant:true});
 }
 window.goPage=goPage;
@@ -332,7 +356,7 @@ window.addEventListener('hashchange',openRouteFromHash);
 el('menuToggle').addEventListener('click',function(){setDrawer(true)});
 el('drawerClose').addEventListener('click',function(){setDrawer(false)});
 el('drawerBackdrop').addEventListener('click',function(){setDrawer(false)});
-document.addEventListener('keydown',function(e){if(e.key==='Escape')setDrawer(false)});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeModal('previewModal');closeModal('calendarPickerModal');setDrawer(false)}});
 document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListener('click',function(){goPage(btn.dataset.page)})});
 
 async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
@@ -347,23 +371,25 @@ function render(){
   var qp=state.queuePolicy||{};
   if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Автоочистка: автоматические новости старше '+(qp.queueMaxAgeHours||12)+' ч удаляются. В очереди хранится максимум '+(qp.queueMaxAutoItems||20)+' свежих автоматических новостей. Материалы источника старше '+(qp.articleMaxAgeHours||24)+' ч не добавляются. Ручные черновики не удаляются.';
   el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){
+    var parts=postParts(q);
     var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
     var media=q.videoUrl?'<div class="queue-placeholder">▶ Видео</div>':effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt="">':'<div class="queue-placeholder">AI</div>';
     var freshnessDate=q.articlePublishedAt||q.createdAt||'';
     var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
     var ms=q.mediaStatus||(effectiveImage?(q.generatedImageUrl?'generated':'found'):(q.videoUrl?'found':'missing'));
     var mcls=(ms==='found'?'found':ms==='generated'?'generated':'bad');
-    return '<article class="queue-card">'+
+    return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+
         '<div class="queue-copy">'+
-          '<div class="queue-head"><div class="queue-title">'+esc(q.title||'Без заголовка')+'</div><span class="news-status queued">В очереди</span></div>'+
+          '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status queued">В очереди</span></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
-          '<div class="queue-text">'+esc(q.text||'')+'</div>'+
-          (q.sourceUrl?'<div class="queue-meta"><a class="link" href="'+esc(q.sourceUrl)+'" target="_blank">Открыть источник</a></div>':'')+
+          '<div class="queue-text">'+esc(parts.text||'')+'</div>'+
+          '<div class="card-click-note">Нажмите на карточку, чтобы посмотреть пост полностью</div>'+
+          (q.sourceUrl?'<div class="queue-meta"><a class="link" href="'+esc(q.sourceUrl)+'" target="_blank" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+
         '</div>'+
       '</div>'+
-      '<div class="queue-actions"><button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button><button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button></div>'+
+      '<div class="queue-actions" onclick="event.stopPropagation()"><button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button><button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button><button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button></div>'+
     '</article>';
   }).join(''):'<div class="empty">Очередь пока пустая</div>';
   el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,20).map(function(h){return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+'</div></div></div>'}).join(''):'<div class="empty">Публикаций пока нет</div>';
@@ -403,6 +429,7 @@ function renderCalendar(){
   if(!el('calendarSlots'))return;
   var schedule=state.publicationSchedule||{};
   var slots=Array.isArray(schedule.slots)?schedule.slots:[];
+  var assignments=schedule.assignments||{};
   var today=moscowDateKey(new Date());
   if(!calendarDateKey)calendarDateKey=today;
   var isToday=calendarDateKey===today;
@@ -418,33 +445,99 @@ function renderCalendar(){
   var used=new Set();
   var nowMin=isToday?moscowMinutes(new Date()):0;
   var todayCmp=calendarDateKey.localeCompare(today);
+  var dayAssignments=assignments[calendarDateKey]||{};
 
-  el('calendarSlots').innerHTML=slots.map(function(slot,idx){
-    var hm=String(slot.time||'00:00').split(':').map(Number), slotMin=(hm[0]||0)*60+(hm[1]||0);
+  el('calendarSlots').innerHTML=slots.map(function(slot){
+    var slotMin=Number(String(slot.time||'00:00').split(':')[0]||0)*60+Number(String(slot.time||'00:00').split(':')[1]||0);
     var match=-1,best=9999;
     dayHistory.forEach(function(h,hi){
       if(used.has(hi))return;
       var dist=Math.abs(historyMoscowMinutes(h)-slotMin);
       if(dist<best&&dist<=55){best=dist;match=hi;}
     });
-    var status='',cls='',meta='';
+
+    var queueId=dayAssignments[slot.time]||'';
+    var item=(state.queue||[]).find(function(q){return q.id===queueId});
+    var title='',meta='',status='',cls='',actions='';
+
     if(match>=0){
-      used.add(match);status='Опубликовано';cls='done';meta=(dayHistory[match].title||'Публикация');
+      used.add(match);
+      title=dayHistory[match].title||'Опубликованная новость';
+      meta='Опубликовано '+safeDate(dayHistory[match].publishedAt);
+      status='Опубликовано';cls='done';
+    }else if(item){
+      var pp=postParts(item);
+      title=pp.title||'Без заголовка';
+      meta=(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
+      status='Запланировано';cls='wait';
+      actions='<div class="calendar-slot-actions"><button onclick="openQueuePreview(\''+item.id+'\')">Посмотреть</button><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Заменить</button><button class="danger" onclick="calendarRemove(\''+calendarDateKey+'\',\''+slot.time+'\')">Убрать</button></div>';
     }else if(slot.kind==='reserve'){
-      status='Резерв';cls='reserve';meta='Используем только для сильной новости';
+      title='Новость не выбрана';
+      meta='Резерв используем только для сильной новости';
+      status='Резерв';cls='reserve';
+      actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Выбрать новость</button></div>';
     }else if(todayCmp<0 || (isToday&&slotMin<nowMin-55)){
-      status='Пропущено';cls='missed';meta='В этом окне публикации не было';
+      title='Публикации не было';
+      meta='Окно уже прошло';
+      status='Пропущено';cls='missed';
     }else{
-      status='Запланировано';cls='wait';meta='Плановое окно публикации';
+      title='Новость не выбрана';
+      meta='Выберите из свежей очереди';
+      status='Свободно';cls='wait';
+      actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Выбрать</button><button onclick="calendarAuto(\''+calendarDateKey+'\',\''+slot.time+'\')">Автоподбор</button></div>';
     }
-    return '<div class="calendar-slot"><div class="calendar-time">'+esc(slot.time)+'</div><div><div class="calendar-slot-title">'+esc(slot.label||(slot.kind==='reserve'?'Резервное окно':'Плановая публикация'))+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div><span class="slot-chip '+cls+'">'+status+'</span></div>';
+
+    return '<div class="calendar-slot"><div class="calendar-time">'+esc(slot.time)+'</div><div class="calendar-slot-main"><div class="calendar-slot-top"><div><div class="calendar-news-title">'+esc(title)+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div><span class="slot-chip '+cls+'">'+status+'</span></div>'+actions+'</div></div>';
   }).join('');
 
   var autoOn=systemStatus&&systemStatus.details&&systemStatus.details.scheduler&&String(systemStatus.details.scheduler.detail||'').includes('включена');
-  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'Цель — '+(schedule.targetPerDay||10)+' постов в сутки: '+regular+' плановых + до '+reserve+' резервных. Жёсткий максимум — '+(schedule.maxPerDay||12)+'. Минимальный интервал — '+(schedule.minIntervalMinutes||60)+' минут.';
+  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'Цель — '+(schedule.targetPerDay||10)+' постов в сутки: '+regular+' плановых + до '+reserve+' резервных. Каждое окно теперь привязано к конкретной новости.';
+  renderDashboardCalendar();
 }
 function moveCalendarDay(delta){if(!calendarDateKey)calendarDateKey=moscowDateKey(new Date());calendarDateKey=addCalendarDays(calendarDateKey,delta);renderCalendar()}
 function calendarToday(){calendarDateKey=moscowDateKey(new Date());renderCalendar()}
+
+function renderDashboardCalendar(){
+  if(!el('dashCalendar'))return;
+  var schedule=state.publicationSchedule||{},slots=Array.isArray(schedule.slots)?schedule.slots:[];
+  var today=moscowDateKey(new Date()),assignments=(schedule.assignments&&schedule.assignments[today])||{};
+  var now=moscowMinutes(new Date());
+  var upcoming=slots.filter(function(s){return Number(s.time.slice(0,2))*60+Number(s.time.slice(3,5))>=now-30}).slice(0,4);
+  if(!upcoming.length)upcoming=slots.slice(-4);
+  el('dashCalendar').innerHTML=upcoming.map(function(slot){
+    var q=(state.queue||[]).find(function(x){return x.id===assignments[slot.time]});
+    var pp=q?postParts(q):null;
+    var title=pp?pp.title:(slot.kind==='reserve'?'Резервное окно':'Новость не выбрана');
+    var meta=q?((q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):(slot.kind==='reserve'?'Только для сильной новости':'Откройте календарь для выбора');
+    return '<div class="dash-slot" onclick="'+(q?('openQueuePreview(\''+q.id+'\')'):"goPage('calendarPage')")+'"><div class="dash-slot-time">'+esc(slot.time)+'</div><div class="dash-slot-title">'+esc(title)+'</div><div class="dash-slot-meta">'+esc(meta)+'</div></div>';
+  }).join('');
+}
+async function calendarRemove(date,time){
+  await api('/api/calendar/remove',{method:'POST',body:JSON.stringify({date:date,time:time})});
+  toast('Новость убрана из календаря');await load();renderCalendar();
+}
+async function calendarAuto(date,time){
+  await api('/api/calendar/auto',{method:'POST',body:JSON.stringify({date:date,time:time})});
+  toast('Подобрана свежая новость');await load();renderCalendar();
+}
+function openCalendarPicker(date,time){
+  calendarPickerTarget={date:date,time:time};
+  el('pickerMeta').textContent=prettyCalendarDate(date)+' · '+time;
+  var schedule=state.publicationSchedule||{},assigned=new Set();
+  Object.keys(schedule.assignments||{}).forEach(function(d){Object.values(schedule.assignments[d]||{}).forEach(function(id){if(id)assigned.add(id)})});
+  var items=(state.queue||[]).filter(function(q){return q&&q.id}).slice().sort(function(a,b){return new Date(b.createdAt||0)-new Date(a.createdAt||0)});
+  el('calendarPickerList').innerHTML=items.length?items.map(function(q){
+    var pp=postParts(q),img=q.generatedImageUrl||q.imageUrl||'',used=assigned.has(q.id);
+    var thumb=img?'<img class="picker-thumb" src="'+esc(img)+'" alt="">':'<div class="picker-thumb queue-placeholder">AI</div>';
+    return '<div class="picker-item">'+thumb+'<div><div class="picker-title">'+esc(pp.title||'Без заголовка')+'</div><div class="picker-meta">'+esc(q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')+(used?' · уже в календаре':'')+'</div></div><button class="'+(used?'':'primary')+'" onclick="assignCalendar(\''+q.id+'\')">'+(used?'Перенести сюда':'Выбрать')+'</button></div>';
+  }).join(''):'<div class="empty">В очереди нет свежих новостей</div>';
+  openModal('calendarPickerModal');
+}
+async function assignCalendar(queueId){
+  if(!calendarPickerTarget)return;
+  await api('/api/calendar/assign',{method:'POST',body:JSON.stringify({date:calendarPickerTarget.date,time:calendarPickerTarget.time,queueId:queueId})});
+  closeModal('calendarPickerModal');toast('Новость поставлена в календарь');await load();renderCalendar();
+}
 
 function renderDashboard(){
   var activeSources=(state.sources||[]).filter(function(x){return x.enabled}).length;
@@ -464,6 +557,7 @@ function renderDashboard(){
   (state.queue||[]).slice(0,3).forEach(function(q){feed.push({title:'В очереди · '+(q.title||'Черновик'),meta:(q.text||'').slice(0,120)})});
   (state.history||[]).slice(0,4).forEach(function(h){feed.push({title:'Опубликовано · '+(h.title||'Пост'),meta:new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId})});
   el('dashFeed').innerHTML=feed.length?feed.slice(0,5).map(function(x){return '<div class="feed-row"><b>'+esc(x.title)+'</b><small>'+esc(x.meta)+'</small></div>'}).join(''):'<div class="empty">Пока нет событий</div>';
+  renderDashboardCalendar();
 }
 function dashboardFromStatus(s){
   var sm=s.summary||{},details=s.details||{};
@@ -478,7 +572,7 @@ function dashboardFromStatus(s){
     ['База данных',details.supabase],
     ['Автопланировщик',details.scheduler]
   ];
-  el('dashPipeline').innerHTML=stages.map(function(pair){var x=pair[1]||{state:'missing',description:'Не настроено'};var label=x.state==='connected'?'Готово':x.state==='partial'?'Частично':'Не готово';return '<div class="pipeline-row"><div class="row"><b>'+esc(pair[0])+'</b><span class="chip">'+label+'</span></div><small>'+esc(x.description||'')+'</small></div>'}).join('');
+  if(el('dashPipeline'))el('dashPipeline').innerHTML=stages.map(function(pair){var x=pair[1]||{state:'missing',description:'Не настроено'};var label=x.state==='connected'?'Готово':x.state==='partial'?'Частично':'Не готово';return '<div class="pipeline-row"><div class="row"><b>'+esc(pair[0])+'</b><span class="chip">'+label+'</span></div><small>'+esc(x.description||'')+'</small></div>'}).join('');
 }
 async function renderConnections(force){
   var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;
@@ -530,21 +624,67 @@ async function loadCollectorStatus(){
       : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. До '+(s.maxItemsPerRun||5)+' новых материалов за цикл. Новости старше '+(s.articleMaxAgeHours||24)+' ч отсекаются, очередь очищается через '+(s.queueMaxAgeHours||12)+' ч и хранит максимум '+(s.queueMaxAutoItems||20)+' свежих материалов. Медиа обязательно. Автопубликация '+(s.autoPublishEnabled?('не чаще 1 поста в '+(s.autoPublishMinIntervalMinutes||30)+' мин'):'отключена — новые новости идут в очередь')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
   }catch(e){el('collectorInfo').textContent='Ошибка статуса: '+e.message}
 }
+function postParts(item){
+  var title=String(item&&item.title||'').trim();
+  var text=String(item&&item.text||'').trim();
+  if(text&&text[0]==='{'){
+    try{
+      var parsed=JSON.parse(text);
+      if(parsed&&typeof parsed==='object'){
+        if(parsed.title)title=String(parsed.title);
+        if(parsed.text)text=String(parsed.text);
+      }
+    }catch(e){}
+  }
+  return {title:title,text:text};
+}
+function openModal(id){var m=el(id);if(m){m.classList.add('open');document.body.style.overflow='hidden'}}
+function closeModal(id){var m=el(id);if(m)m.classList.remove('open');if(!document.querySelector('.modal-backdrop.open'))document.body.style.overflow=''}
+function modalBackdropClose(event,id){if(event.target===el(id))closeModal(id)}
+function renderPreview(item){
+  var pp=postParts(item),img=item.generatedImageUrl||item.imageUrl||'',video=item.videoUrl||'';
+  var media=video?'<video class="telegram-video" controls preload="metadata" src="'+esc(video)+'"></video>':img?'<img class="telegram-media" src="'+esc(img)+'" alt="">':'';
+  var source=item.sourceUrl||item.originalUrl||'';
+  el('previewMeta').textContent=(item.sourceName||'AI Pulse')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
+  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><p>'+esc(pp.text||'Нет текста')+'</p>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">AI Pulse · предпросмотр</div></div></div></div>';
+  openModal('previewModal');
+}
+function openQueuePreview(id){
+  var item=(state.queue||[]).find(function(q){return q.id===id});
+  if(item)renderPreview(item);
+}
+function openNewsPreview(id){
+  var n=(newsItems||[]).find(function(x){return x.id===id});
+  if(!n)return;
+  var md=n.metadata||{};
+  renderPreview({
+    title:n.rewrittenTitle||n.originalTitle||'Без заголовка',
+    text:n.rewrittenText||n.originalText||'',
+    sourceName:n.sourceName||'Источник',
+    sourceUrl:n.originalUrl||'',
+    imageUrl:md.imageUrl||'',
+    generatedImageUrl:md.generatedImageUrl||'',
+    videoUrl:md.videoUrl||'',
+    articlePublishedAt:md.articlePublishedAt||n.detectedAt
+  });
+}
+
 async function loadNews(){
   try{
     var j=await api('/api/news?limit=50');
-    var items=j.items||[];
-    el('newsList').innerHTML=items.length?items.map(function(n){
-      var title=n.rewrittenTitle||n.originalTitle||'Без заголовка';
-      var body=(n.rewrittenText||'').slice(0,320);
+    newsItems=j.items||[];
+    el('newsList').innerHTML=newsItems.length?newsItems.map(function(n){
+      var pp=postParts({title:n.rewrittenTitle||n.originalTitle,text:n.rewrittenText||n.originalText});
+      var title=pp.title||'Без заголовка';
+      var body=(pp.text||'').slice(0,320);
       var status=n.status||'discovered';
       var md=n.metadata||{};
       var image=md.generatedImageUrl||md.imageUrl||'';
       var media=md.videoUrl?'<div class="news-placeholder">▶ Видео</div>':image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">AI</div>';
       var ms=md.mediaStatus||(image?(md.generatedImageUrl?'generated':'found'):(md.videoUrl?'found':'missing'));
       var mcls=(ms==='found'?'found':ms==='generated'?'generated':'bad');
-      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span></div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+(body?'<p>'+esc(body)+'</p>':'')+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'">Открыть источник</a></div>':'')+'</div>';
-      return '<article class="news-card"><div class="news-card-body">'+media+main+'</div></article>';
+      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span></div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
+      return '<article class="news-card" onclick="openNewsPreview(\''+n.id+'\')"><div class="news-card-body">'+media+main+'</div></article>';
     }).join(''):'<div class="empty">Пока ничего не найдено. Нажмите «Собрать сейчас».</div>';
   }catch(e){el('newsList').innerHTML='<div class="empty">Ошибка: '+esc(e.message)+'</div>'}
 }
