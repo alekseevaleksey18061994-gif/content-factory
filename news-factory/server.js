@@ -30,7 +30,13 @@ const VK_PUBLISH_ENABLED = String(process.env.VK_PUBLISH_ENABLED || "false").toL
 const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
-const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 5));
+const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 15));
+const DYNAMIC_SLOT_START_HOUR = 8;
+const DYNAMIC_SLOT_END_HOUR = 23;
+const DYNAMIC_SLOT_PREP_MINUTE = 45;
+const DYNAMIC_SLOT_MAX_AGE_HOURS = 4;
+const DYNAMIC_DAILY_TARGET = 10;
+const DYNAMIC_DAILY_MAX = 12;
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
@@ -80,23 +86,25 @@ const defaultState = {
   },
   publicationSchedule: {
     timezone: "Europe/Moscow",
-    targetPerDay: 10,
-    maxPerDay: 12,
+    targetPerDay: DYNAMIC_DAILY_TARGET,
+    maxPerDay: DYNAMIC_DAILY_MAX,
     minIntervalMinutes: 60,
+    strategy: "dynamic-hourly",
+    prepareMinutesBefore: 15,
     assignments: {},
     suppressed: {},
-    slots: [
-      { time: "00:00", kind: "reserve", label: "Резервное окно" },
-      { time: "03:00", kind: "reserve", label: "Резервное окно" },
-      { time: "08:00", kind: "regular", label: "Плановая публикация" },
-      { time: "10:00", kind: "regular", label: "Плановая публикация" },
-      { time: "12:00", kind: "regular", label: "Плановая публикация" },
-      { time: "14:00", kind: "regular", label: "Плановая публикация" },
-      { time: "16:00", kind: "regular", label: "Плановая публикация" },
-      { time: "18:00", kind: "regular", label: "Плановая публикация" },
-      { time: "20:00", kind: "regular", label: "Плановая публикация" },
-      { time: "22:00", kind: "regular", label: "Плановая публикация" }
-    ]
+    slots: Array.from({ length: DYNAMIC_SLOT_END_HOUR - DYNAMIC_SLOT_START_HOUR + 1 }, function(_, i) {
+      const hour = DYNAMIC_SLOT_START_HOUR + i;
+      return { time: String(hour).padStart(2, "0") + ":00", kind: "dynamic", label: "Динамическое окно" };
+    })
+  },
+  dynamicScheduler: {
+    strategy: "dynamic-hourly",
+    prepareMinutesBefore: 15,
+    lastPreparedAt: "",
+    lastPublishedAt: "",
+    lastPublishedSlot: "",
+    lastTickKey: ""
   },
   queue: [],
   newsVisibleAfter: "",
