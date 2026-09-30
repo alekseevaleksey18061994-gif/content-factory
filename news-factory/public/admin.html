@@ -137,8 +137,12 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
       </section>
 
       <section class="page" id="queuePage">
-        <div class="page-head"><div><h2>Очередь</h2><p>Черновики и будущие новости на проверку.</p></div><button onclick="addDraft()">+ Черновик</button></div>
-        <section class="card"><div class="big" id="queueCount">0</div><div id="queue" class="queue-list"></div></section>
+        <div class="page-head"><div><h2>Очередь</h2><p>Только актуальные новости на проверку и ручные черновики.</p></div><button onclick="addDraft()">+ Черновик</button></div>
+        <section class="card">
+          <div class="row"><div><div class="label">Сейчас в очереди</div><div class="big" id="queueCount">0</div></div><span class="chip">Свежие новости</span></div>
+          <div class="notice" id="queuePolicyInfo" style="margin-top:10px">Загружаю правила актуальности…</div>
+          <div id="queue" class="queue-list" style="margin-top:12px"></div>
+        </section>
       </section>
 
       <section class="page" id="newsPage">
@@ -277,6 +281,17 @@ function statusRu(v){
   return map[v]||v||'—';
 }
 function safeDate(v){try{return v?new Date(v).toLocaleString('ru-RU'):''}catch{return ''}}
+function ageRu(v){
+  if(!v)return '';
+  var ms=Date.now()-new Date(v).getTime();
+  if(!Number.isFinite(ms)||ms<0)return '';
+  var min=Math.floor(ms/60000);
+  if(min<60)return min+' мин назад';
+  var h=Math.floor(min/60);
+  if(h<24)return h+' ч назад';
+  return Math.floor(h/24)+' дн назад';
+}
+
 
 function setDrawer(open){el('appSidebar').classList.toggle('mobile-open',!!open);el('drawerBackdrop').classList.toggle('open',!!open);document.body.classList.toggle('drawer-open',!!open)}
 var pageRoutes={
@@ -329,10 +344,13 @@ function render(){
   el('sourceCount').textContent=(state.sources||[]).length;
   el('sources').innerHTML=(state.sources||[]).map(function(s){var group=s.group==='official'?'Официальный источник':s.group==='media'?'СМИ':'Источник';return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="meta">'+group+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включено':'Выключено')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div></div>'}).join('');
   el('queueCount').textContent=(state.queue||[]).length;
+  var qp=state.queuePolicy||{};
+  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Автоочистка: автоматические новости старше '+(qp.queueMaxAgeHours||12)+' ч удаляются. В очереди хранится максимум '+(qp.queueMaxAutoItems||15)+' автоматических новостей. Материалы источника старше '+(qp.articleMaxAgeHours||48)+' ч не добавляются. Ручные черновики не удаляются.';
   el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){
     var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
     var media=q.videoUrl?'<div class="queue-placeholder">▶ Видео</div>':effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt="">':'<div class="queue-placeholder">AI</div>';
-    var meta=(q.sourceName?esc(q.sourceName):'Источник')+(q.createdAt?' · '+safeDate(q.createdAt):'');
+    var freshnessDate=q.articlePublishedAt||q.createdAt||'';
+    var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
     var ms=q.mediaStatus||(effectiveImage?(q.generatedImageUrl?'generated':'found'):(q.videoUrl?'found':'missing'));
     var mcls=(ms==='found'?'found':ms==='generated'?'generated':'bad');
     return '<article class="queue-card">'+
@@ -509,7 +527,7 @@ async function loadCollectorStatus(){
     var lastTime=last&&(last.finishedAt||last.startedAt);
     el('collectorInfo').textContent=s.running
       ? 'Сборщик сейчас работает…'
-      : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. Система ротирует их и обрабатывает до '+(s.maxItemsPerRun||5)+' новых материалов за цикл. Медиа обязательно. Автопубликация '+(s.autoPublishEnabled?('не чаще 1 поста в '+(s.autoPublishMinIntervalMinutes||30)+' мин'):'отключена — новые новости идут в очередь')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
+      : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. До '+(s.maxItemsPerRun||5)+' новых материалов за цикл. Новости старше '+(s.articleMaxAgeHours||48)+' ч отсекаются, очередь очищается через '+(s.queueMaxAgeHours||12)+' ч. Медиа обязательно. Автопубликация '+(s.autoPublishEnabled?('не чаще 1 поста в '+(s.autoPublishMinIntervalMinutes||30)+' мин'):'отключена — новые новости идут в очередь')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
   }catch(e){el('collectorInfo').textContent='Ошибка статуса: '+e.message}
 }
 async function loadNews(){
