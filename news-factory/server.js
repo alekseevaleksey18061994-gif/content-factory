@@ -23,6 +23,9 @@ const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false")
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
 const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 5));
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
+const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 48)));
+const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
+const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 15)));
 const QUEUE_NEWS_TTL_HOURS = Math.max(6, Number(process.env.QUEUE_NEWS_TTL_HOURS || 24));
 const SOURCE_MAX_AGE_HOURS = Math.max(12, Number(process.env.SOURCE_MAX_AGE_HOURS || 24));
 const MAX_AUTO_QUEUE_ITEMS = Math.max(10, Number(process.env.MAX_AUTO_QUEUE_ITEMS || 20));
@@ -64,6 +67,11 @@ const defaultState = {
   mode: "REVIEW",
   sources: structuredClone(CURATED_SOURCES),
   sourceCursor: 0,
+  queuePolicy: {
+    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
+    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
+    queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
+  },
   publicationSchedule: {
     timezone: "Europe/Moscow",
     targetPerDay: 10,
@@ -84,7 +92,7 @@ const defaultState = {
   },
   queue: [],
   history: [],
-  stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0 },
+  stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 },
   migrations: [],
   updatedAt: new Date().toISOString()
 };
@@ -94,6 +102,64 @@ function ensureDataDir() {
   try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
 }
 
+function normalizeDate(value) {
+  if (!value) return "";
+  const d = new Date(String(value).trim());
+  if (!Number.isFinite(d.getTime())) return "";
+  if (d.getTime() > Date.now() + 24 * 60 * 60 * 1000) return "";
+  return d.toISOString();
+}
+
+function pruneQueueItems(targetState) {
+  if (!targetState || !Array.isArray(targetState.queue)) return { removed: 0, expired: 0, overflow: 0 };
+  const cutoff = Date.now() - QUEUE_MAX_AGE_HOURS * 60 * 60 * 1000;
+  let expired = 0;
+  let overflow = 0;
+  const manual = [];
+  const automatic = [];
+
+  for (const item of targetState.queue) {
+    if (!item || !item.newsId) {
+      manual.push(item);
+      continue;
+    }
+    const createdAt = new Date(item.createdAt || 0).getTime();
+    if (createdAt && createdAt < cutoff) {
+      expired += 1;
+      continue;
+    }
+    automatic.push(item);
+  }
+
+  automatic.sort(function(a, b) {
+    return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+  });
+
+  if (automatic.length > QUEUE_MAX_AUTO_ITEMS) {
+    overflow = automatic.length - QUEUE_MAX_AUTO_ITEMS;
+    automatic.length = QUEUE_MAX_AUTO_ITEMS;
+  }
+
+  const kept = automatic.concat(manual);
+  kept.sort(function(a, b) {
+    return new Date(b && b.createdAt || 0).getTime() - new Date(a && a.createdAt || 0).getTime();
+  });
+  targetState.queue = kept;
+
+  const removed = expired + overflow;
+  if (removed) {
+    targetState.stats = targetState.stats || {};
+    targetState.stats.expired = Number(targetState.stats.expired || 0) + removed;
+  }
+  targetState.queuePolicy = {
+    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
+    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
+    queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
+  };
+  return { removed: removed, expired: expired, overflow: overflow };
+}
+
+
 function loadState() {
   ensureDataDir();
   try {
@@ -102,6 +168,8 @@ function loadState() {
     const loaded = Object.assign({}, structuredClone(defaultState), saved);
     loaded.sources = Array.isArray(saved.sources) ? saved.sources : structuredClone(defaultState.sources);
     loaded.migrations = Array.isArray(saved.migrations) ? saved.migrations : [];
+    loaded.stats = Object.assign({ discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 }, saved.stats || {});
+    loaded.queue = Array.isArray(saved.queue) ? saved.queue : [];
 
     const migrationId = "v0.3.2-restore-openai-source";
     if (!loaded.migrations.includes(migrationId)) {
@@ -119,6 +187,14 @@ function loadState() {
       loaded.migrations.push(curatedMigrationId);
     }
 
+    const freshnessMigrationId = "v0.10.0-freshness-engine";
+    if (!loaded.migrations.includes(freshnessMigrationId)) {
+      loaded.queuePolicy = structuredClone(defaultState.queuePolicy);
+      loaded.migrations.push(freshnessMigrationId);
+    }
+
+    pruneQueueItems(loaded);
+
     const scheduleMigrationId = "v0.9.0-publication-calendar";
     if (!loaded.migrations.includes(scheduleMigrationId)) {
       loaded.publicationSchedule = structuredClone(defaultState.publicationSchedule);
@@ -134,6 +210,7 @@ function loadState() {
     fresh.migrations.push("v0.3.2-restore-openai-source");
     fresh.migrations.push("v0.8.0-curated-sources-20");
     fresh.migrations.push("v0.9.0-publication-calendar");
+    fresh.migrations.push("v0.10.0-freshness-engine");
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2), "utf8"); } catch {}
     return fresh;
   }
@@ -148,6 +225,7 @@ let lastCollectorRun = null;
 let snapshotTimer = null;
 
 function saveState() {
+  pruneQueueItems(state);
   state.updatedAt = new Date().toISOString();
   ensureDataDir();
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8");
@@ -292,6 +370,25 @@ function isOlderThanHours(iso, hours) {
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return false;
   return Date.now() - t > hours * 60 * 60 * 1000;
+}
+
+function extractPublishedAt(html) {
+  const source = String(html || "");
+  const patterns = [
+    /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
+    /<meta[^>]+name=["'](?:date|pubdate|publish-date|published_time)["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["'](?:date|pubdate|publish-date|published_time)["'][^>]*>/i,
+    /<time[^>]+datetime=["']([^"']+)["'][^>]*>/i,
+    /["']datePublished["']\s*:\s*["']([^"']+)["']/i
+  ];
+  for (const re of patterns) {
+    const m = source.match(re);
+    if (!m || !m[1]) continue;
+    const normalized = normalizeDate(htmlDecode(m[1]));
+    if (normalized) return normalized;
+  }
+  return "";
 }
 
 function extractMetaImage(html, pageUrl) {
@@ -695,7 +792,8 @@ async function collectOnce(trigger) {
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaError: media.mediaError || "",
-            generatedBy: media.generatedBy || ""
+            generatedBy: media.generatedBy || "",
+            articlePublishedAt: articlePublishedAt || ""
           }
         };
         summary.found += 1;
