@@ -7,6 +7,9 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
 const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(32).toString("hex");
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
+const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
@@ -174,6 +177,113 @@ async function telegramProbe(method, params) {
   }
 }
 
+
+async function openAIModelProbe() {
+  if (!OPENAI_API_KEY) return { ok: false, error: "OPENAI_API_KEY не задан" };
+  const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/models/" + encodeURIComponent(model), {
+        headers: { authorization: "Bearer " + OPENAI_API_KEY },
+        signal: AbortSignal.timeout(7000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (response.ok) return { ok: true, model: model, result: data };
+      lastError = (data && data.error && data.error.message) || ("HTTP " + response.status);
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+  return { ok: false, error: lastError || "OpenAI API недоступен" };
+}
+
+function extractOpenAIText(data) {
+  if (!data) return "";
+  if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text.trim();
+  const chunks = [];
+  for (const item of (data.output || [])) {
+    for (const part of (item.content || [])) {
+      if (part && typeof part.text === "string") chunks.push(part.text);
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+async function callOpenAIRewrite(payload) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY не настроен");
+  const sourceText = String(payload.text || "").trim();
+  if (!sourceText) throw new Error("Нужен исходный текст новости");
+  const title = String(payload.title || "").trim();
+  const sourceUrl = String(payload.sourceUrl || "").trim();
+  const prompt = [
+    "Ты редактор Telegram-канала AI Pulse | Новости нейросетей.",
+    "Перепиши исходную новость на русском языке коротко, точно и без воды.",
+    "Правила:",
+    "- используй только факты из исходного текста;",
+    "- ничего не придумывай: даты, цены, функции, цитаты и цифры нельзя добавлять от себя;",
+    "- если факт выглядит неопределённым, сформулируй осторожно;",
+    "- стиль: современный Telegram, ясный заголовок + 2–5 коротких абзацев;",
+    "- без кликбейта, который искажает смысл;",
+    "- для политических тем сохраняй нейтральный описательный тон без агитации;",
+    "- верни СТРОГО JSON без markdown: {\"title\":\"...\",\"text\":\"...\",\"confidence\":\"high|medium|low\",\"notes\":\"...\"}.",
+    "",
+    "Исходный заголовок: " + (title || "не указан"),
+    "Источник: " + (sourceUrl || "не указан"),
+    "",
+    "Исходный текст:",
+    sourceText
+  ].join("\n");
+
+  const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer " + OPENAI_API_KEY
+        },
+        body: JSON.stringify({
+          model: model,
+          input: prompt,
+          max_output_tokens: 1200
+        }),
+        signal: AbortSignal.timeout(45000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) {
+        lastError = (data && data.error && data.error.message) || ("OpenAI HTTP " + response.status);
+        continue;
+      }
+      const output = extractOpenAIText(data);
+      if (!output) {
+        lastError = "OpenAI вернул пустой ответ";
+        continue;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      } catch {
+        parsed = { title: title || "AI Pulse", text: output, confidence: "medium", notes: "Ответ модели не был JSON" };
+      }
+      const result = {
+        title: String(parsed.title || title || "AI Pulse").trim(),
+        text: String(parsed.text || "").trim(),
+        confidence: ["high","medium","low"].includes(String(parsed.confidence)) ? String(parsed.confidence) : "medium",
+        notes: String(parsed.notes || "").trim(),
+        model: model
+      };
+      if (!result.text) throw new Error("OpenAI не вернул текст новости");
+      return result;
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+  throw new Error(lastError || "Не удалось получить ответ OpenAI");
+}
+
 function hasEnv() {
   for (const key of arguments) if (!process.env[key]) return false;
   return true;
@@ -196,6 +306,7 @@ async function buildSystemStatus(force) {
 
   const botProbe = BOT_TOKEN ? await telegramProbe("getMe") : { ok: false, error: "TELEGRAM_BOT_TOKEN не задан" };
   const chatProbe = BOT_TOKEN && CHANNEL ? await telegramProbe("getChat", { chat_id: CHANNEL }) : { ok: false, error: "Канал или токен не заданы" };
+  const openaiProbe = OPENAI_API_KEY ? await openAIModelProbe() : { ok: false, error: "OPENAI_API_KEY не задан" };
 
   const railwayConnected = Boolean(
     process.env.RAILWAY_PROJECT_ID ||
@@ -243,10 +354,10 @@ async function buildSystemStatus(force) {
       next: ADMIN_UI_PASSWORD ? "" : "Добавить ADMIN_UI_PASSWORD"
     },
     openai: {
-      state: hasEnv("OPENAI_API_KEY") ? "connected" : "missing",
-      description: hasEnv("OPENAI_API_KEY") ? "OpenAI API настроен" : "AI rewrite пока не подключён",
-      detail: hasEnv("OPENAI_API_KEY") ? "Ключ найден в environment" : "OPENAI_API_KEY отсутствует",
-      next: hasEnv("OPENAI_API_KEY") ? "" : "Подключить OpenAI API для переписывания новостей"
+      state: openaiProbe.ok ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
+      description: openaiProbe.ok ? "OpenAI API подключён и модель доступна" : (OPENAI_API_KEY ? "Ключ найден, но API не подтверждён" : "AI rewrite пока не подключён"),
+      detail: openaiProbe.ok ? "Модель: " + openaiProbe.model : String(openaiProbe.error || "OPENAI_API_KEY отсутствует"),
+      next: openaiProbe.ok ? "" : (OPENAI_API_KEY ? "Проверить ключ, доступ к модели и биллинг OpenAI" : "Подключить OpenAI API для переписывания новостей")
     },
     supabase: {
       state: hasEnv("SUPABASE_URL") && (hasEnv("SUPABASE_SERVICE_ROLE_KEY") || hasEnv("SUPABASE_ANON_KEY")) ? "connected" : "missing",
@@ -307,6 +418,8 @@ const server = http.createServer(async function(req, res) {
         service: "news-factory",
         telegramConfigured: Boolean(BOT_TOKEN && CHANNEL),
         uiConfigured: Boolean(ADMIN_UI_PASSWORD),
+        openaiConfigured: Boolean(OPENAI_API_KEY),
+        openaiModel: OPENAI_MODEL,
         version: APP_VERSION
       });
     }
@@ -347,6 +460,20 @@ const server = http.createServer(async function(req, res) {
       const force = url.searchParams.get("refresh") === "1";
       const status = await buildSystemStatus(force);
       return sendJson(res, 200, status);
+    }
+
+    if (req.method === "POST" && p === "/api/ai/test") {
+      const probe = await openAIModelProbe();
+      if (!probe.ok) return sendJson(res, 502, { ok: false, error: probe.error });
+      return sendJson(res, 200, { ok: true, model: probe.model });
+    }
+
+    if (req.method === "POST" && p === "/api/ai/rewrite") {
+      const body = await readJson(req);
+      const result = await callOpenAIRewrite(body);
+      state.stats.rewritten += 1;
+      saveState();
+      return sendJson(res, 200, { ok: true, result: result });
     }
 
     if (req.method === "POST" && p === "/api/mode") {
