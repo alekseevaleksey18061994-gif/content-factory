@@ -20,6 +20,13 @@ const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED |
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst";
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low";
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
+const VK_ACCESS_TOKEN = String(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || "").trim();
+const VK_GROUP_ID = Math.abs(Number(process.env.VK_GROUP_ID || 0)) || 0;
+const VK_OWNER_ID = Number(process.env.VK_OWNER_ID || (VK_GROUP_ID ? -VK_GROUP_ID : 0)) || 0;
+const VK_SCREEN_NAME = String(process.env.VK_SCREEN_NAME || "chtotamai").trim();
+const VK_PUBLIC_URL = String(process.env.VK_PUBLIC_URL || (VK_SCREEN_NAME ? "https://vk.ru/" + VK_SCREEN_NAME : "")).trim();
+const VK_API_VERSION = String(process.env.VK_API_VERSION || "5.199").trim();
+const VK_PUBLISH_ENABLED = String(process.env.VK_PUBLISH_ENABLED || "false").toLowerCase() === "true";
 const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
@@ -998,7 +1005,7 @@ async function collectOnce(trigger) {
           summary.published < 1;
 
         if (canAutoPublish) {
-          const tg = await sendTelegramPost({
+          const tg = await sendMultiPlatformPost({
             title: rewrite.title,
             text: rewrite.text,
             sourceUrl: url,
@@ -1014,6 +1021,7 @@ async function collectOnce(trigger) {
             title: rewrite.title || originalTitle,
             text: postText,
             messageId: tg.message_id,
+            vkPostId: tg.vkPostId || null,
             publishedAt: baseItem.publishedAt,
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
@@ -1310,6 +1318,228 @@ async function sendTelegram(text) {
   });
 }
 
+async function vkApi(method, params) {
+  if (!VK_ACCESS_TOKEN || !VK_GROUP_ID) throw new Error("VK configuration is incomplete");
+  const body = new URLSearchParams();
+  Object.entries(params || {}).forEach(function(entry) {
+    const key = entry[0], value = entry[1];
+    if (value !== undefined && value !== null && value !== "") body.set(key, String(value));
+  });
+  body.set("access_token", VK_ACCESS_TOKEN);
+  body.set("v", VK_API_VERSION);
+  const response = await fetch("https://api.vk.com/method/" + method, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+    signal: AbortSignal.timeout(20000)
+  });
+  const data = await response.json().catch(function(){ return {}; });
+  if (!response.ok || data.error) {
+    const err = data && data.error;
+    throw new Error(err ? ("VK " + err.error_code + ": " + err.error_msg) : ("VK HTTP " + response.status));
+  }
+  return data.response;
+}
+
+function formatVkPost(post) {
+  const title = String(post.title || "").trim();
+  let text = String(post.text || "").trim();
+  text = text
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/^>\s?/gm, "▌ ")
+    .replace(/\n{3,}/g, "\n\n");
+  let out = "";
+  if (title) out += title;
+  if (text) out += (out ? "\n\n" : "") + text;
+  const sourceUrl = String(post.sourceUrl || "").trim();
+  if (sourceUrl) out += (out ? "\n\n" : "") + "Источник: " + sourceUrl;
+  return out.trim();
+}
+
+async function uploadVkWallPhoto(imageUrl) {
+  if (!imageUrl) throw new Error("VK: нет фото для публикации");
+  const uploadServer = await vkApi("photos.getWallUploadServer", { group_id: VK_GROUP_ID });
+  if (!uploadServer || !uploadServer.upload_url) throw new Error("VK: не получен сервер загрузки фото");
+
+  let sourceUrl = String(imageUrl || "").trim();
+  if (sourceUrl.startsWith("/")) sourceUrl = PUBLIC_BASE_URL + sourceUrl;
+  const imageResponse = await fetch(sourceUrl, {
+    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryVK/1.0)" },
+    signal: AbortSignal.timeout(20000)
+  });
+  if (!imageResponse.ok) throw new Error("VK: фото недоступно, HTTP " + imageResponse.status);
+  const bytes = await imageResponse.arrayBuffer();
+  const mime = String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0];
+  const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+  const form = new FormData();
+  form.append("photo", new Blob([bytes], { type: mime }), "news." + ext);
+
+  const uploadResponse = await fetch(uploadServer.upload_url, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30000)
+  });
+  const uploaded = await uploadResponse.json().catch(function(){ return {}; });
+  if (!uploadResponse.ok || !uploaded.server || !uploaded.photo || !uploaded.hash) {
+    throw new Error("VK: загрузка фото не завершена");
+  }
+
+  const saved = await vkApi("photos.saveWallPhoto", {
+    group_id: VK_GROUP_ID,
+    server: uploaded.server,
+    photo: uploaded.photo,
+    hash: uploaded.hash
+  });
+  const photo = Array.isArray(saved) ? saved[0] : (saved && saved.items ? saved.items[0] : null);
+  if (!photo || !photo.id) throw new Error("VK: фото не сохранено");
+  return "photo" + photo.owner_id + "_" + photo.id;
+}
+
+async function publishVkPost(post) {
+  if (!VK_PUBLISH_ENABLED) return null;
+  if (!VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) throw new Error("VK: подключение настроено не полностью");
+
+  let imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
+  if (!imageUrl && GENERATE_COVER_IF_MISSING) {
+    const generated = await generateNewsCover({
+      id: post.id || newId("vk_cover"),
+      title: post.title || "Что там у ИИ?",
+      text: post.text || "",
+      sourceName: post.sourceName || "VK"
+    });
+    imageUrl = String(generated.url || "").trim();
+  }
+  if (!imageUrl) throw new Error("VK: публикация без изображения запрещена");
+
+  const attachment = await uploadVkWallPhoto(imageUrl);
+  const result = await vkApi("wall.post", {
+    owner_id: VK_OWNER_ID,
+    from_group: 1,
+    message: formatVkPost(post),
+    attachments: attachment
+  });
+  return result || null;
+}
+
+async function sendMultiPlatformPost(post) {
+  const tg = await sendTelegramPost(post);
+  if (VK_PUBLISH_ENABLED && VK_ACCESS_TOKEN && VK_GROUP_ID && VK_OWNER_ID) {
+    try {
+      const vk = await publishVkPost(post);
+      if (vk && vk.post_id) tg.vkPostId = vk.post_id;
+    } catch (error) {
+      console.warn("VK publish failed:", error.message);
+      tg.vkError = String(error.message || error);
+    }
+  }
+  return tg;
+}
+
+async function vkProbe() {
+  if (!VK_ACCESS_TOKEN || !VK_GROUP_ID) return { ok: false, error: "VK_ACCESS_TOKEN или VK_GROUP_ID не задан" };
+  try {
+    const response = await vkApi("groups.getById", {
+      group_id: VK_GROUP_ID,
+      fields: "members_count"
+    });
+    const group = Array.isArray(response) ? response[0] : (response && Array.isArray(response.groups) ? response.groups[0] : null);
+    if (!group) return { ok: false, error: "VK не вернул данные сообщества" };
+    return { ok: true, group: group };
+  } catch (error) {
+    return { ok: false, error: String(error && error.message || error) };
+  }
+}
+
+async function fetchVkAnalytics() {
+  if (!VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
+    return {
+      connected: false,
+      available: false,
+      platform: "vk",
+      totals: { posts: 0, views: 0, likes: 0, comments: 0, reposts: 0, subscribers: null, avgViews: 0, engagementRate: 0 },
+      posts: [],
+      note: "VK пока не подключён полностью."
+    };
+  }
+
+  try {
+    const groupResponse = await vkApi("groups.getById", {
+      group_id: VK_GROUP_ID,
+      fields: "members_count"
+    });
+    const group = Array.isArray(groupResponse) ? groupResponse[0] : (groupResponse && Array.isArray(groupResponse.groups) ? groupResponse.groups[0] : null);
+    const wall = await vkApi("wall.get", {
+      owner_id: VK_OWNER_ID,
+      count: 100,
+      filter: "owner"
+    });
+    const items = wall && Array.isArray(wall.items) ? wall.items : [];
+    const posts = items.map(function(item) {
+      const views = Number(item && item.views && item.views.count || 0);
+      const likes = Number(item && item.likes && item.likes.count || 0);
+      const comments = Number(item && item.comments && item.comments.count || 0);
+      const reposts = Number(item && item.reposts && item.reposts.count || 0);
+      const rawText = String(item && item.text || "").trim();
+      const title = rawText.split(/\n+/)[0].slice(0, 140) || ("Публикация #" + item.id);
+      return {
+        postId: item.id,
+        title: title,
+        publishedAt: item.date ? new Date(Number(item.date) * 1000).toISOString() : "",
+        views: views,
+        likes: likes,
+        comments: comments,
+        reposts: reposts,
+        url: "https://vk.ru/wall" + VK_OWNER_ID + "_" + item.id
+      };
+    });
+
+    const totals = posts.reduce(function(acc, post) {
+      acc.views += post.views;
+      acc.likes += post.likes;
+      acc.comments += post.comments;
+      acc.reposts += post.reposts;
+      return acc;
+    }, { views: 0, likes: 0, comments: 0, reposts: 0 });
+    const avgViews = posts.length ? Math.round(totals.views / posts.length) : 0;
+    const engagementRate = totals.views > 0
+      ? Number((((totals.likes + totals.comments + totals.reposts) / totals.views) * 100).toFixed(2))
+      : 0;
+
+    return {
+      connected: true,
+      available: true,
+      platform: "vk",
+      groupId: VK_GROUP_ID,
+      groupName: group && group.name ? group.name : "Что там у ИИ?",
+      groupUrl: VK_PUBLIC_URL,
+      checkedAt: new Date().toISOString(),
+      totals: {
+        posts: posts.length,
+        views: totals.views,
+        likes: totals.likes,
+        comments: totals.comments,
+        reposts: totals.reposts,
+        subscribers: group && Number.isFinite(Number(group.members_count)) ? Number(group.members_count) : null,
+        avgViews: avgViews,
+        engagementRate: engagementRate
+      },
+      posts: posts,
+      note: "Статистика получена напрямую через VK API."
+    };
+  } catch (error) {
+    return {
+      connected: true,
+      available: false,
+      platform: "vk",
+      error: String(error && error.message || error),
+      totals: { posts: 0, views: 0, likes: 0, comments: 0, reposts: 0, subscribers: null, avgViews: 0, engagementRate: 0 },
+      posts: [],
+      note: "VK подключён, но статистика пока недоступна через выданные права."
+    };
+  }
+}
+
 
 let statusCache = { at: 0, value: null };
 let analyticsCache = { at: 0, value: null };
@@ -1463,19 +1693,12 @@ async function buildPlatformAnalytics(force) {
   const now = Date.now();
   if (!force && analyticsCache.value && now - analyticsCache.at < 5 * 60 * 1000) return analyticsCache.value;
   const telegram = await fetchTelegramAnalytics(force);
-  const vkConfigured = Boolean(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || process.env.VK_GROUP_ID || process.env.VK_OWNER_ID);
+  const vk = await fetchVkAnalytics();
   const value = {
     ok: true,
     generatedAt: new Date().toISOString(),
     telegram: telegram,
-    vk: {
-      connected: vkConfigured,
-      available: false,
-      platform: "vk",
-      totals: { posts: 0, views: null, likes: null, comments: null, reposts: null, subscribers: null, avgViews: null, engagementRate: null },
-      posts: [],
-      note: vkConfigured ? "VK подключён частично: модуль аналитики ждёт идентификатор сообщества и права статистики." : "VK пока не подключён. После подключения сообщества здесь появятся просмотры, лайки, комментарии, репосты и статистика по каждому посту."
-    }
+    vk: vk
   };
   analyticsCache = { at: now, value: value };
   return value;
@@ -1662,6 +1885,7 @@ async function buildSystemStatus(force) {
   const botProbe = BOT_TOKEN ? await telegramProbe("getMe") : { ok: false, error: "TELEGRAM_BOT_TOKEN не задан" };
   const chatProbe = BOT_TOKEN && CHANNEL ? await telegramProbe("getChat", { chat_id: CHANNEL }) : { ok: false, error: "Канал или токен не заданы" };
   const openaiProbe = OPENAI_API_KEY ? await openAIModelProbe() : { ok: false, error: "OPENAI_API_KEY не задан" };
+  const vkStatusProbe = VK_ACCESS_TOKEN && VK_GROUP_ID ? await vkProbe() : { ok: false, error: "VK не настроен" };
 
   const railwayConnected = Boolean(
     process.env.RAILWAY_PROJECT_ID ||
@@ -1731,10 +1955,12 @@ async function buildSystemStatus(force) {
       next: dbReady ? "" : "Проверить PostgreSQL в Railway"
     },
     vk: {
-      state: hasEnv("VK_ACCESS_TOKEN") && hasEnv("VK_OWNER_ID") ? "connected" : "missing",
-      description: hasEnv("VK_ACCESS_TOKEN") ? "VK частично настроен" : "Автопубликация VK ещё не подключена",
-      detail: hasEnv("VK_OWNER_ID") ? "Owner ID найден" : "",
-      next: hasEnv("VK_ACCESS_TOKEN") && hasEnv("VK_OWNER_ID") ? "" : "Подключить VK API"
+      state: vkStatusProbe.ok ? "connected" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
+      description: vkStatusProbe.ok ? "VK подключён через API" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
+      detail: vkStatusProbe.ok && vkStatusProbe.group
+        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)))
+        : String(vkStatusProbe.error || ""),
+      next: vkStatusProbe.ok ? "" : "Проверить права ключа сообщества VK"
     },
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
@@ -1995,7 +2221,7 @@ const server = http.createServer(async function(req, res) {
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить фото или видео для публикации" });
       }
-      const result = await sendTelegramPost({
+      const result = await sendMultiPlatformPost({
         title: String(body.title || "").trim(),
         text: text,
         sourceUrl: String(body.sourceUrl || "").trim(),
@@ -2008,6 +2234,7 @@ const server = http.createServer(async function(req, res) {
         title: String(body.title || "Публикация"),
         text: text,
         messageId: result.message_id,
+        vkPostId: result.vkPostId || null,
         publishedAt: new Date().toISOString()
       });
       state.history = state.history.slice(0, 100);
@@ -2151,7 +2378,7 @@ const server = http.createServer(async function(req, res) {
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить фото или видео. Публикация заблокирована." });
       }
-      const result = await sendTelegramPost({
+      const result = await sendMultiPlatformPost({
         title: item.title,
         text: item.text,
         sourceUrl: item.sourceUrl || "",
@@ -2167,6 +2394,7 @@ const server = http.createServer(async function(req, res) {
         title: item.title,
         text: item.text,
         messageId: result.message_id,
+        vkPostId: result.vkPostId || null,
         publishedAt: new Date().toISOString()
       });
       state.history = state.history.slice(0, 100);
@@ -2191,7 +2419,7 @@ const server = http.createServer(async function(req, res) {
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить медиа" });
       }
-      const result = await sendTelegramPost({
+      const result = await sendMultiPlatformPost({
         title: String(body.title || "").trim(),
         text: text,
         sourceUrl: String(body.sourceUrl || "").trim(),
