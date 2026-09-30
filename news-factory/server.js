@@ -28,6 +28,7 @@ const defaultState = {
   queue: [],
   history: [],
   stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0 },
+  migrations: [],
   updatedAt: new Date().toISOString()
 };
 
@@ -40,9 +41,25 @@ function loadState() {
   try {
     const raw = fs.readFileSync(STATE_FILE, "utf8");
     const saved = JSON.parse(raw);
-    return Object.assign({}, structuredClone(defaultState), saved);
+    const loaded = Object.assign({}, structuredClone(defaultState), saved);
+    loaded.sources = Array.isArray(saved.sources) ? saved.sources : structuredClone(defaultState.sources);
+    loaded.migrations = Array.isArray(saved.migrations) ? saved.migrations : [];
+
+    const migrationId = "v0.3.2-restore-openai-source";
+    if (!loaded.migrations.includes(migrationId)) {
+      const hasOpenAi = loaded.sources.some(function(src) {
+        return src && (src.id === "openai" || String(src.url || "").includes("openai.com/news"));
+      });
+      if (!hasOpenAi) loaded.sources.unshift(structuredClone(defaultState.sources[0]));
+      loaded.migrations.push(migrationId);
+      fs.writeFileSync(STATE_FILE, JSON.stringify(loaded, null, 2), "utf8");
+    }
+    return loaded;
   } catch {
-    return structuredClone(defaultState);
+    const fresh = structuredClone(defaultState);
+    fresh.migrations.push("v0.3.2-restore-openai-source");
+    try { fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2), "utf8"); } catch {}
+    return fresh;
   }
 }
 
