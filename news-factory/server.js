@@ -13,6 +13,8 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
+const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
+const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
 const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 5));
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
 const PORT = Number(process.env.PORT || 3000);
@@ -395,7 +397,16 @@ async function collectOnce(trigger) {
 
         const postText = (rewrite.title ? rewrite.title + "\n\n" : "") + rewrite.text + "\n\nИсточник: " + url;
 
-        if (state.mode === "AUTO") {
+        const lastPublished = (state.history || []).find(function(x){ return x && x.publishedAt; });
+        const lastPublishedAt = lastPublished ? new Date(lastPublished.publishedAt).getTime() : 0;
+        const enoughTimePassed = !lastPublishedAt || (Date.now() - lastPublishedAt) >= AUTO_PUBLISH_MIN_INTERVAL_MINUTES * 60 * 1000;
+        const canAutoPublish =
+          state.mode === "AUTO" &&
+          AUTO_PUBLISH_ENABLED &&
+          enoughTimePassed &&
+          summary.published < 1;
+
+        if (canAutoPublish) {
           const tg = await sendTelegram(postText);
           baseItem.status = "published";
           baseItem.telegramMessageId = tg.message_id;
@@ -413,6 +424,11 @@ async function collectOnce(trigger) {
           summary.published += 1;
         } else {
           baseItem.status = "queued";
+          baseItem.metadata.autoPublishBlocked = state.mode === "AUTO" ? (
+            !AUTO_PUBLISH_ENABLED ? "disabled" :
+            !enoughTimePassed ? "rate_limited" :
+            "run_limit"
+          ) : "review_mode";
           state.queue.unshift({
             id: newId("q"),
             title: rewrite.title || originalTitle,
@@ -464,9 +480,6 @@ function startCollectorScheduler() {
   collectorTimer = setInterval(function(){
     collectOnce("scheduler").catch(function(error){ console.error("Collector run failed:", error.message); });
   }, everyMs);
-  setTimeout(function(){
-    collectOnce("startup").catch(function(error){ console.error("Startup collector failed:", error.message); });
-  }, 30000);
   console.log("Collector scheduler started every " + POLL_INTERVAL_MINUTES + " min");
 }
 
@@ -776,7 +789,9 @@ async function buildSystemStatus(force) {
     scheduler: {
       state: collectorTimer ? "connected" : (COLLECTOR_ENABLED ? "partial" : "missing"),
       description: collectorTimer ? "24/7 scheduler запущен" : "Scheduler ещё не стартовал",
-      detail: collectorTimer ? "Проверка каждые " + POLL_INTERVAL_MINUTES + " минут" : "Режим: " + state.mode,
+      detail: collectorTimer
+        ? ("Проверка каждые " + POLL_INTERVAL_MINUTES + " минут · автопубликация " + (AUTO_PUBLISH_ENABLED ? "включена" : "выключена"))
+        : "Режим: " + state.mode,
       next: collectorTimer ? "" : "Перезапустить сервис после включения collector"
     }
   };
@@ -871,6 +886,8 @@ const server = http.createServer(async function(req, res) {
         running: collectorRunning,
         intervalMinutes: POLL_INTERVAL_MINUTES,
         maxItemsPerRun: MAX_ITEMS_PER_RUN,
+        autoPublishEnabled: AUTO_PUBLISH_ENABLED,
+        autoPublishMinIntervalMinutes: AUTO_PUBLISH_MIN_INTERVAL_MINUTES,
         dbReady: dbReady,
         lastRun: lastCollectorRun,
         runs: runs
