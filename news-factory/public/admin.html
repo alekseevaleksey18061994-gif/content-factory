@@ -581,7 +581,7 @@ button,.quick button,.quick a{
 <div class="app">
   <aside class="side" id="appSidebar">
     <button class="mobile-close" id="drawerClose" type="button">×</button>
-    <div class="side-brand"><div class="side-mark">AI</div><div><b>News Factory</b><small>AI Pulse · <span id="sidebarVersion">v—</span></small></div></div>
+    <div class="side-brand"><div class="side-mark">AI</div><div><b>News Factory</b><small>Что там у ИИ? · <span id="sidebarVersion">v—</span></small></div></div>
 
     <div class="side-group">
       <div class="side-title">Основное</div>
@@ -608,10 +608,10 @@ button,.quick button,.quick a{
 
     <div class="side-spacer"></div>
     <div class="side-group">
-      <a class="nav" href="https://t.me/aipulserussia" target="_blank"><span class="ico">✈</span><b>Открыть Telegram</b></a>
+      <a class="nav" href="https://t.me/chtotamai" target="_blank"><span class="ico">✈</span><b>Открыть Telegram</b></a>
       <button class="nav" onclick="logout()"><span class="ico">↪</span><b>Выйти</b></button>
     </div>
-    <div class="side-status"><span class="online" id="sideStatusDot"></span><div><b>Система запущена</b><small id="sideStatusText">@aipulserussia</small></div></div>
+    <div class="side-status"><span class="online" id="sideStatusDot"></span><div><b>Система запущена</b><small id="sideStatusText">@chtotamai</small></div></div>
   </aside>
   <div class="drawer-backdrop" id="drawerBackdrop"></div>
 
@@ -620,7 +620,7 @@ button,.quick button,.quick a{
       <div class="top">
         <div class="top-left">
           <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">☰</button>
-          <div class="brand"><div class="mark">AI</div><div><h1 id="topTitle">News Factory</h1><div class="sub">AI Pulse · <span id="topVersion">v—</span></div></div></div>
+          <div class="brand"><div class="mark">AI</div><div><h1 id="topTitle">News Factory</h1><div class="sub">Что там у ИИ? · <span id="topVersion">v—</span></div></div></div>
         </div>
         <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
       </div>
@@ -628,8 +628,8 @@ button,.quick button,.quick a{
       <section class="page active" id="homePage">
         <div class="hero">
           <div class="hero-main">
-            <div class="hero-channel"><div class="hero-icon">AI</div><div><h2>AI Pulse</h2><p>@aipulserussia · новости нейросетей и технологий</p></div></div>
-            <div class="actions"><button class="primary" onclick="goPage('publishPage')">Новый пост</button><a class="link" href="https://t.me/aipulserussia" target="_blank">Открыть Telegram</a></div>
+            <div class="hero-channel"><div class="hero-icon">AI</div><div><h2>Что там у ИИ?</h2><p>@chtotamai · новости нейросетей и технологий</p></div></div>
+            <div class="actions"><button class="primary" onclick="goPage('publishPage')">Новый пост</button><a class="link" href="https://t.me/chtotamai" target="_blank">Открыть Telegram</a></div>
           </div>
           <div class="hero-meta"><span class="chip" id="dashMode">Режим —</span><span class="chip" id="dashSystem">Система —</span><span class="chip" id="dashLastPost">Последний пост —</span></div>
         </div>
@@ -665,7 +665,7 @@ button,.quick button,.quick a{
             <button onclick="goPage('aiPage')">AI-редактор</button>
             <button onclick="goPage('queuePage')">Открыть очередь</button>
             <button onclick="goPage('sourcesPage')">Источники</button>
-            <a href="https://t.me/aipulserussia" target="_blank">Открыть канал</a>
+            <a href="https://t.me/chtotamai" target="_blank">Открыть канал</a>
           </div>
         </section>
 
@@ -707,7 +707,7 @@ button,.quick button,.quick a{
 
       <section class="page" id="aiPage">
         <div class="page-head">
-          <div><h2>AI-редактор</h2><p>Переписывает исходную новость в стиль AI Pulse без добавления выдуманных фактов.</p></div>
+          <div><h2>AI-редактор</h2><p>Переписывает исходную новость в живой стиль канала «Что там у ИИ?» без добавления выдуманных фактов.</p></div>
           <button onclick="testOpenAI()">Проверить OpenAI</button>
         </div>
         <div class="ai-layout">
@@ -716,7 +716,7 @@ button,.quick button,.quick a{
             <input id="aiTitle" placeholder="Исходный заголовок — необязательно">
             <input id="aiSourceUrl" style="margin-top:8px" placeholder="Ссылка на источник — необязательно">
             <textarea id="aiSourceText" style="margin-top:8px" placeholder="Вставь сюда исходный текст новости…"></textarea>
-            <button class="primary" id="aiRewriteBtn" style="margin-top:8px;width:100%" onclick="rewriteAI()">✦ Переписать для AI Pulse</button>
+            <button class="primary" id="aiRewriteBtn" style="margin-top:8px;width:100%" onclick="rewriteAI()">✦ Переписать в стиле канала</button>
             <div class="notice" id="aiRewriteStatus" style="margin-top:10px">Модель использует только переданный текст и не должна добавлять факты от себя.</div>
           </section>
           <section class="card ai-result">
@@ -741,8 +741,8 @@ button,.quick button,.quick a{
       </section>
 
       <section class="page" id="publishPage">
-        <div class="page-head"><div><h2>Публикация</h2><p>Ручной пост в AI Pulse.</p></div></div>
-        <section class="card"><textarea id="publishText" placeholder="Напиши текст поста…"></textarea><button class="primary" style="margin-top:8px;width:100%" onclick="publishNow()">Опубликовать в Telegram</button><div class="notice" style="margin-top:10px">Через @AIPulsePublisherBot → @aipulserussia. Если фото/видео не указано, система сама сгенерирует обложку перед публикацией.</div></section>
+        <div class="page-head"><div><h2>Публикация</h2><p>Ручной пост в канал «Что там у ИИ?».</p></div></div>
+        <section class="card"><textarea id="publishText" placeholder="Напиши текст поста…"></textarea><button class="primary" style="margin-top:8px;width:100%" onclick="publishNow()">Опубликовать в Telegram</button><div class="notice" style="margin-top:10px">Через @AIPulsePublisherBot → @chtotamai. Если фото/видео не указано, система сама сгенерирует обложку перед публикацией.</div></section>
       </section>
 
       <section class="page" id="statsPage">
@@ -754,7 +754,7 @@ button,.quick button,.quick a{
 
         <section class="platform-analytics telegram-analytics card" style="margin-top:14px">
           <div class="platform-head">
-            <div><span class="platform-icon">✈</span><div><h3>Telegram</h3><p id="tgAnalyticsSubtitle">@aipulserussia · загружаю статистику…</p></div></div>
+            <div><span class="platform-icon">✈</span><div><h3>Telegram</h3><p id="tgAnalyticsSubtitle">@chtotamai · загружаю статистику…</p></div></div>
             <span class="chip" id="tgAnalyticsStatus">Проверка…</span>
           </div>
           <div class="platform-metrics">
@@ -792,7 +792,7 @@ button,.quick button,.quick a{
       </section>
 
       <section class="page" id="calendarPage">
-        <div class="page-head"><div><h2>Календарь публикаций</h2><p>План AI Pulse на 24 часа по московскому времени.</p></div><span class="chip">Москва · UTC+3</span></div>
+        <div class="page-head"><div><h2>Календарь публикаций</h2><p>План канала «Что там у ИИ?» на 24 часа по московскому времени.</p></div><span class="chip">Москва · UTC+3</span></div>
         <section class="card">
           <div class="calendar-toolbar">
             <div class="calendar-day-nav">
@@ -1330,9 +1330,9 @@ function renderPreview(item){
   var pp=postParts(item),img=item.generatedImageUrl||item.imageUrl||'',video=item.videoUrl||'';
   var media=video?'<video class="telegram-video" controls preload="metadata" src="'+esc(video)+'"></video>':img?'<img class="telegram-media" src="'+esc(img)+'" alt="">':'';
   var source=item.sourceUrl||item.originalUrl||'';
-  el('previewMeta').textContent=(item.sourceName||'AI Pulse')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
+  el('previewMeta').textContent=(item.sourceName||'Что там у ИИ?')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
   var body=editorialBodyHtml(pp.text||'Нет текста');
-  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">AI Pulse · предпросмотр</div></div></div></div>';
+  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">Что там у ИИ? · предпросмотр</div></div></div></div>';
   openModal('previewModal');
 }
 function openQueuePreview(id){
@@ -1420,7 +1420,7 @@ async function rewriteAI(){
     status.textContent='Ошибка: '+e.message;
     toast(e.message);
   }finally{
-    btn.disabled=false;btn.textContent='✦ Переписать для AI Pulse';
+    btn.disabled=false;btn.textContent='✦ Переписать в стиле канала';
   }
 }
 function aiPostText(){
