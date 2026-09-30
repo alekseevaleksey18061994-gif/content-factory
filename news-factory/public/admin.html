@@ -28,10 +28,12 @@ button{border:1px solid #303849;background:var(--panel2);color:var(--text);borde
 .connections{display:grid;gap:14px}.conn-group{border:1px solid #242c39;border-radius:16px;background:#0b1016;overflow:hidden}.conn-group-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;background:#111722;border-bottom:1px solid #242c39}.conn-group-head span{display:flex;align-items:center;gap:9px;min-width:0}.conn-group-icon{width:28px;height:28px;border-radius:9px;background:#172033;color:#9db5ff;display:grid;place-items:center;font-size:13px}.conn-group-head b{font-size:13px}.conn-group-head small{color:var(--muted);font-size:10px}.conn-group-count{flex:0 0 auto;border:1px solid #303849;border-radius:999px;padding:4px 8px;color:#aeb7c7;font-size:10px}.conn-list{padding:0 12px}.conn{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 2px;border-top:1px solid #202733}.conn:first-child{border-top:0}.conn-left{display:flex;align-items:flex-start;gap:10px;min-width:0}.conn-dot{width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:#59655f;margin-top:4px}.conn-dot.on{background:var(--green);box-shadow:0 0 14px rgba(75,208,139,.65)}.conn-dot.partial{background:var(--amber);box-shadow:0 0 12px rgba(255,190,85,.45)}.conn b{font-size:13px}.conn small{color:var(--muted);font-size:11px;display:block;margin-top:3px;line-height:1.35}.conn-note{color:#aeb7c7!important}.conn-next{color:#8090a8!important}.status{flex:0 0 auto;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:800;border:1px solid #303849}.status.done{color:var(--green);border-color:rgba(75,208,139,.28);background:rgba(75,208,139,.08)}.status.work{color:var(--amber);border-color:rgba(255,190,85,.28);background:rgba(255,190,85,.08)}.status.wait{color:#9aa4b3}
 .system-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.system-box{border:1px solid var(--line);background:#0d1016;border-radius:13px;padding:13px}.system-box b{display:block;font-size:20px}.system-box small{display:block;color:var(--muted);font-size:10px;margin-top:4px}.system-box.good b{color:var(--green)}.system-box.warn b{color:var(--amber)}.system-box.muted b{color:#9aa4b3}
 input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:white;border-radius:12px;padding:12px;outline:none}textarea{min-height:138px;resize:vertical}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.source,.queueItem,.hist{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px 0;border-top:1px solid #232a36}.source-toggle{min-width:122px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;padding:8px 11px;font-weight:800}.source-toggle .switch-knob{width:18px;height:18px;border-radius:50%;background:#7d8797;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.source-toggle.on{color:#dffff0;border-color:rgba(75,208,139,.38);background:rgba(75,208,139,.12)}.source-toggle.on .switch-knob{background:var(--green);box-shadow:0 0 12px rgba(75,208,139,.45)}.source-toggle.off{color:#a9b2c1;background:#111722}.source-toggle b{font-size:11px}.source:first-child,.queueItem:first-child,.hist:first-child{border-top:0}.name{font-weight:700}.url,.meta{font-size:12px;color:var(--muted);word-break:break-all;margin-top:3px;line-height:1.4}.chip{display:inline-block;border:1px solid #303849;border-radius:99px;padding:4px 8px;font-size:11px;color:var(--muted)}.empty{color:var(--muted);padding:14px 0}.notice{font-size:13px;color:#98a2b3;line-height:1.45}.toast{position:fixed;left:calc(50% + var(--side)/2);bottom:26px;transform:translateX(-50%) translateY(110px);background:#fff;color:#0a0c10;padding:12px 16px;border-radius:12px;font-weight:750;transition:.25s;z-index:80;box-shadow:0 14px 40px #0008}.toast.show{transform:translateX(-50%) translateY(0)}
+.calendar-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.calendar-day-nav{display:flex;align-items:center;gap:8px}.calendar-day-title{font-size:15px;font-weight:850;min-width:170px;text-align:center}.calendar-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.calendar-summary-box{background:#0d1016;border:1px solid #222937;border-radius:14px;padding:13px}.calendar-summary-box b{display:block;font-size:22px}.calendar-summary-box span{display:block;color:var(--muted);font-size:11px;margin-top:4px}.calendar-slots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.calendar-slot{border:1px solid #252d3a;background:#0d1317;border-radius:15px;padding:13px;display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:12px;align-items:center}.calendar-time{font-size:22px;font-weight:900;letter-spacing:-.02em}.calendar-slot-title{font-size:13px;font-weight:800}.calendar-slot-meta{font-size:10px;color:var(--muted);margin-top:4px}.slot-chip{border:1px solid #303849;border-radius:999px;padding:5px 8px;font-size:9px;font-weight:850;white-space:nowrap}.slot-chip.done{color:var(--green);border-color:rgba(75,208,139,.3);background:rgba(75,208,139,.08)}.slot-chip.wait{color:#9db5ff;border-color:rgba(157,181,255,.28)}.slot-chip.reserve{color:var(--amber);border-color:rgba(255,190,85,.28);background:rgba(255,190,85,.06)}.slot-chip.missed{color:#ff8d94;border-color:rgba(255,107,115,.28)}.calendar-note{margin-top:12px;padding:12px;border:1px solid #263043;background:#111722;border-radius:13px;color:#aeb7c7;font-size:12px;line-height:1.5}
 @media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.dash-two,.ai-layout{grid-template-columns:1fr}.quick{grid-template-columns:repeat(2,1fr)}.collector-head{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:900px){
   .side{transform:translateX(-105%);width:min(86vw,320px);box-shadow:24px 0 70px rgba(0,0,0,.5)}.side.mobile-open{transform:translateX(0)}.drawer-backdrop.open{display:block}.mobile-close{display:grid;place-items:center}.main{margin-left:0}.menu-toggle{display:grid;place-items:center}.shell{padding:14px}.span8,.span7,.span6,.span5,.span4{grid-column:span 12}.stats,.system-grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.top{align-items:flex-start}.health{margin-top:8px}.stack{align-items:stretch;flex-direction:column}.toast{left:50%}body.drawer-open{overflow:hidden}.conn{align-items:flex-start}.status{margin-top:1px}.hero-main{align-items:flex-start;flex-direction:column}.conn-group-head{align-items:flex-start}.conn-group-count{margin-top:2px}
 }
+@media(max-width:700px){.calendar-summary{grid-template-columns:repeat(2,1fr)}.calendar-slots{grid-template-columns:1fr}.calendar-slot{grid-template-columns:62px minmax(0,1fr) auto}.calendar-time{font-size:19px}.calendar-day-title{min-width:0}.calendar-toolbar{align-items:flex-start}.calendar-day-nav{width:100%;justify-content:space-between}}
 @media(max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.quick{grid-template-columns:1fr 1fr}.page-head{align-items:flex-start;flex-direction:column}.health{display:none}.hero h2{font-size:22px}.hero-icon{width:48px;height:48px}.news-card-body,.queue-card-main{grid-template-columns:1fr}.news-thumb,.queue-thumb,.news-placeholder,.queue-placeholder{width:100%;height:170px}.queue-head{align-items:flex-start}.queue-actions{display:grid;grid-template-columns:minmax(0,1fr) auto}.queue-actions .publish{width:100%}.queue-actions .remove{min-width:88px}.news-card-head{gap:8px}.news-status{font-size:10px}}
 </style>
 </head>
@@ -54,6 +56,7 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
     <div class="side-group">
       <div class="side-title">Контроль</div>
       <button class="nav" data-page="statsPage"><span class="ico">↗</span><b>Статистика</b></button>
+      <button class="nav" data-page="calendarPage"><span class="ico">▦</span><b>Календарь публикаций</b></button>
       <button class="nav" data-page="historyPage"><span class="ico">◫</span><b>История</b></button>
       <button class="nav" data-page="modePage"><span class="ico">⚙</span><b>Режим работы</b></button>
     </div>
@@ -203,6 +206,28 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
         <section class="card"><div class="stats"><div class="stat"><b id="s_discovered">0</b><span>Найдено</span></div><div class="stat"><b id="s_rewritten">0</b><span>Переписано</span></div><div class="stat"><b id="s_published">0</b><span>Опубликовано</span></div><div class="stat"><b id="s_skipped">0</b><span>Пропущено</span></div></div></section>
       </section>
 
+      <section class="page" id="calendarPage">
+        <div class="page-head"><div><h2>Календарь публикаций</h2><p>План AI Pulse на 24 часа по московскому времени.</p></div><span class="chip">Москва · UTC+3</span></div>
+        <section class="card">
+          <div class="calendar-toolbar">
+            <div class="calendar-day-nav">
+              <button onclick="moveCalendarDay(-1)">←</button>
+              <div class="calendar-day-title" id="calendarDayTitle">Сегодня</div>
+              <button onclick="moveCalendarDay(1)">→</button>
+            </div>
+            <button onclick="calendarToday()">Сегодня</button>
+          </div>
+          <div class="calendar-summary">
+            <div class="calendar-summary-box"><b id="calendarTarget">10</b><span>Цель в сутки</span></div>
+            <div class="calendar-summary-box"><b id="calendarPublished">0</b><span>Опубликовано</span></div>
+            <div class="calendar-summary-box"><b id="calendarRegular">8</b><span>Плановых окон</span></div>
+            <div class="calendar-summary-box"><b id="calendarReserve">2</b><span>Резервных окон</span></div>
+          </div>
+          <div id="calendarSlots" class="calendar-slots"></div>
+          <div class="calendar-note" id="calendarNote">Автопубликация сейчас выключена. Календарь показывает утверждённый план: 8 плановых публикаций + до 2 резервных сильных новостей, максимум 12 постов за сутки.</div>
+        </section>
+      </section>
+
       <section class="page" id="historyPage">
         <div class="page-head"><div><h2>История</h2><p>Последние публикации канала.</p></div></div>
         <section class="card"><div id="history"></div></section>
@@ -262,6 +287,7 @@ var pageRoutes={
   queuePage:'queue',
   publishPage:'publish',
   statsPage:'stats',
+  calendarPage:'calendar',
   historyPage:'history',
   modePage:'mode',
   connectionsPage:'connections',
@@ -275,11 +301,12 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',historyPage:'История',modePage:'Режим работы',connectionsPage:'Подключения',systemPage:'Статус системы'};
+  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',connectionsPage:'Подключения',systemPage:'Статус системы'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
   if(id==='newsPage'){loadNews();loadCollectorStatus();}
+  if(id==='calendarPage'){renderCalendar();}
 }
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
@@ -323,7 +350,84 @@ function render(){
   }).join(''):'<div class="empty">Очередь пока пустая</div>';
   el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,20).map(function(h){return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+'</div></div></div>'}).join(''):'<div class="empty">Публикаций пока нет</div>';
   renderDashboard();
+  renderCalendar();
 }
+var calendarDateKey=null;
+function moscowDateKey(date){
+  var parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date||new Date());
+  var m={};parts.forEach(function(p){m[p.type]=p.value});
+  return m.year+'-'+m.month+'-'+m.day;
+}
+function moscowMinutes(date){
+  var parts=new Intl.DateTimeFormat('en-US',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date||new Date());
+  var m={};parts.forEach(function(p){m[p.type]=p.value});
+  return Number(m.hour||0)*60+Number(m.minute||0);
+}
+function prettyCalendarDate(key){
+  var p=String(key||'').split('-').map(Number);
+  if(p.length!==3)return key||'';
+  return new Date(Date.UTC(p[0],p[1]-1,p[2],12)).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});
+}
+function addCalendarDays(key,delta){
+  var p=String(key).split('-').map(Number);
+  var d=new Date(Date.UTC(p[0],p[1]-1,p[2]+delta,12));
+  return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0')+'-'+String(d.getUTCDate()).padStart(2,'0');
+}
+function historyMoscowKey(h){
+  if(!h||!h.publishedAt)return '';
+  return moscowDateKey(new Date(h.publishedAt));
+}
+function historyMoscowMinutes(h){
+  if(!h||!h.publishedAt)return -1;
+  return moscowMinutes(new Date(h.publishedAt));
+}
+function renderCalendar(){
+  if(!el('calendarSlots'))return;
+  var schedule=state.publicationSchedule||{};
+  var slots=Array.isArray(schedule.slots)?schedule.slots:[];
+  var today=moscowDateKey(new Date());
+  if(!calendarDateKey)calendarDateKey=today;
+  var isToday=calendarDateKey===today;
+  el('calendarDayTitle').textContent=(isToday?'Сегодня · ':'')+prettyCalendarDate(calendarDateKey);
+  el('calendarTarget').textContent=schedule.targetPerDay||10;
+  var regular=slots.filter(function(x){return x.kind==='regular'}).length;
+  var reserve=slots.filter(function(x){return x.kind==='reserve'}).length;
+  el('calendarRegular').textContent=regular;
+  el('calendarReserve').textContent=reserve;
+
+  var dayHistory=(state.history||[]).filter(function(h){return historyMoscowKey(h)===calendarDateKey});
+  el('calendarPublished').textContent=dayHistory.length;
+  var used=new Set();
+  var nowMin=isToday?moscowMinutes(new Date()):0;
+  var todayCmp=calendarDateKey.localeCompare(today);
+
+  el('calendarSlots').innerHTML=slots.map(function(slot,idx){
+    var hm=String(slot.time||'00:00').split(':').map(Number), slotMin=(hm[0]||0)*60+(hm[1]||0);
+    var match=-1,best=9999;
+    dayHistory.forEach(function(h,hi){
+      if(used.has(hi))return;
+      var dist=Math.abs(historyMoscowMinutes(h)-slotMin);
+      if(dist<best&&dist<=55){best=dist;match=hi;}
+    });
+    var status='',cls='',meta='';
+    if(match>=0){
+      used.add(match);status='Опубликовано';cls='done';meta=(dayHistory[match].title||'Публикация');
+    }else if(slot.kind==='reserve'){
+      status='Резерв';cls='reserve';meta='Используем только для сильной новости';
+    }else if(todayCmp<0 || (isToday&&slotMin<nowMin-55)){
+      status='Пропущено';cls='missed';meta='В этом окне публикации не было';
+    }else{
+      status='Запланировано';cls='wait';meta='Плановое окно публикации';
+    }
+    return '<div class="calendar-slot"><div class="calendar-time">'+esc(slot.time)+'</div><div><div class="calendar-slot-title">'+esc(slot.label||(slot.kind==='reserve'?'Резервное окно':'Плановая публикация'))+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div><span class="slot-chip '+cls+'">'+status+'</span></div>';
+  }).join('');
+
+  var autoOn=systemStatus&&systemStatus.details&&systemStatus.details.scheduler&&String(systemStatus.details.scheduler.detail||'').includes('включена');
+  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'Цель — '+(schedule.targetPerDay||10)+' постов в сутки: '+regular+' плановых + до '+reserve+' резервных. Жёсткий максимум — '+(schedule.maxPerDay||12)+'. Минимальный интервал — '+(schedule.minIntervalMinutes||60)+' минут.';
+}
+function moveCalendarDay(delta){if(!calendarDateKey)calendarDateKey=moscowDateKey(new Date());calendarDateKey=addCalendarDays(calendarDateKey,delta);renderCalendar()}
+function calendarToday(){calendarDateKey=moscowDateKey(new Date());renderCalendar()}
+
 function renderDashboard(){
   var activeSources=(state.sources||[]).filter(function(x){return x.enabled}).length;
   var today=new Date().toDateString();
