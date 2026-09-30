@@ -147,7 +147,7 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
             <div class="collector-box"><b id="collectorEnabled">—</b><small>Collector</small></div>
             <div class="collector-box"><b id="collectorInterval">—</b><small>Интервал</small></div>
             <div class="collector-box"><b id="collectorDb">—</b><small>PostgreSQL</small></div>
-            <div class="collector-box"><b id="collectorLast">—</b><small>Последний запуск</small></div>
+            <div class="collector-box"><b id="collectorAuto">—</b><small>Автопубликация</small></div>
           </div>
           <div class="notice" id="collectorInfo" style="margin-top:12px">Загружаю статус collector…</div>
         </section>
@@ -364,11 +364,13 @@ async function loadCollectorStatus(){
     el('collectorEnabled').textContent=s.enabled?'Включён':'Выключен';
     el('collectorInterval').textContent=(s.intervalMinutes||'—')+' мин';
     el('collectorDb').textContent=s.dbReady?'Подключён':'Нет';
+    el('collectorAuto').textContent=s.autoPublishEnabled?'Включена':'Выключена';
     var last=s.lastRun;
     if(!last&&Array.isArray(s.runs)&&s.runs.length)last=s.runs[0];
     var lastTime=last&&(last.finishedAt||last.startedAt);
-    el('collectorLast').textContent=lastTime?new Date(lastTime).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Нет';
-    el('collectorInfo').textContent=s.running?'Collector сейчас работает…':'24/7 worker активен. За один запуск: до '+(s.maxItemsPerRun||'—')+' новых новостей.';
+    el('collectorInfo').textContent=s.running
+      ? 'Collector сейчас работает…'
+      : '24/7 worker: до '+(s.maxItemsPerRun||'—')+' новостей за проход. Автопубликация '+(s.autoPublishEnabled?('не чаще 1 поста в '+(s.autoPublishMinIntervalMinutes||30)+' мин'):'отключена — новые новости идут в очередь')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
   }catch(e){el('collectorInfo').textContent='Ошибка статуса: '+e.message}
 }
 async function loadNews(){
