@@ -742,7 +742,7 @@ button,.quick button,.quick a{
 
       <section class="page" id="publishPage">
         <div class="page-head"><div><h2>Публикация</h2><p>Ручной пост в канал «Что там у ИИ?».</p></div></div>
-        <section class="card"><textarea id="publishText" placeholder="Напиши текст поста…"></textarea><button class="primary" style="margin-top:8px;width:100%" onclick="publishNow()">Опубликовать в Telegram</button><div class="notice" style="margin-top:10px">Через @AIPulsePublisherBot → @chtotamai. Если фото/видео не указано, система сама сгенерирует обложку перед публикацией.</div></section>
+        <section class="card"><textarea id="publishText" placeholder="Напиши текст поста…"></textarea><button class="primary" style="margin-top:8px;width:100%" onclick="publishNow()">Опубликовать в Telegram</button><div class="notice" id="publishBotNotice" style="margin-top:10px">Telegram-бот → @chtotamai. Если фото/видео не указано, система сама подготовит медиа перед публикацией.</div></section>
       </section>
 
       <section class="page" id="statsPage">
@@ -1242,6 +1242,11 @@ async function renderConnections(force){
   el('statusConnected').textContent=sm.connected==null?'—':sm.connected;el('statusPartial').textContent=sm.partial==null?'—':sm.partial;el('statusMissing').textContent=sm.missing==null?'—':sm.missing;el('statusMode').textContent=statusRu(s.mode||state.mode);
   el('statusCheckedAt').textContent=s.checkedAt?'Проверено '+new Date(s.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Проверено';
   el('statusRuntime').textContent='Версия '+version+' · Service: '+(s.service||'news-factory-api')+' · Environment: '+(s.environment||'production')+' · '+(sm.connected||0)+' из '+(sm.total||0)+' подключений готовы';
+  var botInfo=details.telegramBot||{};
+  if(el('publishBotNotice')){
+    var botLabel=botInfo.username?'@'+botInfo.username:(botInfo.displayName||'Telegram-бот');
+    el('publishBotNotice').innerHTML='Через '+(botInfo.username?'<a class="link" target="_blank" href="https://t.me/'+esc(botInfo.username)+'">'+esc(botLabel)+'</a>':esc(botLabel))+' → <a class="link" target="_blank" href="https://t.me/chtotamai">@chtotamai</a>. Если фото/видео не указано, система сама подготовит медиа перед публикацией.';
+  }
   el('topStatusText').textContent=(sm.connected||0)+'/'+(sm.total||0)+' подключено';el('sideStatusText').textContent=(sm.connected||0)+' подключено · '+(sm.partial||0)+' частично';
   el('sideStatusDot').classList.toggle('warn',(sm.missing||0)>0||(sm.partial||0)>0);
   dashboardFromStatus(s);
