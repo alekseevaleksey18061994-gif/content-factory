@@ -1160,8 +1160,10 @@ function renderPlatformAnalytics(data){
   }).join(''):'<div class="analytics-empty">Пока нет доступной статистики по опубликованным Telegram-постам.</div>';
 
   var vk=data.vk||{},vt=vk.totals||{};
-  el('vkAnalyticsStatus').textContent=vk.available?'Данные получены':(vk.connected?'Ожидает статистику':'Не подключено');
-  el('vkAnalyticsSubtitle').textContent=vk.connected?'Сообщество подключено':'VK пока не подключён';
+  el('vkAnalyticsStatus').textContent=vk.available?'Данные получены':(vk.connected?'Подключено, нет данных':'Не подключено');
+  el('vkAnalyticsSubtitle').innerHTML=vk.connected
+    ? ((vk.groupUrl?'<a class="link" target="_blank" href="'+esc(vk.groupUrl)+'">'+esc(vk.groupName||'Что там у ИИ?')+'</a>':esc(vk.groupName||'Сообщество подключено'))+(vk.checkedAt?' · обновлено '+new Date(vk.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):''))
+    : 'VK пока не подключён';
   analyticsMetric('vkPosts',vt.posts);
   analyticsMetric('vkViews',vt.views);
   analyticsMetric('vkLikes',vt.likes);
@@ -1170,15 +1172,15 @@ function renderPlatformAnalytics(data){
   analyticsMetric('vkSubscribers',vt.subscribers);
   analyticsMetric('vkAvgViews',vt.avgViews);
   el('vkEngagement').textContent=vt.engagementRate==null?'—':Number(vt.engagementRate).toFixed(2)+'%';
-  el('vkAnalyticsNote').textContent=vk.note||'';
+  el('vkAnalyticsNote').textContent=vk.error?('VK: '+vk.error):(vk.note||'');
   var vkPosts=vk.posts||[];
   el('vkPostStats').innerHTML=vkPosts.length?vkPosts.map(function(p){
-    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||'VK пост')+'</b></div>'+
+    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||'VK пост')+'</b>'+(p.url?'<a href="'+esc(p.url)+'" target="_blank">Открыть пост #'+esc(p.postId||'')+'</a>':'')+'</div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.views||0)+'</b><span>Просмотры</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.likes||0)+'</b><span>Лайки</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.comments||0)+'</b><span>Комментарии</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.reposts||0)+'</b><span>Репосты</span></div></div>';
-  }).join(''):'<div class="analytics-empty">После подключения VK здесь появится активность по каждому посту отдельно.</div>';
+  }).join(''):'<div class="analytics-empty">В сообществе пока нет доступных постов для статистики.</div>';
 }
 
 function renderDashboard(){
@@ -1245,7 +1247,7 @@ async function renderConnections(force){
   var botInfo=details.telegramBot||{};
   if(el('publishBotNotice')){
     var botLabel=botInfo.username?'@'+botInfo.username:(botInfo.displayName||'Telegram-бот');
-    el('publishBotNotice').innerHTML='Через '+(botInfo.username?'<a class="link" target="_blank" href="https://t.me/'+esc(botInfo.username)+'">'+esc(botLabel)+'</a>':esc(botLabel))+' → <a class="link" target="_blank" href="https://t.me/chtotamai">@chtotamai</a>. Если фото/видео не указано, система сама подготовит медиа перед публикацией.';
+    el('publishBotNotice').innerHTML='Публикация → <a class="link" target="_blank" href="https://t.me/chtotamai">Telegram @chtotamai</a> + <a class="link" target="_blank" href="https://vk.ru/chtotamai">VK Что там у ИИ?</a>. Если фото/видео не указано, система сама подготовит медиа.';
   }
   el('topStatusText').textContent=(sm.connected||0)+'/'+(sm.total||0)+' подключено';el('sideStatusText').textContent=(sm.connected||0)+' подключено · '+(sm.partial||0)+' частично';
   el('sideStatusDot').classList.toggle('warn',(sm.missing||0)>0||(sm.partial||0)>0);
