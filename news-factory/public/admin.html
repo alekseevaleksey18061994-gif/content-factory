@@ -21,11 +21,12 @@ button{border:1px solid #303849;background:var(--panel2);color:var(--text);borde
 .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.kpi{background:#0d1016;border:1px solid #222937;border-radius:14px;padding:14px;min-height:92px}.kpi b{display:block;font-size:24px}.kpi span{display:block;color:var(--muted);font-size:11px;margin-top:5px}.kpi small{display:block;color:#708096;font-size:10px;margin-top:4px}
 .dash-two{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:14px}.panel-title{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}.panel-title h3{margin:0;font-size:16px}.panel-title p{margin:3px 0 0;color:var(--muted);font-size:11px}.feed-row,.attention-row,.pipeline-row{padding:11px 0;border-top:1px solid #232a36}.feed-row:first-child,.attention-row:first-child,.pipeline-row:first-child{border-top:0}.feed-row b,.attention-row b,.pipeline-row b{font-size:13px}.feed-row small,.attention-row small,.pipeline-row small{display:block;color:var(--muted);font-size:11px;margin-top:4px;line-height:1.4}.att-badge{display:inline-block;padding:4px 7px;border-radius:999px;font-size:9px;font-weight:800;margin-left:6px}.att-warn{background:rgba(255,190,85,.1);color:var(--amber);border:1px solid rgba(255,190,85,.2)}.att-bad{background:rgba(255,107,115,.1);color:#ff8d94;border:1px solid rgba(255,107,115,.2)}
 .quick{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.quick button,.quick a{display:flex;align-items:center;justify-content:center;min-height:54px;text-align:center;text-decoration:none;border:1px solid #303849;background:#111722;color:#fff;border-radius:13px;font-size:12px;font-weight:750}
+.ai-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.ai-result{min-height:100%;display:flex;flex-direction:column}.ai-result textarea{min-height:260px}.ai-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.ai-meta{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.confidence-high{color:var(--green)}.confidence-medium{color:var(--amber)}.confidence-low{color:#ff8d94}.ai-empty{display:grid;place-items:center;min-height:280px;color:var(--muted);text-align:center;padding:24px;border:1px dashed #303849;border-radius:14px;background:#0b0f15}.ai-source textarea{min-height:300px}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.stat{background:#0d1016;border:1px solid #222937;border-radius:13px;padding:13px}.stat b{font-size:22px;display:block}.stat span{color:var(--muted);font-size:12px}
 .connections{display:grid;gap:14px}.conn-group{border:1px solid #242c39;border-radius:16px;background:#0b1016;overflow:hidden}.conn-group-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;background:#111722;border-bottom:1px solid #242c39}.conn-group-head span{display:flex;align-items:center;gap:9px;min-width:0}.conn-group-icon{width:28px;height:28px;border-radius:9px;background:#172033;color:#9db5ff;display:grid;place-items:center;font-size:13px}.conn-group-head b{font-size:13px}.conn-group-head small{color:var(--muted);font-size:10px}.conn-group-count{flex:0 0 auto;border:1px solid #303849;border-radius:999px;padding:4px 8px;color:#aeb7c7;font-size:10px}.conn-list{padding:0 12px}.conn{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 2px;border-top:1px solid #202733}.conn:first-child{border-top:0}.conn-left{display:flex;align-items:flex-start;gap:10px;min-width:0}.conn-dot{width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:#59655f;margin-top:4px}.conn-dot.on{background:var(--green);box-shadow:0 0 14px rgba(75,208,139,.65)}.conn-dot.partial{background:var(--amber);box-shadow:0 0 12px rgba(255,190,85,.45)}.conn b{font-size:13px}.conn small{color:var(--muted);font-size:11px;display:block;margin-top:3px;line-height:1.35}.conn-note{color:#aeb7c7!important}.conn-next{color:#8090a8!important}.status{flex:0 0 auto;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:800;border:1px solid #303849}.status.done{color:var(--green);border-color:rgba(75,208,139,.28);background:rgba(75,208,139,.08)}.status.work{color:var(--amber);border-color:rgba(255,190,85,.28);background:rgba(255,190,85,.08)}.status.wait{color:#9aa4b3}
 .system-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.system-box{border:1px solid var(--line);background:#0d1016;border-radius:13px;padding:13px}.system-box b{display:block;font-size:20px}.system-box small{display:block;color:var(--muted);font-size:10px;margin-top:4px}.system-box.good b{color:var(--green)}.system-box.warn b{color:var(--amber)}.system-box.muted b{color:#9aa4b3}
 input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:white;border-radius:12px;padding:12px;outline:none}textarea{min-height:138px;resize:vertical}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.source,.queueItem,.hist{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px 0;border-top:1px solid #232a36}.source-toggle{min-width:122px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;padding:8px 11px;font-weight:800}.source-toggle .switch-knob{width:18px;height:18px;border-radius:50%;background:#7d8797;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.source-toggle.on{color:#dffff0;border-color:rgba(75,208,139,.38);background:rgba(75,208,139,.12)}.source-toggle.on .switch-knob{background:var(--green);box-shadow:0 0 12px rgba(75,208,139,.45)}.source-toggle.off{color:#a9b2c1;background:#111722}.source-toggle b{font-size:11px}.source:first-child,.queueItem:first-child,.hist:first-child{border-top:0}.name{font-weight:700}.url,.meta{font-size:12px;color:var(--muted);word-break:break-all;margin-top:3px;line-height:1.4}.chip{display:inline-block;border:1px solid #303849;border-radius:99px;padding:4px 8px;font-size:11px;color:var(--muted)}.empty{color:var(--muted);padding:14px 0}.notice{font-size:13px;color:#98a2b3;line-height:1.45}.toast{position:fixed;left:calc(50% + var(--side)/2);bottom:26px;transform:translateX(-50%) translateY(110px);background:#fff;color:#0a0c10;padding:12px 16px;border-radius:12px;font-weight:750;transition:.25s;z-index:80;box-shadow:0 14px 40px #0008}.toast.show{transform:translateX(-50%) translateY(0)}
-@media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.dash-two{grid-template-columns:1fr}.quick{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.dash-two,.ai-layout{grid-template-columns:1fr}.quick{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:900px){
   .side{transform:translateX(-105%);width:min(86vw,320px);box-shadow:24px 0 70px rgba(0,0,0,.5)}.side.mobile-open{transform:translateX(0)}.drawer-backdrop.open{display:block}.mobile-close{display:grid;place-items:center}.main{margin-left:0}.menu-toggle{display:grid;place-items:center}.shell{padding:14px}.span8,.span7,.span6,.span5,.span4{grid-column:span 12}.stats,.system-grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.top{align-items:flex-start}.health{margin-top:8px}.stack{align-items:stretch;flex-direction:column}.toast{left:50%}body.drawer-open{overflow:hidden}.conn{align-items:flex-start}.status{margin-top:1px}.hero-main{align-items:flex-start;flex-direction:column}.conn-group-head{align-items:flex-start}.conn-group-count{margin-top:2px}
 }
@@ -42,6 +43,7 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
       <div class="side-title">Основное</div>
       <button class="nav active" data-page="homePage"><span class="ico">⌂</span><b>Главная</b></button>
       <button class="nav" data-page="sourcesPage"><span class="ico">⌁</span><b>Источники</b></button>
+      <button class="nav" data-page="aiPage"><span class="ico">✦</span><b>AI-редактор</b></button>
       <button class="nav" data-page="queuePage"><span class="ico">☷</span><b>Очередь</b></button>
       <button class="nav" data-page="publishPage"><span class="ico">➤</span><b>Публикация</b></button>
     </div>
@@ -110,9 +112,9 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
         <section class="card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Быстрые действия</h3><p>Основные операции без лишних переходов</p></div></div>
           <div class="quick">
+            <button onclick="goPage('aiPage')">AI-редактор</button>
             <button onclick="goPage('queuePage')">Открыть очередь</button>
             <button onclick="goPage('sourcesPage')">Источники</button>
-            <button onclick="refreshConnections()">Обновить систему</button>
             <a href="https://t.me/aipulserussia" target="_blank">Открыть канал</a>
           </div>
         </section>
@@ -131,6 +133,41 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
       <section class="page" id="queuePage">
         <div class="page-head"><div><h2>Очередь</h2><p>Черновики и будущие новости на проверку.</p></div><button onclick="addDraft()">+ Черновик</button></div>
         <section class="card"><div class="big" id="queueCount">0</div><div id="queue"></div></section>
+      </section>
+
+      <section class="page" id="aiPage">
+        <div class="page-head">
+          <div><h2>AI-редактор</h2><p>Переписывает исходную новость в стиль AI Pulse без добавления выдуманных фактов.</p></div>
+          <button onclick="testOpenAI()">Проверить OpenAI</button>
+        </div>
+        <div class="ai-layout">
+          <section class="card ai-source">
+            <div class="label">Исходная новость</div>
+            <input id="aiTitle" placeholder="Исходный заголовок — необязательно">
+            <input id="aiSourceUrl" style="margin-top:8px" placeholder="Ссылка на источник — необязательно">
+            <textarea id="aiSourceText" style="margin-top:8px" placeholder="Вставь сюда исходный текст новости…"></textarea>
+            <button class="primary" id="aiRewriteBtn" style="margin-top:8px;width:100%" onclick="rewriteAI()">✦ Переписать для AI Pulse</button>
+            <div class="notice" id="aiRewriteStatus" style="margin-top:10px">Модель использует только переданный текст и не должна добавлять факты от себя.</div>
+          </section>
+          <section class="card ai-result">
+            <div class="label">Готовый пост</div>
+            <div id="aiEmpty" class="ai-empty">После обработки здесь появится готовая версия поста.</div>
+            <div id="aiResult" style="display:none">
+              <input id="aiResultTitle" placeholder="Заголовок">
+              <textarea id="aiResultText" style="margin-top:8px" placeholder="Текст"></textarea>
+              <div class="ai-meta">
+                <span class="chip" id="aiModel">Модель —</span>
+                <span class="chip" id="aiConfidence">Уверенность —</span>
+              </div>
+              <div class="notice" id="aiNotes"></div>
+              <div class="ai-toolbar">
+                <button onclick="queueAI()">Добавить в очередь</button>
+                <button class="primary" onclick="publishAI()">Опубликовать в Telegram</button>
+                <button onclick="clearAI()">Очистить</button>
+              </div>
+            </div>
+          </section>
+        </div>
       </section>
 
       <section class="page" id="publishPage">
@@ -176,6 +213,7 @@ function setDrawer(open){el('appSidebar').classList.toggle('mobile-open',!!open)
 var pageRoutes={
   homePage:'home',
   sourcesPage:'sources',
+  aiPage:'ai',
   queuePage:'queue',
   publishPage:'publish',
   statsPage:'stats',
@@ -192,7 +230,7 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',historyPage:'История',modePage:'Режим работы',connectionsPage:'Подключения',systemPage:'Статус системы'};
+  var titles={homePage:'News Factory',sourcesPage:'Источники',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',historyPage:'История',modePage:'Режим работы',connectionsPage:'Подключения',systemPage:'Статус системы'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
@@ -289,6 +327,64 @@ async function refreshConnections(){await renderConnections(true);toast('Ста�
 async function setMode(mode){await api('/api/mode',{method:'POST',body:JSON.stringify({mode:mode})});await load();toast('Режим: '+mode)}
 async function testPost(){var j=await api('/api/test',{method:'POST',body:'{}'});toast('Тест опубликован #'+j.messageId);await load()}
 async function publishNow(){var text=el('publishText').value.trim();if(!text){toast('Введите текст');return}var j=await api('/api/publish',{method:'POST',body:JSON.stringify({text:text,title:'Ручная публикация'})});el('publishText').value='';toast('Опубликовано #'+j.messageId);await load();goPage('homePage')}
+var lastAIResult=null;
+async function testOpenAI(){
+  try{
+    var j=await api('/api/ai/test',{method:'POST',body:'{}'});
+    toast('OpenAI подключён · '+j.model);
+    await renderConnections(true);
+  }catch(e){toast('OpenAI: '+e.message)}
+}
+async function rewriteAI(){
+  var text=el('aiSourceText').value.trim();
+  if(!text){toast('Вставьте текст новости');return}
+  var btn=el('aiRewriteBtn'),status=el('aiRewriteStatus');
+  btn.disabled=true;btn.textContent='Обрабатываю…';status.textContent='OpenAI переписывает новость…';
+  try{
+    var j=await api('/api/ai/rewrite',{method:'POST',body:JSON.stringify({
+      title:el('aiTitle').value.trim(),
+      sourceUrl:el('aiSourceUrl').value.trim(),
+      text:text
+    })});
+    lastAIResult=j.result;
+    el('aiResultTitle').value=j.result.title||'';
+    el('aiResultText').value=j.result.text||'';
+    el('aiModel').textContent='Модель: '+(j.result.model||'—');
+    var conf=j.result.confidence||'medium';
+    el('aiConfidence').textContent='Уверенность: '+conf;
+    el('aiConfidence').className='chip confidence-'+conf;
+    el('aiNotes').textContent=j.result.notes||'';
+    el('aiEmpty').style.display='none';
+    el('aiResult').style.display='block';
+    status.textContent='Готово. Проверь текст перед публикацией.';
+    await load();
+  }catch(e){
+    status.textContent='Ошибка: '+e.message;
+    toast(e.message);
+  }finally{
+    btn.disabled=false;btn.textContent='✦ Переписать для AI Pulse';
+  }
+}
+function aiPostText(){
+  var title=el('aiResultTitle').value.trim(),text=el('aiResultText').value.trim();
+  return (title?title+'\n\n':'')+text;
+}
+async function queueAI(){
+  var text=aiPostText();
+  if(!text.trim()){toast('Сначала создайте текст');return}
+  await api('/api/queue',{method:'POST',body:JSON.stringify({title:el('aiResultTitle').value.trim()||'AI-пост',text:text})});
+  toast('Добавлено в очередь');await load();goPage('queuePage');
+}
+async function publishAI(){
+  var text=aiPostText();
+  if(!text.trim()){toast('Сначала создайте текст');return}
+  var j=await api('/api/publish',{method:'POST',body:JSON.stringify({title:el('aiResultTitle').value.trim()||'AI-публикация',text:text})});
+  toast('Опубликовано #'+j.messageId);clearAI();await load();goPage('homePage');
+}
+function clearAI(){
+  ['aiTitle','aiSourceUrl','aiSourceText','aiResultTitle','aiResultText'].forEach(function(id){el(id).value=''});
+  el('aiResult').style.display='none';el('aiEmpty').style.display='grid';el('aiRewriteStatus').textContent='Модель использует только переданный текст и не должна добавлять факты от себя.';lastAIResult=null;
+}
 async function addSource(){var name=el('sourceName').value.trim(),url=el('sourceUrl').value.trim();if(!name||!url){toast('Заполните название и ссылку');return}await api('/api/sources',{method:'POST',body:JSON.stringify({name:name,url:url})});el('sourceName').value='';el('sourceUrl').value='';await load();toast('Источник добавлен')}
 async function toggleSource(id){await api('/api/sources/toggle',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function removeSource(id){await api('/api/sources/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
