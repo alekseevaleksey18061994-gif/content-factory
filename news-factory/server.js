@@ -202,6 +202,23 @@ function extractTitle(html) {
   return m ? stripHtml(m[1]).slice(0, 300) : "";
 }
 
+function extractMetaImage(html, pageUrl) {
+  const source = String(html || "");
+  const patterns = [
+    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::secure_url)?["'][^>]*>/i,
+    /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["'][^>]*>/i
+  ];
+  for (const re of patterns) {
+    const m = source.match(re);
+    if (!m || !m[1]) continue;
+    const url = canonicalizeUrl(htmlDecode(m[1]), pageUrl);
+    if (url && /^https?:\/\//i.test(url)) return url;
+  }
+  return "";
+}
+
 function extractArticleLinks(html, sourceUrl) {
   const base = new URL(sourceUrl);
   const out = new Map();
@@ -229,7 +246,7 @@ function extractArticleLinks(html, sourceUrl) {
 async function fetchText(url, timeoutMs) {
   const response = await fetch(url, {
     headers: {
-      "user-agent": "Mozilla/5.0 (compatible; NewsFactoryBot/0.5; +https://news-factory-api-production.up.railway.app)"
+      "user-agent": "Mozilla/5.0 (compatible; NewsFactoryBot/0.6; +https://news-factory-api-production.up.railway.app)"
     },
     redirect: "follow",
     signal: AbortSignal.timeout(timeoutMs || 15000)
@@ -322,38 +339,42 @@ async function collectOnce(trigger) {
     }
 
     const enabledSources = (state.sources || []).filter(function(src){ return src.enabled && /^https?:\/\//i.test(src.url || ""); });
-    const candidates = [];
+    const ordered = [];
+    const selectedUrls = new Set();
+
     for (const source of enabledSources) {
+      if (ordered.length >= MAX_ITEMS_PER_RUN) break;
       try {
         const html = await fetchText(source.url, 15000);
-        const links = extractArticleLinks(html, source.url).slice(0, 2);
-        for (const link of links) candidates.push({ source: source, link: link });
+        const links = extractArticleLinks(html, source.url).slice(0, 10);
+        let chosen = null;
+        for (const link of links) {
+          if (selectedUrls.has(link.url)) continue;
+          if (await seenOriginalUrl(link.url)) {
+            summary.skipped += 1;
+            continue;
+          }
+          chosen = link;
+          break;
+        }
+        if (chosen) {
+          selectedUrls.add(chosen.url);
+          ordered.push({ source: source, link: chosen });
+        }
       } catch (error) {
         summary.errors.push(source.name + ": " + error.message);
       }
-    }
-
-    const ordered = [];
-    const seenInRun = new Set();
-    for (const c of candidates) {
-      if (seenInRun.has(c.link.url)) continue;
-      seenInRun.add(c.link.url);
-      ordered.push(c);
-      if (ordered.length >= MAX_ITEMS_PER_RUN * 3) break;
     }
 
     for (const candidate of ordered) {
       if (summary.found >= MAX_ITEMS_PER_RUN) break;
       const source = candidate.source;
       const url = candidate.link.url;
-      if (await seenOriginalUrl(url)) {
-        summary.skipped += 1;
-        continue;
-      }
 
       try {
         const articleHtml = await fetchText(url, 15000);
         const originalTitle = extractTitle(articleHtml) || candidate.link.title;
+        const imageUrl = extractMetaImage(articleHtml, url);
         const raw = stripHtml(articleHtml);
         const originalText = raw.slice(0, 14000);
         if (originalText.length < 250) {
@@ -372,7 +393,7 @@ async function collectOnce(trigger) {
           originalText: originalText,
           contentHash: contentHash,
           status: "discovered",
-          metadata: { trigger: trigger || "scheduler" }
+          metadata: { trigger: trigger || "scheduler", imageUrl: imageUrl }
         };
         summary.found += 1;
         state.stats.discovered += 1;
@@ -395,7 +416,7 @@ async function collectOnce(trigger) {
         baseItem.metadata.model = rewrite.model;
         baseItem.metadata.notes = rewrite.notes;
 
-        const postText = (rewrite.title ? rewrite.title + "\n\n" : "") + rewrite.text + "\n\nИсточник: " + url;
+        const postText = rewrite.text;
 
         const lastPublished = (state.history || []).find(function(x){ return x && x.publishedAt; });
         const lastPublishedAt = lastPublished ? new Date(lastPublished.publishedAt).getTime() : 0;
@@ -407,7 +428,12 @@ async function collectOnce(trigger) {
           summary.published < 1;
 
         if (canAutoPublish) {
-          const tg = await sendTelegram(postText);
+          const tg = await sendTelegramPost({
+            title: rewrite.title,
+            text: rewrite.text,
+            sourceUrl: url,
+            imageUrl: imageUrl
+          });
           baseItem.status = "published";
           baseItem.telegramMessageId = tg.message_id;
           baseItem.publishedAt = new Date().toISOString();
@@ -417,7 +443,8 @@ async function collectOnce(trigger) {
             text: postText,
             messageId: tg.message_id,
             publishedAt: baseItem.publishedAt,
-            sourceUrl: url
+            sourceUrl: url,
+        imageUrl: imageUrl
           });
           state.history = state.history.slice(0, 300);
           state.stats.published += 1;
@@ -435,6 +462,8 @@ async function collectOnce(trigger) {
             text: postText,
             createdAt: new Date().toISOString(),
             sourceUrl: url,
+            imageUrl: imageUrl,
+            sourceName: source.name,
             newsId: id
           });
           state.queue = state.queue.slice(0, 300);
@@ -548,21 +577,76 @@ function newId(prefix) {
   return (prefix || "item") + "_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex");
 }
 
-async function sendTelegram(text) {
+function escapeTelegramHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatTelegramPost(post) {
+  const title = String(post.title || "").trim();
+  const text = String(post.text || "").trim();
+  const sourceUrl = String(post.sourceUrl || "").trim();
+  let html = "";
+  if (title) html += "<b>" + escapeTelegramHtml(title) + "</b>";
+  if (text) html += (html ? "\n\n" : "") + escapeTelegramHtml(text);
+  if (sourceUrl) html += (html ? "\n\n" : "") + '🔗 <a href="' + escapeTelegramHtml(sourceUrl) + '">Источник</a>';
+  return html.trim();
+}
+
+async function telegramApi(method, payload) {
   if (!BOT_TOKEN || !CHANNEL) throw new Error("Telegram configuration is incomplete");
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage";
+  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      chat_id: CHANNEL,
-      text: text,
-      disable_web_page_preview: true
-    })
+    body: JSON.stringify(payload)
   });
   const data = await response.json();
   if (!response.ok || !data.ok) throw new Error((data && data.description) || "Telegram API error");
   return data.result;
+}
+
+async function sendTelegramPost(post) {
+  const html = formatTelegramPost(post);
+  const imageUrl = String(post.imageUrl || "").trim();
+  if (imageUrl && html.length <= 950) {
+    try {
+      return await telegramApi("sendPhoto", {
+        chat_id: CHANNEL,
+        photo: imageUrl,
+        caption: html,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      console.warn("sendPhoto failed, fallback to text:", error.message);
+    }
+  }
+
+  if (imageUrl) {
+    try {
+      await telegramApi("sendPhoto", {
+        chat_id: CHANNEL,
+        photo: imageUrl,
+        caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      console.warn("Photo-only send failed:", error.message);
+    }
+  }
+
+  return await telegramApi("sendMessage", {
+    chat_id: CHANNEL,
+    text: html || escapeTelegramHtml(post.text || ""),
+    parse_mode: "HTML",
+    disable_web_page_preview: true
+  });
+}
+
+async function sendTelegram(text) {
+  return sendTelegramPost({ text: text });
 }
 
 
@@ -632,7 +716,11 @@ async function callOpenAIRewrite(payload) {
     "- используй только факты из исходного текста;",
     "- ничего не придумывай: даты, цены, функции, цитаты и цифры нельзя добавлять от себя;",
     "- если факт выглядит неопределённым, сформулируй осторожно;",
-    "- стиль: современный Telegram, ясный заголовок + 2–5 коротких абзацев;",
+    "- стиль: современный качественный Telegram-пост для AI Pulse;",
+    "- заголовок: короткий, живой, можно 1 уместный emoji в начале, без капслока;",
+    "- текст: 3 коротких смысловых абзаца, примерно 450–800 знаков суммарно;",
+    "- первый абзац сразу говорит, что произошло; второй — что именно нового; третий — почему это важно;",
+    "- не используй markdown, хэштеги, служебные подписи и фразу 'Источник' — ссылку добавит система;",
     "- без кликбейта, который искажает смысл;",
     "- для политических тем сохраняй нейтральный описательный тон без агитации;",
     "- верни СТРОГО JSON без markdown: {\"title\":\"...\",\"text\":\"...\",\"confidence\":\"high|medium|low\",\"notes\":\"...\"}.",
@@ -938,7 +1026,12 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Введите текст" });
-      const result = await sendTelegram(text);
+      const result = await sendTelegramPost({
+        title: String(body.title || "").trim(),
+        text: text,
+        sourceUrl: String(body.sourceUrl || "").trim(),
+        imageUrl: String(body.imageUrl || "").trim()
+      });
       state.history.unshift({
         id: newId("hist"),
         title: String(body.title || "Публикация"),
@@ -1003,7 +1096,12 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const item = state.queue.find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Черновик не найден" });
-      const result = await sendTelegram(item.text);
+      const result = await sendTelegramPost({
+        title: item.title,
+        text: item.text,
+        sourceUrl: item.sourceUrl || "",
+        imageUrl: item.imageUrl || ""
+      });
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
       state.history.unshift({
         id: newId("hist"),
