@@ -16,6 +16,7 @@ const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase() !== "false";
 const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
+const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst";
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low";
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
@@ -584,40 +585,141 @@ async function generateNewsCover(payload) {
   throw new Error(lastError || "Не удалось сгенерировать обложку");
 }
 
+async function enhanceNewsImage(payload) {
+  if (!OPENAI_API_KEY || !IMAGE_ENHANCEMENT_ENABLED) {
+    throw new Error("AI-улучшение изображений отключено");
+  }
+
+  const imageUrl = String(payload.imageUrl || "").trim();
+  if (!/^https?:\/\//i.test(imageUrl)) throw new Error("Нет исходного изображения для улучшения");
+
+  const sourceResponse = await fetch(imageUrl, {
+    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryMedia/1.0)" },
+    redirect: "follow",
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!sourceResponse.ok) throw new Error("Не удалось скачать исходное фото: HTTP " + sourceResponse.status);
+
+  const contentType = String(sourceResponse.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (!contentType.startsWith("image/")) throw new Error("Исходный файл не является изображением");
+
+  const bytes = Buffer.from(await sourceResponse.arrayBuffer());
+  if (!bytes.length) throw new Error("Исходное изображение пустое");
+  if (bytes.length > 12 * 1024 * 1024) throw new Error("Исходное изображение слишком большое для AI-улучшения");
+
+  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : contentType.includes("gif") ? "gif" : "jpg";
+  const prompt = [
+    "Improve this source image for a premium Telegram technology news channel.",
+    "Preserve the factual content and identity of the original image.",
+    "Do not add or remove people, products, logos, UI elements, text, numbers, charts, objects, or claims.",
+    "Do not alter the shape, color, branding, interface, product geometry, or identity of anything shown.",
+    "Only improve presentation where possible: clarity, sharpness, lighting, contrast, crop, visual balance, compression artifacts, and editorial polish.",
+    "Keep it realistic and faithful to the source. No invented text, no watermark, no decorative fake labels.",
+    "Topic context: " + String(payload.title || "").slice(0, 500)
+  ].join("\n");
+
+  const models = [OPENAI_IMAGE_MODEL, "gpt-image-2"].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+
+  for (const model of models) {
+    try {
+      const form = new FormData();
+      form.append("model", model);
+      form.append("image[]", new Blob([bytes], { type: contentType }), "source." + ext);
+      form.append("prompt", prompt);
+      form.append("size", "1536x1024");
+      form.append("quality", OPENAI_IMAGE_QUALITY);
+
+      const response = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { authorization: "Bearer " + OPENAI_API_KEY },
+        body: form,
+        signal: AbortSignal.timeout(120000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) {
+        lastError = (data && data.error && data.error.message) || ("OpenAI image edit HTTP " + response.status);
+        continue;
+      }
+      const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
+      if (!b64) {
+        lastError = "OpenAI image edit не вернул изображение";
+        continue;
+      }
+
+      ensureDataDir();
+      const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+      const fileName = "enhanced_" + safeId + "_" + Date.now() + ".png";
+      fs.writeFileSync(path.join(MEDIA_DIR, fileName), Buffer.from(b64, "base64"));
+      return { url: mediaPublicUrl(fileName), model: model, fileName: fileName };
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+
+  throw new Error(lastError || "Не удалось улучшить изображение");
+}
+
 async function ensureMediaForNews(payload) {
   const imageUrl = String(payload.imageUrl || "").trim();
   const videoUrl = String(payload.videoUrl || "").trim();
+
+  // Priority #1: video. Keep a found photo as fallback in case Telegram cannot fetch/send the video.
   if (videoUrl) {
-    return { videoUrl: videoUrl, imageUrl: imageUrl, generatedImageUrl: "", mediaType: "video", mediaStatus: "found" };
-  }
-  if (imageUrl) {
-    return { videoUrl: "", imageUrl: imageUrl, generatedImageUrl: "", mediaType: "photo", mediaStatus: "found" };
+    return {
+      videoUrl: videoUrl,
+      imageUrl: imageUrl,
+      originalImageUrl: imageUrl,
+      generatedImageUrl: "",
+      mediaType: "video",
+      mediaStatus: "video_found",
+      mediaPriority: 1
+    };
   }
 
+  // Priority #2: original photo.
+  if (imageUrl) {
+    return {
+      videoUrl: "",
+      imageUrl: imageUrl,
+      originalImageUrl: imageUrl,
+      generatedImageUrl: "",
+      mediaType: "photo",
+      mediaStatus: "photo_found",
+      mediaPriority: 2,
+      canEnhance: IMAGE_ENHANCEMENT_ENABLED
+    };
+  }
+
+  // Priority #3: generate a photo only when neither video nor photo was found.
   if (GENERATE_COVER_IF_MISSING) {
     try {
       const generated = await generateNewsCover(payload);
       return {
         videoUrl: "",
         imageUrl: "",
+        originalImageUrl: "",
         generatedImageUrl: generated.url,
         mediaType: "generated",
         mediaStatus: "generated",
+        mediaPriority: 3,
         generatedBy: generated.model
       };
     } catch (error) {
       return {
         videoUrl: "",
         imageUrl: "",
+        originalImageUrl: "",
         generatedImageUrl: "",
         mediaType: "none",
         mediaStatus: "generation_error",
+        mediaPriority: 99,
         mediaError: error.message
       };
     }
   }
 
-  return { videoUrl: "", imageUrl: "", generatedImageUrl: "", mediaType: "none", mediaStatus: "missing" };
+  return { videoUrl: "", imageUrl: "", originalImageUrl: "", generatedImageUrl: "", mediaType: "none", mediaStatus: "missing", mediaPriority: 99 };
 }
 
 function hasPublishableMedia(item) {
@@ -844,10 +946,13 @@ async function collectOnce(trigger) {
             trigger: trigger || "scheduler",
             articlePublishedAt: articlePublishedAt || "",
             imageUrl: media.imageUrl || "",
+            originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             videoUrl: media.videoUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
+            mediaPriority: media.mediaPriority || 99,
+            canEnhance: Boolean(media.canEnhance),
             mediaError: media.mediaError || "",
             generatedBy: media.generatedBy || ""
           }
@@ -912,10 +1017,12 @@ async function collectOnce(trigger) {
             publishedAt: baseItem.publishedAt,
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
+            originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
             videoUrl: media.videoUrl || "",
             mediaType: media.mediaType,
-            mediaStatus: media.mediaStatus
+            mediaStatus: media.mediaStatus,
+            mediaPriority: media.mediaPriority || 99
           });
           state.history = state.history.slice(0, 300);
           state.stats.published += 1;
@@ -935,10 +1042,13 @@ async function collectOnce(trigger) {
             articlePublishedAt: articlePublishedAt || "",
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
+            originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
             videoUrl: media.videoUrl || "",
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
+            mediaPriority: media.mediaPriority || 99,
+            canEnhance: Boolean(media.canEnhance),
             sourceName: source.name,
             newsId: id
           });
@@ -1119,7 +1229,7 @@ async function telegramApi(method, payload) {
 
 async function sendTelegramPost(post) {
   const html = formatTelegramPost(post);
-  const imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
+  let imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
   const videoUrl = String(post.videoUrl || "").trim();
 
   if (MEDIA_REQUIRED && !imageUrl && !videoUrl) {
@@ -1137,9 +1247,25 @@ async function sendTelegramPost(post) {
       });
     } catch (error) {
       console.warn("sendVideo failed:", error.message);
-      if (!imageUrl) throw error;
+      if (!imageUrl && GENERATE_COVER_IF_MISSING) {
+        try {
+          const generatedFallback = await generateNewsCover({
+            id: post.id || newId("video_fallback"),
+            title: post.title || "AI Pulse",
+            text: post.text || "",
+            sourceName: post.sourceName || "Telegram fallback"
+          });
+          post.generatedImageUrl = generatedFallback.url;
+        } catch (fallbackError) {
+          throw new Error("Видео недоступно, а резервное фото не удалось подготовить: " + fallbackError.message);
+        }
+      } else if (!imageUrl) {
+        throw error;
+      }
     }
   }
+
+  imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
 
   if (imageUrl && html.length <= 950) {
     try {
@@ -1591,7 +1717,7 @@ async function buildSystemStatus(force) {
     mediaEngine: {
       state: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
       description: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "Медиа-движок включён" : "Медиа-движок настроен не полностью",
-      detail: "Фото/видео обязательно · если медиа нет, обложка генерируется через " + OPENAI_IMAGE_MODEL,
+      detail: "Приоритет: видео → фото → генерация фото · найденные фото можно улучшать через " + OPENAI_IMAGE_MODEL,
       next: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "" : "Проверить MEDIA_REQUIRED и GENERATE_COVER_IF_MISSING"
     },
     supabase: {
@@ -1658,6 +1784,7 @@ const server = http.createServer(async function(req, res) {
         openaiConfigured: Boolean(OPENAI_API_KEY),
         openaiModel: OPENAI_MODEL,
         mediaRequired: MEDIA_REQUIRED,
+        imageEnhancementEnabled: IMAGE_ENHANCEMENT_ENABLED,
         imageModel: OPENAI_IMAGE_MODEL,
         version: APP_VERSION
       });
@@ -1938,6 +2065,56 @@ const server = http.createServer(async function(req, res) {
       ensureScheduleAssignments(state);
       saveState();
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && p === "/api/queue/enhance-media") {
+      const body = await readJson(req);
+      const item = (state.queue || []).find(function(x){ return x.id === body.id; });
+      if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
+      if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — улучшать фото не требуется" });
+
+      const sourceImage = String(item.originalImageUrl || item.imageUrl || "").trim();
+      if (!sourceImage) return sendJson(res, 400, { ok: false, error: "У новости нет найденного фото для улучшения" });
+
+      try {
+        const enhanced = await enhanceNewsImage({
+          id: item.newsId || item.id,
+          title: item.title,
+          text: item.text,
+          imageUrl: sourceImage
+        });
+        item.originalImageUrl = sourceImage;
+        item.imageUrl = sourceImage;
+        item.generatedImageUrl = enhanced.url;
+        item.mediaType = "enhanced";
+        item.mediaStatus = "enhanced";
+        item.mediaPriority = 2;
+        item.enhancedBy = enhanced.model;
+        item.enhancedAt = new Date().toISOString();
+        item.canEnhance = true;
+
+        if (db && dbReady && item.newsId) {
+          const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 LIMIT 1", [item.newsId]);
+          if (row.rowCount) {
+            const metadata = Object.assign({}, row.rows[0].metadata || {}, {
+              originalImageUrl: sourceImage,
+              imageUrl: sourceImage,
+              generatedImageUrl: enhanced.url,
+              mediaType: "enhanced",
+              mediaStatus: "enhanced",
+              mediaPriority: 2,
+              enhancedBy: enhanced.model,
+              enhancedAt: item.enhancedAt
+            });
+            await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1", [item.newsId, JSON.stringify(metadata)]);
+          }
+        }
+
+        saveState();
+        return sendJson(res, 200, { ok: true, imageUrl: enhanced.url, model: enhanced.model });
+      } catch (error) {
+        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось улучшить фото" });
+      }
     }
 
     if (req.method === "POST" && p === "/api/queue/publish") {
