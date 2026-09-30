@@ -871,7 +871,7 @@ function statusRu(v){
     running:'Работает',success:'Успешно',failed:'Ошибка',completed_with_errors:'Завершено с ошибками',
     disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',review_mode:'На проверку',
     high:'Высокая',medium:'Средняя',low:'Низкая',
-    found:'Медиа найдено',generated:'Обложка сгенерирована',missing:'Нет медиа',generation_error:'Ошибка генерации',missing_media:'Нет медиа',
+    found:'Медиа найдено',video_found:'Видео найдено',photo_found:'Фото найдено',enhanced:'Фото улучшено AI',generated:'Фото сгенерировано',missing:'Нет медиа',generation_error:'Ошибка генерации',missing_media:'Нет медиа',
     photo:'Фото',video:'Видео',generated_media:'Сгенерировано',
     AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'
   };
@@ -943,7 +943,7 @@ function render(){
   el('sources').innerHTML=(state.sources||[]).map(function(s){var group=s.group==='official'?'Официальный источник':s.group==='media'?'СМИ':'Источник';return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="meta">'+group+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включено':'Выключено')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div></div>'}).join('');
   el('queueCount').textContent=(state.queue||[]).length;
   var qp=state.queuePolicy||{};
-  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Автоочистка: автоматические новости старше '+(qp.queueMaxAgeHours||12)+' ч удаляются. В очереди хранится максимум '+(qp.queueMaxAutoItems||20)+' свежих автоматических новостей. Материалы источника старше '+(qp.articleMaxAgeHours||24)+' ч не добавляются. Ручные черновики не удаляются.';
+  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Медиа: видео → фото → генерация фото. Найденное фото можно улучшить через AI. Автоочистка: новости старше '+(qp.queueMaxAgeHours||12)+' ч удаляются, максимум '+(qp.queueMaxAutoItems||20)+' свежих автоматических новостей.';
   el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){
     var parts=postParts(q);
     var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
@@ -951,7 +951,7 @@ function render(){
     var freshnessDate=q.articlePublishedAt||q.createdAt||'';
     var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
     var ms=q.mediaStatus||(effectiveImage?(q.generatedImageUrl?'generated':'found'):(q.videoUrl?'found':'missing'));
-    var mcls=(ms==='found'?'found':ms==='generated'?'generated':'bad');
+    var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
     return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+
         '<div class="queue-copy">'+
@@ -963,7 +963,7 @@ function render(){
           (q.sourceUrl?'<div class="queue-meta"><a class="link" href="'+esc(q.sourceUrl)+'" target="_blank" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+
         '</div>'+
       '</div>'+
-      '<div class="queue-actions" onclick="event.stopPropagation()"><button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button><button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button><button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button></div>'+
+      '<div class="queue-actions" onclick="event.stopPropagation()"><button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+(q.videoUrl?'':((q.originalImageUrl||q.imageUrl)?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Улучшить фото AI</button>':''))+'<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button><button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button></div>'+
     '</article>';
   }).join(''):'<div class="empty">Очередь пока пустая</div>';
   el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,20).map(function(h){return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+'</div></div></div>'}).join(''):'<div class="empty">Публикаций пока нет</div>';
@@ -1349,6 +1349,7 @@ function openNewsPreview(id){
     sourceName:n.sourceName||'Источник',
     sourceUrl:n.originalUrl||'',
     imageUrl:md.imageUrl||'',
+    originalImageUrl:md.originalImageUrl||md.imageUrl||'',
     generatedImageUrl:md.generatedImageUrl||'',
     videoUrl:md.videoUrl||'',
     articlePublishedAt:md.articlePublishedAt||n.detectedAt
@@ -1368,7 +1369,7 @@ async function loadNews(){
       var image=md.generatedImageUrl||md.imageUrl||'';
       var media=md.videoUrl?'<div class="news-placeholder">▶ Видео</div>':image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">AI</div>';
       var ms=md.mediaStatus||(image?(md.generatedImageUrl?'generated':'found'):(md.videoUrl?'found':'missing'));
-      var mcls=(ms==='found'?'found':ms==='generated'?'generated':'bad');
+      var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
       var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span></div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
       return '<article class="news-card" onclick="openNewsPreview(\''+n.id+'\')"><div class="news-card-body">'+media+main+'</div></article>';
     }).join(''):'<div class="empty">Пока ничего не найдено. Нажмите «Собрать сейчас».</div>';
@@ -1445,6 +1446,18 @@ async function addSource(){var name=el('sourceName').value.trim(),url=el('source
 async function toggleSource(id){await api('/api/sources/toggle',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function removeSource(id){await api('/api/sources/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function addDraft(){var title=prompt('Заголовок черновика');if(title===null)return;var text=prompt('Текст поста');if(!text)return;await api('/api/queue',{method:'POST',body:JSON.stringify({title:title,text:text})});await load();toast('Черновик добавлен')}
+async function enhanceQueuePhoto(id){
+  var item=(state.queue||[]).find(function(q){return q.id===id});
+  if(!item)return;
+  if(item.videoUrl){toast('У этой новости приоритет у видео');return}
+  toast('Улучшаю фото через AI…');
+  try{
+    await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id})});
+    toast('Фото улучшено');
+    await load();
+    openQueuePreview(id);
+  }catch(e){toast('Фото: '+e.message)}
+}
 async function publishQueue(id){toast('Проверяю медиа…');await api('/api/queue/publish',{method:'POST',body:JSON.stringify({id:id})});toast('Пост опубликован');await load()}
 async function removeQueue(id){await api('/api/queue/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function logout(){await api('/api/logout',{method:'POST',body:'{}'});location.href='/login'}
