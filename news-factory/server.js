@@ -32,15 +32,34 @@ try {
   APP_VERSION = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")).version || APP_VERSION;
 } catch {}
 
+const CURATED_SOURCES = [
+  { id: "openai", name: "OpenAI News", type: "web", group: "official", priority: 1, url: "https://openai.com/news/", enabled: true },
+  { id: "anthropic", name: "Anthropic News", type: "web", group: "official", priority: 1, url: "https://www.anthropic.com/news", enabled: true },
+  { id: "google-deepmind", name: "Google DeepMind", type: "web", group: "official", priority: 1, url: "https://deepmind.google/blog/", enabled: true },
+  { id: "google-ai", name: "Google AI", type: "web", group: "official", priority: 1, url: "https://blog.google/technology/ai/", enabled: true },
+  { id: "meta-ai", name: "Meta AI", type: "web", group: "official", priority: 1, url: "https://ai.meta.com/blog/", enabled: true },
+  { id: "microsoft-ai", name: "Microsoft AI", type: "web", group: "official", priority: 1, url: "https://blogs.microsoft.com/ai/", enabled: true },
+  { id: "nvidia-ai", name: "NVIDIA AI", type: "web", group: "official", priority: 1, url: "https://blogs.nvidia.com/blog/category/generative-ai/", enabled: true },
+  { id: "xai", name: "xAI News", type: "web", group: "official", priority: 1, url: "https://x.ai/news", enabled: true },
+  { id: "mistral", name: "Mistral AI", type: "web", group: "official", priority: 1, url: "https://mistral.ai/news/", enabled: true },
+  { id: "huggingface", name: "Hugging Face", type: "web", group: "official", priority: 1, url: "https://huggingface.co/blog", enabled: true },
+  { id: "perplexity", name: "Perplexity", type: "web", group: "official", priority: 1, url: "https://www.perplexity.ai/hub/blog", enabled: true },
+  { id: "stability-ai", name: "Stability AI", type: "web", group: "official", priority: 1, url: "https://stability.ai/news-updates", enabled: true },
+
+  { id: "techcrunch-ai", name: "TechCrunch AI", type: "web", group: "media", priority: 2, url: "https://techcrunch.com/category/artificial-intelligence/", enabled: true },
+  { id: "the-verge-ai", name: "The Verge AI", type: "web", group: "media", priority: 2, url: "https://www.theverge.com/ai-artificial-intelligence", enabled: true },
+  { id: "ars-ai", name: "Ars Technica AI", type: "web", group: "media", priority: 2, url: "https://arstechnica.com/ai/", enabled: true },
+  { id: "venturebeat-ai", name: "VentureBeat AI", type: "web", group: "media", priority: 2, url: "https://venturebeat.com/category/ai/", enabled: true },
+  { id: "wired-ai", name: "WIRED AI", type: "web", group: "media", priority: 2, url: "https://www.wired.com/category/artificial-intelligence/", enabled: true },
+  { id: "mit-tech-ai", name: "MIT Technology Review AI", type: "web", group: "media", priority: 2, url: "https://www.technologyreview.com/topic/artificial-intelligence/", enabled: true },
+  { id: "the-decoder", name: "The Decoder", type: "web", group: "media", priority: 2, url: "https://the-decoder.com/", enabled: true },
+  { id: "the-batch", name: "DeepLearning.AI — The Batch", type: "web", group: "media", priority: 2, url: "https://www.deeplearning.ai/the-batch", enabled: true }
+];
+
 const defaultState = {
   mode: "REVIEW",
-  sources: [
-    { id: "openai", name: "OpenAI News", type: "web", url: "https://openai.com/news/", enabled: true },
-    { id: "anthropic", name: "Anthropic News", type: "web", url: "https://www.anthropic.com/news", enabled: true },
-    { id: "google-ai", name: "Google AI", type: "web", url: "https://blog.google/technology/ai/", enabled: true },
-    { id: "meta-ai", name: "Meta AI", type: "web", url: "https://ai.meta.com/blog/", enabled: true },
-    { id: "microsoft-ai", name: "Microsoft AI", type: "web", url: "https://blogs.microsoft.com/ai/", enabled: true }
-  ],
+  sources: structuredClone(CURATED_SOURCES),
+  sourceCursor: 0,
   queue: [],
   history: [],
   stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0 },
@@ -69,12 +88,21 @@ function loadState() {
       });
       if (!hasOpenAi) loaded.sources.unshift(structuredClone(defaultState.sources[0]));
       loaded.migrations.push(migrationId);
-      fs.writeFileSync(STATE_FILE, JSON.stringify(loaded, null, 2), "utf8");
     }
+
+    const curatedMigrationId = "v0.8.0-curated-sources-20";
+    if (!loaded.migrations.includes(curatedMigrationId)) {
+      loaded.sources = structuredClone(CURATED_SOURCES);
+      loaded.sourceCursor = 0;
+      loaded.migrations.push(curatedMigrationId);
+    }
+
+    fs.writeFileSync(STATE_FILE, JSON.stringify(loaded, null, 2), "utf8");
     return loaded;
   } catch {
     const fresh = structuredClone(defaultState);
     fresh.migrations.push("v0.3.2-restore-openai-source");
+    fresh.migrations.push("v0.8.0-curated-sources-20");
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2), "utf8"); } catch {}
     return fresh;
   }
@@ -468,28 +496,38 @@ async function collectOnce(trigger) {
     const ordered = [];
     const selectedUrls = new Set();
 
-    for (const source of enabledSources) {
-      if (ordered.length >= MAX_ITEMS_PER_RUN) break;
+    const cursor = enabledSources.length ? Math.abs(Number(state.sourceCursor || 0)) % enabledSources.length : 0;
+    const rotatedSources = enabledSources.length
+      ? enabledSources.slice(cursor).concat(enabledSources.slice(0, cursor))
+      : [];
+
+    const sourceResults = await Promise.all(rotatedSources.map(async function(source) {
       try {
         const html = await fetchText(source.url, 15000);
-        const links = extractArticleLinks(html, source.url).slice(0, 10);
-        let chosen = null;
+        const links = extractArticleLinks(html, source.url).slice(0, 12);
         for (const link of links) {
           if (selectedUrls.has(link.url)) continue;
           if (await seenOriginalUrl(link.url)) {
             summary.skipped += 1;
             continue;
           }
-          chosen = link;
-          break;
+          selectedUrls.add(link.url);
+          return { source: source, link: link };
         }
-        if (chosen) {
-          selectedUrls.add(chosen.url);
-          ordered.push({ source: source, link: chosen });
-        }
+        return null;
       } catch (error) {
         summary.errors.push(source.name + ": " + error.message);
+        return null;
       }
+    }));
+
+    for (const candidate of sourceResults) {
+      if (candidate) ordered.push(candidate);
+    }
+
+    if (enabledSources.length) {
+      state.sourceCursor = (cursor + Math.max(1, MAX_ITEMS_PER_RUN)) % enabledSources.length;
+      saveState();
     }
 
     for (const candidate of ordered) {
@@ -1065,7 +1103,7 @@ async function buildSystemStatus(force) {
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
       description: COLLECTOR_ENABLED ? "News Collector включён" : "News Collector выключен",
-      detail: String((state.sources || []).filter(function(x){ return x.enabled; }).length) + " активных источников · лимит " + MAX_ITEMS_PER_RUN + " новостей за запуск",
+      detail: String((state.sources || []).filter(function(x){ return x.enabled; }).length) + " активных источников · ротация всех источников · до " + MAX_ITEMS_PER_RUN + " новостей за запуск",
       next: COLLECTOR_ENABLED ? "" : "Включить COLLECTOR_ENABLED"
     },
     scheduler: {
