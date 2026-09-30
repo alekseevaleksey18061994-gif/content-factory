@@ -300,7 +300,7 @@ function render(){
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode(\''+m+'\')">'+labels[m]+'</button>'}).join('');
   ['discovered','rewritten','published','skipped'].forEach(function(k){el('s_'+k).textContent=(state.stats&&state.stats[k])||0});
   el('sourceCount').textContent=(state.sources||[]).length;
-  el('sources').innerHTML=(state.sources||[]).map(function(s){return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включено':'Выключено')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div></div>'}).join('');
+  el('sources').innerHTML=(state.sources||[]).map(function(s){var group=s.group==='official'?'Официальный источник':s.group==='media'?'СМИ':'Источник';return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="meta">'+group+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включено':'Выключено')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div></div>'}).join('');
   el('queueCount').textContent=(state.queue||[]).length;
   el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){
     var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
@@ -404,8 +404,8 @@ async function loadCollectorStatus(){
     if(!last&&Array.isArray(s.runs)&&s.runs.length)last=s.runs[0];
     var lastTime=last&&(last.finishedAt||last.startedAt);
     el('collectorInfo').textContent=s.running
-      ? 'Collector сейчас работает…'
-      : '24/7 worker: максимум по 1 новой новости с каждого активного источника. Медиа обязательно: сначала ищем фото/видео, при отсутствии генерируем обложку. Автопубликация '+(s.autoPublishEnabled?('не чаще 1 поста в '+(s.autoPublishMinIntervalMinutes||30)+' мин'):'отключена — новые новости идут в очередь')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
+      ? 'Сборщик сейчас работает…'
+      : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. Система ротирует их и обрабатывает до '+(s.maxItemsPerRun||5)+' новых материалов за цикл. Медиа обязательно. Автопубликация '+(s.autoPublishEnabled?('не чаще 1 поста в '+(s.autoPublishMinIntervalMinutes||30)+' мин'):'отключена — новые новости идут в очередь')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
   }catch(e){el('collectorInfo').textContent='Ошибка статуса: '+e.message}
 }
 async function loadNews(){
