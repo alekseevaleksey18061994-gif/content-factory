@@ -251,7 +251,7 @@ function statusRu(v){
   };
   return map[v]||v||'—';
 }
-function safeDate(v){try{return v?new Date(v).toLocaleString('ru-RU'):'': ''}catch{return ''}}
+function safeDate(v){try{return v?new Date(v).toLocaleString('ru-RU'):''}catch{return ''}}
 
 function setDrawer(open){el('appSidebar').classList.toggle('mobile-open',!!open);el('drawerBackdrop').classList.toggle('open',!!open);document.body.classList.toggle('drawer-open',!!open)}
 var pageRoutes={
