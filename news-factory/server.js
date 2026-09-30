@@ -23,12 +23,9 @@ const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false")
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
 const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 5));
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
-const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 48)));
+const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
-const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 15)));
-const QUEUE_NEWS_TTL_HOURS = Math.max(6, Number(process.env.QUEUE_NEWS_TTL_HOURS || 24));
-const SOURCE_MAX_AGE_HOURS = Math.max(12, Number(process.env.SOURCE_MAX_AGE_HOURS || 24));
-const MAX_AUTO_QUEUE_ITEMS = Math.max(10, Number(process.env.MAX_AUTO_QUEUE_ITEMS || 20));
+const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
@@ -351,32 +348,6 @@ function extractPublishedAt(html) {
   const patterns = [
     /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
     /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
-    /<meta[^>]+name=["']date["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+itemprop=["']datePublished["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /"datePublished"\s*:\s*"([^"]+)"/i,
-    /<time[^>]+datetime=["']([^"']+)["'][^>]*>/i
-  ];
-  for (const re of patterns) {
-    const m = source.match(re);
-    if (!m || !m[1]) continue;
-    const d = new Date(htmlDecode(m[1]));
-    if (!Number.isNaN(d.getTime())) return d.toISOString();
-  }
-  return "";
-}
-
-function isOlderThanHours(iso, hours) {
-  if (!iso) return false;
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return false;
-  return Date.now() - t > hours * 60 * 60 * 1000;
-}
-
-function extractPublishedAt(html) {
-  const source = String(html || "");
-  const patterns = [
-    /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
     /<meta[^>]+name=["'](?:date|pubdate|publish-date|published_time)["'][^>]+content=["']([^"']+)["'][^>]*>/i,
     /<meta[^>]+content=["']([^"']+)["'][^>]+name=["'](?:date|pubdate|publish-date|published_time)["'][^>]*>/i,
     /<time[^>]+datetime=["']([^"']+)["'][^>]*>/i,
@@ -619,61 +590,6 @@ async function listNewsItems(limit) {
   return [];
 }
 
-function queueNewsAgeReference(item) {
-  if (!item) return "";
-  return item.articlePublishedAt || item.createdAt || "";
-}
-
-async function pruneStaleQueue() {
-  const before = Array.isArray(state.queue) ? state.queue.length : 0;
-  const expiredNewsIds = [];
-  const manual = [];
-  const auto = [];
-
-  for (const item of (state.queue || [])) {
-    if (!item || !item.newsId) {
-      manual.push(item);
-      continue;
-    }
-    const ageRef = queueNewsAgeReference(item);
-    const stale = ageRef ? isOlderThanHours(ageRef, QUEUE_NEWS_TTL_HOURS) : false;
-    if (stale) {
-      if (item.newsId) expiredNewsIds.push(item.newsId);
-      continue;
-    }
-    auto.push(item);
-  }
-
-  auto.sort(function(a, b) {
-    return new Date(queueNewsAgeReference(b) || 0).getTime() - new Date(queueNewsAgeReference(a) || 0).getTime();
-  });
-
-  const keptAuto = auto.slice(0, MAX_AUTO_QUEUE_ITEMS);
-  const droppedByCap = auto.slice(MAX_AUTO_QUEUE_ITEMS);
-  droppedByCap.forEach(function(item){ if (item && item.newsId) expiredNewsIds.push(item.newsId); });
-
-  state.queue = manual.concat(keptAuto).sort(function(a, b) {
-    return new Date(b && b.createdAt || 0).getTime() - new Date(a && a.createdAt || 0).getTime();
-  });
-
-  const removed = before - state.queue.length;
-  if (removed > 0) {
-    state.lastQueueCleanup = { removed: removed, at: new Date().toISOString() };
-    saveState();
-    if (db && dbReady && expiredNewsIds.length) {
-      try {
-        await db.query(
-          "UPDATE news_items SET status='expired', metadata = metadata || $2::jsonb WHERE id = ANY($1::text[]) AND status='queued'",
-          [expiredNewsIds, JSON.stringify({ expiredAt: new Date().toISOString(), expireReason: "queue_freshness" })]
-        );
-      } catch (error) {
-        console.error("Queue expiry DB update failed:", error.message);
-      }
-    }
-  }
-  return removed;
-}
-
 async function getCollectorRuns(limit) {
   if (!db || !dbReady) return [];
   const r = await db.query(
@@ -691,8 +607,11 @@ async function collectOnce(trigger) {
   const summary = { ok: true, trigger: trigger || "scheduler", startedAt: startedAt, found: 0, queued: 0, published: 0, skipped: 0, errors: [] };
   let runId = null;
   try {
-    const expiredBeforeRun = await pruneStaleQueue();
-    if (expiredBeforeRun) summary.expired = expiredBeforeRun;
+    const cleanupBeforeRun = pruneQueueItems(state);
+    if (cleanupBeforeRun.removed) {
+      summary.expired = cleanupBeforeRun.removed;
+      saveState();
+    }
 
     if (db && dbReady) {
       const r = await db.query("INSERT INTO collector_runs(status) VALUES('running') RETURNING id");
@@ -751,7 +670,7 @@ async function collectOnce(trigger) {
         const articleHtml = await fetchText(url, 15000);
         const originalTitle = extractTitle(articleHtml) || candidate.link.title;
         const articlePublishedAt = extractPublishedAt(articleHtml);
-        if (articlePublishedAt && isOlderThanHours(articlePublishedAt, SOURCE_MAX_AGE_HOURS)) {
+        if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > ARTICLE_MAX_AGE_HOURS * 60 * 60 * 1000) {
           summary.skipped += 1;
           continue;
         }
@@ -792,8 +711,7 @@ async function collectOnce(trigger) {
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaError: media.mediaError || "",
-            generatedBy: media.generatedBy || "",
-            articlePublishedAt: articlePublishedAt || ""
+            generatedBy: media.generatedBy || ""
           }
         };
         summary.found += 1;
@@ -886,7 +804,7 @@ async function collectOnce(trigger) {
             sourceName: source.name,
             newsId: id
           });
-          await pruneStaleQueue();
+          pruneQueueItems(state);
           summary.queued += 1;
         }
 
@@ -1427,7 +1345,8 @@ const server = http.createServer(async function(req, res) {
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
 
     if (req.method === "GET" && p === "/api/dashboard") {
-      await pruneStaleQueue();
+      const cleanup = pruneQueueItems(state);
+      if (cleanup.removed) saveState();
       return sendJson(res, 200, { ok: true, state: state });
     }
 
@@ -1450,9 +1369,9 @@ const server = http.createServer(async function(req, res) {
         running: collectorRunning,
         intervalMinutes: POLL_INTERVAL_MINUTES,
         maxItemsPerRun: MAX_ITEMS_PER_RUN,
-        queueNewsTtlHours: QUEUE_NEWS_TTL_HOURS,
-        sourceMaxAgeHours: SOURCE_MAX_AGE_HOURS,
-        maxAutoQueueItems: MAX_AUTO_QUEUE_ITEMS,
+        queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
+        articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
+        queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS,
         autoPublishEnabled: AUTO_PUBLISH_ENABLED,
         autoPublishMinIntervalMinutes: AUTO_PUBLISH_MIN_INTERVAL_MINUTES,
         mediaRequired: MEDIA_REQUIRED,
@@ -1680,7 +1599,8 @@ const server = http.createServer(async function(req, res) {
 });
 
 await initDb();
-await pruneStaleQueue();
+const startupCleanup = pruneQueueItems(state);
+if (startupCleanup.removed) saveState();
 startCollectorScheduler();
 
 server.listen(PORT, "0.0.0.0", function() {
