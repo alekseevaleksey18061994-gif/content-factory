@@ -24,8 +24,8 @@ const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_P
 const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 5));
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
 const QUEUE_NEWS_TTL_HOURS = Math.max(6, Number(process.env.QUEUE_NEWS_TTL_HOURS || 24));
-const SOURCE_MAX_AGE_HOURS = Math.max(12, Number(process.env.SOURCE_MAX_AGE_HOURS || 48));
-const MAX_AUTO_QUEUE_ITEMS = Math.max(10, Number(process.env.MAX_AUTO_QUEUE_ITEMS || 30));
+const SOURCE_MAX_AGE_HOURS = Math.max(12, Number(process.env.SOURCE_MAX_AGE_HOURS || 24));
+const MAX_AUTO_QUEUE_ITEMS = Math.max(10, Number(process.env.MAX_AUTO_QUEUE_ITEMS || 20));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
@@ -594,6 +594,9 @@ async function collectOnce(trigger) {
   const summary = { ok: true, trigger: trigger || "scheduler", startedAt: startedAt, found: 0, queued: 0, published: 0, skipped: 0, errors: [] };
   let runId = null;
   try {
+    const expiredBeforeRun = await pruneStaleQueue();
+    if (expiredBeforeRun) summary.expired = expiredBeforeRun;
+
     if (db && dbReady) {
       const r = await db.query("INSERT INTO collector_runs(status) VALUES('running') RETURNING id");
       runId = r.rows[0].id;
@@ -650,6 +653,11 @@ async function collectOnce(trigger) {
       try {
         const articleHtml = await fetchText(url, 15000);
         const originalTitle = extractTitle(articleHtml) || candidate.link.title;
+        const articlePublishedAt = extractPublishedAt(articleHtml);
+        if (articlePublishedAt && isOlderThanHours(articlePublishedAt, SOURCE_MAX_AGE_HOURS)) {
+          summary.skipped += 1;
+          continue;
+        }
         const imageUrl = extractMetaImage(articleHtml, url);
         const videoUrl = extractMetaVideo(articleHtml, url);
         const raw = stripHtml(articleHtml);
@@ -680,6 +688,7 @@ async function collectOnce(trigger) {
           status: "discovered",
           metadata: {
             trigger: trigger || "scheduler",
+            articlePublishedAt: articlePublishedAt || "",
             imageUrl: media.imageUrl || "",
             videoUrl: media.videoUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
@@ -769,6 +778,7 @@ async function collectOnce(trigger) {
             title: rewrite.title || originalTitle,
             text: postText,
             createdAt: new Date().toISOString(),
+            articlePublishedAt: articlePublishedAt || "",
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
@@ -778,7 +788,7 @@ async function collectOnce(trigger) {
             sourceName: source.name,
             newsId: id
           });
-          state.queue = state.queue.slice(0, 300);
+          await pruneStaleQueue();
           summary.queued += 1;
         }
 
@@ -1319,6 +1329,7 @@ const server = http.createServer(async function(req, res) {
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
 
     if (req.method === "GET" && p === "/api/dashboard") {
+      await pruneStaleQueue();
       return sendJson(res, 200, { ok: true, state: state });
     }
 
@@ -1341,6 +1352,9 @@ const server = http.createServer(async function(req, res) {
         running: collectorRunning,
         intervalMinutes: POLL_INTERVAL_MINUTES,
         maxItemsPerRun: MAX_ITEMS_PER_RUN,
+        queueNewsTtlHours: QUEUE_NEWS_TTL_HOURS,
+        sourceMaxAgeHours: SOURCE_MAX_AGE_HOURS,
+        maxAutoQueueItems: MAX_AUTO_QUEUE_ITEMS,
         autoPublishEnabled: AUTO_PUBLISH_ENABLED,
         autoPublishMinIntervalMinutes: AUTO_PUBLISH_MIN_INTERVAL_MINUTES,
         mediaRequired: MEDIA_REQUIRED,
@@ -1568,6 +1582,7 @@ const server = http.createServer(async function(req, res) {
 });
 
 await initDb();
+await pruneStaleQueue();
 startCollectorScheduler();
 
 server.listen(PORT, "0.0.0.0", function() {
