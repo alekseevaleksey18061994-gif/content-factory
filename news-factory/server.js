@@ -304,8 +304,6 @@ function loadState() {
       loaded.migrations.push(clearOldNewsMigrationId);
     }
 
-    pruneQueueItems(loaded);
-
     const scheduleMigrationId = "v0.9.0-publication-calendar";
     if (!loaded.migrations.includes(scheduleMigrationId)) {
       loaded.publicationSchedule = structuredClone(defaultState.publicationSchedule);
@@ -313,6 +311,32 @@ function loadState() {
     } else if (!loaded.publicationSchedule) {
       loaded.publicationSchedule = structuredClone(defaultState.publicationSchedule);
     }
+
+    const dynamicMigrationId = "v0.19.0-dynamic-hourly-source";
+    if (!loaded.migrations.includes(dynamicMigrationId)) {
+      // Remove only automatic items prepared by the old all-day calendar.
+      // Manual drafts are preserved.
+      loaded.queue = (loaded.queue || []).filter(function(item){ return item && !item.newsId; });
+      loaded.publicationSchedule = structuredClone(defaultState.publicationSchedule);
+      loaded.dynamicScheduler = structuredClone(defaultState.dynamicScheduler);
+      loaded.migrations.push(dynamicMigrationId);
+    } else {
+      loaded.publicationSchedule = Object.assign(
+        structuredClone(defaultState.publicationSchedule),
+        loaded.publicationSchedule || {}
+      );
+      loaded.publicationSchedule.strategy = "dynamic-hourly";
+      loaded.publicationSchedule.prepareMinutesBefore = 15;
+      loaded.publicationSchedule.targetPerDay = DYNAMIC_DAILY_TARGET;
+      loaded.publicationSchedule.maxPerDay = DYNAMIC_DAILY_MAX;
+      loaded.publicationSchedule.slots = structuredClone(defaultState.publicationSchedule.slots);
+      loaded.dynamicScheduler = Object.assign(
+        structuredClone(defaultState.dynamicScheduler),
+        loaded.dynamicScheduler || {}
+      );
+    }
+
+    pruneQueueItems(loaded);
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(loaded, null, 2), "utf8");
     return loaded;
@@ -324,6 +348,7 @@ function loadState() {
     fresh.migrations.push("v0.10.0-freshness-engine");
     fresh.migrations.push("v0.11.0-dashboard-calendar-actions");
     fresh.migrations.push("v0.14.1-clear-old-news");
+    fresh.migrations.push("v0.19.0-dynamic-hourly-source");
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2), "utf8"); } catch {}
     return fresh;
   }
