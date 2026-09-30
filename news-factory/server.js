@@ -8,6 +8,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
 const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(32).toString("hex");
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
+const ADMIN_UI_PASSWORD_SHA256 = String(process.env.ADMIN_UI_PASSWORD_SHA256 || "").trim().toLowerCase();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
@@ -1211,7 +1212,13 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "POST" && p === "/api/login") {
       const body = await readJson(req);
-      if (!ADMIN_UI_PASSWORD || body.password !== ADMIN_UI_PASSWORD) {
+      const providedPassword = String(body.password || "");
+      const providedHash = crypto.createHash("sha256").update(providedPassword).digest("hex");
+      const hashConfigured = /^[a-f0-9]{64}$/.test(ADMIN_UI_PASSWORD_SHA256);
+      const hashMatches = hashConfigured &&
+        crypto.timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(ADMIN_UI_PASSWORD_SHA256, "hex"));
+      const plainMatches = !hashConfigured && Boolean(ADMIN_UI_PASSWORD) && providedPassword === ADMIN_UI_PASSWORD;
+      if (!hashMatches && !plainMatches) {
         return sendJson(res, 401, { ok: false, error: "invalid password" });
       }
       return sendJson(res, 200, { ok: true }, {
