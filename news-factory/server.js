@@ -830,7 +830,11 @@ async function sendTelegramPost(post) {
 }
 
 async function sendTelegram(text) {
-  return sendTelegramPost({ text: text });
+  return telegramApi("sendMessage", {
+    chat_id: CHANNEL,
+    text: String(text || ""),
+    disable_web_page_preview: true
+  });
 }
 
 
