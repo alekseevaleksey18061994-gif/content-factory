@@ -30,7 +30,7 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
     <button class="mobile-close" id="drawerClose" type="button">×</button>
     <div class="side-brand">
       <div class="side-mark">AI</div>
-      <div><b>News Factory</b><small>AI Pulse · автопубликация</small></div>
+      <div><b>News Factory</b><small>AI Pulse · автопубликация · <span id="sidebarVersion">v—</span></small></div>
     </div>
 
     <div class="side-group">
@@ -69,7 +69,7 @@ input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:whit
       <div class="top">
         <div class="top-left">
           <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">☰</button>
-          <div class="brand"><div class="mark">AI</div><div><h1>News Factory</h1><div class="sub">AI Pulse · управление автопубликацией</div></div></div>
+          <div class="brand"><div class="mark">AI</div><div><h1>News Factory</h1><div class="sub">AI Pulse · управление автопубликацией · <span id="topVersion">v—</span></div></div></div>
         </div>
         <div class="health"><span class="dot" id="topStatusDot"></span><span id="topStatusText">Сервис работает</span></div>
       </div>
@@ -198,7 +198,10 @@ async function renderConnections(force){
   el('statusMissing').textContent=sm.missing==null?'—':sm.missing;
   el('statusMode').textContent=s.mode||state.mode||'—';
   el('statusCheckedAt').textContent=s.checkedAt?'Проверено '+new Date(s.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Проверено';
-  el('statusRuntime').textContent='Service: '+(s.service||'news-factory-api')+' · Environment: '+(s.environment||'production')+' · '+(sm.connected||0)+' из '+(sm.total||0)+' подключений готовы';
+  var version='v'+(s.version||'—');
+  el('sidebarVersion').textContent=version;
+  el('topVersion').textContent=version;
+  el('statusRuntime').textContent='Версия '+version+' · Service: '+(s.service||'news-factory-api')+' · Environment: '+(s.environment||'production')+' · '+(sm.connected||0)+' из '+(sm.total||0)+' подключений готовы';
   el('topStatusText').textContent=(sm.connected||0)+'/'+(sm.total||0)+' подключено';
   el('sideStatusText').textContent=(sm.connected||0)+' подключено · '+(sm.partial||0)+' частично';
   var warning=(sm.missing||0)>0||(sm.partial||0)>0;
