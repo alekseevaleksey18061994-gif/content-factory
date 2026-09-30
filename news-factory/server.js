@@ -534,7 +534,7 @@ async function generateNewsCover(payload) {
   }
 
   const prompt = [
-    "Create a premium editorial technology news image for the Telegram channel AI Pulse.",
+    "Create a premium editorial technology news image for the Telegram channel «Что там у ИИ?».",
     "Topic: " + String(payload.title || "AI technology news"),
     "Context: " + String(payload.text || "").slice(0, 1800),
     "Visual direction: dark graphite premium technology editorial, realistic or polished cinematic illustration, strong central subject, clean composition, high contrast, modern AI/technology atmosphere.",
@@ -1251,7 +1251,7 @@ async function sendTelegramPost(post) {
         try {
           const generatedFallback = await generateNewsCover({
             id: post.id || newId("video_fallback"),
-            title: post.title || "AI Pulse",
+            title: post.title || "Что там у ИИ?",
             text: post.text || "",
             sourceName: post.sourceName || "Telegram fallback"
           });
@@ -1540,7 +1540,7 @@ async function callOpenAIRewrite(payload) {
   const title = String(payload.title || "").trim();
   const sourceUrl = String(payload.sourceUrl || "").trim();
   const prompt = [
-    "Ты редактор Telegram-канала AI Pulse | Новости нейросетей.",
+    "Ты редактор Telegram-канала «Что там у ИИ? | Новости нейросетей».",
     "Твоя задача — не просто пересказать новость, а сделать живой фирменный Telegram-пост: человечный, быстрый, умный и узнаваемый.",
     "",
     "ГЛАВНОЕ:",
@@ -1548,10 +1548,10 @@ async function callOpenAIRewrite(payload) {
     "- ничего не придумывай: даты, цены, характеристики, цитаты, сравнения и цифры нельзя добавлять от себя;",
     "- если факт не подтверждён исходником — не используй его;",
     "- не копируй формулировки источника дословно длинными кусками;",
-    "- не копируй стиль конкурентов один в один: у AI Pulse должен быть собственный голос;",
+    "- не копируй стиль конкурентов один в один: у «Что там у ИИ?» должен быть собственный голос;",
     "- для политических, трагических, медицинских и других чувствительных тем — нейтрально, без шуток и оценочных призывов;",
     "",
-    "ГОЛОС AI PULSE:",
+    "ГОЛОС «ЧТО ТАМ У ИИ?»:",
     "- живой русский язык, как будто умный человек рассказал важную новость другу;",
     "- меньше канцелярита и фраз вроде «компания сообщила», если можно сказать проще;",
     "- допускается лёгкая ирония или короткая шутка из мира нейросетей, но только если тема реально подходит;",
@@ -1621,10 +1621,10 @@ async function callOpenAIRewrite(payload) {
       try {
         parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
       } catch {
-        parsed = { title: title || "AI Pulse", text: output, confidence: "medium", notes: "Ответ модели не был JSON" };
+        parsed = { title: title || "Что там у ИИ?", text: output, confidence: "medium", notes: "Ответ модели не был JSON" };
       }
       const result = {
-        title: String(parsed.title || title || "AI Pulse").trim(),
+        title: String(parsed.title || title || "Что там у ИИ?").trim(),
         text: String(parsed.text || "").trim(),
         confidence: ["high","medium","low"].includes(String(parsed.confidence)) ? String(parsed.confidence) : "medium",
         notes: String(parsed.notes || "").trim(),
@@ -1968,7 +1968,7 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "POST" && p === "/api/test") {
       const marker = crypto.randomBytes(3).toString("hex");
-      const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в AI Pulse работает.\nТест: " + marker);
+      const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «Что там у ИИ?» работает.\nТест: " + marker);
       state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString() });
       state.history = state.history.slice(0, 100);
       state.stats.published += 1;
@@ -1982,7 +1982,7 @@ const server = http.createServer(async function(req, res) {
       if (!text) return sendJson(res, 400, { ok: false, error: "Введите текст" });
       const media = await ensureMediaForNews({
         id: newId("manual"),
-        title: String(body.title || "AI Pulse").trim(),
+        title: String(body.title || "Что там у ИИ?").trim(),
         text: text,
         sourceName: "Ручная публикация",
         imageUrl: String(body.imageUrl || "").trim(),
@@ -2178,7 +2178,7 @@ const server = http.createServer(async function(req, res) {
       if (!text) return sendJson(res, 400, { ok: false, error: "text is required" });
       const media = await ensureMediaForNews({
         id: newId("legacy"),
-        title: String(body.title || "AI Pulse").trim(),
+        title: String(body.title || "Что там у ИИ?").trim(),
         text: text,
         sourceName: "API публикация",
         imageUrl: String(body.imageUrl || "").trim(),
