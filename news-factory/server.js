@@ -60,6 +60,24 @@ const defaultState = {
   mode: "REVIEW",
   sources: structuredClone(CURATED_SOURCES),
   sourceCursor: 0,
+  publicationSchedule: {
+    timezone: "Europe/Moscow",
+    targetPerDay: 10,
+    maxPerDay: 12,
+    minIntervalMinutes: 60,
+    slots: [
+      { time: "00:00", kind: "reserve", label: "Резервное окно" },
+      { time: "03:00", kind: "reserve", label: "Резервное окно" },
+      { time: "08:00", kind: "regular", label: "Плановая публикация" },
+      { time: "10:00", kind: "regular", label: "Плановая публикация" },
+      { time: "12:00", kind: "regular", label: "Плановая публикация" },
+      { time: "14:00", kind: "regular", label: "Плановая публикация" },
+      { time: "16:00", kind: "regular", label: "Плановая публикация" },
+      { time: "18:00", kind: "regular", label: "Плановая публикация" },
+      { time: "20:00", kind: "regular", label: "Плановая публикация" },
+      { time: "22:00", kind: "regular", label: "Плановая публикация" }
+    ]
+  },
   queue: [],
   history: [],
   stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0 },
@@ -97,12 +115,21 @@ function loadState() {
       loaded.migrations.push(curatedMigrationId);
     }
 
+    const scheduleMigrationId = "v0.9.0-publication-calendar";
+    if (!loaded.migrations.includes(scheduleMigrationId)) {
+      loaded.publicationSchedule = structuredClone(defaultState.publicationSchedule);
+      loaded.migrations.push(scheduleMigrationId);
+    } else if (!loaded.publicationSchedule) {
+      loaded.publicationSchedule = structuredClone(defaultState.publicationSchedule);
+    }
+
     fs.writeFileSync(STATE_FILE, JSON.stringify(loaded, null, 2), "utf8");
     return loaded;
   } catch {
     const fresh = structuredClone(defaultState);
     fresh.migrations.push("v0.3.2-restore-openai-source");
     fresh.migrations.push("v0.8.0-curated-sources-20");
+    fresh.migrations.push("v0.9.0-publication-calendar");
     try { fs.writeFileSync(STATE_FILE, JSON.stringify(fresh, null, 2), "utf8"); } catch {}
     return fresh;
   }
