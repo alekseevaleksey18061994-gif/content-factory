@@ -102,7 +102,7 @@ function requireAuth(req, res) {
 
 async function sendTelegram(text) {
   if (!BOT_TOKEN || !CHANNEL) throw new Error("Telegram configuration is incomplete");
-  const response = await fetch(\`https://api.telegram.org/bot\${BOT_TOKEN}/sendMessage\`, {
+  const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -117,10 +117,10 @@ async function sendTelegram(text) {
 }
 
 function newId(prefix = "item") {
-  return \`\${prefix}_\${Date.now()}_\${crypto.randomBytes(3).toString("hex")}\`;
+  return `${prefix}_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
 }
 
-const loginPage = \`<!doctype html>
+const loginPage = `<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -139,9 +139,9 @@ button{width:100%;margin-top:12px;padding:15px;border:0;border-radius:14px;backg
 <form id="f"><input id="p" type="password" placeholder="Пароль" autocomplete="current-password"><button>Войти</button><div class="err" id="e"></div></form>
 <script>
 f.onsubmit=async(e)=>{e.preventDefault();const r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:p.value})});if(r.ok)location='/admin';else document.getElementById('e').textContent='Неверный пароль';}
-</script></div></body></html>\`;
+</script></div></body></html>`;
 
-const adminPage = \`<!doctype html>
+const adminPage = `<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -207,11 +207,11 @@ async function publishQueue(id){await api('/api/queue/publish',{method:'POST',bo
 async function removeQueue(id){await api('/api/queue/remove',{method:'POST',body:JSON.stringify({id})});await load()}
 async function logout(){await api('/api/logout',{method:'POST',body:'{}'});location='/login'}
 load().catch(e=>showToast(e.message));
-</script></body></html>\`;
+</script></body></html>`;
 
 const server = http.createServer(async (req, res) => {
   try {
-    const url = new URL(req.url, \`http://\${req.headers.host || "localhost"}\`);
+    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, {
@@ -236,7 +236,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       if (!ADMIN_UI_PASSWORD || body.password !== ADMIN_UI_PASSWORD) return json(res, 401, { ok: false });
       return json(res, 200, { ok: true }, {
-        "set-cookie": \`nf_session=\${sessionToken()}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000\`
+        "set-cookie": `nf_session=${sessionToken()}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`
       });
     }
 
@@ -261,7 +261,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/test") {
       const marker = crypto.randomBytes(3).toString("hex");
-      const result = await sendTelegram(\`✅ News Factory подключён\\n\\nАвтопубликация в AI Pulse работает.\\nТест: \${marker}\`);
+      const result = await sendTelegram(`✅ News Factory подключён\\n\\nАвтопубликация в AI Pulse работает.\\nТест: ${marker}`);
       state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString() });
       state.history = state.history.slice(0, 100);
       state.stats.published += 1; saveState();
@@ -338,5 +338,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(\`News Factory listening on :\${PORT}\`);
+  console.log(`News Factory listening on :${PORT}`);
 });
