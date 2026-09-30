@@ -11,6 +11,10 @@ const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
+let APP_VERSION = "0.0.0";
+try {
+  APP_VERSION = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")).version || APP_VERSION;
+} catch {}
 
 const defaultState = {
   mode: "REVIEW",
@@ -266,6 +270,7 @@ async function buildSystemStatus(force) {
     checkedAt: new Date().toISOString(),
     environment: process.env.RAILWAY_ENVIRONMENT_NAME || "production",
     service: "news-factory-api",
+    version: APP_VERSION,
     mode: state.mode,
     summary: summary,
     details: details
@@ -284,7 +289,8 @@ const server = http.createServer(async function(req, res) {
         ok: true,
         service: "news-factory",
         telegramConfigured: Boolean(BOT_TOKEN && CHANNEL),
-        uiConfigured: Boolean(ADMIN_UI_PASSWORD)
+        uiConfigured: Boolean(ADMIN_UI_PASSWORD),
+        version: APP_VERSION
       });
     }
 
