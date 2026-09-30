@@ -132,6 +132,148 @@ async function sendTelegram(text) {
   return data.result;
 }
 
+
+let statusCache = { at: 0, value: null };
+
+async function telegramProbe(method, params) {
+  if (!BOT_TOKEN) return { ok: false, error: "Токен не задан" };
+  try {
+    const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(params || {}),
+      signal: AbortSignal.timeout(5000)
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) return { ok: false, error: (data && data.description) || "Telegram API error" };
+    return { ok: true, result: data.result };
+  } catch (error) {
+    return { ok: false, error: String(error && error.message || error) };
+  }
+}
+
+function hasEnv() {
+  for (const key of arguments) if (!process.env[key]) return false;
+  return true;
+}
+
+async function buildSystemStatus(force) {
+  const now = Date.now();
+  if (!force && statusCache.value && now - statusCache.at < 30000) return statusCache.value;
+
+  let storageOk = false;
+  let storageDetail = "";
+  try {
+    ensureDataDir();
+    fs.accessSync(DATA_DIR, fs.constants.W_OK);
+    storageOk = true;
+    storageDetail = "Том /data доступен для записи";
+  } catch (error) {
+    storageDetail = "Нет записи в " + DATA_DIR;
+  }
+
+  const botProbe = BOT_TOKEN ? await telegramProbe("getMe") : { ok: false, error: "TELEGRAM_BOT_TOKEN не задан" };
+  const chatProbe = BOT_TOKEN && CHANNEL ? await telegramProbe("getChat", { chat_id: CHANNEL }) : { ok: false, error: "Канал или токен не заданы" };
+
+  const railwayConnected = Boolean(
+    process.env.RAILWAY_PROJECT_ID ||
+    process.env.RAILWAY_SERVICE_ID ||
+    process.env.RAILWAY_ENVIRONMENT_ID ||
+    process.env.RAILWAY_PUBLIC_DOMAIN
+  );
+  const gitConnected = Boolean(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_REPO_NAME);
+
+  const details = {
+    railway: {
+      state: railwayConnected ? "connected" : "partial",
+      description: railwayConnected ? "Production запущен в Railway" : "Сервис работает, системные переменные Railway не найдены",
+      detail: process.env.RAILWAY_ENVIRONMENT_NAME ? "Окружение: " + process.env.RAILWAY_ENVIRONMENT_NAME : "Environment: production",
+      next: railwayConnected ? "" : "Проверить Railway runtime variables"
+    },
+    github: {
+      state: gitConnected ? "connected" : "partial",
+      description: gitConnected ? "Деплой идёт из GitHub" : "Исходники есть в GitHub, runtime не отдал commit metadata",
+      detail: process.env.RAILWAY_GIT_COMMIT_SHA ? "Commit: " + process.env.RAILWAY_GIT_COMMIT_SHA.slice(0, 8) : "Repo: content-factory/news-factory",
+      next: gitConnected ? "" : "Проверить source connection в Railway"
+    },
+    telegramBot: {
+      state: botProbe.ok ? "connected" : (BOT_TOKEN ? "partial" : "missing"),
+      description: botProbe.ok ? "Бот отвечает через Telegram API" : "Бот не подтверждён API",
+      detail: botProbe.ok && botProbe.result ? "@" + (botProbe.result.username || "bot") : String(botProbe.error || ""),
+      next: botProbe.ok ? "" : "Проверить TELEGRAM_BOT_TOKEN"
+    },
+    telegramChannel: {
+      state: chatProbe.ok ? "connected" : (CHANNEL ? "partial" : "missing"),
+      description: chatProbe.ok ? "Канал доступен боту" : "Доступ к каналу не подтверждён",
+      detail: chatProbe.ok && chatProbe.result ? ((chatProbe.result.title || CHANNEL) + " · " + CHANNEL) : String(chatProbe.error || CHANNEL || ""),
+      next: chatProbe.ok ? "" : "Проверить права бота и TELEGRAM_CHANNEL"
+    },
+    storage: {
+      state: storageOk ? "connected" : "missing",
+      description: storageOk ? "Постоянное хранилище подключено" : "Хранилище недоступно",
+      detail: storageDetail,
+      next: storageOk ? "" : "Проверить Railway volume /data"
+    },
+    adminUi: {
+      state: ADMIN_UI_PASSWORD ? "connected" : "missing",
+      description: ADMIN_UI_PASSWORD ? "Приватная админка защищена входом" : "Пароль админки не задан",
+      detail: ADMIN_UI_PASSWORD ? "Сессия HttpOnly + Secure" : "",
+      next: ADMIN_UI_PASSWORD ? "" : "Добавить ADMIN_UI_PASSWORD"
+    },
+    openai: {
+      state: hasEnv("OPENAI_API_KEY") ? "connected" : "missing",
+      description: hasEnv("OPENAI_API_KEY") ? "OpenAI API настроен" : "AI rewrite пока не подключён",
+      detail: hasEnv("OPENAI_API_KEY") ? "Ключ найден в environment" : "OPENAI_API_KEY отсутствует",
+      next: hasEnv("OPENAI_API_KEY") ? "" : "Подключить OpenAI API для переписывания новостей"
+    },
+    supabase: {
+      state: hasEnv("SUPABASE_URL") && (hasEnv("SUPABASE_SERVICE_ROLE_KEY") || hasEnv("SUPABASE_ANON_KEY")) ? "connected" : "missing",
+      description: hasEnv("SUPABASE_URL") ? "Supabase указан" : "База Supabase ещё не подключена",
+      detail: hasEnv("SUPABASE_URL") ? "URL найден в environment" : "Сейчас MVP хранит state.json на /data",
+      next: hasEnv("SUPABASE_URL") ? "" : "Подключить Supabase/PostgreSQL для multi-channel"
+    },
+    vk: {
+      state: hasEnv("VK_ACCESS_TOKEN") && hasEnv("VK_OWNER_ID") ? "connected" : "missing",
+      description: hasEnv("VK_ACCESS_TOKEN") ? "VK частично настроен" : "Автопубликация VK ещё не подключена",
+      detail: hasEnv("VK_OWNER_ID") ? "Owner ID найден" : "",
+      next: hasEnv("VK_ACCESS_TOKEN") && hasEnv("VK_OWNER_ID") ? "" : "Подключить VK API"
+    },
+    collector: {
+      state: "partial",
+      description: "Источники добавляются, автоматический сборщик ещё не запущен",
+      detail: String((state.sources || []).filter(function(x){ return x.enabled; }).length) + " активных источников",
+      next: "Добавить RSS/Web/Telegram ingestion и Fetch Now"
+    },
+    scheduler: {
+      state: "missing",
+      description: "Автоматический планировщик пока не включён",
+      detail: state.mode === "AUTO" ? "AUTO выбран, но collector/scheduler ещё не реализованы" : "Текущий режим: " + state.mode,
+      next: "Запустить scheduler после News Collector"
+    }
+  };
+
+  const values = Object.values(details);
+  const summary = {
+    connected: values.filter(function(x){ return x.state === "connected"; }).length,
+    partial: values.filter(function(x){ return x.state === "partial"; }).length,
+    missing: values.filter(function(x){ return x.state === "missing"; }).length,
+    total: values.length
+  };
+
+  const result = {
+    ok: true,
+    checkedAt: new Date().toISOString(),
+    environment: process.env.RAILWAY_ENVIRONMENT_NAME || "production",
+    service: "news-factory-api",
+    mode: state.mode,
+    summary: summary,
+    details: details
+  };
+  statusCache = { at: now, value: result };
+  return result;
+}
+
 const server = http.createServer(async function(req, res) {
   try {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
@@ -176,6 +318,12 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "GET" && p === "/api/dashboard") {
       return sendJson(res, 200, { ok: true, state: state });
+    }
+
+    if (req.method === "GET" && p === "/api/status") {
+      const force = url.searchParams.get("refresh") === "1";
+      const status = await buildSystemStatus(force);
+      return sendJson(res, 200, status);
     }
 
     if (req.method === "POST" && p === "/api/mode") {
