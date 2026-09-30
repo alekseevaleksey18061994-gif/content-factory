@@ -24,9 +24,10 @@ input{width:100%;border:1px solid #303849;background:#0a0d13;color:white;border-
       <div id="error" class="err"></div>
     </form>
   </div>
-  <div class="foot">News Factory · private admin</div>
+  <div class="foot">News Factory · private admin · <span id="appVersion">v—</span></div>
 </div>
 <script>
+fetch('/health',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){if(j&&j.version)document.getElementById('appVersion').textContent='v'+j.version}).catch(function(){});
 document.getElementById('loginForm').addEventListener('submit', async function(e){
   e.preventDefault();
   var password=document.getElementById('password').value;
