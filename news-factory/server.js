@@ -2,6 +2,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import pg from "pg";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -10,6 +11,10 @@ const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
+const DATABASE_URL = process.env.DATABASE_URL || "";
+const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
+const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 5));
+const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
@@ -67,11 +72,402 @@ function loadState() {
 }
 
 let state = loadState();
+const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000 }) : null;
+let dbReady = false;
+let collectorRunning = false;
+let collectorTimer = null;
+let lastCollectorRun = null;
+let snapshotTimer = null;
 
 function saveState() {
   state.updatedAt = new Date().toISOString();
   ensureDataDir();
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+  scheduleStateSnapshot();
+}
+
+async function initDb() {
+  if (!db) return false;
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS news_items (
+        id TEXT PRIMARY KEY,
+        source_id TEXT,
+        source_name TEXT,
+        source_url TEXT,
+        original_url TEXT UNIQUE,
+        original_title TEXT,
+        original_text TEXT,
+        content_hash TEXT,
+        detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        rewritten_title TEXT,
+        rewritten_text TEXT,
+        confidence TEXT,
+        status TEXT NOT NULL DEFAULT 'discovered',
+        telegram_message_id BIGINT,
+        published_at TIMESTAMPTZ,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+      );
+      CREATE INDEX IF NOT EXISTS news_items_detected_idx ON news_items(detected_at DESC);
+      CREATE INDEX IF NOT EXISTS news_items_status_idx ON news_items(status);
+      CREATE INDEX IF NOT EXISTS news_items_hash_idx ON news_items(content_hash);
+
+      CREATE TABLE IF NOT EXISTS collector_runs (
+        id BIGSERIAL PRIMARY KEY,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        finished_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'running',
+        found_count INTEGER NOT NULL DEFAULT 0,
+        queued_count INTEGER NOT NULL DEFAULT 0,
+        published_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        error_text TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS app_snapshots (
+        id BIGSERIAL PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        state JSONB NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS app_snapshots_created_idx ON app_snapshots(created_at DESC);
+    `);
+    dbReady = true;
+    await saveStateSnapshot();
+    console.log("PostgreSQL ready");
+    return true;
+  } catch (error) {
+    dbReady = false;
+    console.error("PostgreSQL init failed:", error.message);
+    return false;
+  }
+}
+
+async function saveStateSnapshot() {
+  if (!db || !dbReady) return;
+  try {
+    await db.query("INSERT INTO app_snapshots(state) VALUES($1::jsonb)", [JSON.stringify(state)]);
+    await db.query("DELETE FROM app_snapshots WHERE id NOT IN (SELECT id FROM app_snapshots ORDER BY created_at DESC LIMIT 200)");
+  } catch (error) {
+    console.error("State snapshot failed:", error.message);
+  }
+}
+
+function scheduleStateSnapshot() {
+  if (!db || !dbReady) return;
+  clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(function(){ saveStateSnapshot(); }, 1500);
+}
+
+function canonicalizeUrl(raw, base) {
+  try {
+    const u = new URL(raw, base);
+    u.hash = "";
+    ["utm_source","utm_medium","utm_campaign","utm_term","utm_content","fbclid","gclid"].forEach(function(k){ u.searchParams.delete(k); });
+    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
+    return u.toString();
+  } catch {
+    return "";
+  }
+}
+
+function htmlDecode(text) {
+  return String(text || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, function(_, n){ return String.fromCharCode(Number(n)); });
+}
+
+function stripHtml(html) {
+  return htmlDecode(String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<!--([\s\S]*?)-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+  ).trim();
+}
+
+function extractTitle(html) {
+  const og = String(html || "").match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i) ||
+             String(html || "").match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["'][^>]*>/i);
+  if (og && og[1]) return stripHtml(og[1]).slice(0, 300);
+  const m = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return m ? stripHtml(m[1]).slice(0, 300) : "";
+}
+
+function extractArticleLinks(html, sourceUrl) {
+  const base = new URL(sourceUrl);
+  const out = new Map();
+  const re = /<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(String(html || "")))) {
+    const url = canonicalizeUrl(m[1], sourceUrl);
+    const text = stripHtml(m[2]).replace(/\s+/g, " ").trim();
+    if (!url || text.length < 18 || text.length > 220) continue;
+    let u;
+    try { u = new URL(url); } catch { continue; }
+    if (u.hostname !== base.hostname && !u.hostname.endsWith("." + base.hostname.replace(/^www\./, ""))) continue;
+    if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip|mp4|mp3)$/i.test(u.pathname)) continue;
+    if (u.pathname === "/" || u.pathname.split("/").filter(Boolean).length < 1) continue;
+    const score =
+      (/news|blog|article|stories|technology|ai|research|product|updates/i.test(u.pathname) ? 4 : 0) +
+      (u.pathname.split("/").filter(Boolean).length >= 2 ? 2 : 0) +
+      (text.length >= 35 ? 1 : 0);
+    const prev = out.get(url);
+    if (!prev || score > prev.score) out.set(url, { url: url, title: text, score: score });
+  }
+  return Array.from(out.values()).sort(function(a,b){ return b.score - a.score; }).slice(0, 12);
+}
+
+async function fetchText(url, timeoutMs) {
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": "Mozilla/5.0 (compatible; NewsFactoryBot/0.5; +https://news-factory-api-production.up.railway.app)"
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(timeoutMs || 15000)
+  });
+  if (!response.ok) throw new Error("HTTP " + response.status + " " + url);
+  const type = response.headers.get("content-type") || "";
+  if (!type.includes("text/html") && !type.includes("application/xhtml")) throw new Error("Unsupported content type: " + type);
+  return await response.text();
+}
+
+async function seenOriginalUrl(url) {
+  if (db && dbReady) {
+    const r = await db.query("SELECT 1 FROM news_items WHERE original_url=$1 LIMIT 1", [url]);
+    return r.rowCount > 0;
+  }
+  state.seenUrls = Array.isArray(state.seenUrls) ? state.seenUrls : [];
+  return state.seenUrls.includes(url);
+}
+
+async function saveNewsItem(item) {
+  if (db && dbReady) {
+    await db.query(
+      `INSERT INTO news_items
+      (id, source_id, source_name, source_url, original_url, original_title, original_text, content_hash, rewritten_title, rewritten_text, confidence, status, telegram_message_id, published_at, metadata)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+      ON CONFLICT (original_url) DO UPDATE SET
+        rewritten_title=COALESCE(EXCLUDED.rewritten_title, news_items.rewritten_title),
+        rewritten_text=COALESCE(EXCLUDED.rewritten_text, news_items.rewritten_text),
+        confidence=COALESCE(EXCLUDED.confidence, news_items.confidence),
+        status=EXCLUDED.status,
+        telegram_message_id=COALESCE(EXCLUDED.telegram_message_id, news_items.telegram_message_id),
+        published_at=COALESCE(EXCLUDED.published_at, news_items.published_at),
+        metadata=EXCLUDED.metadata`,
+      [
+        item.id, item.sourceId, item.sourceName, item.sourceUrl, item.originalUrl, item.originalTitle,
+        item.originalText, item.contentHash, item.rewrittenTitle || null, item.rewrittenText || null,
+        item.confidence || null, item.status, item.telegramMessageId || null, item.publishedAt || null,
+        JSON.stringify(item.metadata || {})
+      ]
+    );
+  }
+  state.seenUrls = Array.isArray(state.seenUrls) ? state.seenUrls : [];
+  if (!state.seenUrls.includes(item.originalUrl)) {
+    state.seenUrls.push(item.originalUrl);
+    state.seenUrls = state.seenUrls.slice(-5000);
+    saveState();
+  }
+}
+
+async function listNewsItems(limit) {
+  const safeLimit = Math.max(1, Math.min(100, Number(limit || 30)));
+  if (db && dbReady) {
+    const r = await db.query(
+      `SELECT id, source_id AS "sourceId", source_name AS "sourceName", source_url AS "sourceUrl",
+      original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
+      rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
+      telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
+      FROM news_items ORDER BY detected_at DESC LIMIT $1`, [safeLimit]
+    );
+    return r.rows;
+  }
+  return [];
+}
+
+async function getCollectorRuns(limit) {
+  if (!db || !dbReady) return [];
+  const r = await db.query(
+    'SELECT id, started_at AS "startedAt", finished_at AS "finishedAt", status, found_count AS "foundCount", queued_count AS "queuedCount", published_count AS "publishedCount", skipped_count AS "skippedCount", error_text AS "errorText" FROM collector_runs ORDER BY id DESC LIMIT $1',
+    [Math.max(1, Math.min(50, Number(limit || 10)))]
+  );
+  return r.rows;
+}
+
+async function collectOnce(trigger) {
+  if (!COLLECTOR_ENABLED) return { ok: false, error: "Collector disabled" };
+  if (collectorRunning) return { ok: false, error: "Collector already running" };
+  collectorRunning = true;
+  const startedAt = new Date().toISOString();
+  const summary = { ok: true, trigger: trigger || "scheduler", startedAt: startedAt, found: 0, queued: 0, published: 0, skipped: 0, errors: [] };
+  let runId = null;
+  try {
+    if (db && dbReady) {
+      const r = await db.query("INSERT INTO collector_runs(status) VALUES('running') RETURNING id");
+      runId = r.rows[0].id;
+    }
+
+    if (state.mode === "PAUSED" && trigger !== "manual") {
+      summary.skipped += 1;
+      return summary;
+    }
+
+    const enabledSources = (state.sources || []).filter(function(src){ return src.enabled && /^https?:\/\//i.test(src.url || ""); });
+    const candidates = [];
+    for (const source of enabledSources) {
+      try {
+        const html = await fetchText(source.url, 15000);
+        const links = extractArticleLinks(html, source.url).slice(0, 2);
+        for (const link of links) candidates.push({ source: source, link: link });
+      } catch (error) {
+        summary.errors.push(source.name + ": " + error.message);
+      }
+    }
+
+    const ordered = [];
+    const seenInRun = new Set();
+    for (const c of candidates) {
+      if (seenInRun.has(c.link.url)) continue;
+      seenInRun.add(c.link.url);
+      ordered.push(c);
+      if (ordered.length >= MAX_ITEMS_PER_RUN * 3) break;
+    }
+
+    for (const candidate of ordered) {
+      if (summary.found >= MAX_ITEMS_PER_RUN) break;
+      const source = candidate.source;
+      const url = candidate.link.url;
+      if (await seenOriginalUrl(url)) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      try {
+        const articleHtml = await fetchText(url, 15000);
+        const originalTitle = extractTitle(articleHtml) || candidate.link.title;
+        const raw = stripHtml(articleHtml);
+        const originalText = raw.slice(0, 14000);
+        if (originalText.length < 250) {
+          summary.skipped += 1;
+          continue;
+        }
+        const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
+        const id = "news_" + contentHash.slice(0, 20);
+        const baseItem = {
+          id: id,
+          sourceId: source.id,
+          sourceName: source.name,
+          sourceUrl: source.url,
+          originalUrl: url,
+          originalTitle: originalTitle,
+          originalText: originalText,
+          contentHash: contentHash,
+          status: "discovered",
+          metadata: { trigger: trigger || "scheduler" }
+        };
+        summary.found += 1;
+        state.stats.discovered += 1;
+
+        let rewrite;
+        try {
+          rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText });
+          state.stats.rewritten += 1;
+        } catch (error) {
+          baseItem.status = "rewrite_error";
+          baseItem.metadata.rewriteError = error.message;
+          await saveNewsItem(baseItem);
+          summary.errors.push(originalTitle + ": " + error.message);
+          continue;
+        }
+
+        baseItem.rewrittenTitle = rewrite.title;
+        baseItem.rewrittenText = rewrite.text;
+        baseItem.confidence = rewrite.confidence;
+        baseItem.metadata.model = rewrite.model;
+        baseItem.metadata.notes = rewrite.notes;
+
+        const postText = (rewrite.title ? rewrite.title + "\n\n" : "") + rewrite.text + "\n\nИсточник: " + url;
+
+        if (state.mode === "AUTO") {
+          const tg = await sendTelegram(postText);
+          baseItem.status = "published";
+          baseItem.telegramMessageId = tg.message_id;
+          baseItem.publishedAt = new Date().toISOString();
+          state.history.unshift({
+            id: newId("hist"),
+            title: rewrite.title || originalTitle,
+            text: postText,
+            messageId: tg.message_id,
+            publishedAt: baseItem.publishedAt,
+            sourceUrl: url
+          });
+          state.history = state.history.slice(0, 300);
+          state.stats.published += 1;
+          summary.published += 1;
+        } else {
+          baseItem.status = "queued";
+          state.queue.unshift({
+            id: newId("q"),
+            title: rewrite.title || originalTitle,
+            text: postText,
+            createdAt: new Date().toISOString(),
+            sourceUrl: url,
+            newsId: id
+          });
+          state.queue = state.queue.slice(0, 300);
+          summary.queued += 1;
+        }
+
+        await saveNewsItem(baseItem);
+        saveState();
+      } catch (error) {
+        summary.errors.push(url + ": " + error.message);
+      }
+    }
+
+    summary.finishedAt = new Date().toISOString();
+    lastCollectorRun = summary;
+    if (db && dbReady && runId) {
+      await db.query(
+        "UPDATE collector_runs SET finished_at=NOW(), status=$2, found_count=$3, queued_count=$4, published_count=$5, skipped_count=$6, error_text=$7 WHERE id=$1",
+        [runId, summary.errors.length ? "completed_with_errors" : "success", summary.found, summary.queued, summary.published, summary.skipped, summary.errors.slice(0, 20).join("\n") || null]
+      );
+    }
+    saveState();
+    return summary;
+  } catch (error) {
+    summary.ok = false;
+    summary.error = error.message;
+    summary.finishedAt = new Date().toISOString();
+    lastCollectorRun = summary;
+    if (db && dbReady && runId) {
+      try {
+        await db.query("UPDATE collector_runs SET finished_at=NOW(), status='failed', error_text=$2 WHERE id=$1", [runId, error.message]);
+      } catch {}
+    }
+    return summary;
+  } finally {
+    collectorRunning = false;
+  }
+}
+
+function startCollectorScheduler() {
+  if (!COLLECTOR_ENABLED || collectorTimer) return;
+  const everyMs = POLL_INTERVAL_MINUTES * 60 * 1000;
+  collectorTimer = setInterval(function(){
+    collectOnce("scheduler").catch(function(error){ console.error("Collector run failed:", error.message); });
+  }, everyMs);
+  setTimeout(function(){
+    collectOnce("startup").catch(function(error){ console.error("Startup collector failed:", error.message); });
+  }, 30000);
+  console.log("Collector scheduler started every " + POLL_INTERVAL_MINUTES + " min");
 }
 
 function sendJson(res, status, payload, headers) {
@@ -360,10 +756,10 @@ async function buildSystemStatus(force) {
       next: openaiProbe.ok ? "" : (OPENAI_API_KEY ? "Проверить ключ, доступ к модели и биллинг OpenAI" : "Подключить OpenAI API для переписывания новостей")
     },
     supabase: {
-      state: hasEnv("SUPABASE_URL") && (hasEnv("SUPABASE_SERVICE_ROLE_KEY") || hasEnv("SUPABASE_ANON_KEY")) ? "connected" : "missing",
-      description: hasEnv("SUPABASE_URL") ? "Supabase указан" : "База Supabase ещё не подключена",
-      detail: hasEnv("SUPABASE_URL") ? "URL найден в environment" : "Сейчас MVP хранит state.json на /data",
-      next: hasEnv("SUPABASE_URL") ? "" : "Подключить Supabase/PostgreSQL для multi-channel"
+      state: dbReady ? "connected" : (DATABASE_URL ? "partial" : "missing"),
+      description: dbReady ? "PostgreSQL подключён и доступен" : (DATABASE_URL ? "DATABASE_URL задан, база ещё не подтверждена" : "База данных не подключена"),
+      detail: dbReady ? "Долговременное хранение news_items, collector_runs и snapshots" : (DATABASE_URL ? "Ожидание подключения PostgreSQL" : "Используется только /data/state.json"),
+      next: dbReady ? "" : "Проверить PostgreSQL в Railway"
     },
     vk: {
       state: hasEnv("VK_ACCESS_TOKEN") && hasEnv("VK_OWNER_ID") ? "connected" : "missing",
@@ -372,16 +768,16 @@ async function buildSystemStatus(force) {
       next: hasEnv("VK_ACCESS_TOKEN") && hasEnv("VK_OWNER_ID") ? "" : "Подключить VK API"
     },
     collector: {
-      state: "partial",
-      description: "Источники добавляются, автоматический сборщик ещё не запущен",
-      detail: String((state.sources || []).filter(function(x){ return x.enabled; }).length) + " активных источников",
-      next: "Добавить RSS/Web/Telegram ingestion и Fetch Now"
+      state: COLLECTOR_ENABLED ? "connected" : "missing",
+      description: COLLECTOR_ENABLED ? "News Collector включён" : "News Collector выключен",
+      detail: String((state.sources || []).filter(function(x){ return x.enabled; }).length) + " активных источников · лимит " + MAX_ITEMS_PER_RUN + " новостей за запуск",
+      next: COLLECTOR_ENABLED ? "" : "Включить COLLECTOR_ENABLED"
     },
     scheduler: {
-      state: "missing",
-      description: "Автоматический планировщик пока не включён",
-      detail: state.mode === "AUTO" ? "AUTO выбран, но collector/scheduler ещё не реализованы" : "Текущий режим: " + state.mode,
-      next: "Запустить scheduler после News Collector"
+      state: collectorTimer ? "connected" : (COLLECTOR_ENABLED ? "partial" : "missing"),
+      description: collectorTimer ? "24/7 scheduler запущен" : "Scheduler ещё не стартовал",
+      detail: collectorTimer ? "Проверка каждые " + POLL_INTERVAL_MINUTES + " минут" : "Режим: " + state.mode,
+      next: collectorTimer ? "" : "Перезапустить сервис после включения collector"
     }
   };
 
@@ -460,6 +856,30 @@ const server = http.createServer(async function(req, res) {
       const force = url.searchParams.get("refresh") === "1";
       const status = await buildSystemStatus(force);
       return sendJson(res, 200, status);
+    }
+
+    if (req.method === "GET" && p === "/api/news") {
+      const items = await listNewsItems(url.searchParams.get("limit") || 50);
+      return sendJson(res, 200, { ok: true, items: items });
+    }
+
+    if (req.method === "GET" && p === "/api/collector/status") {
+      const runs = await getCollectorRuns(10);
+      return sendJson(res, 200, {
+        ok: true,
+        enabled: COLLECTOR_ENABLED,
+        running: collectorRunning,
+        intervalMinutes: POLL_INTERVAL_MINUTES,
+        maxItemsPerRun: MAX_ITEMS_PER_RUN,
+        dbReady: dbReady,
+        lastRun: lastCollectorRun,
+        runs: runs
+      });
+    }
+
+    if (req.method === "POST" && p === "/api/collector/run") {
+      const result = await collectOnce("manual");
+      return sendJson(res, result.ok === false ? 409 : 200, result);
     }
 
     if (req.method === "POST" && p === "/api/ai/test") {
@@ -596,6 +1016,9 @@ const server = http.createServer(async function(req, res) {
     if (!res.headersSent) sendJson(res, 500, { ok: false, error: error.message });
   }
 });
+
+await initDb();
+startCollectorScheduler();
 
 server.listen(PORT, "0.0.0.0", function() {
   console.log("News Factory listening on :" + PORT);
