@@ -475,6 +475,98 @@ button,.quick button,.quick a{
 @media(max-width:900px){.platform-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.post-stat-row{grid-template-columns:minmax(0,1fr) repeat(2,minmax(72px,.35fr))}.post-stat-row .post-stat-cell:nth-child(n+4){display:none}}
 @media(max-width:560px){.platform-head{align-items:flex-start}.platform-metrics{grid-template-columns:1fr 1fr}.post-stat-row{grid-template-columns:minmax(0,1fr) 72px}.post-stat-row .post-stat-cell:nth-child(n+3){display:none}.metric-box{min-height:80px}.metric-box b{font-size:20px}}
 
+
+/* v0.14.0 — safe spacing + editorial preview */
+.main{padding-left:8px;padding-right:8px}
+.shell{padding:30px 38px 48px}
+.top{
+  margin-left:0;
+  margin-right:0;
+  padding:15px 18px 20px;
+  border-radius:18px;
+  background:linear-gradient(180deg,rgba(10,13,19,.97),rgba(9,12,17,.88) 72%,rgba(9,12,17,0));
+}
+.top-left{min-width:0;padding-left:2px}
+.brand{min-width:0}
+.mark{flex:0 0 50px;margin-left:0}
+.page.active{padding:0 12px 34px}
+.page-head{padding:8px 8px 5px;margin-bottom:16px}
+.page-head>div{min-width:0}
+.card{padding:24px}
+.hero{padding:25px 26px}
+.side{padding:20px 18px 18px}
+.side-brand{padding:10px 10px 18px}
+.side-mark{flex:0 0 42px}
+.side-group{padding-left:2px;padding-right:2px}
+.nav{padding-left:12px;padding-right:12px}
+.collector-head,.stats,.calendar-summary,.system-grid,.platform-metrics{min-width:0}
+.collector-box,.stat,.calendar-summary-box,.system-box,.metric-box{min-width:0}
+.card,.hero,.news-card,.queue-card,.calendar-slot,.conn-group,.source,.collector-box,.metric-box{
+  overflow-wrap:anywhere;
+  word-break:normal;
+}
+.page-head h2,.page-head p,.panel-title h3,.panel-title p,.hero h2,.hero p,.notice,.collector-box small{
+  padding-left:1px;
+  padding-right:1px;
+}
+.news-card-body,.queue-card-main,.news-card-head,.queue-head,.calendar-slot-main,.platform-head>div{min-width:0}
+.news-status,.media-badge,.slot-chip,.chip,.status{
+  margin-left:2px;
+  margin-right:2px;
+}
+.telegram-copy{padding:18px 18px 17px}
+.telegram-copy h3{
+  font-size:18px;
+  line-height:1.35;
+  margin:0 0 14px;
+  letter-spacing:-.015em;
+}
+.telegram-body{
+  color:#e7ebf1;
+  font-size:14px;
+  line-height:1.62;
+}
+.telegram-body p{margin:0 0 13px;white-space:pre-wrap}
+.telegram-body p:last-child{margin-bottom:0}
+.telegram-body strong{font-weight:800;color:#fff}
+.telegram-body em{font-style:italic;color:#dce4ef}
+.telegram-quote{
+  margin:14px 0;
+  padding:11px 13px;
+  border-left:3px solid #ff6b73;
+  border-radius:0 10px 10px 0;
+  background:linear-gradient(90deg,rgba(255,107,115,.15),rgba(255,107,115,.045));
+  color:#f2e7e8;
+  font-style:italic;
+}
+.telegram-accent{
+  margin:12px 0;
+  padding:10px 12px;
+  border:1px solid rgba(111,147,255,.20);
+  border-radius:11px;
+  background:rgba(111,147,255,.07);
+}
+@media(max-width:1100px){
+  .shell{padding-left:26px;padding-right:26px}
+  .page.active{padding-left:8px;padding-right:8px}
+}
+@media(max-width:900px){
+  .main{padding-left:0;padding-right:0}
+  .shell{padding:16px 15px 30px!important}
+  .top{padding:12px 10px 16px}
+  .page.active{padding:0 2px 28px}
+  .page-head{padding-left:4px;padding-right:4px}
+  .card{padding:18px}
+  .side{padding:18px 16px}
+}
+@media(max-width:560px){
+  .shell{padding-left:12px!important;padding-right:12px!important}
+  .top{padding-left:8px;padding-right:8px}
+  .page.active{padding-left:0;padding-right:0}
+  .card{padding:16px}
+  .hero{padding:18px}
+}
+
 @media(max-width:900px){.dashboard-calendar{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.dashboard-calendar{grid-template-columns:1fr 1fr}.modal-backdrop{padding:8px}.modal-card{border-radius:16px}.picker-item{grid-template-columns:54px minmax(0,1fr)}.picker-thumb{width:54px;height:44px}.picker-item button{grid-column:1/-1;width:100%}}
 @media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.dash-two,.ai-layout{grid-template-columns:1fr}.quick{grid-template-columns:repeat(2,1fr)}.collector-head{grid-template-columns:repeat(2,1fr)}}
@@ -866,7 +958,7 @@ function render(){
           '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status queued">В очереди</span></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
-          '<div class="queue-text">'+esc(parts.text||'')+'</div>'+
+          '<div class="queue-text">'+esc(stripEditorialMarks(parts.text||''))+'</div>'+
           '<div class="card-click-note">Нажмите на карточку, чтобы посмотреть пост полностью</div>'+
           (q.sourceUrl?'<div class="queue-meta"><a class="link" href="'+esc(q.sourceUrl)+'" target="_blank" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+
         '</div>'+
@@ -1188,6 +1280,49 @@ function postParts(item){
   }
   return {title:title,text:text};
 }
+function stripEditorialMarks(text){
+  return String(text||'')
+    .replace(/^>\s?/gm,'')
+    .replace(/\*\*([^*\n]+)\*\*/g,'$1')
+    .replace(/__([^_\n]+)__/g,'$1');
+}
+function inlineEditorialHtml(text){
+  var safe=esc(String(text||''));
+  safe=safe.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');
+  safe=safe.replace(/__([^_\n]+)__/g,'<em>$1</em>');
+  return safe;
+}
+function editorialBodyHtml(text){
+  var lines=String(text||'').replace(/\r\n/g,'\n').split('\n');
+  var html=[],para=[];
+  function flushPara(){
+    if(!para.length)return;
+    var content=para.map(inlineEditorialHtml).join('<br>');
+    var raw=para.join(' ').trim();
+    var accent=/^[🧠🔥⚡💡🤖👀✅🎯🚀]/.test(raw);
+    html.push(accent?'<div class="telegram-accent">'+content+'</div>':'<p>'+content+'</p>');
+    para=[];
+  }
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i];
+    if(/^>\s?/.test(line)){
+      flushPara();
+      var q=[];
+      while(i<lines.length&&/^>\s?/.test(lines[i])){
+        q.push(lines[i].replace(/^>\s?/,''));
+        i++;
+      }
+      i--;
+      html.push('<div class="telegram-quote">'+q.map(inlineEditorialHtml).join('<br>')+'</div>');
+      continue;
+    }
+    if(!line.trim()){flushPara();continue}
+    para.push(line);
+  }
+  flushPara();
+  return html.join('');
+}
+
 function openModal(id){var m=el(id);if(m){m.classList.add('open');document.body.style.overflow='hidden'}}
 function closeModal(id){var m=el(id);if(m)m.classList.remove('open');if(!document.querySelector('.modal-backdrop.open'))document.body.style.overflow=''}
 function modalBackdropClose(event,id){if(event.target===el(id))closeModal(id)}
@@ -1196,7 +1331,8 @@ function renderPreview(item){
   var media=video?'<video class="telegram-video" controls preload="metadata" src="'+esc(video)+'"></video>':img?'<img class="telegram-media" src="'+esc(img)+'" alt="">':'';
   var source=item.sourceUrl||item.originalUrl||'';
   el('previewMeta').textContent=(item.sourceName||'AI Pulse')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
-  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><p>'+esc(pp.text||'Нет текста')+'</p>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">AI Pulse · предпросмотр</div></div></div></div>';
+  var body=editorialBodyHtml(pp.text||'Нет текста');
+  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">AI Pulse · предпросмотр</div></div></div></div>';
   openModal('previewModal');
 }
 function openQueuePreview(id){
@@ -1226,7 +1362,7 @@ async function loadNews(){
     el('newsList').innerHTML=newsItems.length?newsItems.map(function(n){
       var pp=postParts({title:n.rewrittenTitle||n.originalTitle,text:n.rewrittenText||n.originalText});
       var title=pp.title||'Без заголовка';
-      var body=(pp.text||'').slice(0,320);
+      var body=stripEditorialMarks(pp.text||'').slice(0,320);
       var status=n.status||'discovered';
       var md=n.metadata||{};
       var image=md.generatedImageUrl||md.imageUrl||'';
