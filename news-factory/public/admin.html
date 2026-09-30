@@ -451,6 +451,30 @@ button,.quick button,.quick a{
 }
 .topTitle,.topTitle *{overflow:visible}
 
+
+.platform-analytics{overflow:hidden}
+.platform-head{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.platform-head>div{display:flex;align-items:center;gap:12px}
+.platform-head h3{margin:0;font-size:20px;line-height:1.2}
+.platform-head p{margin:4px 0 0;color:var(--muted);font-size:12px}
+.platform-icon{width:42px;height:42px;border-radius:13px;display:grid;place-items:center;font-weight:900;background:linear-gradient(135deg,#28a8ea,#6e78ff);border:1px solid rgba(255,255,255,.12);box-shadow:0 10px 24px rgba(41,123,255,.18)}
+.vk-analytics .platform-icon{background:linear-gradient(135deg,#1f8fff,#2367dc);font-size:12px}
+.platform-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:16px}
+.metric-box{min-height:88px;padding:14px;border:1px solid rgba(132,151,183,.18);border-radius:15px;background:linear-gradient(180deg,#10161f,#0b1016);box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+.metric-box b{display:block;font-size:23px;line-height:1.1;font-weight:820;letter-spacing:-.025em}
+.metric-box span{display:block;color:#8f9cad;font-size:11px;line-height:1.35;margin-top:7px}
+.post-stats-list{display:grid;gap:9px}
+.post-stat-row{display:grid;grid-template-columns:minmax(0,1.6fr) repeat(4,minmax(74px,.45fr));gap:10px;align-items:center;padding:12px 13px;border:1px solid #26303e;border-radius:14px;background:#0c1118}
+.post-stat-title{min-width:0}
+.post-stat-title b{display:block;font-size:12px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.post-stat-title a{display:inline-block;color:#8fb0ff;font-size:10px;margin-top:4px;text-decoration:none}
+.post-stat-cell{text-align:right}
+.post-stat-cell b{display:block;font-size:13px;line-height:1.2}
+.post-stat-cell span{display:block;color:var(--muted);font-size:9px;margin-top:3px}
+.analytics-empty{padding:16px;border:1px dashed #2e3848;border-radius:14px;color:var(--muted);font-size:12px;text-align:center;background:#0b1016}
+@media(max-width:900px){.platform-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.post-stat-row{grid-template-columns:minmax(0,1fr) repeat(2,minmax(72px,.35fr))}.post-stat-row .post-stat-cell:nth-child(n+4){display:none}}
+@media(max-width:560px){.platform-head{align-items:flex-start}.platform-metrics{grid-template-columns:1fr 1fr}.post-stat-row{grid-template-columns:minmax(0,1fr) 72px}.post-stat-row .post-stat-cell:nth-child(n+3){display:none}.metric-box{min-height:80px}.metric-box b{font-size:20px}}
+
 @media(max-width:900px){.dashboard-calendar{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.dashboard-calendar{grid-template-columns:1fr 1fr}.modal-backdrop{padding:8px}.modal-card{border-radius:16px}.picker-item{grid-template-columns:54px minmax(0,1fr)}.picker-thumb{width:54px;height:44px}.picker-item button{grid-column:1/-1;width:100%}}
 @media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.dash-two,.ai-layout{grid-template-columns:1fr}.quick{grid-template-columns:repeat(2,1fr)}.collector-head{grid-template-columns:repeat(2,1fr)}}
@@ -630,8 +654,49 @@ button,.quick button,.quick a{
       </section>
 
       <section class="page" id="statsPage">
-        <div class="page-head"><div><h2>Статистика</h2><p>Основные показатели News Factory.</p></div></div>
-        <section class="card"><div class="stats"><div class="stat"><b id="s_discovered">0</b><span>Найдено</span></div><div class="stat"><b id="s_rewritten">0</b><span>Переписано</span></div><div class="stat"><b id="s_published">0</b><span>Опубликовано</span></div><div class="stat"><b id="s_skipped">0</b><span>Пропущено</span></div></div></section>
+        <div class="page-head"><div><h2>Статистика</h2><p>Активность по публикациям и отдельно по каждой площадке.</p></div><button onclick="loadAnalytics(true)">Обновить статистику</button></div>
+        <section class="card">
+          <div class="panel-title"><div><h3>News Factory</h3><p>Работа контент-конвейера.</p></div></div>
+          <div class="stats"><div class="stat"><b id="s_discovered">0</b><span>Найдено</span></div><div class="stat"><b id="s_rewritten">0</b><span>Переписано</span></div><div class="stat"><b id="s_published">0</b><span>Опубликовано</span></div><div class="stat"><b id="s_skipped">0</b><span>Пропущено</span></div></div>
+        </section>
+
+        <section class="platform-analytics telegram-analytics card" style="margin-top:14px">
+          <div class="platform-head">
+            <div><span class="platform-icon">✈</span><div><h3>Telegram</h3><p id="tgAnalyticsSubtitle">@aipulserussia · загружаю статистику…</p></div></div>
+            <span class="chip" id="tgAnalyticsStatus">Проверка…</span>
+          </div>
+          <div class="platform-metrics">
+            <div class="metric-box"><b id="tgPosts">—</b><span>Постов</span></div>
+            <div class="metric-box"><b id="tgViews">—</b><span>Просмотры</span></div>
+            <div class="metric-box"><b id="tgReactions">—</b><span>Лайки / реакции</span></div>
+            <div class="metric-box"><b id="tgComments">—</b><span>Комментарии</span></div>
+            <div class="metric-box"><b id="tgForwards">—</b><span>Пересылки</span></div>
+            <div class="metric-box"><b id="tgSubscribers">—</b><span>Подписчики</span></div>
+            <div class="metric-box"><b id="tgAvgViews">—</b><span>Средние просмотры</span></div>
+            <div class="metric-box"><b id="tgEngagement">—</b><span>Вовлечённость</span></div>
+          </div>
+          <div class="notice" id="tgAnalyticsNote" style="margin-top:12px">Загружаю данные Telegram…</div>
+          <div class="post-stats-list" id="tgPostStats" style="margin-top:12px"></div>
+        </section>
+
+        <section class="platform-analytics vk-analytics card" style="margin-top:14px">
+          <div class="platform-head">
+            <div><span class="platform-icon">VK</span><div><h3>ВКонтакте</h3><p id="vkAnalyticsSubtitle">Отдельная статистика VK</p></div></div>
+            <span class="chip" id="vkAnalyticsStatus">Проверка…</span>
+          </div>
+          <div class="platform-metrics">
+            <div class="metric-box"><b id="vkPosts">—</b><span>Постов</span></div>
+            <div class="metric-box"><b id="vkViews">—</b><span>Просмотры</span></div>
+            <div class="metric-box"><b id="vkLikes">—</b><span>Лайки</span></div>
+            <div class="metric-box"><b id="vkComments">—</b><span>Комментарии</span></div>
+            <div class="metric-box"><b id="vkReposts">—</b><span>Репосты</span></div>
+            <div class="metric-box"><b id="vkSubscribers">—</b><span>Подписчики</span></div>
+            <div class="metric-box"><b id="vkAvgViews">—</b><span>Средние просмотры</span></div>
+            <div class="metric-box"><b id="vkEngagement">—</b><span>Вовлечённость</span></div>
+          </div>
+          <div class="notice" id="vkAnalyticsNote" style="margin-top:12px">Загружаю данные VK…</div>
+          <div class="post-stats-list" id="vkPostStats" style="margin-top:12px"></div>
+        </section>
       </section>
 
       <section class="page" id="calendarPage">
@@ -761,6 +826,7 @@ function goPage(id,options){
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
   if(id==='newsPage'){loadNews();loadCollectorStatus();}
   if(id==='calendarPage'){renderCalendar();}
+  if(id==='statsPage'){loadAnalytics(false);}
 }
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
@@ -953,6 +1019,74 @@ async function assignCalendar(queueId){
   if(!calendarPickerTarget)return;
   await api('/api/calendar/assign',{method:'POST',body:JSON.stringify({date:calendarPickerTarget.date,time:calendarPickerTarget.time,queueId:queueId})});
   closeModal('calendarPickerModal');toast('Новость поставлена в календарь');await load();renderCalendar();
+}
+
+
+function fmtMetric(v){
+  if(v===null||v===undefined||v==='')return '—';
+  var n=Number(v);
+  if(!Number.isFinite(n))return String(v);
+  return new Intl.NumberFormat('ru-RU',{notation:n>=10000?'compact':'standard',maximumFractionDigits:1}).format(n);
+}
+function analyticsMetric(id,value,suffix){
+  var node=el(id);if(!node)return;
+  node.textContent=(value===null||value===undefined)?'—':fmtMetric(value)+(suffix||'');
+}
+async function loadAnalytics(force){
+  try{
+    if(el('tgAnalyticsStatus'))el('tgAnalyticsStatus').textContent='Обновляю…';
+    if(el('vkAnalyticsStatus'))el('vkAnalyticsStatus').textContent='Обновляю…';
+    var j=await api('/api/analytics'+(force?'?refresh=1':''));
+    renderPlatformAnalytics(j);
+  }catch(e){
+    if(el('tgAnalyticsStatus'))el('tgAnalyticsStatus').textContent='Ошибка';
+    if(el('vkAnalyticsStatus'))el('vkAnalyticsStatus').textContent='Ошибка';
+    if(el('tgAnalyticsNote'))el('tgAnalyticsNote').textContent='Не удалось загрузить статистику: '+e.message;
+  }
+}
+function renderPlatformAnalytics(data){
+  var tg=data.telegram||{},tt=tg.totals||{};
+  el('tgAnalyticsStatus').textContent=tg.available?'Данные получены':(tg.connected?'Нет данных':'Не подключено');
+  el('tgAnalyticsStatus').className='chip';
+  el('tgAnalyticsSubtitle').textContent=(tg.channel||'Telegram')+(tg.checkedAt?' · обновлено '+new Date(tg.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'');
+  analyticsMetric('tgPosts',tt.posts);
+  analyticsMetric('tgViews',tt.views);
+  analyticsMetric('tgReactions',tt.reactions);
+  analyticsMetric('tgComments',tt.comments);
+  analyticsMetric('tgForwards',tt.forwards);
+  analyticsMetric('tgSubscribers',tt.subscribers);
+  analyticsMetric('tgAvgViews',tt.avgViews);
+  el('tgEngagement').textContent=tt.engagementRate==null?'—':Number(tt.engagementRate).toFixed(2)+'%';
+  el('tgAnalyticsNote').textContent=tg.error?('Telegram: '+tg.error):(tg.note||'');
+  var posts=tg.posts||[];
+  el('tgPostStats').innerHTML=posts.length?posts.slice(0,30).map(function(p){
+    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||('Пост #'+p.messageId))+'</b><a href="'+esc(p.url||'#')+'" target="_blank">Открыть пост #'+esc(p.messageId)+'</a></div>'+
+      '<div class="post-stat-cell"><b>'+fmtMetric(p.views||0)+'</b><span>Просмотры</span></div>'+
+      '<div class="post-stat-cell"><b>'+fmtMetric(p.reactions||0)+'</b><span>Реакции</span></div>'+
+      '<div class="post-stat-cell"><b>'+fmtMetric(p.comments||0)+'</b><span>Комментарии</span></div>'+
+      '<div class="post-stat-cell"><b>'+(p.forwards==null?'—':fmtMetric(p.forwards))+'</b><span>Пересылки</span></div></div>';
+  }).join(''):'<div class="analytics-empty">Пока нет доступной статистики по опубликованным Telegram-постам.</div>';
+
+  var vk=data.vk||{},vt=vk.totals||{};
+  el('vkAnalyticsStatus').textContent=vk.available?'Данные получены':(vk.connected?'Ожидает статистику':'Не подключено');
+  el('vkAnalyticsSubtitle').textContent=vk.connected?'Сообщество подключено':'VK пока не подключён';
+  analyticsMetric('vkPosts',vt.posts);
+  analyticsMetric('vkViews',vt.views);
+  analyticsMetric('vkLikes',vt.likes);
+  analyticsMetric('vkComments',vt.comments);
+  analyticsMetric('vkReposts',vt.reposts);
+  analyticsMetric('vkSubscribers',vt.subscribers);
+  analyticsMetric('vkAvgViews',vt.avgViews);
+  el('vkEngagement').textContent=vt.engagementRate==null?'—':Number(vt.engagementRate).toFixed(2)+'%';
+  el('vkAnalyticsNote').textContent=vk.note||'';
+  var vkPosts=vk.posts||[];
+  el('vkPostStats').innerHTML=vkPosts.length?vkPosts.map(function(p){
+    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||'VK пост')+'</b></div>'+
+      '<div class="post-stat-cell"><b>'+fmtMetric(p.views||0)+'</b><span>Просмотры</span></div>'+
+      '<div class="post-stat-cell"><b>'+fmtMetric(p.likes||0)+'</b><span>Лайки</span></div>'+
+      '<div class="post-stat-cell"><b>'+fmtMetric(p.comments||0)+'</b><span>Комментарии</span></div>'+
+      '<div class="post-stat-cell"><b>'+fmtMetric(p.reposts||0)+'</b><span>Репосты</span></div></div>';
+  }).join(''):'<div class="analytics-empty">После подключения VK здесь появится активность по каждому посту отдельно.</div>';
 }
 
 function renderDashboard(){
