@@ -13,7 +13,7 @@ button,a,input,textarea{font:inherit}.app{min-height:100vh}.side{position:fixed;
 .side-group{display:grid;gap:5px}.side-title{color:#687386;font-size:10px;font-weight:800;letter-spacing:.1em;padding:5px 10px;text-transform:uppercase}.nav{border:0;background:transparent;color:#cbd2df;border-radius:12px;padding:11px 10px;display:flex;align-items:center;gap:10px;text-align:left;cursor:pointer;text-decoration:none}.nav:hover,.nav.active{background:#171e2b;color:#fff}.nav .ico{width:24px;height:24px;border-radius:8px;background:#121823;display:grid;place-items:center;color:#90a8ff;font-size:13px}.nav b{font-size:13px}.side-spacer{flex:1}.side-status{border:1px solid #263043;background:#111722;border-radius:14px;padding:11px;display:flex;align-items:center;gap:9px}.online{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green)}.online.warn{background:var(--amber);box-shadow:0 0 12px rgba(255,190,85,.45)}.side-status b{font-size:12px;display:block}.side-status small{font-size:10px;color:var(--muted)}
 .mobile-close{display:none;position:absolute;right:10px;top:10px;width:38px;height:38px;border:1px solid #2b3444;background:#151a24;color:#fff;border-radius:12px;font-size:22px}.drawer-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:40;backdrop-filter:blur(3px)}
 .main{margin-left:var(--side);min-width:0}.shell{max-width:1240px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;position:sticky;top:0;z-index:20;padding:8px 0;background:linear-gradient(#080a0f 75%,transparent)}.top-left{display:flex;align-items:center;gap:11px}.menu-toggle{display:none;width:42px;height:42px;border:1px solid #303849;background:#111722;color:#fff;border-radius:13px;font-size:20px}.brand{display:flex;align-items:center;gap:12px}.mark{width:48px;height:48px;border-radius:15px;background:linear-gradient(135deg,#20c7ff,#625bff 55%,#b24cff);display:grid;place-items:center;font-weight:900;font-size:20px;box-shadow:0 12px 28px rgba(75,97,255,.22)}h1{margin:0;font-size:24px}.sub{color:var(--muted);font-size:12px;margin-top:3px}.health{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}
-.page{display:none}.page.active{display:block}.page-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:14px}.page-head h2{margin:0;font-size:26px}.page-head p{margin:5px 0 0;color:var(--muted);font-size:13px}
+.page{display:none!important}.page.active{display:block!important}.page-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-end;margin-bottom:14px}.page-head h2{margin:0;font-size:26px}.page-head p{margin:5px 0 0;color:var(--muted);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.card{background:linear-gradient(180deg,rgba(18,22,30,.96),rgba(15,19,26,.96));border:1px solid var(--line);border-radius:18px;padding:17px}.span12{grid-column:span 12}.span8{grid-column:span 8}.span7{grid-column:span 7}.span6{grid-column:span 6}.span5{grid-column:span 5}.span4{grid-column:span 4}
 .label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.09em;margin-bottom:8px}.big{font-size:28px;font-weight:800}.row{display:flex;align-items:center;justify-content:space-between;gap:12px}.actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.modes{display:flex;gap:8px;flex-wrap:wrap}
 button{border:1px solid #303849;background:var(--panel2);color:var(--text);border-radius:11px;padding:9px 12px;font-size:13px;cursor:pointer}.primary{background:#f5f7fa;color:#080a0f;border-color:#f5f7fa;font-weight:800}.active{border-color:#6c91ff;background:#172343}.danger{color:#ff9197}.link{color:#9db5ff;text-decoration:none}
@@ -173,14 +173,36 @@ function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function setDrawer(open){el('appSidebar').classList.toggle('mobile-open',!!open);el('drawerBackdrop').classList.toggle('open',!!open);document.body.classList.toggle('drawer-open',!!open)}
-function goPage(id){
+var pageRoutes={
+  homePage:'home',
+  sourcesPage:'sources',
+  queuePage:'queue',
+  publishPage:'publish',
+  statsPage:'stats',
+  historyPage:'history',
+  modePage:'mode',
+  connectionsPage:'connections',
+  systemPage:'system'
+};
+var routePages=Object.fromEntries(Object.keys(pageRoutes).map(function(id){return [pageRoutes[id],id]}));
+function goPage(id,options){
+  options=options||{};
+  if(!pageRoutes[id])id='homePage';
   document.querySelectorAll('.page').forEach(function(p){p.classList.toggle('active',p.id===id)});
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
-  setDrawer(false);window.scrollTo({top:0,behavior:'smooth'});
+  setDrawer(false);
+  window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
   var titles={homePage:'News Factory',sourcesPage:'Источники',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',historyPage:'История',modePage:'Режим работы',connectionsPage:'Подключения',systemPage:'Статус системы'};
   el('topTitle').textContent=titles[id]||'News Factory';
+  var hash='#'+pageRoutes[id];
+  if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
+}
+function openRouteFromHash(){
+  var route=(location.hash||'#home').slice(1);
+  goPage(routePages[route]||'homePage',{fromHash:true,instant:true});
 }
 window.goPage=goPage;
+window.addEventListener('hashchange',openRouteFromHash);
 el('menuToggle').addEventListener('click',function(){setDrawer(true)});
 el('drawerClose').addEventListener('click',function(){setDrawer(false)});
 el('drawerBackdrop').addEventListener('click',function(){setDrawer(false)});
@@ -259,6 +281,7 @@ async function addDraft(){var title=prompt('Заголовок черновик�
 async function publishQueue(id){await api('/api/queue/publish',{method:'POST',body:JSON.stringify({id:id})});toast('Пост опубликован');await load()}
 async function removeQueue(id){await api('/api/queue/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function logout(){await api('/api/logout',{method:'POST',body:'{}'});location.href='/login'}
+openRouteFromHash();
 load().catch(function(e){toast(e.message)});
 </script>
 </body>
