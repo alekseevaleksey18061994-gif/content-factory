@@ -6,78 +6,111 @@
 <meta name="theme-color" content="#080a0f">
 <title>News Factory</title>
 <style>
-:root{--bg:#080a0f;--panel:#11151d;--panel2:#171c26;--line:#262d3a;--text:#f5f7fa;--muted:#8f99aa;--green:#4bd08b;--blue:#5b8cff;--red:#ff6b73;--amber:#ffbe55}
-*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}body{min-height:100vh;background:radial-gradient(circle at 0% 0%,rgba(48,74,255,.13),transparent 28%),#080a0f}
-.shell{max-width:1240px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;position:sticky;top:0;z-index:8;padding:8px 0;background:linear-gradient(#080a0f 75%,transparent)}
-.brand{display:flex;align-items:center;gap:12px}.mark{width:48px;height:48px;border-radius:15px;background:linear-gradient(135deg,#20c7ff,#625bff 55%,#b24cff);display:grid;place-items:center;font-weight:900;font-size:20px;box-shadow:0 12px 28px rgba(75,97,255,.22)}h1{margin:0;font-size:24px}.sub{color:var(--muted);font-size:12px;margin-top:3px}.health{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}
-.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.card{background:linear-gradient(180deg,rgba(18,22,30,.96),rgba(15,19,26,.96));border:1px solid var(--line);border-radius:18px;padding:17px}.span12{grid-column:span 12}.span8{grid-column:span 8}.span7{grid-column:span 7}.span6{grid-column:span 6}.span5{grid-column:span 5}.span4{grid-column:span 4}
+:root{--bg:#080a0f;--panel:#11151d;--panel2:#171c26;--line:#262d3a;--text:#f5f7fa;--muted:#8f99aa;--green:#4bd08b;--blue:#5b8cff;--red:#ff6b73;--amber:#ffbe55;--side:270px}
+*{box-sizing:border-box}html{scroll-behavior:smooth}html,body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}body{min-height:100vh;background:radial-gradient(circle at 0% 0%,rgba(48,74,255,.13),transparent 28%),#080a0f;overflow-x:hidden}
+button,a,input,textarea{font:inherit}.app{min-height:100vh}.side{position:fixed;inset:0 auto 0 0;width:var(--side);z-index:50;background:linear-gradient(180deg,#0e1219,#0a0d12);border-right:1px solid #202735;padding:16px 13px;display:flex;flex-direction:column;gap:14px;overflow:auto;transition:transform .25s ease}
+.side-brand{display:flex;align-items:center;gap:11px;padding:8px 8px 14px;border-bottom:1px solid #202735}.side-mark{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#20c7ff,#625bff 55%,#b24cff);display:grid;place-items:center;font-weight:900;box-shadow:0 12px 28px rgba(75,97,255,.22)}.side-brand b{display:block;font-size:15px}.side-brand small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+.side-group{display:grid;gap:5px}.side-title{color:#687386;font-size:10px;font-weight:800;letter-spacing:.1em;padding:5px 10px;text-transform:uppercase}.nav{border:0;background:transparent;color:#cbd2df;border-radius:12px;padding:11px 10px;display:flex;align-items:center;gap:10px;text-align:left;cursor:pointer}.nav:hover,.nav.active{background:#171e2b;color:#fff}.nav .ico{width:24px;height:24px;border-radius:8px;background:#121823;display:grid;place-items:center;color:#90a8ff;font-size:13px}.nav b{font-size:13px}.side-spacer{flex:1}.side-status{border:1px solid #263043;background:#111722;border-radius:14px;padding:11px;display:flex;align-items:center;gap:9px}.online{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green)}.side-status b{font-size:12px;display:block}.side-status small{font-size:10px;color:var(--muted)}
+.mobile-close{display:none;position:absolute;right:10px;top:10px;width:38px;height:38px;border:1px solid #2b3444;background:#151a24;color:#fff;border-radius:12px;font-size:22px}.drawer-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:40;backdrop-filter:blur(3px)}
+.main{margin-left:var(--side);min-width:0}.shell{max-width:1240px;margin:0 auto;padding:20px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;position:sticky;top:0;z-index:20;padding:8px 0;background:linear-gradient(#080a0f 75%,transparent)}.top-left{display:flex;align-items:center;gap:11px}.menu-toggle{display:none;width:42px;height:42px;border:1px solid #303849;background:#111722;color:#fff;border-radius:13px;font-size:20px}.brand{display:flex;align-items:center;gap:12px}.mark{width:48px;height:48px;border-radius:15px;background:linear-gradient(135deg,#20c7ff,#625bff 55%,#b24cff);display:grid;place-items:center;font-weight:900;font-size:20px;box-shadow:0 12px 28px rgba(75,97,255,.22)}h1{margin:0;font-size:24px}.sub{color:var(--muted);font-size:12px;margin-top:3px}.health{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.card{background:linear-gradient(180deg,rgba(18,22,30,.96),rgba(15,19,26,.96));border:1px solid var(--line);border-radius:18px;padding:17px;scroll-margin-top:88px}.span12{grid-column:span 12}.span8{grid-column:span 8}.span7{grid-column:span 7}.span6{grid-column:span 6}.span5{grid-column:span 5}.span4{grid-column:span 4}
 .label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.09em;margin-bottom:8px}.big{font-size:28px;font-weight:800}.row{display:flex;align-items:center;justify-content:space-between;gap:12px}.actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.modes{display:flex;gap:8px;flex-wrap:wrap}
 button{border:1px solid #303849;background:var(--panel2);color:var(--text);border-radius:11px;padding:9px 12px;font-size:13px;cursor:pointer}.primary{background:#f5f7fa;color:#080a0f;border-color:#f5f7fa;font-weight:800}.active{border-color:#6c91ff;background:#172343}.danger{color:#ff9197}.link{color:#9db5ff;text-decoration:none}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.stat{background:#0d1016;border:1px solid #222937;border-radius:13px;padding:13px}.stat b{font-size:22px;display:block}.stat span{color:var(--muted);font-size:12px}
-input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:white;border-radius:12px;padding:12px;font:inherit;outline:none}textarea{min-height:138px;resize:vertical}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.source,.queueItem,.hist{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px 0;border-top:1px solid #232a36}.source:first-child,.queueItem:first-child,.hist:first-child{border-top:0}.name{font-weight:700}.url,.meta{font-size:12px;color:var(--muted);word-break:break-all;margin-top:3px;line-height:1.4}.chip{display:inline-block;border:1px solid #303849;border-radius:99px;padding:4px 8px;font-size:11px;color:var(--muted)}.empty{color:var(--muted);padding:14px 0}.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(110px);background:#fff;color:#0a0c10;padding:12px 16px;border-radius:12px;font-weight:750;transition:.25s;z-index:30;box-shadow:0 14px 40px #0008}.toast.show{transform:translateX(-50%) translateY(0)}
-.notice{font-size:13px;color:#98a2b3;line-height:1.45}.channel{display:flex;align-items:center;gap:10px}.channelIcon{width:40px;height:40px;border-radius:13px;background:#1c2642;display:grid;place-items:center;font-weight:800;color:#8db3ff}
-@media(max-width:800px){.shell{padding:14px}.span8,.span7,.span6,.span5,.span4{grid-column:span 12}.stats{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.top{align-items:flex-start}.health{margin-top:8px}.stack{align-items:stretch;flex-direction:column}}
+input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:white;border-radius:12px;padding:12px;outline:none}textarea{min-height:138px;resize:vertical}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.source,.queueItem,.hist{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px 0;border-top:1px solid #232a36}.source:first-child,.queueItem:first-child,.hist:first-child{border-top:0}.name{font-weight:700}.url,.meta{font-size:12px;color:var(--muted);word-break:break-all;margin-top:3px;line-height:1.4}.chip{display:inline-block;border:1px solid #303849;border-radius:99px;padding:4px 8px;font-size:11px;color:var(--muted)}.empty{color:var(--muted);padding:14px 0}.toast{position:fixed;left:calc(50% + var(--side)/2);bottom:26px;transform:translateX(-50%) translateY(110px);background:#fff;color:#0a0c10;padding:12px 16px;border-radius:12px;font-weight:750;transition:.25s;z-index:80;box-shadow:0 14px 40px #0008}.toast.show{transform:translateX(-50%) translateY(0)}.notice{font-size:13px;color:#98a2b3;line-height:1.45}
+@media(max-width:900px){
+  .side{transform:translateX(-105%);width:min(86vw,320px);box-shadow:24px 0 70px rgba(0,0,0,.5)}.side.mobile-open{transform:translateX(0)}.drawer-backdrop.open{display:block}.mobile-close{display:grid;place-items:center}.main{margin-left:0}.menu-toggle{display:grid;place-items:center}.shell{padding:14px}.span8,.span7,.span6,.span5,.span4{grid-column:span 12}.stats{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.top{align-items:flex-start}.health{margin-top:8px}.stack{align-items:stretch;flex-direction:column}.toast{left:50%}body.drawer-open{overflow:hidden}
+}
 </style>
 </head>
 <body>
-<div class="shell">
-  <div class="top">
-    <div class="brand"><div class="mark">AI</div><div><h1>News Factory</h1><div class="sub">AI Pulse · управление автопубликацией</div></div></div>
-    <div class="health"><span class="dot"></span><span>Сервис работает</span></div>
-  </div>
+<div class="app">
+  <aside class="side" id="appSidebar">
+    <button class="mobile-close" id="drawerClose" type="button">×</button>
+    <div class="side-brand">
+      <div class="side-mark">AI</div>
+      <div><b>News Factory</b><small>AI Pulse · автопубликация</small></div>
+    </div>
 
-  <div class="grid">
-    <section class="card span12">
-      <div class="row stack">
-        <div>
-          <div class="label">Режим работы</div>
-          <div id="modes" class="modes"></div>
+    <div class="side-group">
+      <div class="side-title">Основное</div>
+      <button class="nav active" data-target="dashboard"><span class="ico">⌂</span><b>Главная</b></button>
+      <button class="nav" data-target="sourcesCard"><span class="ico">⌁</span><b>Источники</b></button>
+      <button class="nav" data-target="queueCard"><span class="ico">☷</span><b>Очередь</b></button>
+      <button class="nav" data-target="publishCard"><span class="ico">➤</span><b>Публикация</b></button>
+    </div>
+
+    <div class="side-group">
+      <div class="side-title">Контроль</div>
+      <button class="nav" data-target="statsCard"><span class="ico">↗</span><b>Статистика</b></button>
+      <button class="nav" data-target="historyCard"><span class="ico">◫</span><b>История</b></button>
+      <button class="nav" data-target="settingsCard"><span class="ico">⚙</span><b>Режим работы</b></button>
+    </div>
+
+    <div class="side-spacer"></div>
+
+    <div class="side-group">
+      <a class="nav" href="https://t.me/aipulserussia" target="_blank"><span class="ico">✈</span><b>Открыть Telegram</b></a>
+      <button class="nav" onclick="logout()"><span class="ico">↪</span><b>Выйти</b></button>
+    </div>
+    <div class="side-status"><span class="online"></span><div><b>Система запущена</b><small>@aipulserussia</small></div></div>
+  </aside>
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+
+  <main class="main">
+    <div class="shell">
+      <div class="top">
+        <div class="top-left">
+          <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">☰</button>
+          <div class="brand"><div class="mark">AI</div><div><h1>News Factory</h1><div class="sub">AI Pulse · управление автопубликацией</div></div></div>
         </div>
-        <div class="actions">
-          <a class="link" href="https://t.me/aipulserussia" target="_blank">Открыть канал</a>
-          <button onclick="testPost()">Тест в Telegram</button>
-          <button class="danger" onclick="logout()">Выйти</button>
-        </div>
+        <div class="health"><span class="dot"></span><span>Сервис работает</span></div>
       </div>
-    </section>
 
-    <section class="card span12">
-      <div class="label">Статистика</div>
-      <div class="stats">
-        <div class="stat"><b id="s_discovered">0</b><span>Найдено</span></div>
-        <div class="stat"><b id="s_rewritten">0</b><span>Переписано</span></div>
-        <div class="stat"><b id="s_published">0</b><span>Опубликовано</span></div>
-        <div class="stat"><b id="s_skipped">0</b><span>Пропущено</span></div>
+      <div class="grid" id="dashboard">
+        <section class="card span12" id="settingsCard">
+          <div class="row stack">
+            <div><div class="label">Режим работы</div><div id="modes" class="modes"></div></div>
+            <div class="actions"><a class="link" href="https://t.me/aipulserussia" target="_blank">Открыть канал</a><button onclick="testPost()">Тест в Telegram</button></div>
+          </div>
+        </section>
+
+        <section class="card span12" id="statsCard">
+          <div class="label">Статистика</div>
+          <div class="stats">
+            <div class="stat"><b id="s_discovered">0</b><span>Найдено</span></div>
+            <div class="stat"><b id="s_rewritten">0</b><span>Переписано</span></div>
+            <div class="stat"><b id="s_published">0</b><span>Опубликовано</span></div>
+            <div class="stat"><b id="s_skipped">0</b><span>Пропущено</span></div>
+          </div>
+        </section>
+
+        <section class="card span7" id="sourcesCard">
+          <div class="row"><div><div class="label">Источники</div><div class="big" id="sourceCount">0</div></div><span class="chip">официальные + свои</span></div>
+          <div id="sources"></div>
+          <div class="two" style="margin-top:12px"><input id="sourceName" placeholder="Название источника"><input id="sourceUrl" placeholder="https://... или t.me/..."></div>
+          <button style="margin-top:8px" onclick="addSource()">+ Добавить источник</button>
+        </section>
+
+        <section class="card span5" id="publishCard">
+          <div class="label">Быстрая публикация</div>
+          <textarea id="publishText" placeholder="Напиши текст поста…"></textarea>
+          <button class="primary" style="margin-top:8px;width:100%" onclick="publishNow()">Опубликовать в Telegram</button>
+          <div class="notice" style="margin-top:10px">Публикация идёт через @AIPulsePublisherBot в канал @aipulserussia.</div>
+        </section>
+
+        <section class="card span7" id="queueCard">
+          <div class="row"><div><div class="label">Очередь</div><div class="big" id="queueCount">0</div></div><button onclick="addDraft()">+ Черновик</button></div>
+          <div id="queue"></div>
+        </section>
+
+        <section class="card span5" id="historyCard">
+          <div class="label">Последние публикации</div>
+          <div id="history"></div>
+        </section>
       </div>
-    </section>
-
-    <section class="card span7">
-      <div class="row"><div><div class="label">Источники</div><div class="big" id="sourceCount">0</div></div><span class="chip">официальные + свои</span></div>
-      <div id="sources"></div>
-      <div class="two" style="margin-top:12px">
-        <input id="sourceName" placeholder="Название источника">
-        <input id="sourceUrl" placeholder="https://... или t.me/...">
-      </div>
-      <button style="margin-top:8px" onclick="addSource()">+ Добавить источник</button>
-    </section>
-
-    <section class="card span5">
-      <div class="label">Быстрая публикация</div>
-      <textarea id="publishText" placeholder="Напиши текст поста…"></textarea>
-      <button class="primary" style="margin-top:8px;width:100%" onclick="publishNow()">Опубликовать в Telegram</button>
-      <div class="notice" style="margin-top:10px">Публикация идёт через @AIPulsePublisherBot в канал @aipulserussia.</div>
-    </section>
-
-    <section class="card span7">
-      <div class="row"><div><div class="label">Очередь</div><div class="big" id="queueCount">0</div></div><button onclick="addDraft()">+ Черновик</button></div>
-      <div id="queue"></div>
-    </section>
-
-    <section class="card span5">
-      <div class="label">Последние публикации</div>
-      <div id="history"></div>
-    </section>
-  </div>
+    </div>
+  </main>
 </div>
 <div id="toast" class="toast"></div>
 
@@ -86,30 +119,23 @@ var state={};
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-async function api(url,opt){
-  opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});
-  var r=await fetch(url,opt);
-  if(r.status===401){location.href='/login';throw new Error('unauthorized')}
-  var j=await r.json();
-  if(!r.ok)throw new Error(j.error||'Ошибка');
-  return j;
-}
+function setDrawer(open){var side=el('appSidebar'),back=el('drawerBackdrop');side.classList.toggle('mobile-open',!!open);back.classList.toggle('open',!!open);document.body.classList.toggle('drawer-open',!!open)}
+el('menuToggle').addEventListener('click',function(){setDrawer(true)});
+el('drawerClose').addEventListener('click',function(){setDrawer(false)});
+el('drawerBackdrop').addEventListener('click',function(){setDrawer(false)});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')setDrawer(false)});
+document.querySelectorAll('[data-target]').forEach(function(btn){btn.addEventListener('click',function(){document.querySelectorAll('.nav[data-target]').forEach(function(n){n.classList.remove('active')});btn.classList.add('active');var target=el(btn.dataset.target);if(target)target.scrollIntoView({behavior:'smooth',block:'start'});setDrawer(false)})});
+async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
 async function load(){var j=await api('/api/dashboard');state=j.state;render()}
 function render(){
   var labels={AUTO:'AUTO · автоматически',REVIEW:'REVIEW · на проверку',PAUSED:'PAUSED · стоп'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode(\''+m+'\')">'+labels[m]+'</button>'}).join('');
   ['discovered','rewritten','published','skipped'].forEach(function(k){el('s_'+k).textContent=(state.stats&&state.stats[k])||0});
   el('sourceCount').textContent=(state.sources||[]).length;
-  el('sources').innerHTML=(state.sources||[]).map(function(s){
-    return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><span class="chip">'+(s.enabled?'Вкл':'Выкл')+'</span><button onclick="toggleSource(\''+s.id+'\')">'+(s.enabled?'Откл':'Вкл')+'</button><button class="danger" onclick="removeSource(\''+s.id+'\')">×</button></div></div>';
-  }).join('');
+  el('sources').innerHTML=(state.sources||[]).map(function(s){return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><span class="chip">'+(s.enabled?'Вкл':'Выкл')+'</span><button onclick="toggleSource(\''+s.id+'\')">'+(s.enabled?'Откл':'Вкл')+'</button><button class="danger" onclick="removeSource(\''+s.id+'\')">×</button></div></div>'}).join('');
   el('queueCount').textContent=(state.queue||[]).length;
-  el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){
-    return '<div class="queueItem"><div><div class="name">'+esc(q.title||'Без заголовка')+'</div><div class="meta">'+esc(q.text).slice(0,160)+'</div></div><div class="actions"><button class="primary" onclick="publishQueue(\''+q.id+'\')">Пост</button><button class="danger" onclick="removeQueue(\''+q.id+'\')">×</button></div></div>';
-  }).join(''):'<div class="empty">Очередь пока пустая</div>';
-  el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,8).map(function(h){
-    return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+'</div></div></div>';
-  }).join(''):'<div class="empty">Публикаций пока нет</div>';
+  el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){return '<div class="queueItem"><div><div class="name">'+esc(q.title||'Без заголовка')+'</div><div class="meta">'+esc(q.text).slice(0,160)+'</div></div><div class="actions"><button class="primary" onclick="publishQueue(\''+q.id+'\')">Пост</button><button class="danger" onclick="removeQueue(\''+q.id+'\')">×</button></div></div>'}).join(''):'<div class="empty">Очередь пока пустая</div>';
+  el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,8).map(function(h){return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+'</div></div></div>'}).join(''):'<div class="empty">Публикаций пока нет</div>';
 }
 async function setMode(mode){await api('/api/mode',{method:'POST',body:JSON.stringify({mode:mode})});await load();toast('Режим: '+mode)}
 async function testPost(){var j=await api('/api/test',{method:'POST',body:'{}'});toast('Тест опубликован #'+j.messageId);await load()}
