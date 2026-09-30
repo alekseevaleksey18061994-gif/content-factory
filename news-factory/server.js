@@ -1687,7 +1687,11 @@ async function buildSystemStatus(force) {
     telegramBot: {
       state: botProbe.ok ? "connected" : (BOT_TOKEN ? "partial" : "missing"),
       description: botProbe.ok ? "Бот отвечает через Telegram API" : "Бот не подтверждён API",
-      detail: botProbe.ok && botProbe.result ? "@" + (botProbe.result.username || "bot") : String(botProbe.error || ""),
+      detail: botProbe.ok && botProbe.result
+        ? ((botProbe.result.first_name || "Telegram-бот") + (botProbe.result.username ? " · @" + botProbe.result.username : ""))
+        : String(botProbe.error || ""),
+      username: botProbe.ok && botProbe.result ? String(botProbe.result.username || "") : "",
+      displayName: botProbe.ok && botProbe.result ? String(botProbe.result.first_name || "") : "",
       next: botProbe.ok ? "" : "Проверить TELEGRAM_BOT_TOKEN"
     },
     telegramChannel: {
