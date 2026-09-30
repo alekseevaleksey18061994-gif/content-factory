@@ -12,6 +12,11 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
 const DATABASE_URL = process.env.DATABASE_URL || "";
+const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase() !== "false";
+const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
+const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst";
+const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low";
+const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
 const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
@@ -20,6 +25,7 @@ const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
+const MEDIA_DIR = path.join(DATA_DIR, "media");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 let APP_VERSION = "0.0.0";
 try {
@@ -44,6 +50,7 @@ const defaultState = {
 
 function ensureDataDir() {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+  try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
 }
 
 function loadState() {
@@ -219,6 +226,125 @@ function extractMetaImage(html, pageUrl) {
   return "";
 }
 
+function extractMetaVideo(html, pageUrl) {
+  const source = String(html || "");
+  const patterns = [
+    /<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:video(?::secure_url)?["'][^>]*>/i,
+    /<video[^>]+src=["']([^"']+)["'][^>]*>/i,
+    /<source[^>]+src=["']([^"']+)["'][^>]*type=["']video\/[^"']+["'][^>]*>/i
+  ];
+  for (const re of patterns) {
+    const m = source.match(re);
+    if (!m || !m[1]) continue;
+    const url = canonicalizeUrl(htmlDecode(m[1]), pageUrl);
+    if (url && /^https?:\/\//i.test(url) && /\.(mp4|mov|m4v|webm)(\?|$)/i.test(url)) return url;
+  }
+  return "";
+}
+
+function mediaPublicUrl(fileName) {
+  return PUBLIC_BASE_URL + "/media/" + encodeURIComponent(fileName);
+}
+
+async function generateNewsCover(payload) {
+  if (!OPENAI_API_KEY || !GENERATE_COVER_IF_MISSING) {
+    throw new Error("Генерация обложек отключена");
+  }
+
+  const prompt = [
+    "Create a premium editorial technology news image for the Telegram channel AI Pulse.",
+    "Topic: " + String(payload.title || "AI technology news"),
+    "Context: " + String(payload.text || "").slice(0, 1800),
+    "Visual direction: dark graphite premium technology editorial, realistic or polished cinematic illustration, strong central subject, clean composition, high contrast, modern AI/technology atmosphere.",
+    "No text, no captions, no watermarks, no fake UI, no invented logos, no random letters.",
+    "If a real company/product is mentioned, do not invent a different product design or fabricated branding.",
+    "Landscape 3:2 composition suitable for a Telegram news post."
+  ].join("\n");
+
+  const candidates = [OPENAI_IMAGE_MODEL, "gpt-image-2"].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + OPENAI_API_KEY,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: model,
+          prompt: prompt,
+          size: "1536x1024",
+          quality: OPENAI_IMAGE_QUALITY
+        }),
+        signal: AbortSignal.timeout(120000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) {
+        lastError = (data && data.error && data.error.message) || ("OpenAI Images HTTP " + response.status);
+        continue;
+      }
+      const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
+      if (!b64) {
+        lastError = "OpenAI Images не вернул изображение";
+        continue;
+      }
+      ensureDataDir();
+      const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+      const fileName = "cover_" + safeId + ".png";
+      const filePath = path.join(MEDIA_DIR, fileName);
+      fs.writeFileSync(filePath, Buffer.from(b64, "base64"));
+      return { url: mediaPublicUrl(fileName), model: model, fileName: fileName };
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+  throw new Error(lastError || "Не удалось сгенерировать обложку");
+}
+
+async function ensureMediaForNews(payload) {
+  const imageUrl = String(payload.imageUrl || "").trim();
+  const videoUrl = String(payload.videoUrl || "").trim();
+  if (videoUrl) {
+    return { videoUrl: videoUrl, imageUrl: imageUrl, generatedImageUrl: "", mediaType: "video", mediaStatus: "found" };
+  }
+  if (imageUrl) {
+    return { videoUrl: "", imageUrl: imageUrl, generatedImageUrl: "", mediaType: "photo", mediaStatus: "found" };
+  }
+
+  if (GENERATE_COVER_IF_MISSING) {
+    try {
+      const generated = await generateNewsCover(payload);
+      return {
+        videoUrl: "",
+        imageUrl: "",
+        generatedImageUrl: generated.url,
+        mediaType: "generated",
+        mediaStatus: "generated",
+        generatedBy: generated.model
+      };
+    } catch (error) {
+      return {
+        videoUrl: "",
+        imageUrl: "",
+        generatedImageUrl: "",
+        mediaType: "none",
+        mediaStatus: "generation_error",
+        mediaError: error.message
+      };
+    }
+  }
+
+  return { videoUrl: "", imageUrl: "", generatedImageUrl: "", mediaType: "none", mediaStatus: "missing" };
+}
+
+function hasPublishableMedia(item) {
+  return Boolean(item && (item.videoUrl || item.imageUrl || item.generatedImageUrl || (item.metadata && (item.metadata.videoUrl || item.metadata.imageUrl || item.metadata.generatedImageUrl))));
+}
+
+
 function extractArticleLinks(html, sourceUrl) {
   const base = new URL(sourceUrl);
   const out = new Map();
@@ -375,6 +501,7 @@ async function collectOnce(trigger) {
         const articleHtml = await fetchText(url, 15000);
         const originalTitle = extractTitle(articleHtml) || candidate.link.title;
         const imageUrl = extractMetaImage(articleHtml, url);
+        const videoUrl = extractMetaVideo(articleHtml, url);
         const raw = stripHtml(articleHtml);
         const originalText = raw.slice(0, 14000);
         if (originalText.length < 250) {
@@ -383,6 +510,14 @@ async function collectOnce(trigger) {
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
         const id = "news_" + contentHash.slice(0, 20);
+        const media = await ensureMediaForNews({
+          id: id,
+          title: originalTitle,
+          text: originalText,
+          sourceName: source.name,
+          imageUrl: imageUrl,
+          videoUrl: videoUrl
+        });
         const baseItem = {
           id: id,
           sourceId: source.id,
@@ -393,10 +528,27 @@ async function collectOnce(trigger) {
           originalText: originalText,
           contentHash: contentHash,
           status: "discovered",
-          metadata: { trigger: trigger || "scheduler", imageUrl: imageUrl }
+          metadata: {
+            trigger: trigger || "scheduler",
+            imageUrl: media.imageUrl || "",
+            videoUrl: media.videoUrl || "",
+            generatedImageUrl: media.generatedImageUrl || "",
+            mediaType: media.mediaType,
+            mediaStatus: media.mediaStatus,
+            mediaError: media.mediaError || "",
+            generatedBy: media.generatedBy || ""
+          }
         };
         summary.found += 1;
         state.stats.discovered += 1;
+
+        if (MEDIA_REQUIRED && !hasPublishableMedia(baseItem)) {
+          baseItem.status = "missing_media";
+          await saveNewsItem(baseItem);
+          summary.skipped += 1;
+          summary.errors.push(originalTitle + ": не удалось подготовить фото или видео");
+          continue;
+        }
 
         let rewrite;
         try {
@@ -432,7 +584,9 @@ async function collectOnce(trigger) {
             title: rewrite.title,
             text: rewrite.text,
             sourceUrl: url,
-            imageUrl: imageUrl
+            imageUrl: media.imageUrl,
+            generatedImageUrl: media.generatedImageUrl,
+            videoUrl: media.videoUrl
           });
           baseItem.status = "published";
           baseItem.telegramMessageId = tg.message_id;
@@ -444,7 +598,11 @@ async function collectOnce(trigger) {
             messageId: tg.message_id,
             publishedAt: baseItem.publishedAt,
             sourceUrl: url,
-        imageUrl: imageUrl
+            imageUrl: media.imageUrl || "",
+            generatedImageUrl: media.generatedImageUrl || "",
+            videoUrl: media.videoUrl || "",
+            mediaType: media.mediaType,
+            mediaStatus: media.mediaStatus
           });
           state.history = state.history.slice(0, 300);
           state.stats.published += 1;
@@ -462,7 +620,11 @@ async function collectOnce(trigger) {
             text: postText,
             createdAt: new Date().toISOString(),
             sourceUrl: url,
-            imageUrl: imageUrl,
+            imageUrl: media.imageUrl || "",
+            generatedImageUrl: media.generatedImageUrl || "",
+            videoUrl: media.videoUrl || "",
+            mediaType: media.mediaType,
+            mediaStatus: media.mediaStatus,
             sourceName: source.name,
             newsId: id
           });
@@ -610,7 +772,28 @@ async function telegramApi(method, payload) {
 
 async function sendTelegramPost(post) {
   const html = formatTelegramPost(post);
-  const imageUrl = String(post.imageUrl || "").trim();
+  const imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
+  const videoUrl = String(post.videoUrl || "").trim();
+
+  if (MEDIA_REQUIRED && !imageUrl && !videoUrl) {
+    throw new Error("Публикация запрещена: у новости нет фото или видео");
+  }
+
+  if (videoUrl) {
+    try {
+      return await telegramApi("sendVideo", {
+        chat_id: CHANNEL,
+        video: videoUrl,
+        caption: html.length <= 1000 ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
+        parse_mode: "HTML",
+        supports_streaming: true
+      });
+    } catch (error) {
+      console.warn("sendVideo failed:", error.message);
+      if (!imageUrl) throw error;
+    }
+  }
+
   if (imageUrl && html.length <= 950) {
     try {
       return await telegramApi("sendPhoto", {
@@ -620,29 +803,30 @@ async function sendTelegramPost(post) {
         parse_mode: "HTML"
       });
     } catch (error) {
-      console.warn("sendPhoto failed, fallback to text:", error.message);
+      console.warn("sendPhoto failed:", error.message);
+      if (MEDIA_REQUIRED) throw error;
     }
   }
 
   if (imageUrl) {
-    try {
-      await telegramApi("sendPhoto", {
+    const photo = await telegramApi("sendPhoto", {
+      chat_id: CHANNEL,
+      photo: imageUrl,
+      caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
+      parse_mode: "HTML"
+    });
+    if (html && html.length > 950) {
+      await telegramApi("sendMessage", {
         chat_id: CHANNEL,
-        photo: imageUrl,
-        caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
-        parse_mode: "HTML"
+        text: html,
+        parse_mode: "HTML",
+        disable_web_page_preview: true
       });
-    } catch (error) {
-      console.warn("Photo-only send failed:", error.message);
     }
+    return photo;
   }
 
-  return await telegramApi("sendMessage", {
-    chat_id: CHANNEL,
-    text: html || escapeTelegramHtml(post.text || ""),
-    parse_mode: "HTML",
-    disable_web_page_preview: true
-  });
+  throw new Error("Публикация запрещена: медиа не подготовлено");
 }
 
 async function sendTelegram(text) {
@@ -856,6 +1040,12 @@ async function buildSystemStatus(force) {
       detail: openaiProbe.ok ? "Модель: " + openaiProbe.model : String(openaiProbe.error || "OPENAI_API_KEY отсутствует"),
       next: openaiProbe.ok ? "" : (OPENAI_API_KEY ? "Проверить ключ, доступ к модели и биллинг OpenAI" : "Подключить OpenAI API для переписывания новостей")
     },
+    mediaEngine: {
+      state: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
+      description: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "Медиа-движок включён" : "Медиа-движок настроен не полностью",
+      detail: "Фото/видео обязательно · если медиа нет, обложка генерируется через " + OPENAI_IMAGE_MODEL,
+      next: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "" : "Проверить MEDIA_REQUIRED и GENERATE_COVER_IF_MISSING"
+    },
     supabase: {
       state: dbReady ? "connected" : (DATABASE_URL ? "partial" : "missing"),
       description: dbReady ? "PostgreSQL подключён и доступен" : (DATABASE_URL ? "DATABASE_URL задан, база ещё не подтверждена" : "База данных не подключена"),
@@ -919,8 +1109,25 @@ const server = http.createServer(async function(req, res) {
         uiConfigured: Boolean(ADMIN_UI_PASSWORD),
         openaiConfigured: Boolean(OPENAI_API_KEY),
         openaiModel: OPENAI_MODEL,
+        mediaRequired: MEDIA_REQUIRED,
+        imageModel: OPENAI_IMAGE_MODEL,
         version: APP_VERSION
       });
+    }
+
+    if (req.method === "GET" && p.startsWith("/media/")) {
+      const fileName = decodeURIComponent(p.slice("/media/".length));
+      if (!fileName || fileName !== path.basename(fileName)) return sendJson(res, 400, { ok: false, error: "invalid media path" });
+      const filePath = path.join(MEDIA_DIR, fileName);
+      try {
+        const body = fs.readFileSync(filePath);
+        const ext = path.extname(fileName).toLowerCase();
+        const type = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "application/octet-stream";
+        res.writeHead(200, { "content-type": type, "cache-control": "public, max-age=31536000, immutable" });
+        return res.end(body);
+      } catch {
+        return sendJson(res, 404, { ok: false, error: "media not found" });
+      }
     }
 
     if (req.method === "GET" && p === "/") return redirect(res, "/admin");
@@ -976,6 +1183,9 @@ const server = http.createServer(async function(req, res) {
         maxItemsPerRun: MAX_ITEMS_PER_RUN,
         autoPublishEnabled: AUTO_PUBLISH_ENABLED,
         autoPublishMinIntervalMinutes: AUTO_PUBLISH_MIN_INTERVAL_MINUTES,
+        mediaRequired: MEDIA_REQUIRED,
+        generateCoverIfMissing: GENERATE_COVER_IF_MISSING,
+        imageModel: OPENAI_IMAGE_MODEL,
         dbReady: dbReady,
         lastRun: lastCollectorRun,
         runs: runs
@@ -1026,11 +1236,24 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Введите текст" });
+      const media = await ensureMediaForNews({
+        id: newId("manual"),
+        title: String(body.title || "AI Pulse").trim(),
+        text: text,
+        sourceName: "Ручная публикация",
+        imageUrl: String(body.imageUrl || "").trim(),
+        videoUrl: String(body.videoUrl || "").trim()
+      });
+      if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
+        return sendJson(res, 422, { ok: false, error: "Не удалось подготовить фото или видео для публикации" });
+      }
       const result = await sendTelegramPost({
         title: String(body.title || "").trim(),
         text: text,
         sourceUrl: String(body.sourceUrl || "").trim(),
-        imageUrl: String(body.imageUrl || "").trim()
+        imageUrl: media.imageUrl,
+        generatedImageUrl: media.generatedImageUrl,
+        videoUrl: media.videoUrl
       });
       state.history.unshift({
         id: newId("hist"),
@@ -1079,7 +1302,13 @@ const server = http.createServer(async function(req, res) {
         id: newId("q"),
         title: String(body.title || "Черновик"),
         text: text,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        sourceUrl: String(body.sourceUrl || "").trim(),
+        imageUrl: String(body.imageUrl || "").trim(),
+        generatedImageUrl: String(body.generatedImageUrl || "").trim(),
+        videoUrl: String(body.videoUrl || "").trim(),
+        mediaType: String(body.mediaType || ""),
+        mediaStatus: String(body.mediaStatus || "")
       });
       saveState();
       return sendJson(res, 200, { ok: true });
@@ -1096,11 +1325,39 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const item = state.queue.find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Черновик не найден" });
+      let media = {
+        imageUrl: item.imageUrl || "",
+        generatedImageUrl: item.generatedImageUrl || "",
+        videoUrl: item.videoUrl || "",
+        mediaType: item.mediaType || "",
+        mediaStatus: item.mediaStatus || ""
+      };
+      if (!(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
+        media = await ensureMediaForNews({
+          id: item.newsId || item.id,
+          title: item.title,
+          text: item.text,
+          sourceName: item.sourceName || "Очередь",
+          imageUrl: "",
+          videoUrl: ""
+        });
+        item.imageUrl = media.imageUrl || "";
+        item.generatedImageUrl = media.generatedImageUrl || "";
+        item.videoUrl = media.videoUrl || "";
+        item.mediaType = media.mediaType;
+        item.mediaStatus = media.mediaStatus;
+        saveState();
+      }
+      if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
+        return sendJson(res, 422, { ok: false, error: "Не удалось подготовить фото или видео. Публикация заблокирована." });
+      }
       const result = await sendTelegramPost({
         title: item.title,
         text: item.text,
         sourceUrl: item.sourceUrl || "",
-        imageUrl: item.imageUrl || ""
+        imageUrl: media.imageUrl,
+        generatedImageUrl: media.generatedImageUrl,
+        videoUrl: media.videoUrl
       });
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
       state.history.unshift({
@@ -1121,7 +1378,25 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "text is required" });
-      const result = await sendTelegram(text);
+      const media = await ensureMediaForNews({
+        id: newId("legacy"),
+        title: String(body.title || "AI Pulse").trim(),
+        text: text,
+        sourceName: "API публикация",
+        imageUrl: String(body.imageUrl || "").trim(),
+        videoUrl: String(body.videoUrl || "").trim()
+      });
+      if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
+        return sendJson(res, 422, { ok: false, error: "Не удалось подготовить медиа" });
+      }
+      const result = await sendTelegramPost({
+        title: String(body.title || "").trim(),
+        text: text,
+        sourceUrl: String(body.sourceUrl || "").trim(),
+        imageUrl: media.imageUrl,
+        generatedImageUrl: media.generatedImageUrl,
+        videoUrl: media.videoUrl
+      });
       return sendJson(res, 200, { ok: true, messageId: result.message_id });
     }
 
