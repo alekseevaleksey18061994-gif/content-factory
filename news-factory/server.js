@@ -268,6 +268,32 @@ function extractTitle(html) {
   return m ? stripHtml(m[1]).slice(0, 300) : "";
 }
 
+function extractPublishedAt(html) {
+  const source = String(html || "");
+  const patterns = [
+    /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
+    /<meta[^>]+name=["']date["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /<meta[^>]+itemprop=["']datePublished["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+    /"datePublished"\s*:\s*"([^"]+)"/i,
+    /<time[^>]+datetime=["']([^"']+)["'][^>]*>/i
+  ];
+  for (const re of patterns) {
+    const m = source.match(re);
+    if (!m || !m[1]) continue;
+    const d = new Date(htmlDecode(m[1]));
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  }
+  return "";
+}
+
+function isOlderThanHours(iso, hours) {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t > hours * 60 * 60 * 1000;
+}
+
 function extractMetaImage(html, pageUrl) {
   const source = String(html || "");
   const patterns = [
@@ -494,6 +520,61 @@ async function listNewsItems(limit) {
     return r.rows;
   }
   return [];
+}
+
+function queueNewsAgeReference(item) {
+  if (!item) return "";
+  return item.articlePublishedAt || item.createdAt || "";
+}
+
+async function pruneStaleQueue() {
+  const before = Array.isArray(state.queue) ? state.queue.length : 0;
+  const expiredNewsIds = [];
+  const manual = [];
+  const auto = [];
+
+  for (const item of (state.queue || [])) {
+    if (!item || !item.newsId) {
+      manual.push(item);
+      continue;
+    }
+    const ageRef = queueNewsAgeReference(item);
+    const stale = ageRef ? isOlderThanHours(ageRef, QUEUE_NEWS_TTL_HOURS) : false;
+    if (stale) {
+      if (item.newsId) expiredNewsIds.push(item.newsId);
+      continue;
+    }
+    auto.push(item);
+  }
+
+  auto.sort(function(a, b) {
+    return new Date(queueNewsAgeReference(b) || 0).getTime() - new Date(queueNewsAgeReference(a) || 0).getTime();
+  });
+
+  const keptAuto = auto.slice(0, MAX_AUTO_QUEUE_ITEMS);
+  const droppedByCap = auto.slice(MAX_AUTO_QUEUE_ITEMS);
+  droppedByCap.forEach(function(item){ if (item && item.newsId) expiredNewsIds.push(item.newsId); });
+
+  state.queue = manual.concat(keptAuto).sort(function(a, b) {
+    return new Date(b && b.createdAt || 0).getTime() - new Date(a && a.createdAt || 0).getTime();
+  });
+
+  const removed = before - state.queue.length;
+  if (removed > 0) {
+    state.lastQueueCleanup = { removed: removed, at: new Date().toISOString() };
+    saveState();
+    if (db && dbReady && expiredNewsIds.length) {
+      try {
+        await db.query(
+          "UPDATE news_items SET status='expired', metadata = metadata || $2::jsonb WHERE id = ANY($1::text[]) AND status='queued'",
+          [expiredNewsIds, JSON.stringify({ expiredAt: new Date().toISOString(), expireReason: "queue_freshness" })]
+        );
+      } catch (error) {
+        console.error("Queue expiry DB update failed:", error.message);
+      }
+    }
+  }
+  return removed;
 }
 
 async function getCollectorRuns(limit) {
