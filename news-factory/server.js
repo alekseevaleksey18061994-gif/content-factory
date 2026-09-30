@@ -6,6 +6,7 @@ import pg from "pg";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
+const TELEGRAM_PUBLIC_USERNAME = String(process.env.TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
 const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(32).toString("hex");
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
 const ADMIN_UI_PASSWORD_SHA256 = String(process.env.ADMIN_UI_PASSWORD_SHA256 || "").trim().toLowerCase();
@@ -1129,6 +1130,175 @@ async function sendTelegram(text) {
 
 
 let statusCache = { at: 0, value: null };
+let analyticsCache = { at: 0, value: null };
+
+function parseCompactNumber(value) {
+  const raw = stripHtml(String(value || "")).replace(/\s+/g, "").replace(",", ".").toUpperCase();
+  const m = raw.match(/([0-9]+(?:\.[0-9]+)?)([KMBКММЛН]*)/);
+  if (!m) return 0;
+  let n = Number(m[1] || 0);
+  const suffix = m[2] || "";
+  if (suffix === "K" || suffix === "К") n *= 1e3;
+  else if (suffix === "M" || suffix === "М" || suffix === "МЛН") n *= 1e6;
+  else if (suffix === "B") n *= 1e9;
+  return Math.round(n);
+}
+
+function metricFromChunk(chunk, classPattern) {
+  const re = new RegExp(
+    '<(?:span|div|a)[^>]+class=["\\\'][^"\\\']*' + classPattern + '[^"\\\']*["\\\'][^>]*>([\\s\\S]*?)<\\/(?:span|div|a)>',
+    'ig'
+  );
+  let total = 0;
+  let matched = false;
+  let m;
+  while ((m = re.exec(chunk))) {
+    matched = true;
+    const text = stripHtml(m[1]);
+    const nums = text.match(/[0-9]+(?:[.,][0-9]+)?\s*[KMBКМ]?/ig) || [];
+    if (nums.length) total += parseCompactNumber(nums[nums.length - 1]);
+  }
+  return matched ? total : null;
+}
+
+function parseTelegramPreview(html) {
+  const source = String(html || "");
+  const posts = [];
+  const parts = source.split(/<div[^>]+class=["'][^"']*tgme_widget_message_wrap[^"']*["'][^>]*>/i).slice(1);
+  for (const chunk of parts) {
+    const idMatch = chunk.match(/data-post=["'][^"']+\/(\d+)["']/i);
+    if (!idMatch) continue;
+    const messageId = Number(idMatch[1]);
+    const viewsMatch = chunk.match(/class=["'][^"']*tgme_widget_message_views[^"']*["'][^>]*>([^<]+)</i);
+    const dateMatch = chunk.match(/<time[^>]+datetime=["']([^"']+)["']/i);
+    const reactions = metricFromChunk(chunk, 'tgme_widget_message_reaction\\b');
+    let comments = metricFromChunk(chunk, 'tgme_widget_message_comments\\b');
+    if (comments == null) comments = metricFromChunk(chunk, 'tgme_widget_message_repl(?:y|ies)\\b');
+    posts.push({
+      messageId: messageId,
+      views: viewsMatch ? parseCompactNumber(viewsMatch[1]) : 0,
+      reactions: reactions == null ? 0 : reactions,
+      comments: comments == null ? 0 : comments,
+      forwards: null,
+      publishedAt: dateMatch ? normalizeDate(dateMatch[1]) : ""
+    });
+  }
+  const subsMatch = source.match(/class=["'][^"']*tgme_header_counter[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
+  const beforeMatch = source.match(/data-before=["'](\d+)["']/i) || source.match(/[?&]before=(\d+)/i);
+  return {
+    posts: posts,
+    subscribers: subsMatch ? parseCompactNumber(subsMatch[1]) : null,
+    before: beforeMatch ? Number(beforeMatch[1]) : null
+  };
+}
+
+async function fetchTelegramAnalytics(force) {
+  if (!TELEGRAM_PUBLIC_USERNAME) {
+    return {
+      connected: false,
+      available: false,
+      platform: "telegram",
+      error: "Публичный Telegram-канал не настроен",
+      totals: { posts: 0, views: 0, reactions: 0, comments: 0, forwards: null, subscribers: null, avgViews: 0, engagementRate: 0 },
+      posts: []
+    };
+  }
+
+  const historyById = new Map((state.history || []).map(function(h){ return [Number(h.messageId), h]; }).filter(function(x){ return Number.isFinite(x[0]); }));
+  const wanted = new Set(Array.from(historyById.keys()));
+  const collected = new Map();
+  let subscribers = null;
+  let before = null;
+  let lastError = "";
+
+  for (let page = 0; page < 5; page += 1) {
+    let url = "https://t.me/s/" + encodeURIComponent(TELEGRAM_PUBLIC_USERNAME);
+    if (before) url += "?before=" + encodeURIComponent(before);
+    try {
+      const response = await fetch(url, {
+        headers: {
+          "user-agent": "Mozilla/5.0 (compatible; NewsFactoryAnalytics/1.0; +https://t.me/" + TELEGRAM_PUBLIC_USERNAME + ")",
+          "accept-language": "ru,en;q=0.8"
+        },
+        signal: AbortSignal.timeout(12000)
+      });
+      if (!response.ok) throw new Error("Telegram HTTP " + response.status);
+      const html = await response.text();
+      const parsed = parseTelegramPreview(html);
+      if (subscribers == null && parsed.subscribers != null) subscribers = parsed.subscribers;
+      for (const post of parsed.posts) collected.set(post.messageId, post);
+      if (wanted.size && Array.from(wanted).every(function(id){ return collected.has(id); })) break;
+      if (!parsed.before || parsed.before === before || !parsed.posts.length) break;
+      before = parsed.before;
+    } catch (error) {
+      lastError = String(error && error.message || error);
+      break;
+    }
+  }
+
+  const posts = Array.from(collected.values())
+    .filter(function(p){ return !wanted.size || wanted.has(Number(p.messageId)); })
+    .map(function(p) {
+      const h = historyById.get(Number(p.messageId));
+      return Object.assign({}, p, {
+        title: h && h.title ? h.title : "Публикация #" + p.messageId,
+        url: "https://t.me/" + TELEGRAM_PUBLIC_USERNAME + "/" + p.messageId
+      });
+    })
+    .sort(function(a,b){ return Number(b.messageId) - Number(a.messageId); });
+
+  const views = posts.reduce(function(sum,p){ return sum + Number(p.views || 0); }, 0);
+  const reactions = posts.reduce(function(sum,p){ return sum + Number(p.reactions || 0); }, 0);
+  const comments = posts.reduce(function(sum,p){ return sum + Number(p.comments || 0); }, 0);
+  const avgViews = posts.length ? Math.round(views / posts.length) : 0;
+  const engagementRate = views > 0 ? Number((((reactions + comments) / views) * 100).toFixed(2)) : 0;
+
+  return {
+    connected: true,
+    available: posts.length > 0 || !lastError,
+    platform: "telegram",
+    channel: "@" + TELEGRAM_PUBLIC_USERNAME,
+    channelUrl: "https://t.me/" + TELEGRAM_PUBLIC_USERNAME,
+    source: "public_web_preview",
+    checkedAt: new Date().toISOString(),
+    error: posts.length ? "" : lastError,
+    totals: {
+      posts: posts.length,
+      views: views,
+      reactions: reactions,
+      comments: comments,
+      forwards: null,
+      subscribers: subscribers,
+      avgViews: avgViews,
+      engagementRate: engagementRate
+    },
+    posts: posts.slice(0, 100),
+    note: "Просмотры, реакции и доступные комментарии считываются из открытой веб-версии Telegram. Для полной статистики пересылок и глубокой истории позже подключим Telegram API (MTProto)."
+  };
+}
+
+async function buildPlatformAnalytics(force) {
+  const now = Date.now();
+  if (!force && analyticsCache.value && now - analyticsCache.at < 5 * 60 * 1000) return analyticsCache.value;
+  const telegram = await fetchTelegramAnalytics(force);
+  const vkConfigured = Boolean(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || process.env.VK_GROUP_ID || process.env.VK_OWNER_ID);
+  const value = {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    telegram: telegram,
+    vk: {
+      connected: vkConfigured,
+      available: false,
+      platform: "vk",
+      totals: { posts: 0, views: null, likes: null, comments: null, reposts: null, subscribers: null, avgViews: null, engagementRate: null },
+      posts: [],
+      note: vkConfigured ? "VK подключён частично: модуль аналитики ждёт идентификатор сообщества и права статистики." : "VK пока не подключён. После подключения сообщества здесь появятся просмотры, лайки, комментарии, репосты и статистика по каждому посту."
+    }
+  };
+  analyticsCache = { at: now, value: value };
+  return value;
+}
+
 
 async function telegramProbe(method, params) {
   if (!BOT_TOKEN) return { ok: false, error: "Токен не задан" };
@@ -1514,6 +1684,12 @@ const server = http.createServer(async function(req, res) {
       ensureScheduleAssignments(state, day);
       saveState();
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "GET" && p === "/api/analytics") {
+      const force = url.searchParams.get("refresh") === "1";
+      const analytics = await buildPlatformAnalytics(force);
+      return sendJson(res, 200, analytics);
     }
 
     if (req.method === "GET" && p === "/api/status") {
