@@ -186,37 +186,11 @@ function cleanupScheduleAssignments(targetState) {
 }
 
 function ensureScheduleAssignments(targetState, dayKey) {
-  const schedule = ensureScheduleShape(targetState);
+  // Dynamic scheduler never fills the whole day in advance.
+  // A slot is assigned only shortly before publication.
+  ensureScheduleShape(targetState);
   cleanupScheduleAssignments(targetState);
-  const today = moscowDateKey(new Date());
-  const day = dayKey || today;
-  if (day !== today) return 0;
-
-  if (!schedule.assignments[day]) schedule.assignments[day] = {};
-  if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
-
-  const used = new Set();
-  Object.keys(schedule.assignments).forEach(function(d) {
-    Object.values(schedule.assignments[d] || {}).forEach(function(id){ if (id) used.add(id); });
-  });
-
-  const candidates = (targetState.queue || [])
-    .filter(function(item){ return item && item.id && item.newsId && !used.has(item.id); })
-    .sort(function(a,b){ return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime(); });
-
-  const nowMin = moscowMinutes(new Date());
-  let assigned = 0;
-  (schedule.slots || []).filter(function(slot){ return slot.kind === "regular"; }).forEach(function(slot) {
-    if (schedule.suppressed[day][slot.time]) return;
-    if (schedule.assignments[day][slot.time]) return;
-    if (slotMinutes(slot.time) < nowMin - 30) return;
-    const next = candidates.shift();
-    if (!next) return;
-    schedule.assignments[day][slot.time] = next.id;
-    used.add(next.id);
-    assigned += 1;
-  });
-  return assigned;
+  return 0;
 }
 
 function removeQueueIdFromSchedule(targetState, queueId) {
@@ -277,7 +251,6 @@ function pruneQueueItems(targetState) {
     queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
   };
   cleanupScheduleAssignments(targetState);
-  ensureScheduleAssignments(targetState);
   return { removed: removed, expired: expired, overflow: overflow };
 }
 
