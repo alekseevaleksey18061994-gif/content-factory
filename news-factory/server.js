@@ -3303,25 +3303,6 @@ const server = http.createServer(async function(req, res) {
       });
     }
 
-    if (req.method === "GET" && p === "/internal/vk-preview-smoke-f4a1b9c8d7e6a5f40392b1c0ef7742bb") {
-      try {
-        const marker = crypto.randomBytes(4).toString("hex");
-        const preview = await createPublicPostPage({
-          id: "vk_preview_probe_" + marker,
-          postId: "vk_preview_probe_" + marker,
-          topicId: "smoke",
-          title: "News Factory VK preview probe",
-          text: "Временная проверка SSR Open Graph страницы и локального JPEG. Маркер: " + marker,
-          sourceName: "News Factory",
-          sourceUrl: PUBLIC_BASE_URL + "/health"
-        });
-        const preflight = await preflightPublicPostPage(preview);
-        return sendJson(res, 200, { ok: true, preview: preview, preflight: preflight }, { "cache-control": "no-store" });
-      } catch (error) {
-        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) }, { "cache-control": "no-store" });
-      }
-    }
-
     if (req.method === "POST" && p === "/internal/vk-preview-test-page") {
       const smokeAuthorized = req.headers["x-admin-key"] === ADMIN_KEY ||
         (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET));
