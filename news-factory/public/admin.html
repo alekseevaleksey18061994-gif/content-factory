@@ -580,7 +580,7 @@ button,.quick button,.quick a{
 }
 .social-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.social-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px;border:1px solid var(--line);border-radius:18px;background:var(--panel2)}.social-card-main{display:flex;align-items:center;gap:14px;min-width:0}.social-icon{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;font-weight:800;font-size:15px;background:var(--soft);border:1px solid var(--line)}.social-card h3{margin:0 0 4px}.social-card p{margin:0;color:var(--muted);font-size:13px}.social-card .actions{flex:0 0 auto}@media(max-width:760px){.social-grid{grid-template-columns:1fr}.social-card{align-items:flex-start;flex-direction:column}.social-card .actions{width:100%}.social-card .actions a{width:100%;text-align:center}}
 @media(max-width:700px){.calendar-summary{grid-template-columns:repeat(2,1fr)}.calendar-slots{grid-template-columns:1fr}.calendar-slot{grid-template-columns:62px minmax(0,1fr) auto}.calendar-time{font-size:19px}.calendar-day-title{min-width:0}.calendar-toolbar{align-items:flex-start}.calendar-day-nav{width:100%;justify-content:space-between}}
-@media(max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.quick{grid-template-columns:1fr 1fr}.page-head{align-items:flex-start;flex-direction:column}.health{display:none}.hero h2{font-size:22px}.hero-icon{width:48px;height:48px}.news-card-body,.queue-card-main{grid-template-columns:1fr}.news-thumb,.queue-thumb,.news-placeholder,.queue-placeholder{width:100%;height:170px}.queue-head{align-items:flex-start}.queue-actions{display:grid;grid-template-columns:minmax(0,1fr) auto}.queue-actions .publish{width:100%}.queue-actions .remove{min-width:88px}.news-card-head{gap:8px}.news-status{font-size:10px}}
+@media(max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.quick{grid-template-columns:1fr 1fr}.page-head{align-items:flex-start;flex-direction:column}.health{display:none}.hero h2{font-size:22px}.hero-icon{width:48px;height:48px}.news-card-body,.queue-card-main{grid-template-columns:1fr}.news-thumb,.queue-thumb,.news-placeholder,.queue-placeholder{width:100%;height:170px}.queue-head{align-items:flex-start}.news-card-head{gap:8px}.news-status{font-size:10px}}
 
 /* v0.26.1 — news feed live status + mobile refresh */
 .news-feed-head{gap:14px;align-items:center}
@@ -725,11 +725,12 @@ button,.quick button,.quick a{
 .page-refresh-fab:active{transform:scale(.96)}
 @media(max-width:560px){
   .page-refresh-fab{
-    right:calc(14px + env(safe-area-inset-right));
-    bottom:calc(14px + env(safe-area-inset-bottom));
-    width:52px;
-    height:52px;
-    min-height:52px;
+    right:calc(10px + env(safe-area-inset-right));
+    bottom:calc(10px + env(safe-area-inset-bottom));
+    width:46px;
+    height:46px;
+    min-height:46px;
+    opacity:.86;
   }
 }
 
@@ -1460,13 +1461,45 @@ body{
   background:rgba(244,240,255,.88)!important;
 }
 @media(max-width:620px){
-  .queue-action-row{grid-template-columns:1fr!important}
-  .queue-action-row.secondary{grid-template-columns:1fr 1fr!important}
-  .queue-actions .publish-targets{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .queue-actions{
+    gap:8px!important;
+  }
+  .queue-actions .publish-targets{
+    grid-template-columns:repeat(3,minmax(0,1fr))!important;
+    gap:6px!important;
+  }
+  .queue-actions .target-pill{
+    min-height:40px!important;
+    padding:7px 6px!important;
+    gap:5px!important;
+    font-size:10px!important;
+  }
+  .queue-actions .target-pill input{
+    width:17px!important;
+    height:17px!important;
+    min-width:17px!important;
+    flex:0 0 17px!important;
+  }
+  .queue-action-row,
+  .queue-action-row.secondary{
+    grid-template-columns:1fr 1fr!important;
+    gap:8px!important;
+  }
+  .queue-actions button,
+  .queue-video-priority{
+    min-height:44px!important;
+    font-size:12px!important;
+    padding:9px 10px!important;
+  }
+  .queue-video-priority{
+    text-align:center;
+  }
 }
-@media(max-width:410px){
-  .queue-action-row.secondary{grid-template-columns:1fr!important}
-  .queue-actions .publish-targets{grid-template-columns:1fr!important}
+@media(max-width:380px){
+  .queue-actions .target-pill{font-size:9.5px!important;padding:6px 4px!important}
+  .queue-actions .target-pill input{width:16px!important;height:16px!important;min-width:16px!important}
+  .queue-action-row,.queue-action-row.secondary{gap:7px!important}
+  .queue-actions button,.queue-video-priority{font-size:11px!important;padding:8px!important}
 }
 
 /* v0.28.5 — source performance ranking */
@@ -2518,19 +2551,19 @@ function render(){
         '</div>'+
       '</div>'+
       '<div class="queue-actions" onclick="event.stopPropagation()">'+
-        '<div class="queue-action-row">'+
-          '<div class="publish-targets">'+
-            '<label class="target-pill all"><input id="all_'+q.id+'" type="checkbox" checked onchange="setQueueAll(\''+q.id+'\',this.checked)"> Все</label>'+
-            '<label class="target-pill"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> Telegram</label>'+
-            '<label class="target-pill"><input id="vk_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> VK</label>'+
-          '</div>'+
-          '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
+        '<div class="publish-targets">'+
+          '<label class="target-pill all"><input id="all_'+q.id+'" type="checkbox" checked onchange="setQueueAll(\''+q.id+'\',this.checked)"> Все</label>'+
+          '<label class="target-pill"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> Telegram</label>'+
+          '<label class="target-pill"><input id="vk_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> VK</label>'+
         '</div>'+
         '<div class="queue-action-row secondary">'+
-          (q.videoUrl?'<div class="queue-video-priority">🎬 Видео уже в приоритете</div>':((q.originalImageUrl||q.imageUrl)?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Перегенерировать медиа</button>':'<div class="queue-video-priority">Медиа подготовлено AI</div>'))+
-          '<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
+          '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
+          (q.videoUrl?'<div class="queue-video-priority">🎬 Видео в приоритете</div>':((q.originalImageUrl||q.imageUrl)?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Перегенерировать</button>':'<div class="queue-video-priority">Медиа готово</div>'))+
         '</div>'+
-        '<button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button>'+
+        '<div class="queue-action-row secondary">'+
+          '<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
+          '<button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button>'+
+        '</div>'+
       '</div>'+
     '</article>';
   }).join(''):'<div class="empty">Очередь пока пустая</div>';
