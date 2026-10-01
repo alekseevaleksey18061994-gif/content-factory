@@ -1036,6 +1036,359 @@ input::placeholder,textarea::placeholder{color:#8b9ab3}
   .home-hero-cta{min-height:56px}
 }
 
+
+/* v0.28.1 — approved airy light layout, readability + spacing */
+:root{
+  --text:#081735;
+  --muted:#5d7190;
+  --line:rgba(70,132,188,.18);
+}
+body{
+  background:
+    radial-gradient(circle at 10% 7%,rgba(32,212,220,.16),transparent 27%),
+    radial-gradient(circle at 91% 20%,rgba(30,157,255,.12),transparent 30%),
+    linear-gradient(180deg,#f7fdff 0%,#eaf8ff 56%,#f5fbff 100%);
+}
+.top{
+  margin-bottom:22px;
+  border-radius:26px;
+  padding:18px 20px;
+  background:linear-gradient(145deg,rgba(255,255,255,.96),rgba(245,251,255,.90));
+  border:1px solid rgba(70,132,188,.13);
+  box-shadow:0 12px 34px rgba(46,106,154,.08),inset 0 1px 0 rgba(255,255,255,.98);
+}
+.sub{color:#607392;font-weight:500;line-height:1.4}
+.health{color:#3f5879}
+#homePage,#connectionsPage{
+  border-radius:28px;
+  padding:20px !important;
+  background:
+    radial-gradient(circle at 90% 9%,rgba(32,212,220,.12),transparent 31%),
+    radial-gradient(circle at 12% 86%,rgba(22,140,255,.08),transparent 33%),
+    linear-gradient(145deg,rgba(218,246,255,.88),rgba(225,241,255,.78));
+  border:1px solid rgba(76,151,198,.10);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.66);
+}
+#homePage>.hero,
+#homePage>.kpis,
+#homePage>.card,
+#homePage>.dash-two,
+#connectionsPage>.card,
+#connectionsPage>.page-head{
+  max-width:100%;
+}
+.card,.hero,.kpi,.system-box,.conn-group,.calendar-summary-box,.collector-box,.stat,.dash-slot{
+  border-color:rgba(67,129,185,.17);
+  background:linear-gradient(150deg,rgba(255,255,255,.97),rgba(247,251,255,.91));
+  box-shadow:0 10px 28px rgba(45,98,144,.075),inset 0 1px 0 rgba(255,255,255,.98);
+}
+.card{border-radius:24px}
+.hero{border-radius:25px}
+.home-hero{
+  padding:26px;
+  background:
+    radial-gradient(circle at 96% 9%,rgba(32,212,220,.16),transparent 32%),
+    radial-gradient(circle at 86% 88%,rgba(22,140,255,.10),transparent 31%),
+    linear-gradient(145deg,rgba(255,255,255,.98),rgba(244,251,255,.92));
+}
+.home-hero-stats{gap:14px;margin-top:22px}
+.home-hero-stat{
+  min-height:94px;
+  padding:17px 18px;
+  border-radius:20px;
+  border-color:rgba(66,130,188,.16);
+  background:rgba(255,255,255,.90);
+  box-shadow:0 8px 22px rgba(45,98,144,.065),inset 0 1px 0 rgba(255,255,255,.98);
+}
+.home-hero-stat span{
+  color:#4f6688;
+  font-size:11px;
+  font-weight:700;
+}
+.home-hero-stat b{
+  color:#081735;
+  font-size:17px;
+  font-weight:750;
+}
+.kpis{gap:14px !important;margin-top:18px !important}
+.kpi{
+  min-height:118px;
+  border-radius:22px;
+  padding:18px 19px;
+  background:rgba(255,255,255,.94);
+}
+.kpi b{color:#081735;font-size:31px;font-weight:800}
+.kpi span{
+  color:#243a5f;
+  font-size:12.5px;
+  font-weight:700;
+  margin-top:10px;
+}
+.kpi small{
+  color:#5d7190;
+  font-size:11px;
+  font-weight:500;
+  margin-top:6px;
+}
+#homePage>.card,#homePage>.dash-two{margin-top:18px !important}
+#homePage .dash-two{gap:18px}
+.panel-title p,.page-head p,.hero p,.notice{
+  color:#556b8c;
+}
+.label{
+  color:#536a8c;
+  font-weight:700;
+}
+.meta,.queue-meta,.url,.feed-row small,.attention-row small,.pipeline-row small{
+  color:#5c708d;
+}
+.connections-toolbar{
+  display:grid;
+  grid-template-columns:minmax(220px,auto) 1fr;
+  align-items:center;
+  gap:18px;
+  padding:0 4px 2px !important;
+  margin:0 0 22px !important;
+}
+.connections-heading{display:none}
+.connections-refresh-btn{
+  justify-self:start;
+  min-width:260px;
+  min-height:64px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:12px;
+  border-radius:19px;
+  color:#fff;
+  font-size:15px;
+  font-weight:750;
+  border:1px solid rgba(19,161,220,.22);
+  background:linear-gradient(105deg,#1ed1da 0%,#168cff 76%,#5967ef 115%);
+  box-shadow:0 12px 28px rgba(22,140,255,.18),inset 0 1px 0 rgba(255,255,255,.28);
+}
+.connections-refresh-btn:hover{
+  color:#fff;
+  background:linear-gradient(105deg,#18c9d4,#0e84f6 78%,#5863e8 115%);
+}
+.refresh-glyph{
+  font-size:31px;
+  line-height:1;
+  font-weight:500;
+  transform:translateY(-1px);
+}
+.connections-check-summary{
+  justify-self:end;
+  min-width:190px;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:3px;
+  color:#5c7192;
+}
+.connections-check-summary span{font-size:12px;font-weight:500}
+.connections-check-summary b{font-size:15px;color:#081735;font-weight:700}
+.system-overview-card{
+  padding:26px !important;
+  border-radius:26px;
+}
+.system-overview-card>.row{
+  align-items:flex-start;
+  gap:18px;
+}
+.system-overview-card .label{
+  color:#081735;
+  font-size:20px;
+  line-height:1.2;
+  font-weight:800;
+  text-transform:none;
+  letter-spacing:-.025em;
+  margin-bottom:8px;
+}
+#statusRuntime{
+  color:#516986;
+  font-size:13px;
+  line-height:1.55;
+  font-weight:500;
+}
+#statusCheckedAt{
+  color:#385170;
+  border-color:rgba(50,167,139,.20);
+  background:rgba(240,253,248,.92);
+  font-size:11px;
+  font-weight:700;
+}
+.system-grid{
+  gap:16px !important;
+  margin-top:20px !important;
+}
+.system-box{
+  min-height:118px;
+  border-radius:22px;
+  padding:19px 20px;
+  background:rgba(255,255,255,.95);
+}
+.system-box b{
+  color:#081735;
+  font-size:30px;
+  font-weight:800;
+}
+.system-box.good b{color:#0aa76c}
+.system-box.warn b{color:#ed9200}
+.system-box.muted b{color:#657895}
+.system-box small{
+  color:#4d6485;
+  font-size:11.5px;
+  font-weight:600;
+  margin-top:10px;
+}
+.connections-card{
+  padding:20px !important;
+  border-radius:26px;
+}
+.connections{gap:18px}
+.conn-group{
+  border-radius:22px;
+  overflow:hidden;
+  background:rgba(255,255,255,.96);
+  border-color:rgba(71,133,188,.16);
+}
+.conn-group-head{
+  padding:18px 20px;
+  background:linear-gradient(145deg,rgba(255,255,255,.98),rgba(246,251,255,.94));
+  border-bottom-color:rgba(71,133,188,.14);
+}
+.conn-group-icon{
+  width:38px;
+  height:38px;
+  border-radius:13px;
+  color:#1585dc;
+  background:linear-gradient(145deg,rgba(31,208,218,.16),rgba(64,162,255,.13));
+  border:1px solid rgba(51,155,213,.12);
+}
+.conn-group-head b{
+  color:#0b1a38;
+  font-size:15px;
+  font-weight:750;
+}
+.conn-group-head small{
+  color:#637692;
+  font-size:11px;
+  font-weight:500;
+}
+.conn-group-count{
+  color:#324b6d;
+  border-color:rgba(65,131,188,.18);
+  background:rgba(248,252,255,.92);
+  font-size:11px;
+  font-weight:700;
+}
+.conn-list{padding:0 20px}
+.conn{
+  min-height:70px;
+  padding:16px 2px;
+  border-top-color:rgba(73,132,183,.13);
+}
+.conn b{
+  color:#0c1a38;
+  font-size:14px;
+  font-weight:700;
+}
+.conn small{
+  color:#5d718d;
+  font-size:11.5px;
+  line-height:1.45;
+}
+.conn-note{color:#536a87!important}
+.conn-next{color:#5a7190!important}
+.status.wait{color:#627590}
+.page-refresh-fab{
+  width:58px;
+  height:58px;
+  min-height:58px;
+  border-color:rgba(255,255,255,.82);
+  background:linear-gradient(135deg,#20d4dc,#168cff 79%,#5967ed);
+  box-shadow:0 12px 30px rgba(22,140,255,.23),inset 0 1px 0 rgba(255,255,255,.36);
+}
+@media(max-width:900px){
+  #homePage,#connectionsPage{
+    padding:16px !important;
+    border-radius:24px;
+  }
+  .connections-toolbar{
+    grid-template-columns:1fr auto;
+    gap:14px;
+  }
+  .connections-refresh-btn{min-width:220px}
+}
+@media(max-width:560px){
+  .shell{padding-left:12px!important;padding-right:12px!important}
+  .top{
+    padding:16px 14px;
+    border-radius:24px;
+    margin-bottom:18px;
+  }
+  #homePage,#connectionsPage{
+    padding:12px !important;
+    border-radius:22px;
+  }
+  .home-hero{padding:20px}
+  .home-hero-stats{gap:12px}
+  .kpis{gap:12px !important}
+  .kpi{min-height:110px;padding:16px}
+  .kpi b{font-size:29px}
+  .kpi span{font-size:12px}
+  .connections-toolbar{
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:12px;
+    padding:0 2px 2px !important;
+    margin-bottom:18px !important;
+  }
+  .connections-refresh-btn{
+    min-width:0;
+    width:100%;
+    min-height:58px;
+    padding:12px 16px;
+    font-size:14px;
+    border-radius:18px;
+  }
+  .refresh-glyph{font-size:28px}
+  .connections-check-summary{
+    min-width:120px;
+    align-items:flex-start;
+  }
+  .connections-check-summary span{font-size:10.5px}
+  .connections-check-summary b{font-size:13px}
+  .system-overview-card{padding:18px !important}
+  .system-overview-card>.row{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:start;
+  }
+  .system-overview-card .label{font-size:18px}
+  #statusRuntime{font-size:12px}
+  .system-grid{gap:12px !important}
+  .system-box{
+    min-height:105px;
+    padding:16px;
+    border-radius:20px;
+  }
+  .system-box b{font-size:27px}
+  .system-box small{font-size:11px}
+  .connections-card{padding:14px !important}
+  .connections{gap:14px}
+  .conn-group-head{padding:15px 14px;gap:10px}
+  .conn-group-count{
+    max-width:135px;
+    text-align:center;
+    white-space:normal;
+    line-height:1.25 !important;
+  }
+  .conn-list{padding:0 14px}
+  .conn{padding:14px 0}
+  .conn small{font-size:11px}
+}
+
 </style>
 </head>
 <body>
@@ -1084,7 +1437,7 @@ input::placeholder,textarea::placeholder{color:#8b9ab3}
       <div class="top">
         <div class="top-left">
           <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">☰</button>
-          <div class="brand"><div class="mark">AI</div><div><h1 id="topTitle">News Factory</h1><div class="sub">Что там у ИИ? · <span id="topVersion">v—</span></div></div></div>
+          <div class="brand"><div class="mark">AI</div><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
         </div>
         <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
       </div>
@@ -1354,8 +1707,8 @@ input::placeholder,textarea::placeholder{color:#8b9ab3}
       </section>
 
       <section class="page" id="connectionsPage">
-        <div class="page-head"><div><h2>Система и подключения</h2><p>Состояние News Factory, интеграции и хранение данных.</p></div><button onclick="refreshConnections()">Обновить статусы</button></div>
-        <section class="card">
+        <div class="page-head connections-toolbar"><div class="connections-heading"><h2>Система и подключения</h2><p>Состояние News Factory, интеграции и хранение данных.</p></div><button class="connections-refresh-btn" onclick="refreshConnections()"><span class="refresh-glyph">↻</span><span>Обновить статусы</span></button><div class="connections-check-summary"><span>Последняя проверка</span><b id="statusCheckedSummary">—</b></div></div>
+        <section class="card system-overview-card">
           <div class="row"><div><div class="label">Состояние системы</div><div class="notice" id="statusRuntime">Загружаю runtime status…</div></div><span class="chip" id="statusCheckedAt">Проверка…</span></div>
           <div class="system-grid" style="margin-top:12px">
             <div class="system-box good"><b id="statusConnected">—</b><small>Подключено</small></div>
@@ -1364,7 +1717,7 @@ input::placeholder,textarea::placeholder{color:#8b9ab3}
             <div class="system-box"><b id="statusMode">—</b><small>Текущий режим</small></div>
           </div>
         </section>
-        <section class="card" style="margin-top:14px"><div id="connections" class="connections"><div class="empty">Проверяю подключения…</div></div></section>
+        <section class="card connections-card" style="margin-top:18px"><div id="connections" class="connections"><div class="empty">Проверяю подключения…</div></div></section>
         <section class="card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Хранение данных</h3><p>Где сохраняются новости, очередь и код.</p></div></div>
           <div class="pipeline-row"><div class="row"><b>PostgreSQL</b><span class="chip">Основная база</span></div><small>Новости, рейтинги, история запусков и состояние публикаций.</small></div>
@@ -1451,6 +1804,8 @@ function goPage(id,options){
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
   var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
+  if(el('topSubtitleText'))el('topSubtitleText').textContent=id==='connectionsPage'?'Состояние News Factory, интеграции и хранение данных.':'Что там у ИИ? · ';
+  if(el('topVersion'))el('topVersion').style.display=id==='connectionsPage'?'none':'inline';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
   if(id==='newsPage'){loadNews();loadCollectorStatus();}
@@ -1876,6 +2231,7 @@ async function renderConnections(force){
   el('sidebarVersion').textContent=version;el('topVersion').textContent=version;
   el('statusConnected').textContent=sm.connected==null?'—':sm.connected;el('statusPartial').textContent=sm.partial==null?'—':sm.partial;el('statusMissing').textContent=sm.missing==null?'—':sm.missing;el('statusMode').textContent=statusRu(s.mode||state.mode);
   el('statusCheckedAt').textContent=s.checkedAt?'Проверено '+new Date(s.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Проверено';
+  if(el('statusCheckedSummary'))el('statusCheckedSummary').textContent=s.checkedAt?'Сегодня, '+new Date(s.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'—';
   el('statusRuntime').textContent='Версия '+version+' · Service: '+(s.service||'news-factory-api')+' · Environment: '+(s.environment||'production')+' · '+(sm.connected||0)+' из '+(sm.total||0)+' подключений готовы';
   var botInfo=details.telegramBot||{};
   if(el('publishBotNotice')){
