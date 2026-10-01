@@ -159,6 +159,8 @@ const BLOGGER_SOURCES = [
 ];
 const BLOGGER_SLOTS = ["10:30", "12:30", "15:30", "18:30", "21:30"];
 const BLOGGER_DAILY_TARGET = 5;
+const RUSSIAN_AI_SLOTS = ["09:30", "11:30", "13:30", "16:30", "19:30", "22:30"];
+const RUSSIAN_AI_DAILY_TARGET = 6;
 
 const defaultState = {
   mode: "REVIEW",
@@ -575,6 +577,25 @@ function ensureConfiguredWorkspaces() {
       aiWorkspace.updatedAt = new Date().toISOString();
       changed = true;
     }
+
+    const russianSlotMigration = "v0.29.3-ai-russian-slots-6";
+    if (!aiWorkspace.state.migrations.includes(russianSlotMigration)) {
+      const schedule = ensureScheduleShape(aiWorkspace.state);
+      const slotMap = new Map((schedule.slots || []).map(function(slot){ return [slot.time, slot]; }));
+      for (const time of RUSSIAN_AI_SLOTS) {
+        if (!slotMap.has(time)) schedule.slots.push({ time: time, kind: "russian-ai", label: "Российский ИИ" });
+      }
+      schedule.slots.sort(function(a,b){ return String(a.time).localeCompare(String(b.time)); });
+      aiWorkspace.state.russianAiScheduler = Object.assign({
+        targetPerDay: RUSSIAN_AI_DAILY_TARGET,
+        lastPreparedAt: "",
+        lastPublishedAt: "",
+        lastPublishedSlot: ""
+      }, aiWorkspace.state.russianAiScheduler || {});
+      aiWorkspace.state.migrations.push(russianSlotMigration);
+      aiWorkspace.updatedAt = new Date().toISOString();
+      changed = true;
+    }
   }
 
   let cars = workspaceStore.workspaces.find(function(ws){
@@ -671,6 +692,12 @@ function findSourceForItem(item) {
 function isBloggerSource(sourceOrItem) {
   const source = sourceOrItem && sourceOrItem.group ? sourceOrItem : findSourceForItem(sourceOrItem);
   return Boolean(source && source.group === "blogger");
+}
+function isRussianAISource(sourceOrItem) {
+  const directId = String(sourceOrItem && (sourceOrItem.sourceId || sourceOrItem.id) || "");
+  if (directId.startsWith("ru-")) return true;
+  const source = sourceOrItem && sourceOrItem.group ? sourceOrItem : findSourceForItem(sourceOrItem);
+  return Boolean(source && String(source.id || "").startsWith("ru-"));
 }
 
 function sourceStatKey(sourceOrItem) {
@@ -1860,11 +1887,14 @@ async function collectOnce(trigger) {
       return summary;
     }
 
-    const bloggerRun = String(trigger || "").startsWith("blogger-");
+    const triggerName = String(trigger || "");
+    const bloggerRun = triggerName.startsWith("blogger-");
+    const russianAiRun = triggerName.startsWith("russian-ai-");
     const enabledSources = (state.sources || []).filter(function(src){
       if (!src || !src.enabled || !/^https?:\/\//i.test(src.url || "")) return false;
       if (bloggerRun) return src.group === "blogger";
-      if (String(trigger || "").startsWith("slot-")) return src.group !== "blogger";
+      if (russianAiRun) return isRussianAISource(src);
+      if (triggerName.startsWith("slot-")) return src.group !== "blogger" && !isRussianAISource(src);
       return true;
     });
     const ordered = [];
@@ -2158,13 +2188,21 @@ function dynamicScheduledHistorySlot(item) {
 function dynamicDailyPublishedCount(dayKey) {
   return (state.history || []).filter(function(item) {
     const slot = dynamicScheduledHistorySlot(item);
-    return slot && slot.startsWith(dayKey + " ") && item.publicationOrigin !== "blogger-schedule";
+    return slot && slot.startsWith(dayKey + " ") &&
+      item.publicationOrigin !== "blogger-schedule" &&
+      item.publicationOrigin !== "russian-ai-schedule";
   }).length;
 }
 function bloggerDailyPublishedCount(dayKey) {
   return (state.history || []).filter(function(item) {
     const slot = dynamicScheduledHistorySlot(item);
     return slot && slot.startsWith(dayKey + " ") && item.publicationOrigin === "blogger-schedule";
+  }).length;
+}
+function russianAiDailyPublishedCount(dayKey) {
+  return (state.history || []).filter(function(item) {
+    const slot = dynamicScheduledHistorySlot(item);
+    return slot && slot.startsWith(dayKey + " ") && item.publicationOrigin === "russian-ai-schedule";
   }).length;
 }
 
@@ -2225,10 +2263,13 @@ function dynamicBestQueueItem(kind) {
   const used = dynamicUsedQueueIds();
   const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
   const wantsBlogger = kind === "blogger";
+  const wantsRussianAi = kind === "russian-ai";
   return (state.queue || [])
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
-      return wantsBlogger ? isBloggerSource(item) : !isBloggerSource(item);
+      if (wantsBlogger) return isBloggerSource(item);
+      if (wantsRussianAi) return isRussianAISource(item);
+      return !isBloggerSource(item) && !isRussianAISource(item);
     })
     .sort(function(a, b) {
       const scoreDiff = dynamicItemScore(b) - dynamicItemScore(a);
@@ -2263,7 +2304,7 @@ function dynamicAssignBest(day, time, kind) {
   schedule.assignments[day][time] = item.id;
   delete schedule.suppressed[day][time];
   item.preparedFor = day + " " + time;
-  item.preparedKind = kind === "blogger" ? "blogger" : "regular";
+  item.preparedKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
   item.preparedAt = new Date().toISOString();
   if (!item.sourceSelectedAt) {
     noteSourceEvent(item, "selected");
@@ -2324,8 +2365,26 @@ async function prepareBloggerSlot(time) {
   return { ok: true, slot: slotTime, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
 }
 
+async function prepareRussianAiSlot(time) {
+  const now = new Date();
+  const day = moscowDateKey(now);
+  const slotTime = String(time || "");
+  if (!RUSSIAN_AI_SLOTS.includes(slotTime)) return { ok: true, skipped: "invalid_russian_ai_slot" };
+  if (russianAiDailyPublishedCount(day) >= RUSSIAN_AI_DAILY_TARGET) return { ok: true, skipped: "russian_ai_daily_target" };
+
+  const schedule = ensureScheduleShape(state);
+  if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
+
+  const collector = await collectOnce("russian-ai-slot-prep");
+  const item = dynamicAssignBest(day, slotTime, "russian-ai");
+  state.russianAiScheduler = state.russianAiScheduler || {};
+  state.russianAiScheduler.lastPreparedAt = new Date().toISOString();
+  saveState();
+  return { ok: true, slot: slotTime, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
+}
+
 async function publishDynamicSlot(kind) {
-  const publishKind = kind === "blogger" ? "blogger" : "regular";
+  const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
   const hour = Math.floor(nowMinutes / 60);
@@ -2334,18 +2393,24 @@ async function publishDynamicSlot(kind) {
   }
 
   const day = moscowDateKey(now);
-  const time = String(hour).padStart(2, "0") + (publishKind === "blogger" ? ":30" : ":00");
+  const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai") ? ":30" : ":00");
   if (publishKind === "blogger" && !BLOGGER_SLOTS.includes(time)) return { ok: true, skipped: "not_blogger_slot" };
+  if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
   const slotKey = day + " " + time;
   state.dynamicScheduler = state.dynamicScheduler || {};
   state.bloggerScheduler = state.bloggerScheduler || {};
-  const schedulerState = publishKind === "blogger" ? state.bloggerScheduler : state.dynamicScheduler;
+  state.russianAiScheduler = state.russianAiScheduler || {};
+  const schedulerState = publishKind === "blogger"
+    ? state.bloggerScheduler
+    : (publishKind === "russian-ai" ? state.russianAiScheduler : state.dynamicScheduler);
 
   if (schedulerState.lastPublishedSlot === slotKey) {
     return { ok: true, skipped: "already_done" };
   }
   if (publishKind === "blogger") {
     if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
+  } else if (publishKind === "russian-ai") {
+    if (russianAiDailyPublishedCount(day) >= RUSSIAN_AI_DAILY_TARGET) return { ok: true, skipped: "russian_ai_daily_target" };
   } else if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
     return { ok: true, skipped: "daily_max" };
   }
@@ -2354,10 +2419,14 @@ async function publishDynamicSlot(kind) {
   let queueId = schedule.assignments[day] && schedule.assignments[day][time];
 
   if (!queueId) {
-    let lastChanceItem = dynamicAssignBest(day, time, publishKind === "blogger" ? "blogger" : undefined);
+    const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
+    let lastChanceItem = dynamicAssignBest(day, time, laneKind);
     if (!lastChanceItem && !collectorRunning) {
-      await collectOnce(publishKind === "blogger" ? "blogger-slot-last-chance" : "slot-last-chance");
-      lastChanceItem = dynamicAssignBest(day, time, publishKind === "blogger" ? "blogger" : undefined);
+      const lastChanceTrigger = publishKind === "blogger"
+        ? "blogger-slot-last-chance"
+        : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
+      await collectOnce(lastChanceTrigger);
+      lastChanceItem = dynamicAssignBest(day, time, laneKind);
     }
     queueId = lastChanceItem && lastChanceItem.id || "";
   }
@@ -2454,7 +2523,9 @@ async function publishDynamicSlot(kind) {
       videoUrl: item.videoUrl || "",
       mediaType: item.mediaType || "",
       mediaStatus: item.mediaStatus || "",
-      publicationOrigin: publishKind === "blogger" ? "blogger-schedule" : "schedule",
+      publicationOrigin: publishKind === "blogger"
+        ? "blogger-schedule"
+        : (publishKind === "russian-ai" ? "russian-ai-schedule" : "schedule"),
       scheduledSlot: slotKey
     };
     state.history.unshift(historyItem);
@@ -2469,7 +2540,9 @@ async function publishDynamicSlot(kind) {
     historyItem.vkError = result.vkError || item.vkError || "";
     historyItem.vkPreviewSlug = result.vkPreviewSlug || historyItem.vkPreviewSlug || "";
     historyItem.vkPreviewUrl = result.vkPreviewUrl || historyItem.vkPreviewUrl || "";
-    historyItem.publicationOrigin = publishKind === "blogger" ? "blogger-schedule" : "schedule";
+    historyItem.publicationOrigin = publishKind === "blogger"
+      ? "blogger-schedule"
+      : (publishKind === "russian-ai" ? "russian-ai-schedule" : "schedule");
     historyItem.scheduledSlot = slotKey;
   }
 
@@ -2535,13 +2608,24 @@ async function dynamicSchedulerTick() {
 
   let action = "";
   let bloggerTime = "";
+  let russianAiTime = "";
   if (minute === 15) {
     bloggerTime = String(hour).padStart(2, "0") + ":30";
-    if (BLOGGER_SLOTS.includes(bloggerTime)) action = "blogger_prepare";
+    russianAiTime = bloggerTime;
+    if (BLOGGER_SLOTS.includes(bloggerTime) && (state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) {
+      action = "blogger_prepare";
+    } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
+      action = "russian_ai_prepare";
+    }
   }
   if (!action && minute === 30) {
     bloggerTime = String(hour).padStart(2, "0") + ":30";
-    if (BLOGGER_SLOTS.includes(bloggerTime)) action = "blogger_publish";
+    russianAiTime = bloggerTime;
+    if (BLOGGER_SLOTS.includes(bloggerTime) && (state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) {
+      action = "blogger_publish";
+    } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
+      action = "russian_ai_publish";
+    }
   }
   if (!action && minute === DYNAMIC_SLOT_PREP_MINUTE && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
     action = "prepare";
@@ -2550,6 +2634,7 @@ async function dynamicSchedulerTick() {
   }
   if (!action) return;
   if (action.startsWith("blogger_") && !(state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) return;
+  if (action.startsWith("russian_ai_") && !(state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) return;
 
   state.dynamicScheduler = state.dynamicScheduler || {};
   const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0") + "-" + action;
@@ -2564,7 +2649,11 @@ async function dynamicSchedulerTick() {
         ? await publishDynamicSlot()
         : action === "blogger_prepare"
           ? await prepareBloggerSlot(bloggerTime)
-          : await publishDynamicSlot("blogger");
+          : action === "blogger_publish"
+            ? await publishDynamicSlot("blogger")
+            : action === "russian_ai_prepare"
+              ? await prepareRussianAiSlot(russianAiTime)
+              : await publishDynamicSlot("russian-ai");
     console.log("Dynamic scheduler " + action + ":", JSON.stringify(result));
   } catch (error) {
     console.error("Dynamic scheduler " + action + " failed:", error.message);
@@ -2586,7 +2675,7 @@ function startCollectorScheduler() {
     dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
   }, 30000);
   dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
-  console.log("Dynamic scheduler: multi-workspace · regular hourly + blogger slots 10:30/12:30/15:30/18:30/21:30 Moscow");
+  console.log("Dynamic scheduler: regular hourly + autoblogger slots + Russian AI slots 09:30/11:30/13:30/16:30/19:30/22:30 Moscow");
 }
 
 function sendJson(res, status, payload, headers) {
@@ -5103,7 +5192,8 @@ const server = http.createServer(async function(req, res) {
       delete schedule.suppressed[day][time];
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
       const slot = (schedule.slots || []).find(function(entry){ return entry && entry.time === time; });
-      const item = dynamicAssignBest(day, time, slot && slot.kind === "blogger" ? "blogger" : undefined);
+      const pickKind = slot && slot.kind === "blogger" ? "blogger" : (slot && slot.kind === "russian-ai" ? "russian-ai" : undefined);
+      const item = dynamicAssignBest(day, time, pickKind);
       return sendJson(res, 200, { ok: true, assignment: item ? { date: day, time: time, queueId: item.id } : null });
     }
 
