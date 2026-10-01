@@ -1352,6 +1352,7 @@ function enrichNewsFeedItem(row) {
   ];
   let aiScore = null;
   for (const value of scoreCandidates) {
+    if (value === null || value === undefined || value === "") continue;
     const n = Number(value);
     if (Number.isFinite(n)) {
       aiScore = Math.max(0, Math.min(100, Math.round(n)));
