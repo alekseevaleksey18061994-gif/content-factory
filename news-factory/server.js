@@ -1066,6 +1066,8 @@ function storySourceSnapshot(item) {
     : [{
         sourceId: item && item.sourceId || "",
         sourceName: item && item.sourceName || "Источник",
+        sourceGroup: item && item.sourceGroup || "",
+        sourceRole: item && item.sourceRole || sourceEditorialRole(item),
         url: item && item.sourceUrl || "",
         newsId: item && item.newsId || "",
         title: item && (item.sourceOriginalTitle || item.title) || "",
@@ -1088,6 +1090,8 @@ function mergeStorySources(a, b) {
     out.push({
       sourceId: String(source.sourceId || ""),
       sourceName: String(source.sourceName || source.name || "Источник"),
+      sourceGroup: String(source.sourceGroup || source.group || ""),
+      sourceRole: String(source.sourceRole || sourceEditorialRole(source)),
       url: String(source.url || source.sourceUrl || ""),
       newsId: String(source.newsId || ""),
       title: String(source.title || "").slice(0, 300),
@@ -6191,7 +6195,10 @@ async function classifyPublishedStoryRelationship(item) {
 
   for (const h of (state.history || [])) {
     if (!h || !h.publishedAt || new Date(h.publishedAt).getTime() < cutoff) continue;
-    const score = storySimilarity(item, h);
+    const score = storySimilarity(
+      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
+      Object.assign({}, h, { sourceId: "published:" + String(h.sourceId || h.sourceName || "") })
+    );
     if (score > bestScore) { bestScore = score; best = h; }
   }
   if (!best || bestScore < 0.16) return { relation: "new_story", candidate: null, reason: "" };
@@ -6245,6 +6252,7 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
     return {
       n: index + 1,
       source: String(source.sourceName || "Источник"),
+      role: sourceRoleLabel(source.sourceRole || sourceEditorialRole(source)),
       url: String(source.url || ""),
       title: String(source.title || "").slice(0, 300),
       text: String(source.text || "").slice(0, 4200)
@@ -6272,7 +6280,7 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
     "- убирай повторы и объединяй совпадающие факты;",
     "- если важная деталь есть только у одного источника, при необходимости атрибутируй её этому источнику;",
     "- если источники расходятся в цифрах, датах или трактовках — не выбирай молча одну версию, а кратко обозначь расхождение;",
-    "- официальные первичные источники используй для официальных характеристик/дат, авторские мнения оставляй мнениями авторов;",
+    "- учитывай поле role каждого материала: официальный первичный источник — опора для характеристик/дат; СМИ — контекст; автор/блогер — мнение, опыт и демонстрация с атрибуцией;",
     "- COPYRIGHT SAFE: полностью новая структура и формулировки; никаких длинных дословных фрагментов;",
     "- прямую цитату используй только если она действительно важна, максимум 8 слов подряд и с атрибуцией;",
     "- ссылки на источники в текст не вставляй — система добавит их сама.",
