@@ -392,6 +392,48 @@ function saveState() {
   scheduleStateSnapshot();
 }
 
+async function runMigrations() {
+  if (!db) return;
+  const migrationsDir = path.join(process.cwd(), "migrations");
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  let files = [];
+  try {
+    files = fs.readdirSync(migrationsDir)
+      .filter(function(name){ return /\.sql$/i.test(name); })
+      .sort();
+  } catch (error) {
+    if (error && error.code === "ENOENT") return;
+    throw error;
+  }
+
+  for (const fileName of files) {
+    const version = fileName.replace(/\.sql$/i, "");
+    const exists = await db.query("SELECT 1 FROM schema_migrations WHERE version=$1 LIMIT 1", [version]);
+    if (exists.rowCount) continue;
+
+    const sql = fs.readFileSync(path.join(migrationsDir, fileName), "utf8");
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(sql);
+      await client.query("INSERT INTO schema_migrations(version) VALUES($1)", [version]);
+      await client.query("COMMIT");
+      console.log("DB migration applied:", version);
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
 async function initDb() {
   if (!db) return false;
   try {
@@ -437,6 +479,7 @@ async function initDb() {
       );
       CREATE INDEX IF NOT EXISTS app_snapshots_created_idx ON app_snapshots(created_at DESC);
     `);
+    await runMigrations();
     dbReady = true;
     await saveStateSnapshot();
     console.log("PostgreSQL ready");
