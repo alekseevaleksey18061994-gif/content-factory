@@ -1888,7 +1888,7 @@ async function collectOnce(trigger) {
 
         let rewrite;
         try {
-          rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText });
+          rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "" });
           state.stats.rewritten += 1;
         } catch (error) {
           baseItem.status = "rewrite_error";
@@ -3998,6 +3998,8 @@ async function callOpenAIRewrite(payload) {
   if (!sourceText) throw new Error("Нужен исходный текст новости");
   const title = String(payload.title || "").trim();
   const sourceUrl = String(payload.sourceUrl || "").trim();
+  const sourceName = String(payload.sourceName || "").trim();
+  const sourceGroup = String(payload.sourceGroup || "").trim();
   const channelName = String(currentWorkspace().name || "News Factory");
   const prompt = [
     "Ты редактор Telegram-канала «" + channelName + "».",
@@ -4007,6 +4009,8 @@ async function callOpenAIRewrite(payload) {
     "- используй только факты из исходного текста;",
     "- ничего не придумывай: даты, цены, характеристики, цитаты, сравнения и цифры нельзя добавлять от себя;",
     "- если факт не подтверждён исходником — не используй его;",
+    sourceGroup === "blogger" ? "- это материал автоблогера «" + sourceName + "»: его личные оценки, предположения и впечатления обязательно атрибутируй автору и не выдавай за установленный факт;" : "- отделяй факты от оценок и предположений источника;",
+    sourceGroup === "blogger" ? "- если блогер показывает собственный автомобиль, эксперимент, покупку или тест — прямо укажи, что это произошло у автора/в его проекте;" : "- сохраняй нейтральную атрибуцию источника там, где это важно;",
     "- не копируй формулировки источника дословно длинными кусками;",
     "- не копируй стиль конкурентов один в один: у канала «" + channelName + "» должен быть собственный голос;",
     "- для политических, трагических, медицинских и других чувствительных тем — нейтрально, без шуток и оценочных призывов;",
