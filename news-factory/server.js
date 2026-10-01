@@ -812,6 +812,62 @@ function ensureConfiguredWorkspaces() {
     changed = true;
   }
 
+  const editorialIntelligenceMigration = "v0.32.0-editorial-intelligence";
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+    if (ws.state.migrations.includes(editorialIntelligenceMigration)) continue;
+
+    ws.state.editorialPolicy = Object.assign({
+      qcEnabled: EDITORIAL_QC_ENABLED,
+      autoQualityMin: AUTO_QUALITY_MIN,
+      diversityEnabled: true,
+      platformVariants: true,
+      storyUpdates: true,
+      mediaDirector: true,
+      repairLoop: true
+    }, ws.state.editorialPolicy || {});
+    ws.state.editorialLearning = Object.assign({
+      updatedAt: "",
+      sampleSize: 0,
+      byFormat: {},
+      bySource: {},
+      byTopic: {}
+    }, ws.state.editorialLearning || {});
+
+    for (const source of (ws.state.sources || [])) {
+      if (!source) continue;
+      source.editorialRole = source.editorialRole || sourceEditorialRole(source);
+    }
+
+    for (const item of (ws.state.queue || [])) {
+      if (!item) continue;
+      item.sourceRole = item.sourceRole || sourceEditorialRole(item);
+      if (!Number.isFinite(Number(item.qualityScore))) {
+        item.qualityScore = 72;
+        item.qualityBreakdown = item.qualityBreakdown || { hook: 14, clarity: 11, factuality: 20, originality: 10, structure: 7, mediaFit: 10 };
+        item.qcStatus = item.qcStatus || "legacy_pass";
+        item.qcIssues = Array.isArray(item.qcIssues) ? item.qcIssues : [];
+      }
+      item.topicEntities = normalizeTopicEntities(item.topicEntities);
+      item.platformVariants = item.platformVariants && typeof item.platformVariants === "object" ? item.platformVariants : {
+        telegram: { title: item.title || "", text: item.text || "" },
+        vk: { title: item.title || "", text: item.text || "" }
+      };
+      item.decisionSummary = item.decisionSummary || "Старая карточка адаптирована к новому редакционному контуру.";
+    }
+
+    for (const h of (ws.state.history || [])) {
+      if (!h) continue;
+      h.sourceRole = h.sourceRole || sourceEditorialRole(h);
+      h.topicEntities = normalizeTopicEntities(h.topicEntities);
+    }
+
+    ws.state.migrations.push(editorialIntelligenceMigration);
+    ws.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+
   if (changed) {
     cars.updatedAt = new Date().toISOString();
     persistWorkspaceStore();
