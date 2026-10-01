@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import {
   createEditorialPipeline,
+  createModelClients,
   resolveChannelId,
   timeSlotFor,
   legacyScores,
@@ -5999,6 +6000,7 @@ async function fetchVkAnalytics() {
 
 const statusCache = new Map();
 const analyticsCache = new Map();
+let anthropicProbeCache = { at: 0, value: null };
 
 function parseCompactNumber(value) {
   const raw = stripHtml(String(value || "")).replace(/\s+/g, "").replace(",", ".").toUpperCase();
@@ -6275,6 +6277,48 @@ async function openAIModelProbe() {
     }
   }
   return { ok: false, error: lastError || "OpenAI API недоступен" };
+}
+
+
+async function anthropicEditorialProbe(force) {
+  if (!ANTHROPIC_API_KEY) return { ok: false, error: "ANTHROPIC_API_KEY не задан" };
+  const now = Date.now();
+  if (!force && anthropicProbeCache.value && now - anthropicProbeCache.at < 10 * 60 * 1000) {
+    return anthropicProbeCache.value;
+  }
+  try {
+    const clients = createModelClients({
+      anthropicApiKey: ANTHROPIC_API_KEY,
+      anthropicModel: ANTHROPIC_MODEL,
+      timeoutMs: 30000
+    });
+    const result = await clients.callAnthropic(
+      [
+        "Ты технический health-check редакционного корректора.",
+        "Верни verdict=pass, пустой errors, checked_claims=1 и короткий summary.",
+        "Не добавляй никаких других данных."
+      ].join("\n"),
+      JSON.stringify({
+        role: "checker",
+        channel_id: "health",
+        post: { title: "Проверка подключения", tg_text: "Служебная проверка.", vk_text: "Служебная проверка.", cover: null, format: "health", legal_flags: [], has_photo: false },
+        sources: [{ name: "health", url: "https://example.com", date: new Date().toISOString(), role: "technical", title: "Проверка", text: "Служебная проверка API." }],
+        registry: { banned_orgs: [], foreign_agents: [] }
+      }),
+      { maxTokens: 250 }
+    );
+    const parsed = result && result.parsed || {};
+    const ok = ["pass", "fix", "reject"].includes(String(parsed.verdict || "").toLowerCase()) && Array.isArray(parsed.errors);
+    const value = ok
+      ? { ok: true, model: result.model || ANTHROPIC_MODEL, structured: result.structured !== false }
+      : { ok: false, error: "Claude вернул ответ вне схемы" };
+    anthropicProbeCache = { at: now, value };
+    return value;
+  } catch (error) {
+    const value = { ok: false, error: String(error && error.message || error) };
+    anthropicProbeCache = { at: now, value };
+    return value;
+  }
 }
 
 function extractOpenAIText(data) {
@@ -7619,14 +7663,16 @@ async function buildSystemStatus(force) {
     BOT_TOKEN ? telegramProbe("getMe") : Promise.resolve({ ok: false, error: "TELEGRAM_BOT_TOKEN не задан" }),
     BOT_TOKEN && telegramChannel ? telegramProbe("getChat", { chat_id: telegramChannel }) : Promise.resolve({ ok: false, error: "Канал или токен не заданы" }),
     OPENAI_API_KEY ? openAIModelProbe() : Promise.resolve({ ok: false, error: "OPENAI_API_KEY не задан" }),
+    ANTHROPIC_API_KEY ? anthropicEditorialProbe(Boolean(force)) : Promise.resolve({ ok: false, error: "ANTHROPIC_API_KEY не задан" }),
     VK_ACCESS_TOKEN && VK_GROUP_ID ? vkProbe() : Promise.resolve({ ok: false, error: "VK не настроен" }),
     githubAutomationProbe()
   ]);
   const botProbe = probes[0];
   const chatProbe = probes[1];
   const openaiProbe = probes[2];
-  const vkStatusProbe = probes[3];
-  const githubAutomation = probes[4];
+  const anthropicProbe = probes[3];
+  const vkStatusProbe = probes[4];
+  const githubAutomation = probes[5];
 
   const railwayConnected = Boolean(
     process.env.RAILWAY_PROJECT_ID ||
@@ -7714,12 +7760,26 @@ async function buildSystemStatus(force) {
       next: openaiProbe.ok ? "" : (OPENAI_API_KEY ? "Проверить ключ, доступ к модели и биллинг OpenAI" : "Подключить OpenAI API")
     },
     editorialV2: {
-      state: editorialV2Active() ? (ANTHROPIC_API_KEY ? "connected" : "partial") : (EDITORIAL_V2_ENABLED ? "missing" : "partial"),
-      description: editorialV2Active()
-        ? (ANTHROPIC_API_KEY ? "Редакция v2: автор GPT + двойная проверка GPT и Claude" : "Редакция v2 работает, но проверка только GPT")
-        : (EDITORIAL_V2_ENABLED ? "Редакция v2 не запустилась — работает старая схема" : "Редакция v2 выключена (EDITORIAL_V2_ENABLED=false)"),
-      detail: "Канал: " + (resolveChannelId(currentWorkspace()) || "профиль не определён") + " · Claude: " + (ANTHROPIC_API_KEY ? ANTHROPIC_MODEL : "нет ключа") + " · исправлений до " + EDITORIAL_V2_MAX_FIX_ROUNDS + (editorialPromptError ? " · ошибка промпта: " + editorialPromptError : ""),
-      next: !EDITORIAL_V2_ENABLED ? "" : (!editorialV2Active() ? "Проверить OPENAI_API_KEY и файл prompts/chto-tam.md" : (ANTHROPIC_API_KEY ? "" : "Добавить ANTHROPIC_API_KEY для второй проверки"))
+      state: !editorialV2Active()
+        ? (EDITORIAL_V2_ENABLED ? "missing" : "partial")
+        : (!ANTHROPIC_API_KEY ? "partial" : (openaiProbe.ok && anthropicProbe.ok ? "connected" : "partial")),
+      description: !editorialV2Active()
+        ? (EDITORIAL_V2_ENABLED ? "Редакция v2 не запустилась — работает старая схема" : "Редакция v2 выключена (EDITORIAL_V2_ENABLED=false)")
+        : (!ANTHROPIC_API_KEY
+          ? "Редакция v2 работает, но проверка только GPT"
+          : (openaiProbe.ok && anthropicProbe.ok
+            ? "Редакция v2: автор GPT + двойная проверка GPT и Claude"
+            : "Редакция v2 настроена, но один из проверщиков не прошёл живую проверку")),
+      detail: "Канал: " + (resolveChannelId(currentWorkspace()) || "профиль не определён") +
+        " · GPT: " + (openaiProbe.ok ? openaiProbe.model : "ошибка") +
+        " · Claude: " + (anthropicProbe.ok ? (anthropicProbe.model + (anthropicProbe.structured ? " · JSON schema OK" : " · JSON fallback")) : String(anthropicProbe.error || (ANTHROPIC_API_KEY ? "ошибка" : "нет ключа"))) +
+        " · исправлений до " + EDITORIAL_V2_MAX_FIX_ROUNDS +
+        (editorialPromptError ? " · ошибка промпта: " + editorialPromptError : ""),
+      next: !EDITORIAL_V2_ENABLED ? "" :
+        (!editorialV2Active() ? "Проверить OPENAI_API_KEY и файл prompts/chto-tam.md" :
+          (!ANTHROPIC_API_KEY ? "Добавить ANTHROPIC_API_KEY для второй проверки" :
+            (!openaiProbe.ok ? "Проверить OpenAI API и биллинг" :
+              (!anthropicProbe.ok ? "Проверить Anthropic API, модель и формат ответа" : ""))))
     },
     openaiImage: {
       state: openaiProbe.ok && IMAGE_ENHANCEMENT_ENABLED && OPENAI_IMAGE_MODEL ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
@@ -7995,13 +8055,19 @@ const server = http.createServer(async function(req, res) {
     }
     if (req.method === "GET" && p === "/api/editorial/status") {
       const recent = (state.queue || []).concat(state.history || []).filter(function(item){ return item && item.editorialV2; }).slice(0, 20);
+      const anthropicHealth = ANTHROPIC_API_KEY ? await anthropicEditorialProbe(false) : { ok: false, error: "ANTHROPIC_API_KEY не задан" };
       return sendJson(res, 200, {
         ok: true,
         enabled: EDITORIAL_V2_ENABLED,
         active: editorialV2Active(),
+        operational: editorialV2Active() && Boolean(OPENAI_API_KEY) && (!EDITORIAL_V2_REQUIRE_ALL_CHECKERS || (Boolean(ANTHROPIC_API_KEY) && anthropicHealth.ok)),
         promptError: editorialPromptError || null,
         channelId: resolveChannelId(currentWorkspace()),
         checkers: ["openai:" + OPENAI_MODEL].concat(ANTHROPIC_API_KEY ? ["anthropic:" + ANTHROPIC_MODEL] : []),
+        checkerHealth: {
+          openai: { configured: Boolean(OPENAI_API_KEY) },
+          anthropic: { configured: Boolean(ANTHROPIC_API_KEY), ok: Boolean(anthropicHealth.ok), model: anthropicHealth.ok ? anthropicHealth.model : "", structured: Boolean(anthropicHealth.structured), error: anthropicHealth.ok ? "" : String(anthropicHealth.error || "") }
+        },
         requireAllCheckers: EDITORIAL_V2_REQUIRE_ALL_CHECKERS,
         maxFixRounds: EDITORIAL_V2_MAX_FIX_ROUNDS,
         recent: recent.map(function(item){ return { title: item.title, verdict: item.editorialV2.verdict, importance: item.editorialV2.importance, checkers: item.editorialV2.checkers, rounds: item.editorialV2.rounds, errors: item.editorialV2.errors }; })
