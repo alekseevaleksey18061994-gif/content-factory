@@ -3687,13 +3687,16 @@ async function callOpenAIEditorialScoreBatch(items) {
         };
         const total = Object.values(breakdown).reduce(function(sum, value){ return sum + value; }, 0);
         const explicit = Number(entry && entry.editorial_score);
+        const editorialScore = total > 0
+          ? Math.min(100, total)
+          : (Number.isFinite(explicit) ? Math.max(0, Math.min(100, Math.round(explicit))) : null);
         return {
           id: String(entry && entry.id || ""),
-          editorialScore: total > 0 ? Math.min(100, total) : (Number.isFinite(explicit) ? Math.max(0, Math.min(100, Math.round(explicit))) : 50),
+          editorialScore: editorialScore,
           scoreBreakdown: breakdown,
           scoreReason: String(entry && entry.score_reason || "").trim()
         };
-      }).filter(function(entry){ return entry.id; });
+      }).filter(function(entry){ return entry.id && Number.isFinite(entry.editorialScore); });
     } catch (error) {
       console.warn("AI editorial score batch failed:", error.message);
     }
@@ -3727,8 +3730,10 @@ async function backfillRecentNewsEditorialScores(limit) {
   for (let offset = 0; offset < rows.rows.length; offset += 10) {
     const batch = rows.rows.slice(offset, offset + 10);
     const scores = await callOpenAIEditorialScoreBatch(batch);
+    const allowedIds = new Set(batch.map(function(item){ return String(item.id || ""); }));
     for (const score of scores) {
-      await db.query(
+      if (!allowedIds.has(score.id)) continue;
+      const updated = await db.query(
         "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1",
         [score.id, JSON.stringify({
           editorialScore: score.editorialScore,
@@ -3737,6 +3742,7 @@ async function backfillRecentNewsEditorialScores(limit) {
           scoreBackfilledAt: new Date().toISOString()
         })]
       );
+      if (!updated.rowCount) continue;
       const queueItem = (state.queue || []).find(function(q){ return q && q.newsId === score.id; });
       if (queueItem) {
         queueItem.aiScore = score.editorialScore;
