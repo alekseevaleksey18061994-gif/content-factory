@@ -3797,6 +3797,19 @@ async function publishDynamicSlot(kind) {
       mediaStatus: item.mediaStatus || "",
       contentFormat: item.contentFormat || "",
       contentFormatLabel: item.contentFormatLabel || "",
+      qualityScore: item.qualityScore == null ? null : Number(item.qualityScore),
+      qualityBreakdown: item.qualityBreakdown || null,
+      qcStatus: item.qcStatus || "",
+      qcIssues: Array.isArray(item.qcIssues) ? item.qcIssues : [],
+      topicEntities: normalizeTopicEntities(item.topicEntities),
+      platformVariants: item.platformVariants || null,
+      sourceRole: item.sourceRole || sourceEditorialRole(item),
+      decisionSummary: item.decisionSummary || "",
+      decisionExplanation: buildDecisionExplanation(item),
+      repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
+      mediaDirector: item.mediaDirector || null,
+      storyUpdateOf: item.storyUpdateOf || "",
+      storyUpdateTitle: item.storyUpdateTitle || "",
       publicationOrigin: publishKind === "blogger"
         ? "blogger-schedule"
         : (publishKind === "russian-ai" ? "russian-ai-schedule" : "schedule"),
@@ -3844,7 +3857,12 @@ async function publishDynamicSlot(kind) {
             vkStatus: result.vkStatus || item.vkStatus || "",
             vkError: result.vkError || item.vkError || "",
             vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
-            vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0
+            vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0,
+            repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
+            qualityScore: item.qualityScore == null ? null : Number(item.qualityScore),
+            qcStatus: item.qcStatus || "",
+            topicEntities: normalizeTopicEntities(item.topicEntities),
+            sourceRole: item.sourceRole || sourceEditorialRole(item)
           }),
           result.vkPostId || item.vkPostId || null,
           result.vkStatus || item.vkStatus || "",
@@ -7191,6 +7209,10 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/dashboard") {
       const cleanup = pruneQueueItems(state);
       if (cleanup.removed) saveState();
+      for (const item of (state.queue || [])) {
+        if (!item) continue;
+        item.decisionExplanation = buildDecisionExplanation(item);
+      }
       return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings() });
     }
 
@@ -7638,6 +7660,7 @@ const server = http.createServer(async function(req, res) {
         imageUrl: item.imageUrl || "",
         generatedImageUrl: item.generatedImageUrl || "",
         videoUrl: item.videoUrl || "",
+        mediaPackUrls: Array.isArray(item.mediaPackUrls) ? item.mediaPackUrls : [],
         mediaType: item.mediaType || "",
         mediaStatus: item.mediaStatus || ""
       };
@@ -7696,7 +7719,18 @@ const server = http.createServer(async function(req, res) {
         videoUrl: media.videoUrl,
         mediaStatus: media.mediaStatus || item.mediaStatus || "",
         mediaOrigin: item.mediaOrigin || media.mediaOrigin || "",
-        mediaLicense: item.mediaLicense || media.mediaLicense || sourceMediaLicense(item)
+        mediaLicense: item.mediaLicense || media.mediaLicense || sourceMediaLicense(item),
+        mediaPackUrls: Array.isArray(item.mediaPackUrls) ? item.mediaPackUrls : (Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : []),
+        platformVariants: item.platformVariants || null,
+        qualityScore: item.qualityScore,
+        qualityBreakdown: item.qualityBreakdown,
+        qcStatus: item.qcStatus,
+        qcIssues: item.qcIssues,
+        topicEntities: item.topicEntities,
+        sourceRole: item.sourceRole,
+        decisionSummary: item.decisionSummary,
+        storyUpdateOf: item.storyUpdateOf || "",
+        storyUpdateTitle: item.storyUpdateTitle || ""
       }, effectiveTargets);
 
       if (result.safeMedia) Object.assign(item, result.safeMedia);
@@ -7739,6 +7773,8 @@ const server = http.createServer(async function(req, res) {
           vkStatus: result.vkStatus || item.vkStatus || "",
           vkError: result.vkError || item.vkError || "",
           publishedAt: publishedAt,
+          sourceId: item.sourceId || "",
+          sourceName: item.sourceName || "",
           sourceUrl: item.sourceUrl || "",
           sourceUrls: Array.isArray(item.sourceUrls) ? item.sourceUrls : [],
           sources: Array.isArray(item.sources) ? item.sources : [],
@@ -7750,6 +7786,19 @@ const server = http.createServer(async function(req, res) {
           mediaPackUrls: Array.isArray(item.mediaPackUrls) ? item.mediaPackUrls : [],
           contentFormat: item.contentFormat || "",
           contentFormatLabel: item.contentFormatLabel || "",
+          qualityScore: item.qualityScore == null ? null : Number(item.qualityScore),
+          qualityBreakdown: item.qualityBreakdown || null,
+          qcStatus: item.qcStatus || "",
+          qcIssues: Array.isArray(item.qcIssues) ? item.qcIssues : [],
+          topicEntities: normalizeTopicEntities(item.topicEntities),
+          platformVariants: item.platformVariants || null,
+          sourceRole: item.sourceRole || sourceEditorialRole(item),
+          decisionSummary: item.decisionSummary || "",
+          decisionExplanation: buildDecisionExplanation(item),
+          repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
+          mediaDirector: item.mediaDirector || null,
+          storyUpdateOf: item.storyUpdateOf || "",
+          storyUpdateTitle: item.storyUpdateTitle || "",
           publicationOrigin: "manual",
           manualPublishedFromSchedule: item.preparedFor || ""
         };
