@@ -3545,6 +3545,42 @@ const server = http.createServer(async function(req, res) {
       }, { "cache-control": "no-store" });
     }
 
+    if (req.method === "GET" && p === "/internal/verify-vk-post-3-a57d1e2c") {
+      try {
+        const response = await vkApi(
+          "wall.getById",
+          { posts: String(VK_OWNER_ID) + "_3", extended: 0 },
+          { token: VK_ACCESS_TOKEN, tokenKind: "community", context: { topicId: "system", postId: "verify-3" } }
+        );
+        const items = Array.isArray(response) ? response : (response && Array.isArray(response.items) ? response.items : []);
+        const post = items[0] || null;
+        if (!post) return sendJson(res, 404, { ok: false, error: "post not found" }, { "cache-control": "no-store" });
+        const attachments = Array.isArray(post.attachments) ? post.attachments.map(function(a) {
+          const photo = a && a.photo;
+          return {
+            type: a && a.type || "",
+            ownerId: photo && photo.owner_id || null,
+            mediaId: photo && photo.id || null,
+            sizes: photo && Array.isArray(photo.sizes) ? photo.sizes.length : 0
+          };
+        }) : [];
+        return sendJson(res, 200, {
+          ok: true,
+          postId: post.id || null,
+          ownerId: post.owner_id || null,
+          attachmentCount: attachments.length,
+          attachments: attachments,
+          textPresent: Boolean(String(post.text || "").trim())
+        }, { "cache-control": "no-store" });
+      } catch (error) {
+        return sendJson(res, 502, {
+          ok: false,
+          errorCode: error && error.vkErrorCode != null ? error.vkErrorCode : null,
+          error: String(error && (error.vkErrorMsg || error.message) || error)
+        }, { "cache-control": "no-store" });
+      }
+    }
+
     if (req.method === "GET" && p === "/internal/runtime-probe-8c4e31a7f39d4b51a2e6") {
       const day = moscowDateKey(new Date());
       const schedule = ensureScheduleShape(state);
