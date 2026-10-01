@@ -1539,6 +1539,11 @@ function normalizePublicPostSources(post) {
     });
   }
 
+  if (Array.isArray(p.storySources)) {
+    p.storySources.forEach(function(source) {
+      if (source && typeof source === "object") add(source.sourceName || source.name || source.title || "", source.url || source.sourceUrl || source.href || "");
+    });
+  }
   if (Array.isArray(p.sources)) {
     p.sources.forEach(function(source) {
       if (typeof source === "string") add("", source);
@@ -3326,11 +3331,21 @@ function formatTelegramBody(value) {
 function formatTelegramPost(post) {
   const title = String(post.title || "").trim();
   const text = String(post.text || "").trim();
-  const sourceUrl = String(post.sourceUrl || "").trim();
+  const sources = normalizePublicPostSources(post).slice(0, 5);
   let html = "";
   if (title) html += "<b>" + escapeTelegramHtml(title) + "</b>";
   if (text) html += (html ? "\n\n" : "") + formatTelegramBody(text);
-  if (sourceUrl) html += (html ? "\n\n" : "") + '🔗 <a href="' + escapeTelegramAttr(sourceUrl) + '">Источник</a>';
+  if (sources.length === 1) {
+    html += (html ? "\n\n" : "") + '🔗 <a href="' + escapeTelegramAttr(sources[0].url) + '">Источник</a>';
+  } else if (sources.length > 1) {
+    const links = sources.map(function(source, index) {
+      const label = String(source.name || "").trim() && !/^https?:/i.test(String(source.name || ""))
+        ? String(source.name).trim()
+        : ("Источник " + (index + 1));
+      return '<a href="' + escapeTelegramAttr(source.url) + '">' + escapeTelegramHtml(label) + '</a>';
+    });
+    html += (html ? "\n\n" : "") + "🔗 Источники: " + links.join(" · ");
+  }
   return html.trim();
 }
 
@@ -3519,8 +3534,36 @@ async function sendTelegramPost(post) {
   const telegramChannel = currentTelegramChannel();
   if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
   const html = formatTelegramPost(post);
-  let imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
+  const mediaPackUrls = Array.from(new Set((Array.isArray(post.mediaPackUrls) ? post.mediaPackUrls : [])
+    .map(function(url){ return String(url || "").trim(); })
+    .filter(function(url){ return /^https?:\/\//i.test(url); }))).slice(0, 10);
+  let imageUrl = String(post.generatedImageUrl || post.imageUrl || mediaPackUrls[0] || "").trim();
   const videoUrl = String(post.videoUrl || "").trim();
+
+  if (mediaPackUrls.length > 1 && !videoUrl) {
+    try {
+      const album = mediaPackUrls.map(function(url, index) {
+        const item = { type: "photo", media: url };
+        if (index === 0) {
+          item.caption = html;
+          item.parse_mode = "HTML";
+        }
+        return item;
+      });
+      const messages = await telegramApi("sendMediaGroup", {
+        chat_id: telegramChannel,
+        media: album
+      });
+      if (Array.isArray(messages) && messages.length) {
+        const first = messages[0];
+        first.media_group_message_ids = messages.map(function(message){ return message.message_id; });
+        return first;
+      }
+    } catch (error) {
+      console.warn("sendMediaGroup failed, falling back to one image:", error.message);
+      imageUrl = mediaPackUrls[0] || imageUrl;
+    }
+  }
 
   if (MEDIA_REQUIRED && !imageUrl && !videoUrl) {
     throw new Error("Публикация запрещена: у новости нет фото или видео");
@@ -3914,8 +3957,15 @@ function formatVkPost(post, options) {
   let out = "";
   if (title) out += title;
   if (text) out += (out ? "\n\n" : "") + text;
-  const sourceUrl = String(post.sourceUrl || "").trim();
-  if (opts.includeSource !== false && sourceUrl) out += (out ? "\n\n" : "") + "Источник: " + sourceUrl;
+  const sources = normalizePublicPostSources(post).slice(0, 5);
+  if (opts.includeSource !== false && sources.length === 1) {
+    out += (out ? "\n\n" : "") + "Источник: " + sources[0].url;
+  } else if (opts.includeSource !== false && sources.length > 1) {
+    out += (out ? "\n\n" : "") + "Источники:\n" + sources.map(function(source) {
+      const name = String(source.name || "Источник").replace(/https?:\/\/\S+/g, "").trim() || "Источник";
+      return "• " + name + " — " + source.url;
+    }).join("\n");
+  }
   return out.trim();
 }
 
