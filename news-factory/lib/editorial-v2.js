@@ -265,6 +265,7 @@ export function normalizeWriterResult(raw, channelId) {
   const out = {
     status,
     skipReason: str(r.skip_reason, 300),
+    titleRu: stripTags(str(r.title_ru, 160)),
     channelId: str(r.channel_id) || channelId,
     importance,
     angle: r.angle ? str(r.angle, 300) : null,

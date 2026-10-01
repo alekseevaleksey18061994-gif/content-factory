@@ -3192,7 +3192,14 @@ function enrichNewsFeedItem(row) {
   const aiTier = queueItem && queueItem.aiTier
     ? String(queueItem.aiTier)
     : (aiScore == null ? "" : (aiScore >= AI_TOP_NEWS_SCORE ? "top" : (aiScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal")));
-  const aiScoreReason = String((queueItem && queueItem.aiScoreReason) || metadata.scoreReason || "");
+  const v2Meta = metadata.editorialV2 && typeof metadata.editorialV2 === "object" ? metadata.editorialV2 : null;
+  if (aiScore == null && v2Meta && Number.isFinite(Number(v2Meta.importance))) aiScore = Math.max(0, Math.min(100, Number(v2Meta.importance) * 10));
+  let aiScoreReason = String((queueItem && queueItem.aiScoreReason) || metadata.scoreReason || "");
+  if (item.status === "editorial_skip" && !queueItem && !historyItem) {
+    const reason = String(metadata.editorialSkipReason || (v2Meta && v2Meta.skipReason) || "не прошла отбор");
+    if (!/^Пропущено редакцией/.test(aiScoreReason)) aiScoreReason = "Пропущено редакцией: " + reason;
+    item.editorialSkipReason = reason;
+  }
 
   item.status = runtimeStatus;
   item.runtimeStatus = runtimeStatus;
@@ -3435,6 +3442,9 @@ async function collectOnce(trigger) {
           if (v2.skip) {
             baseItem.status = "editorial_skip";
             baseItem.metadata.editorialSkipReason = v2.reason;
+            if (v2.meta.titleRu) baseItem.metadata.titleRu = v2.meta.titleRu;
+            baseItem.metadata.editorialScore = v2.meta.importance == null ? 0 : v2.meta.importance * 10;
+            baseItem.metadata.scoreReason = "Пропущено редакцией: " + v2.reason;
             noteSourceEvent(source, "score", { score: v2.meta.importance == null ? 0 : v2.meta.importance * 10 });
             await saveNewsItem(baseItem);
             summary.skipped += 1;
@@ -6641,6 +6651,7 @@ async function runEditorialV2(sources, options) {
     verdict: outcome.verdict,
     importance: post.importance == null ? null : post.importance,
     skipReason: post.skipReason || "",
+    titleRu: post.titleRu || "",
     angle: post.angle || null,
     format: post.format || "",
     hookType: post.hookType || "",
@@ -7258,6 +7269,73 @@ async function tryMergeStoryQueueItem(newItem) {
   return target;
 }
 
+// News that never became a post (skipped, failed, no media, duplicate) keep their
+// original — often English — headline. The admin feed shows a Russian translation
+// stored in metadata.titleRu; this fills it for older rows in small batches.
+async function translateTitlesToRussian(items) {
+  if (!OPENAI_API_KEY || !Array.isArray(items) || !items.length) return [];
+  const compact = items.slice(0, 40).map(function(item){ return { id: String(item.id || ""), title: String(item.title || "").slice(0, 300) }; });
+  const prompt = [
+    "Переведи заголовки новостей на русский язык.",
+    "Перевод нейтральный и точный, до 120 символов, без эмодзи, без оценок, ничего не добавляй.",
+    "Названия компаний, моделей и продуктов оставляй как в оригинале (NIO, Tesla, GPT-6).",
+    "Служебные хвосты сайтов вроде « - News | NIO» или « | Reuters» отбрасывай.",
+    "Верни строго JSON без markdown: {\"items\":[{\"id\":\"...\",\"title_ru\":\"...\"}]}",
+    "",
+    JSON.stringify(compact)
+  ].join("\n");
+  const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 3000 }),
+        signal: AbortSignal.timeout(45000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) continue;
+      const output = extractOpenAIText(data);
+      if (!output) continue;
+      const parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      const allowed = new Set(compact.map(function(x){ return x.id; }));
+      return (Array.isArray(parsed && parsed.items) ? parsed.items : [])
+        .map(function(x){ return { id: String(x && x.id || ""), titleRu: String(x && x.title_ru || "").replace(/<[^>]+>/g, "").trim().slice(0, 160) }; })
+        .filter(function(x){ return allowed.has(x.id) && /[А-Яа-яЁё]/.test(x.titleRu); });
+    } catch (error) {
+      console.warn("Title translation batch failed:", error.message);
+    }
+  }
+  return [];
+}
+
+async function backfillRussianNewsTitles(limit) {
+  if (!db || !dbReady || !OPENAI_API_KEY) return { ok: false, translated: 0, skipped: "unavailable" };
+  const safeLimit = Math.max(1, Math.min(40, Number(limit || 40)));
+  const rows = await db.query(
+    `SELECT id, original_title AS title FROM news_items
+      WHERE workspace_id=$1
+        AND COALESCE(rewritten_title, '') = ''
+        AND COALESCE(original_title, '') <> ''
+        AND original_title !~ '[А-Яа-яЁё]'
+        AND (metadata->>'titleRu' IS NULL OR metadata->>'titleRu' = '')
+      ORDER BY detected_at DESC
+      LIMIT $2`,
+    [currentWorkspaceId(), safeLimit]
+  );
+  if (!rows.rows.length) return { ok: true, translated: 0 };
+  const translated = await translateTitlesToRussian(rows.rows);
+  let count = 0;
+  for (const t of translated) {
+    const updated = await db.query(
+      "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
+      [t.id, JSON.stringify({ titleRu: t.titleRu }), currentWorkspaceId()]
+    );
+    count += updated.rowCount || 0;
+  }
+  return { ok: true, translated: count };
+}
+
 async function callOpenAIEditorialScoreBatch(items) {
   if (!OPENAI_API_KEY || !Array.isArray(items) || !items.length) return [];
   const compact = items.slice(0, 10).map(function(item) {
@@ -7333,7 +7411,7 @@ async function backfillRecentNewsEditorialScores(limit) {
   const safeLimit = Math.max(1, Math.min(40, Number(limit || 30)));
   const cutoff = normalizeDate(state.newsVisibleAfter || "");
   const params = [currentWorkspaceId()];
-  let where = "workspace_id=$1 AND (metadata->>'editorialScore' IS NULL OR metadata->>'editorialScore'='') AND COALESCE(rewritten_text, original_text, '') <> ''";
+  let where = "workspace_id=$1 AND status <> 'editorial_skip' AND (metadata->>'editorialScore' IS NULL OR metadata->>'editorialScore'='') AND COALESCE(rewritten_text, original_text, '') <> ''";
   if (cutoff) {
     params.push(cutoff);
     where += " AND detected_at >= $" + params.length;
@@ -8025,6 +8103,8 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "POST" && p === "/api/news/backfill-scores") {
       const result = await backfillRecentNewsEditorialScores(30);
+      const titles = await backfillRussianNewsTitles(40).catch(function(error){ return { ok: false, translated: 0, error: error.message }; });
+      result.titlesTranslated = titles.translated || 0;
       return sendJson(res, 200, result);
     }
 
