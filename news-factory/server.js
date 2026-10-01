@@ -471,6 +471,7 @@ function normalizeWorkspaceState(saved) {
 }
 function freshWorkspaceState() {
   const fresh = structuredClone(defaultState);
+  fresh.mode = "AUTO";
   fresh.sources = [];
   fresh.sourceStats = {};
   fresh.queue = [];
@@ -568,6 +569,19 @@ function ensureConfiguredWorkspaces() {
     if (!cars.slug) { cars.slug = "chtotamtachki"; changed = true; }
     if (!cars.name) { cars.name = "Что там у тачек?"; changed = true; }
   }
+  const autoModeMigration = "v0.28.9-car-auto-mode";
+  if (!cars.state.migrations.includes(autoModeMigration)) {
+    cars.state.mode = "AUTO";
+    cars.state.topicSettings = cars.state.topicSettings || {};
+    cars.state.topicSettings.default = Object.assign({}, cars.state.topicSettings.default || {}, {
+      allow_text_fallback: false,
+      auto_publish_telegram: true,
+      auto_publish_vk: false
+    });
+    cars.state.migrations.push(autoModeMigration);
+    changed = true;
+  }
+
   const carSourcesMigration = "v0.28.5-car-sources-30";
   cars.state.migrations = Array.isArray(cars.state.migrations) ? cars.state.migrations : [];
   if (!cars.state.migrations.includes(carSourcesMigration)) {
@@ -5489,13 +5503,34 @@ setTimeout(function() {
       const hasBloggers = Array.isArray(ws.state && ws.state.sources) && ws.state.sources.some(function(source){ return source && source.enabled && source.group === "blogger"; });
       if (!hasBloggers) continue;
       const hasBloggerQueue = Array.isArray(ws.state.queue) && ws.state.queue.some(function(item){ return item && (item.sourceGroup === "blogger" || String(item.sourceId || "").startsWith("blogger-")); });
-      if (hasBloggerQueue) continue;
-      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+      if (!hasBloggerQueue) {
+        await workspaceContext.run({ workspaceId: ws.id }, async function(){
+          try {
+            const result = await collectOnce("blogger-bootstrap");
+            console.log("Blogger bootstrap " + ws.id + ":", JSON.stringify(result));
+          } catch (error) {
+            console.warn("Blogger bootstrap " + ws.id + " failed:", error.message);
+          }
+        });
+      }
+    }
+
+    const cars = workspaceStore.workspaces.find(function(ws){ return ws && ws.id === "chtotamtachki"; });
+    if (cars) {
+      await workspaceContext.run({ workspaceId: cars.id }, async function(){
         try {
-          const result = await collectOnce("blogger-bootstrap");
-          console.log("Blogger bootstrap " + ws.id + ":", JSON.stringify(result));
+          const now = new Date();
+          const day = moscowDateKey(now);
+          const hour = Math.floor(moscowMinutes(now) / 60);
+          const time = String(hour).padStart(2, "0") + ":00";
+          const schedule = ensureScheduleShape(state);
+          const hasPreparedCurrentSlot = Boolean(schedule.assignments[day] && schedule.assignments[day][time]);
+          if (state.mode === "AUTO" && AUTO_PUBLISH_ENABLED && hasPreparedCurrentSlot) {
+            const result = await publishDynamicSlot();
+            console.log("Car startup catch-up publish:", JSON.stringify(result));
+          }
         } catch (error) {
-          console.warn("Blogger bootstrap " + ws.id + " failed:", error.message);
+          console.warn("Car startup catch-up publish failed:", error.message);
         }
       });
     }
