@@ -5735,7 +5735,11 @@ const server = http.createServer(async function(req, res) {
         generatedImageUrl: String(body.generatedImageUrl || "").trim(),
         videoUrl: String(body.videoUrl || "").trim(),
         mediaType: String(body.mediaType || ""),
-        mediaStatus: String(body.mediaStatus || "")
+        mediaStatus: String(body.mediaStatus || ""),
+        mediaLicense: (String(body.imageUrl || "").trim() || String(body.videoUrl || "").trim()) ? "user_provided" : "unknown",
+        mediaOrigin: (String(body.imageUrl || "").trim() || String(body.videoUrl || "").trim()) ? "user_provided" : "",
+        copyrightSafe: COPYRIGHT_SAFE_MODE,
+        copyrightPolicyVersion: "v1"
       });
       saveState();
       return sendJson(res, 200, { ok: true });
