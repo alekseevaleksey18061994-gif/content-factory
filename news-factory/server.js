@@ -2697,7 +2697,7 @@ async function uploadVkMessagesPhoto(imageUrl, post, previewSlug) {
 
   const uploadServer = await vkApi(
     "photos.getMessagesUploadServer",
-    {},
+    { peer_id: VK_OWNER_ID },
     { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
   );
   if (!uploadServer || !uploadServer.upload_url) {
@@ -2855,7 +2855,7 @@ async function publishVkPost(post) {
     const photoResult = await vkApi(
       "wall.post",
       {
-        owner_id: -241910449,
+        owner_id: VK_OWNER_ID,
         from_group: 1,
         message: baseMessage,
         attachments: photo.attachment,
@@ -2903,7 +2903,7 @@ async function publishVkPost(post) {
     const result = await vkApi(
       "wall.post",
       {
-        owner_id: -241910449,
+        owner_id: VK_OWNER_ID,
         from_group: 1,
         message: baseMessage,
         attachments: preview.url,
@@ -2942,7 +2942,7 @@ async function publishVkPost(post) {
     const fallback = await vkApi(
       "wall.post",
       {
-        owner_id: -241910449,
+        owner_id: VK_OWNER_ID,
         from_group: 1,
         message: baseMessage,
         guid: vkPostGuid(post, "text")
