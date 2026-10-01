@@ -105,9 +105,7 @@ log({
 });
 
 const context = { postId: "smoke", slug: preview.slug };
-const uploadServer = await vk("photos.getMessagesUploadServer", {
-  peer_id: -VK_TEST_GROUP_ID
-}, context);
+const uploadServer = await vk("photos.getMessagesUploadServer", {}, context);
 if (!uploadServer || !uploadServer.upload_url) throw new Error("VK did not return messages upload_url");
 
 const form = new FormData();
