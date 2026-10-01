@@ -426,7 +426,9 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const initials = initialsRaw || name.split(/\s+/).filter(Boolean).slice(0, 2).map(function(x){ return x[0] || ""; }).join("").toUpperCase().slice(0, 3) || "NF";
   const telegramChannel = String(raw && raw.telegramChannel || "").trim();
   const telegramPublicUsername = String(raw && raw.telegramPublicUsername || telegramChannel || slug || "").replace(/^@/, "").trim();
-  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
+  const avatarUrl = String(raw && raw.avatarUrl || "").trim();
+  const avatarFile = String(raw && raw.avatarFile || "").trim();
+  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
 }
 function loadWorkspaceStore() {
   ensureDataDir();
@@ -461,7 +463,7 @@ function currentTelegramPublicUsername() {
     ? String(ws.telegramPublicUsername || ws.slug || ws.telegramChannel || "").replace(/^@/, "").trim()
     : String(TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
 }
-function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
 function persistWorkspaceStore() {
   ensureDataDir();
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
@@ -2183,14 +2185,63 @@ function redirect(res, location) {
   res.end();
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes) {
   let body = "";
+  const limit = Math.max(1024, Number(maxBytes || 1024 * 1024));
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 1024 * 1024) throw new Error("request too large");
+    if (Buffer.byteLength(body, "utf8") > limit) throw new Error("request too large");
   }
   if (!body) return {};
   return JSON.parse(body);
+}
+
+async function saveWorkspaceAvatar(workspace, dataUrl) {
+  if (!workspace) throw new Error("Кабинет не найден");
+  const raw = String(dataUrl || "").trim();
+  const match = raw.match(/^data:image\/(png|jpe?g|webp);base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) throw new Error("Поддерживаются JPG, PNG и WEBP");
+  const input = Buffer.from(match[2], "base64");
+  if (!input.length) throw new Error("Файл изображения пустой");
+  if (input.length > 8 * 1024 * 1024) throw new Error("Фото должно быть не больше 8 МБ");
+
+  const output = await sharp(input, { limitInputPixels: 50 * 1000 * 1000 })
+    .rotate()
+    .resize(512, 512, { fit: "cover", position: "centre" })
+    .webp({ quality: 90 })
+    .toBuffer();
+
+  ensureDataDir();
+  const safeId = String(workspace.id || "account").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+  const fileName = "avatar_" + safeId + "_" + Date.now() + ".webp";
+  fs.writeFileSync(path.join(MEDIA_DIR, fileName), output);
+
+  if (workspace.avatarFile && workspace.avatarFile !== fileName) {
+    try {
+      const oldFile = path.basename(String(workspace.avatarFile));
+      if (oldFile.startsWith("avatar_")) fs.unlinkSync(path.join(MEDIA_DIR, oldFile));
+    } catch {}
+  }
+
+  workspace.avatarFile = fileName;
+  workspace.avatarUrl = mediaPublicUrl(fileName);
+  workspace.updatedAt = new Date().toISOString();
+  persistWorkspaceStore();
+  return workspace.avatarUrl;
+}
+
+function removeWorkspaceAvatar(workspace) {
+  if (!workspace) throw new Error("Кабинет не найден");
+  if (workspace.avatarFile) {
+    try {
+      const fileName = path.basename(String(workspace.avatarFile));
+      if (fileName.startsWith("avatar_")) fs.unlinkSync(path.join(MEDIA_DIR, fileName));
+    } catch {}
+  }
+  workspace.avatarFile = "";
+  workspace.avatarUrl = "";
+  workspace.updatedAt = new Date().toISOString();
+  persistWorkspaceStore();
 }
 
 function parseCookies(req) {
@@ -4351,10 +4402,32 @@ const server = http.createServer(async function(req, res) {
       analyticsCache.delete(workspace.id);
       return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
+    if (req.method === "POST" && p === "/api/workspaces/avatar") {
+      const body = await readJson(req, 10 * 1024 * 1024);
+      const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
+      if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      try {
+        await saveWorkspaceAvatar(workspace, body.image);
+        return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
+      } catch (error) {
+        return sendJson(res, 400, { ok: false, error: error.message || "Не удалось сохранить фото" });
+      }
+    }
+
+    if (req.method === "POST" && p === "/api/workspaces/avatar/remove") {
+      const body = await readJson(req);
+      const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
+      if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      removeWorkspaceAvatar(workspace);
+      return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
+    }
+
     if (req.method === "POST" && p === "/api/workspaces/remove") {
       const body = await readJson(req), id = String(body.id || "");
       if (!id || id === workspaceStore.defaultWorkspaceId) return sendJson(res, 400, { ok: false, error: "Основной кабинет удалить нельзя" });
-      if (!getWorkspaceById(id)) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      const deletingWorkspace = getWorkspaceById(id);
+      if (!deletingWorkspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      removeWorkspaceAvatar(deletingWorkspace);
       workspaceStore.workspaces = workspaceStore.workspaces.filter(function(ws){ return ws.id !== id; });
       persistWorkspaceStore();
       statusCache.delete(id); analyticsCache.delete(id);
