@@ -26,7 +26,7 @@ const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunb
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "medium";
 const STORY_CLUSTER_ENABLED = String(process.env.STORY_CLUSTER_ENABLED || "true").toLowerCase() !== "false";
 const STORY_CLUSTER_WINDOW_HOURS = Math.max(2, Number(process.env.STORY_CLUSTER_WINDOW_HOURS || 8));
-const STORY_CLUSTER_MIN_SIMILARITY = Math.max(0.18, Math.min(0.8, Number(process.env.STORY_CLUSTER_MIN_SIMILARITY || 0.30)));
+const STORY_CLUSTER_MIN_SIMILARITY = Math.max(0.18, Math.min(0.8, Number(process.env.STORY_CLUSTER_MIN_SIMILARITY || 0.20)));
 const STORY_CLUSTER_MAX_SOURCES = Math.max(2, Math.min(6, Number(process.env.STORY_CLUSTER_MAX_SOURCES || 5)));
 const STORY_MEDIA_PACK_COUNT = Math.max(2, Math.min(4, Number(process.env.STORY_MEDIA_PACK_COUNT || 3)));
 const EDITORIAL_VARIETY_ENABLED = String(process.env.EDITORIAL_VARIETY_ENABLED || "true").toLowerCase() !== "false";
@@ -568,7 +568,11 @@ function currentTelegramPublicUsername() {
     ? String(ws.telegramPublicUsername || ws.slug || ws.telegramChannel || "").replace(/^@/, "").trim()
     : String(TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
 }
-function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+function workspaceVkPublishingAllowed(ws) {
+  const target = ws || currentWorkspace();
+  return Boolean(target && target.id === workspaceStore.defaultWorkspaceId);
+}
+function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", vkPublishingAllowed: workspaceVkPublishingAllowed(ws), createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
 function persistWorkspaceStore() {
   ensureDataDir();
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
@@ -3493,7 +3497,7 @@ function normalizePublishTargets(value) {
   const hasExplicit = Object.prototype.hasOwnProperty.call(requested, "telegram") || Object.prototype.hasOwnProperty.call(requested, "vk");
   return {
     telegram: hasExplicit ? requested.telegram !== false : true,
-    vk: hasExplicit ? requested.vk === true : true
+    vk: (hasExplicit ? requested.vk === true : true) && workspaceVkPublishingAllowed(currentWorkspace())
   };
 }
 
@@ -4060,7 +4064,7 @@ function autoPublishTargetsForPost(post) {
   const topic = topicSettingsForPost(post);
   return {
     telegram: topic.auto_publish_telegram !== false,
-    vk: topic.auto_publish_vk !== false
+    vk: topic.auto_publish_vk !== false && workspaceVkPublishingAllowed(currentWorkspace())
   };
 }
 
