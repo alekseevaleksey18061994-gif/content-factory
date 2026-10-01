@@ -1483,6 +1483,82 @@ function formatTelegramPost(post) {
   return html.trim();
 }
 
+function trimPostToCaptionLimit(post, limit) {
+  const max = Number(limit || 900);
+  const out = Object.assign({}, post);
+  let text = String(out.text || "").trim();
+  let html = formatTelegramPost(out);
+  while (html.length > max && text.length > 140) {
+    const over = html.length - max;
+    let target = Math.max(140, text.length - over - 40);
+    let cut = text.slice(0, target).trim();
+    const punct = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf("\n"));
+    if (punct > Math.floor(target * 0.55)) cut = cut.slice(0, punct + 1).trim();
+    text = cut.replace(/[\s,;:–—-]+$/g, "") + "…";
+    out.text = text;
+    html = formatTelegramPost(out);
+  }
+  return out;
+}
+
+async function preparePostForSingleTelegramCaption(post) {
+  const original = Object.assign({}, post);
+  if (formatTelegramPost(original).length <= 900) return original;
+
+  if (OPENAI_API_KEY) {
+    const prompt = [
+      "Сожми готовый новостной пост канала «Что там у ИИ?» так, чтобы он целиком поместился в подпись к одному фото/видео Telegram.",
+      "Сохрани только факты из исходного готового поста. Ничего не добавляй и не меняй цифры, имена, компании, даты и смысл.",
+      "Заголовок до 90 знаков. Текст 430–620 знаков. 3–5 коротких абзацев.",
+      "Можно сохранить 1–2 выделения **жирным** и максимум одну строку > для важного факта.",
+      "Не добавляй слово «Источник» — ссылку добавит система.",
+      "Верни строго JSON: {\"title\":\"...\",\"text\":\"...\"}.",
+      "",
+      "Заголовок:",
+      String(original.title || ""),
+      "",
+      "Текст:",
+      String(original.text || "")
+    ].join("\n");
+
+    const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+    for (const model of candidates) {
+      try {
+        const response = await fetch("https://api.openai.com/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+          body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 900 }),
+          signal: AbortSignal.timeout(45000)
+        });
+        const data = await response.json().catch(function(){ return {}; });
+        if (!response.ok) continue;
+        const output = extractOpenAIText(data);
+        if (!output) continue;
+        const parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+        const compact = Object.assign({}, original, {
+          title: String(parsed.title || original.title || "").trim(),
+          text: String(parsed.text || "").trim()
+        });
+        if (compact.text && formatTelegramPost(compact).length <= 900) return compact;
+        return trimPostToCaptionLimit(compact, 900);
+      } catch (error) {
+        console.warn("Telegram caption compact failed:", error.message);
+      }
+    }
+  }
+
+  return trimPostToCaptionLimit(original, 900);
+}
+
+function normalizePublishTargets(value) {
+  const requested = value && typeof value === "object" ? value : {};
+  const hasExplicit = Object.prototype.hasOwnProperty.call(requested, "telegram") || Object.prototype.hasOwnProperty.call(requested, "vk");
+  return {
+    telegram: hasExplicit ? requested.telegram !== false : true,
+    vk: hasExplicit ? requested.vk === true : true
+  };
+}
+
 async function telegramApi(method, payload) {
   if (!BOT_TOKEN || !CHANNEL) throw new Error("Telegram configuration is incomplete");
   const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
@@ -1683,18 +1759,44 @@ async function publishVkPost(post) {
   return result || null;
 }
 
-async function sendMultiPlatformPost(post) {
-  const tg = await sendTelegramPost(post);
-  if (VK_PUBLISH_ENABLED && VK_ACCESS_TOKEN && VK_GROUP_ID && VK_OWNER_ID) {
-    try {
-      const vk = await publishVkPost(post);
-      if (vk && vk.post_id) tg.vkPostId = vk.post_id;
-    } catch (error) {
-      console.warn("VK publish failed:", error.message);
-      tg.vkError = String(error.message || error);
+async function sendMultiPlatformPost(post, targets) {
+  const selected = normalizePublishTargets(targets);
+  if (!selected.telegram && !selected.vk) throw new Error("Выберите хотя бы одну соцсеть");
+
+  const prepared = selected.telegram ? await preparePostForSingleTelegramCaption(post) : Object.assign({}, post);
+  const result = {
+    message_id: null,
+    vkPostId: null,
+    telegramPublished: false,
+    vkPublished: false,
+    publishedText: prepared.text || "",
+    publishedTitle: prepared.title || ""
+  };
+
+  if (selected.telegram) {
+    const tg = await sendTelegramPost(prepared);
+    result.message_id = tg.message_id;
+    result.telegramPublished = true;
+  }
+
+  if (selected.vk) {
+    if (!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
+      result.vkError = "VK не настроен для публикации";
+    } else {
+      try {
+        const vk = await publishVkPost(prepared);
+        if (vk && vk.post_id) {
+          result.vkPostId = vk.post_id;
+          result.vkPublished = true;
+        }
+      } catch (error) {
+        console.warn("VK publish failed:", error.message);
+        result.vkError = String(error.message || error);
+      }
     }
   }
-  return tg;
+
+  return result;
 }
 
 async function vkProbe() {
