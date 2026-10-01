@@ -1887,7 +1887,7 @@ button{line-height:1.2!important}
 }
 
 
-/* v0.30.0 — Copyright Safe controls */
+/* v0.31.2 — balanced source-media controls */
 .copyright-safe-note{
   margin:10px 0 12px!important;
   padding:12px 13px!important;
@@ -1926,6 +1926,26 @@ button{line-height:1.2!important}
   color:#0b7b56!important;
   border-color:rgba(24,182,123,.22)!important;
   background:rgba(225,249,239,.88)!important;
+}
+.source-media-badge{
+  color:#0f6d9b!important;
+  border-color:rgba(28,145,204,.22)!important;
+  background:rgba(231,247,255,.92)!important;
+}
+.ai-fallback-badge{
+  color:#7858a8!important;
+  border-color:rgba(121,92,210,.20)!important;
+  background:rgba(245,241,255,.92)!important;
+}
+.queue-media-visual{position:relative;min-width:0}
+.queue-media-visual .queue-thumb{display:block}
+.queue-video-overlay{
+  position:absolute;left:10px;bottom:10px;
+  display:inline-flex;align-items:center;
+  padding:6px 9px;border-radius:999px;
+  background:rgba(8,20,34,.78);color:#fff;
+  font-size:10px;font-weight:800;
+  backdrop-filter:blur(7px);
 }
 @media(max-width:760px){
   .source-ranked-actions{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important}
@@ -2113,7 +2133,7 @@ button{line-height:1.2!important}
             <div class="source-summary-box source-summary-bad"><b id="sourceReplaceCount">0</b><span>На замену</span></div>
           </div>
           <div class="notice source-rating-note">Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.</div>
-          <div class="notice copyright-safe-note"><b>Copyright Safe включён.</b> По умолчанию из источника берутся только факты и ссылка. Чужие фото/видео не публикуются: система делает собственную AI-обложку. Разрешайте исходное медиа только когда у вас есть право на его использование.</div>
+          <div class="notice copyright-safe-note"><b>Balanced Media включён.</b> Фото и видео из новостного источника используются по умолчанию с сохранением ссылки на источник. AI-обложка создаётся только как запасной вариант, если медиа нет или источник помечен «Медиа запрещено».</div>
           <div id="sources" class="source-ranked-list"></div>
           <div class="two" style="margin-top:14px"><input id="sourceName" placeholder="Название источника"><input id="sourceUrl" placeholder="https://..."></div>
           <button style="margin-top:8px" onclick="addSource()">+ Добавить источник</button>
@@ -2415,7 +2435,7 @@ function statusRu(v){
     running:'Работает',success:'Успешно',failed:'Ошибка',completed_with_errors:'Завершено с ошибками',
     disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',slot_scheduler:'Ждёт ближайший слот',review_mode:'На проверку',
     high:'Высокая',medium:'Средняя',low:'Низкая',
-    found:'Медиа найдено',video_found:'Видео найдено',photo_found:'Фото найдено',enhanced:'Фото улучшено AI',generated:'AI-обложка',copyright_pending:'Ожидает AI-обложку',missing:'Нет медиа',generation_error:'Ошибка генерации',missing_media:'Нет медиа',
+    found:'Медиа найдено',video_found:'Видео найдено',photo_found:'Фото найдено',enhanced:'Фото улучшено AI',generated:'AI-обложка (fallback)',copyright_pending:'Медиа заблокировано',missing:'Нет медиа',generation_error:'Ошибка AI-обложки',missing_media:'Нет медиа',
     photo:'Фото',video:'Видео',generated_media:'Сгенерировано',
     AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'
   };
@@ -2423,7 +2443,7 @@ function statusRu(v){
 }
 function mediaLicenseLabel(v){
   var x=String(v||'unknown');
-  return x==='allowed'?'Медиа разрешено':x==='forbidden'?'Медиа запрещено':'Медиа: не проверено';
+  return x==='allowed'?'Медиа явно разрешено':x==='forbidden'?'Медиа запрещено':'Медиа источника · используем';
 }
 function mediaLicenseClass(v){
   var x=String(v||'unknown');
@@ -2723,7 +2743,7 @@ function render(){
         '<span>Средний AI <b>'+esc(avg)+'</b></span>'+
         (r.errors?'<span class="source-error-metric">Ошибок <b>'+esc(r.errors)+'</b></span>':'')+
       '</div></div>'+
-      '<div class="actions source-ranked-actions"><select class="source-license" onchange="setSourceMediaLicense(\''+s.id+'\',this.value)"><option value="unknown" '+((s.mediaLicense||'unknown')==='unknown'?'selected':'')+'>Медиа: не проверено</option><option value="allowed" '+(s.mediaLicense==='allowed'?'selected':'')+'>Медиа: разрешено</option><option value="forbidden" '+(s.mediaLicense==='forbidden'?'selected':'')+'>Медиа: запрещено</option></select><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включён':'Выключен')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div>'+
+      '<div class="actions source-ranked-actions"><select class="source-license" onchange="setSourceMediaLicense(\''+s.id+'\',this.value)"><option value="unknown" '+((s.mediaLicense||'unknown')==='unknown'?'selected':'')+'>По умолчанию: использовать медиа</option><option value="allowed" '+(s.mediaLicense==='allowed'?'selected':'')+'>Медиа: явно разрешено</option><option value="forbidden" '+(s.mediaLicense==='forbidden'?'selected':'')+'>Медиа: запрещено</option></select><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включён':'Выключен')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div>'+
     '</div>';
   }).join('');
   el('queueCount').textContent=(state.queue||[]).length;
@@ -2746,11 +2766,14 @@ function render(){
   var vkAllowed=!!(currentWorkspaceMeta&&currentWorkspaceMeta.vkPublishingAllowed);
   el('queue').innerHTML=sortedQueue.length?sortedQueue.map(function(q){
     var parts=postParts(q);
-    var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
-    var media=q.videoUrl?'<div class="queue-placeholder">▶ Видео</div>':effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt="">':'<div class="queue-placeholder">AI</div>';
+    var sourceImage=q.imageUrl||q.originalImageUrl||'';
+    var effectiveImage=sourceImage||q.generatedImageUrl||'';
+    var media=q.videoUrl
+      ? (effectiveImage?'<div class="queue-media-visual"><img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="queue-placeholder">▶ Видео</div>')
+      : effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt="">':'<div class="queue-placeholder">Нет медиа</div>';
     var freshnessDate=q.articlePublishedAt||q.createdAt||'';
     var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
-    var ms=q.mediaStatus||(effectiveImage?(q.generatedImageUrl?'generated':'found'):(q.videoUrl?'found':'missing'));
+    var ms=q.videoUrl?'video_found':sourceImage?'photo_found':(q.generatedImageUrl?'generated':(q.mediaStatus||'missing'));
     var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
     var aiScore=Number(q.aiScore);
     var aiTier=String(q.aiTier||'');
@@ -2768,7 +2791,7 @@ function render(){
           '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status '+esc(q.status||'queued')+'">'+esc(statusRu(q.status||'queued'))+'</span></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
-          ((q.mediaOrigin==='ai_generated'||q.mediaStatus==='copyright_pending'||q.copyrightSafe)?'<span class="media-badge copyright-media-badge">Copyright Safe · '+(q.mediaStatus==='copyright_pending'?'своя обложка при публикации':'AI-обложка')+'</span>':'')+
+          ((q.videoUrl||sourceImage)?'<span class="media-badge source-media-badge">'+(q.videoUrl?'Видео':'Фото')+' источника · ссылка сохранена</span>':(q.generatedImageUrl?'<span class="media-badge ai-fallback-badge">AI fallback · исходного медиа нет</span>':(q.mediaStatus==='copyright_pending'?'<span class="media-badge copyright-media-badge">Медиа источника заблокировано</span>':'')))+
           (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
           (storyCount>1?'<span class="media-badge story-badge">🔥 Сюжет · '+storyCount+' источника</span>':'')+
           (packCount>1?'<span class="media-badge story-badge">🖼 '+packCount+' фото</span>':'')+
@@ -3310,7 +3333,7 @@ function openModal(id){var m=el(id);if(m){m.classList.add('open');document.body.
 function closeModal(id){var m=el(id);if(m)m.classList.remove('open');if(!document.querySelector('.modal-backdrop.open'))document.body.style.overflow=''}
 function modalBackdropClose(event,id){if(event.target===el(id))closeModal(id)}
 function renderPreview(item){
-  var pp=postParts(item),img=item.generatedImageUrl||item.imageUrl||'',video=item.videoUrl||'';
+  var pp=postParts(item),img=item.imageUrl||item.originalImageUrl||item.generatedImageUrl||'',video=item.videoUrl||'';
   var pack=Array.isArray(item.mediaPackUrls)?item.mediaPackUrls.filter(Boolean).slice(0,4):[];
   var media='';
   if(video){
@@ -3361,9 +3384,12 @@ async function loadNews(){
       var body=stripEditorialMarks(pp.text||'').slice(0,320);
       var status=n.runtimeStatus||n.status||'discovered';
       var md=n.metadata||{};
-      var image=md.generatedImageUrl||md.imageUrl||'';
-      var media=md.videoUrl?'<div class="news-placeholder">▶ Видео</div>':image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">AI</div>';
-      var ms=md.mediaStatus||(image?(md.generatedImageUrl?'generated':'found'):(md.videoUrl?'found':'missing'));
+      var sourceImage=md.imageUrl||md.originalImageUrl||'';
+      var image=sourceImage||md.generatedImageUrl||'';
+      var media=md.videoUrl
+        ? (image?'<div class="queue-media-visual"><img class="news-thumb" src="'+esc(image)+'" alt=""><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="news-placeholder">▶ Видео</div>')
+        : image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">Нет медиа</div>';
+      var ms=md.videoUrl?'video_found':sourceImage?'photo_found':(md.generatedImageUrl?'generated':(md.mediaStatus||'missing'));
       var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
       var editorialScore=(n.aiScore===null||n.aiScore===undefined||n.aiScore==='')?NaN:Number(n.aiScore);
       if(!Number.isFinite(editorialScore))editorialScore=(md.editorialScore===null||md.editorialScore===undefined||md.editorialScore==='')?NaN:Number(md.editorialScore);
