@@ -180,6 +180,40 @@ function anthropicText(data) {
     .map(function(part){ return part.text; }).join("\n").trim();
 }
 
+
+export const CHECKER_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    verdict: { type: "string", enum: ["pass", "fix", "reject"] },
+    errors: {
+      type: "array",
+      maxItems: 20,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          severity: { type: "string", enum: ["critical", "minor"] },
+          type: { type: "string" },
+          field: { type: "string" },
+          quote: { type: "string" },
+          problem: { type: "string" },
+          fix: { type: "string" }
+        },
+        required: ["severity", "type", "field", "quote", "problem", "fix"]
+      }
+    },
+    checked_claims: { type: "integer", minimum: 0 },
+    summary: { type: "string" }
+  },
+  required: ["verdict", "errors", "checked_claims", "summary"]
+};
+
+function anthropicOutputSchema(opts) {
+  if (opts && opts.schema && typeof opts.schema === "object") return opts.schema;
+  return CHECKER_OUTPUT_SCHEMA;
+}
+
 export function createModelClients(config) {
   const cfg = config || {};
   const fetchImpl = cfg.fetch || globalThis.fetch;
@@ -212,14 +246,26 @@ export function createModelClients(config) {
   async function callAnthropic(system, input, opts) {
     if (!cfg.anthropicApiKey) throw new Error("ANTHROPIC_API_KEY не настроен");
     const model = cfg.anthropicModel || "claude-sonnet-5-5";
-    const send = async function(withTemperature) {
+    const schema = anthropicOutputSchema(opts);
+    const errMsg = function(d){ return String(d && d.error && d.error.message || ""); };
+
+    const send = async function(options) {
+      const o = options || {};
       const body = {
         model,
         max_tokens: (opts && opts.maxTokens) || 3000,
         system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
         messages: [{ role: "user", content: input }]
       };
-      if (withTemperature) body.temperature = 0;
+      if (o.temperature !== false) body.temperature = 0;
+      if (o.structured !== false) {
+        body.output_config = {
+          format: {
+            type: "json_schema",
+            schema
+          }
+        };
+      }
       const response = await fetchImpl("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -231,17 +277,74 @@ export function createModelClients(config) {
         signal: AbortSignal.timeout(cfg.timeoutMs || 90000)
       });
       const data = await response.json().catch(function(){ return {}; });
-      return { response, data };
+      return { response, data, body };
     };
-    let { response, data } = await send(true);
-    const errMsg = function(d){ return String(d && d.error && d.error.message || ""); };
-    if (!response.ok && response.status === 400 && /temperature/i.test(errMsg(data))) {
-      ({ response, data } = await send(false));
+
+    // First choice: Anthropic Structured Outputs. This guarantees a JSON object
+    // matching the checker schema on supported Claude models.
+    let result = await send({ structured: true, temperature: true });
+    if (!result.response.ok && result.response.status === 400 && /temperature/i.test(errMsg(result.data))) {
+      result = await send({ structured: true, temperature: false });
     }
-    if (!response.ok) throw new Error(errMsg(data) || ("Anthropic HTTP " + response.status));
-    const parsed = parseJsonLoose(anthropicText(data));
-    if (!parsed) throw new Error("Claude вернул не JSON");
-    return { parsed, model, provider: "anthropic" };
+
+    // Compatibility fallback for a model/account that does not accept
+    // output_config.format yet. We still require JSON and make one repair retry.
+    const structuredUnsupported = !result.response.ok && result.response.status === 400 &&
+      /(output_config|json_schema|structured output|format)/i.test(errMsg(result.data));
+
+    if (structuredUnsupported) {
+      result = await send({ structured: false, temperature: false });
+    }
+
+    if (!result.response.ok) throw new Error(errMsg(result.data) || ("Anthropic HTTP " + result.response.status));
+
+    let parsed = parseJsonLoose(anthropicText(result.data));
+    if (!parsed && structuredUnsupported) {
+      const repairSystem = [
+        system,
+        "",
+        "ТЕХНИЧЕСКОЕ ТРЕБОВАНИЕ: верни только один JSON-объект без markdown и пояснений.",
+        "Обязательные поля: verdict (pass|fix|reject), errors (массив), checked_claims (целое число), summary (строка).",
+        "У каждого errors[] обязательны severity, type, field, quote, problem, fix."
+      ].join("\n");
+      const repairBody = {
+        model,
+        max_tokens: (opts && opts.maxTokens) || 3000,
+        system: [{ type: "text", text: repairSystem }],
+        messages: [{ role: "user", content: input }],
+        temperature: 0
+      };
+      let repairResponse = await fetchImpl("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": cfg.anthropicApiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify(repairBody),
+        signal: AbortSignal.timeout(cfg.timeoutMs || 90000)
+      });
+      let repairData = await repairResponse.json().catch(function(){ return {}; });
+      if (!repairResponse.ok && repairResponse.status === 400 && /temperature/i.test(errMsg(repairData))) {
+        delete repairBody.temperature;
+        repairResponse = await fetchImpl("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": cfg.anthropicApiKey,
+            "anthropic-version": "2023-06-01"
+          },
+          body: JSON.stringify(repairBody),
+          signal: AbortSignal.timeout(cfg.timeoutMs || 90000)
+        });
+        repairData = await repairResponse.json().catch(function(){ return {}; });
+      }
+      if (!repairResponse.ok) throw new Error(errMsg(repairData) || ("Anthropic HTTP " + repairResponse.status));
+      parsed = parseJsonLoose(anthropicText(repairData));
+    }
+
+    if (!parsed) throw new Error("Claude вернул невалидный JSON");
+    return { parsed, model, provider: "anthropic", structured: !structuredUnsupported };
   }
 
   return { callOpenAI, callAnthropic };
