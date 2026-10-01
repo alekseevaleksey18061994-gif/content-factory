@@ -1344,6 +1344,12 @@ function enrichNewsFeedItem(row) {
     runtimeStatus = queueItem.status === "media_failed"
       ? "media_failed"
       : (scheduledSlot ? "scheduled" : "queued");
+  } else if (item.publishedAt) {
+    runtimeStatus = "published";
+  } else if (runtimeStatus === "queued") {
+    const detectedAt = new Date(item.detectedAt || 0).getTime();
+    const ageMs = Number.isFinite(detectedAt) ? Date.now() - detectedAt : 0;
+    runtimeStatus = ageMs > QUEUE_MAX_AGE_HOURS * 60 * 60 * 1000 ? "expired" : "not_queued";
   }
 
   const scoreCandidates = [
@@ -3706,7 +3712,7 @@ async function callOpenAIEditorialScoreBatch(items) {
 
 async function backfillRecentNewsEditorialScores(limit) {
   if (!db || !dbReady || !OPENAI_API_KEY) return { ok: false, scored: 0, skipped: "unavailable" };
-  const safeLimit = Math.max(1, Math.min(40, Number(limit || 30)));
+  const safeLimit = Math.max(1, Math.min(100, Number(limit || 50)));
   const cutoff = normalizeDate(state.newsVisibleAfter || "");
   const params = [];
   let where = "(metadata->>'editorialScore' IS NULL OR metadata->>'editorialScore'='') AND COALESCE(rewritten_text, original_text, '') <> ''";
@@ -4243,7 +4249,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/news/backfill-scores") {
-      const result = await backfillRecentNewsEditorialScores(30);
+      const result = await backfillRecentNewsEditorialScores(100);
       return sendJson(res, 200, result);
     }
 
@@ -4754,7 +4760,7 @@ await initDb();
 const startupCleanup = pruneQueueItems(state);
 if (startupCleanup.removed) saveState();
 setTimeout(function() {
-  backfillRecentNewsEditorialScores(30)
+  backfillRecentNewsEditorialScores(100)
     .then(function(result){ if (result && result.scored) console.log("News score backfill:", JSON.stringify(result)); })
     .catch(function(error){ console.warn("News score backfill failed:", error.message); });
 }, 1500);
