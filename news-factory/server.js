@@ -418,6 +418,27 @@ function normalizeWorkspaceState(saved) {
   pruneQueueItems(loaded);
   return loaded;
 }
+function freshWorkspaceState() {
+  const fresh = structuredClone(defaultState);
+  fresh.sources = [];
+  fresh.queue = [];
+  fresh.history = [];
+  fresh.stats = { discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 };
+  fresh.sourceCursor = 0;
+  fresh.newsVisibleAfter = new Date().toISOString();
+  fresh.topicSettings = structuredClone(defaultState.topicSettings);
+  fresh.topicSettings.default = Object.assign({}, fresh.topicSettings.default || {}, {
+    allow_text_fallback: false,
+    auto_publish_telegram: true,
+    auto_publish_vk: false
+  });
+  fresh.publicationSchedule = structuredClone(defaultState.publicationSchedule);
+  fresh.dynamicScheduler = structuredClone(defaultState.dynamicScheduler);
+  fresh.migrations = Array.isArray(fresh.migrations) ? fresh.migrations : [];
+  ensureScheduleShape(fresh);
+  return fresh;
+}
+
 function normalizeWorkspaceMeta(raw, fallbackId) {
   const id = String(raw && raw.id || fallbackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || DEFAULT_WORKSPACE_ID;
   const name = String(raw && raw.name || "Новый канал").trim().slice(0, 80) || "Новый канал";
@@ -470,6 +491,38 @@ function persistWorkspaceStore() {
   const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
   if (defaultWorkspace && defaultWorkspace.state) fs.writeFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2), "utf8");
 }
+
+function ensureConfiguredWorkspaces() {
+  let changed = false;
+  let cars = workspaceStore.workspaces.find(function(ws){
+    const slug = String(ws.slug || ws.telegramPublicUsername || ws.telegramChannel || "").replace(/^@/, "").toLowerCase();
+    return slug === "chtotamtachki" || String(ws.name || "").trim().toLowerCase() === "что там у тачек?";
+  });
+  if (!cars) {
+    cars = normalizeWorkspaceMeta({
+      id: "chtotamtachki",
+      name: "Что там у тачек?",
+      slug: "chtotamtachki",
+      initials: "АВТ",
+      telegramChannel: "@chtotamtachki",
+      telegramPublicUsername: "chtotamtachki",
+      state: freshWorkspaceState()
+    }, "chtotamtachki");
+    workspaceStore.workspaces.push(cars);
+    changed = true;
+  } else {
+    if (!cars.telegramChannel) { cars.telegramChannel = "@chtotamtachki"; changed = true; }
+    if (!cars.telegramPublicUsername) { cars.telegramPublicUsername = "chtotamtachki"; changed = true; }
+    if (!cars.slug) { cars.slug = "chtotamtachki"; changed = true; }
+    if (!cars.name) { cars.name = "Что там у тачек?"; changed = true; }
+  }
+  if (changed) {
+    cars.updatedAt = new Date().toISOString();
+    persistWorkspaceStore();
+  }
+}
+ensureConfiguredWorkspaces();
+
 const state = new Proxy({}, {
   get: function(_target, prop){ return currentWorkspace().state[prop]; },
   set: function(_target, prop, value){ currentWorkspace().state[prop] = value; return true; },
@@ -1096,11 +1149,12 @@ async function generateNewsCover(payload) {
     throw new Error("Генерация обложек отключена");
   }
 
+  const channelName = String(currentWorkspace().name || "News Factory");
   const prompt = [
-    "Create a premium editorial technology news image for the Telegram channel «Что там у ИИ?».",
+    "Create a premium editorial news image for the Telegram channel «" + channelName + "».",
     "Topic: " + String(payload.title || "AI technology news"),
     "Context: " + String(payload.text || "").slice(0, 1800),
-    "Visual direction: premium modern AI-news editorial, cinematic but realistic, strong central subject, clean composition, deep contrast, sophisticated electric-blue/cyan accents, subtle depth and atmosphere, visually striking enough to stop a scroll without looking like cheap sci-fi.",
+    "Visual direction: premium modern editorial, cinematic but realistic, strong central subject, clean composition, deep contrast, restrained accents appropriate to the subject, subtle depth and atmosphere, visually striking enough to stop a scroll without looking artificial.",
     "No text, no captions, no watermarks, no fake UI, no invented logos, no random letters.",
     "If a real company/product is mentioned, do not invent a different product design or fabricated branding.",
     "Landscape 3:2 composition suitable for Telegram and VK. Keep important faces/products inside a safe central area for mobile crops."
@@ -1171,13 +1225,14 @@ async function enhanceNewsImage(payload) {
   if (bytes.length > 12 * 1024 * 1024) throw new Error("Исходное изображение слишком большое для AI-улучшения");
 
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : contentType.includes("gif") ? "gif" : "jpg";
+  const channelName = String(currentWorkspace().name || "News Factory");
   const prompt = [
-    "Transform this source photo into a premium, scroll-stopping editorial image for the AI-news brand «Что там у ИИ?».",
+    "Transform this source photo into a premium, scroll-stopping editorial image for the news brand «" + channelName + "».",
     "ABSOLUTE FACT LOCK: preserve every real person, face, body, product, logo, screen, document, object and factual scene identity. No substitutions and no invented details.",
     "Do not add text, captions, numbers, fake UI, logos, watermarks, people or products that were not in the source.",
     "Make the presentation noticeably stronger: professional editorial crop, cleaner composition, better sharpness, natural skin tones, controlled highlights, deeper contrast, richer but realistic color, subtle cinematic depth.",
-    "Add only restrained non-factual visual treatment such as soft electric-blue/cyan light shaping, gentle background separation, vignette or atmospheric glow where it does not change the factual scene.",
-    "The result should feel like a high-end technology magazine cover image, not a filter and not fantasy sci-fi.",
+    "Add only restrained non-factual visual treatment such as clean light shaping, gentle background separation, vignette or atmospheric glow where it does not change the factual scene.",
+    "The result should feel like a high-end editorial magazine image appropriate to the subject, not a filter and not fantasy.",
     "Keep it realistic, credible and mobile-readable. Landscape 3:2.",
     "Topic context: " + String(payload.title || "").slice(0, 500)
   ].join("\n");
@@ -2348,11 +2403,12 @@ function trimPostToCaptionLimit(post, limit) {
 
 async function preparePostForSingleTelegramCaption(post) {
   const original = Object.assign({}, post);
+  const channelName = String(currentWorkspace().name || "News Factory");
   if (formatTelegramPost(original).length <= 900) return original;
 
   if (OPENAI_API_KEY) {
     const prompt = [
-      "Сожми готовый новостной пост канала «Что там у ИИ?» так, чтобы он целиком поместился в подпись к одному фото/видео Telegram.",
+      "Сожми готовый новостной пост канала «" + channelName + "» так, чтобы он целиком поместился в подпись к одному фото/видео Telegram.",
       "Сохрани только факты из исходного готового поста. Ничего не добавляй и не меняй цифры, имена, компании, даты и смысл.",
       "Заголовок до 90 знаков. Текст 430–620 знаков. 3–5 коротких абзацев.",
       "Можно сохранить 1–2 выделения **жирным** и максимум одну строку > для важного факта.",
@@ -3677,8 +3733,9 @@ async function callOpenAIRewrite(payload) {
   if (!sourceText) throw new Error("Нужен исходный текст новости");
   const title = String(payload.title || "").trim();
   const sourceUrl = String(payload.sourceUrl || "").trim();
+  const channelName = String(currentWorkspace().name || "News Factory");
   const prompt = [
-    "Ты редактор Telegram-канала «Что там у ИИ? | Новости нейросетей».",
+    "Ты редактор Telegram-канала «" + channelName + "».",
     "Твоя задача — не просто пересказать новость, а сделать живой фирменный Telegram-пост: человечный, быстрый, умный и узнаваемый.",
     "",
     "ГЛАВНОЕ:",
@@ -3686,13 +3743,13 @@ async function callOpenAIRewrite(payload) {
     "- ничего не придумывай: даты, цены, характеристики, цитаты, сравнения и цифры нельзя добавлять от себя;",
     "- если факт не подтверждён исходником — не используй его;",
     "- не копируй формулировки источника дословно длинными кусками;",
-    "- не копируй стиль конкурентов один в один: у «Что там у ИИ?» должен быть собственный голос;",
+    "- не копируй стиль конкурентов один в один: у канала «" + channelName + "» должен быть собственный голос;",
     "- для политических, трагических, медицинских и других чувствительных тем — нейтрально, без шуток и оценочных призывов;",
     "",
-    "ГОЛОС «ЧТО ТАМ У ИИ?»:",
+    "ГОЛОС КАНАЛА «" + channelName + "»:",
     "- живой русский язык, как будто умный человек рассказал важную новость другу;",
     "- меньше канцелярита и фраз вроде «компания сообщила», если можно сказать проще;",
-    "- допускается лёгкая ирония или короткая шутка из мира нейросетей, но только если тема реально подходит;",
+    "- допускается лёгкая ирония или короткая шутка по теме канала, но только если тема реально подходит;",
     "- юмор не должен искажать факт и не должен быть в каждом посте;",
     "- можно использовать 2–4 уместных emoji на весь пост, а не украшать каждую строку;",
     "- иногда можно закончить коротким вопросом аудитории или реакцией в духе «Как вам такой расклад?»;",
@@ -3820,8 +3877,9 @@ async function callOpenAIEditorialScoreBatch(items) {
       text: String(item.text || "").slice(0, 1800)
     };
   });
+  const channelName = String(currentWorkspace().name || "News Factory");
   const prompt = [
-    "Ты выпускающий редактор новостного канала «Что там у ИИ?».",
+    "Ты выпускающий редактор новостного канала «" + channelName + "».",
     "Оцени каждую новость отдельно. Не переписывай текст и не добавляй факты.",
     "Шкала строго 0–100 как сумма:",
     "importance 0–25, audience_interest 0–20, novelty 0–20, virality 0–15, usefulness 0–10, credibility 0–10.",
@@ -4380,9 +4438,8 @@ const server = http.createServer(async function(req, res) {
         initials: String(body.initials || "").trim(),
         telegramChannel: String(body.telegramChannel || body.telegramPublicUsername || "").trim(),
         telegramPublicUsername: String(body.telegramPublicUsername || body.telegramChannel || "").replace(/^@/, "").trim(),
-        state: structuredClone(defaultState)
+        state: freshWorkspaceState()
       }, id);
-      workspace.state.topicSettings.default.auto_publish_vk = false;
       workspaceStore.workspaces.push(workspace);
       persistWorkspaceStore();
       return sendJson(res, 201, { ok: true, workspace: publicWorkspaceMeta(workspace) });
@@ -4622,7 +4679,7 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "POST" && p === "/api/test") {
       const marker = crypto.randomBytes(3).toString("hex");
-      const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «Что там у ИИ?» работает.\nТест: " + marker);
+      const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «" + String(currentWorkspace().name || "текущий канал") + "» работает.\nТест: " + marker);
       state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString(), publicationOrigin: "test" });
       state.history = state.history.slice(0, 100);
       state.stats.published += 1;
