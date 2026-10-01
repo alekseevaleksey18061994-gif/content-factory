@@ -607,6 +607,73 @@ button,.quick button,.quick a{
 .publish-openai-test{white-space:nowrap;min-width:max-content}
 @media(max-width:560px){.publish-openai-test{width:100%}}
 
+/* v0.27.3 — symmetric home hero */
+.home-hero{
+  padding:24px;
+}
+.home-hero-top{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:18px;
+  align-items:center;
+}
+.hero-channel-copy{min-width:0}
+.home-hero-cta{
+  min-width:150px;
+  min-height:50px;
+  padding-left:20px;
+  padding-right:20px;
+  border-radius:15px;
+  font-size:14px;
+}
+.home-hero-stats{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+  margin-top:20px;
+}
+.home-hero-stat{
+  min-width:0;
+  min-height:86px;
+  padding:15px 16px;
+  border:1px solid rgba(132,151,183,.20);
+  border-radius:16px;
+  background:linear-gradient(180deg,rgba(13,19,28,.92),rgba(9,14,21,.92));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035);
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+}
+.home-hero-stat span{
+  color:#7f8ca0;
+  font-size:10.5px;
+  font-weight:750;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.home-hero-stat b{
+  margin-top:7px;
+  color:#f3f6fb;
+  font-size:16px;
+  line-height:1.3;
+  font-weight:820;
+  overflow-wrap:anywhere;
+}
+@media(max-width:700px){
+  .home-hero{padding:18px}
+  .home-hero-top{grid-template-columns:1fr;gap:16px}
+  .hero-channel{width:100%;align-items:center}
+  .home-hero-cta{width:100%;min-height:54px;font-size:15px}
+  .home-hero-stats{grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+  .home-hero-stat{min-height:82px;padding:14px}
+  .home-hero-stat-last{grid-column:1/-1;min-height:76px}
+  .home-hero-stat b{font-size:15px}
+}
+@media(max-width:390px){
+  .home-hero-stats{grid-template-columns:1fr}
+  .home-hero-stat-last{grid-column:auto}
+}
+
 /* v0.27.2 — social connection status + per-platform auto publish */
 .social-platform-card{align-items:stretch;flex-direction:column}
 .social-platform-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -677,12 +744,29 @@ button,.quick button,.quick a{
       </div>
 
       <section class="page active" id="homePage">
-        <div class="hero">
-          <div class="hero-main">
-            <div class="hero-channel"><div class="hero-icon">AI</div><div><h2>Что там у ИИ?</h2><p>@chtotamai · новости нейросетей и технологий</p></div></div>
-            <div class="actions"><button class="primary" onclick="goPage('publishPage')">Новый пост</button></div>
+        <div class="hero home-hero">
+          <div class="home-hero-top">
+            <div class="hero-channel">
+              <div class="hero-icon">AI</div>
+              <div class="hero-channel-copy"><h2>Что там у ИИ?</h2><p>@chtotamai · новости нейросетей и технологий</p></div>
+            </div>
+            <button class="primary home-hero-cta" onclick="goPage('publishPage')">+ Новый пост</button>
           </div>
-          <div class="hero-meta"><span class="chip" id="dashMode">Режим —</span><span class="chip" id="dashSystem">Система —</span><span class="chip" id="dashLastPost">Последний пост —</span></div>
+
+          <div class="home-hero-stats">
+            <div class="home-hero-stat">
+              <span>Режим</span>
+              <b id="dashMode">—</b>
+            </div>
+            <div class="home-hero-stat">
+              <span>Система</span>
+              <b id="dashSystem">—</b>
+            </div>
+            <div class="home-hero-stat home-hero-stat-last">
+              <span>Последний пост</span>
+              <b id="dashLastPost">—</b>
+            </div>
+          </div>
         </div>
 
         <div class="kpis" style="margin-top:14px">
@@ -1323,9 +1407,9 @@ function renderDashboard(){
   el('dashDiscovered').textContent=(state.stats&&state.stats.discovered)||0;
   el('dashRewritten').textContent=(state.stats&&state.stats.rewritten)||0;
   el('dashSkipped').textContent=(state.stats&&state.stats.skipped)||0;
-  el('dashMode').textContent='Режим: '+statusRu(state.mode);
+  el('dashMode').textContent=statusRu(state.mode);
   var last=(state.history||[])[0];
-  el('dashLastPost').textContent=last&&last.publishedAt?'Последний пост: '+new Date(last.publishedAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Последний пост: нет';
+  el('dashLastPost').textContent=last&&last.publishedAt?new Date(last.publishedAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Нет публикаций';
 
   var feed=[];
   (state.queue||[]).slice(0,3).forEach(function(q){feed.push({title:'В очереди · '+(q.title||'Черновик'),meta:(q.text||'').slice(0,120)})});
@@ -1335,7 +1419,7 @@ function renderDashboard(){
 }
 function dashboardFromStatus(s){
   var sm=s.summary||{},details=s.details||{};
-  el('dashSystem').textContent='Система: '+(sm.connected||0)+'/'+(sm.total||0)+' подключено';
+  el('dashSystem').textContent=(sm.connected||0)+'/'+(sm.total||0)+' подключено';
   var issues=Object.keys(details).map(function(key){return {key:key,x:details[key]}}).filter(function(o){return o.x&&o.x.state!=='connected'});
   el('dashAttention').innerHTML=issues.length?issues.slice(0,5).map(function(o){var bad=o.x.state==='missing';return '<div class="attention-row"><b>'+esc(o.x.description||o.key)+'<span class="att-badge '+(bad?'att-bad':'att-warn')+'">'+(bad?'Не подключено':'Частично')+'</span></b><small>'+(o.x.next?'Следующий шаг: '+esc(o.x.next):esc(o.x.detail||''))+'</small></div>'}).join(''):'<div class="empty">Всё подключено</div>';
   var stages=[
