@@ -878,8 +878,8 @@ async function saveNewsItem(item) {
   if (db && dbReady) {
     await db.query(
       `INSERT INTO news_items
-      (id, source_id, source_name, source_url, original_url, original_title, original_text, content_hash, rewritten_title, rewritten_text, confidence, status, telegram_message_id, published_at, metadata)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+      (id, source_id, source_name, source_url, original_url, original_title, original_text, content_hash, rewritten_title, rewritten_text, confidence, status, telegram_message_id, published_at, metadata, topic_id, vk_post_id, vk_status, vk_error_code, vk_error_msg, vk_media_attempts, updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,$20,$21,NOW())
       ON CONFLICT (original_url) DO UPDATE SET
         rewritten_title=COALESCE(EXCLUDED.rewritten_title, news_items.rewritten_title),
         rewritten_text=COALESCE(EXCLUDED.rewritten_text, news_items.rewritten_text),
@@ -887,12 +887,25 @@ async function saveNewsItem(item) {
         status=EXCLUDED.status,
         telegram_message_id=COALESCE(EXCLUDED.telegram_message_id, news_items.telegram_message_id),
         published_at=COALESCE(EXCLUDED.published_at, news_items.published_at),
-        metadata=EXCLUDED.metadata`,
+        metadata=EXCLUDED.metadata,
+        topic_id=COALESCE(EXCLUDED.topic_id, news_items.topic_id),
+        vk_post_id=COALESCE(EXCLUDED.vk_post_id, news_items.vk_post_id),
+        vk_status=COALESCE(EXCLUDED.vk_status, news_items.vk_status),
+        vk_error_code=COALESCE(EXCLUDED.vk_error_code, news_items.vk_error_code),
+        vk_error_msg=COALESCE(EXCLUDED.vk_error_msg, news_items.vk_error_msg),
+        vk_media_attempts=GREATEST(COALESCE(EXCLUDED.vk_media_attempts,0),COALESCE(news_items.vk_media_attempts,0)),
+        updated_at=NOW()`,
       [
         item.id, item.sourceId, item.sourceName, item.sourceUrl, item.originalUrl, item.originalTitle,
         item.originalText, item.contentHash, item.rewrittenTitle || null, item.rewrittenText || null,
         item.confidence || null, item.status, item.telegramMessageId || null, item.publishedAt || null,
-        JSON.stringify(item.metadata || {})
+        JSON.stringify(item.metadata || {}),
+        item.topicId || "default",
+        item.vkPostId || null,
+        item.vkStatus || null,
+        item.vkErrorCode == null ? null : String(item.vkErrorCode),
+        item.vkError || item.vkErrorMsg || null,
+        Number(item.vkMediaAttempts || 0)
       ]
     );
   }
