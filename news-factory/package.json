@@ -1,12 +1,13 @@
 {
   "name": "news-factory",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "test:vk-media": "node scripts/vk-media-smoke.js",
-    "test:vk-photo": "node scripts/vk-photo-smoke-test.js"
+    "test:vk-photo": "node scripts/vk-photo-smoke-test.js",
+    "test:vk-link-preview": "node scripts/vk-link-preview-smoke.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
