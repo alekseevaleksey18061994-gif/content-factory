@@ -2361,7 +2361,6 @@ function sleepMs(ms) {
 
 function allowTextFallbackForPost(post) {
   const p = post || {};
-  if (p.allow_text_fallback === true || p.allowTextFallback === true) return true;
   const topicId = String(p.topicId || p.topic_id || "default");
   const topics = state && state.topicSettings && typeof state.topicSettings === "object" ? state.topicSettings : {};
   const topic = topics[topicId] || topics.default || {};
@@ -3180,11 +3179,9 @@ async function buildSystemStatus(force) {
       state: vkStatusProbe.ok ? "connected" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
       description: vkStatusProbe.ok ? "VK подключён через API" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
       detail: vkStatusProbe.ok && vkStatusProbe.group
-        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · " + (getVkUserToken() ? "текст + фото" : "текст; для фото нужен VK_USER_TOKEN"))
+        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · фото через HTTPS link preview + Open Graph")
         : String(vkStatusProbe.error || ""),
-      next: vkStatusProbe.ok
-        ? (getVkUserToken() ? "" : "Авторизовать VK для фото (photos,wall,groups,offline)")
-        : "Проверить права ключа сообщества VK"
+      next: vkStatusProbe.ok ? "" : "Проверить права ключа сообщества VK"
     },
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
