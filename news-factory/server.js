@@ -1722,6 +1722,8 @@ async function publishDynamicSlot() {
       vkPostId: result.vkPostId || item.vkPostId || null,
       vkStatus: result.vkStatus || item.vkStatus || "",
       vkError: result.vkError || item.vkError || "",
+      vkPreviewSlug: result.vkPreviewSlug || item.vkPreviewSlug || "",
+      vkPreviewUrl: result.vkPreviewUrl || item.vkPreviewUrl || "",
       publishedAt: publishedAt,
       sourceUrl: item.sourceUrl || "",
       imageUrl: item.imageUrl || "",
@@ -1740,6 +1742,8 @@ async function publishDynamicSlot() {
     historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
     historyItem.vkStatus = result.vkStatus || item.vkStatus || historyItem.vkStatus || "";
     historyItem.vkError = result.vkError || item.vkError || "";
+    historyItem.vkPreviewSlug = result.vkPreviewSlug || historyItem.vkPreviewSlug || "";
+    historyItem.vkPreviewUrl = result.vkPreviewUrl || historyItem.vkPreviewUrl || "";
   }
 
   delete schedule.assignments[day][time];
@@ -2546,6 +2550,70 @@ async function uploadVkWallPhoto(imageUrl, post) {
   throw failed;
 }
 
+
+function isVkLinkPreviewError(error) {
+  const code = String(error && error.vkErrorCode == null ? "" : error.vkErrorCode);
+  const msg = String(error && (error.vkErrorMsg || error.message) || "").toLowerCase();
+  return code === "100" && (msg.includes("link_photo_sizing_rule") || msg.includes("no photo given"));
+}
+
+async function uploadVkWallImageDocument(imageUrl, post, previewSlug) {
+  const context = vkPostContext(post, { slug: previewSlug || "", tokenKind: "community" });
+  const image = await downloadVkImage(imageUrl, context);
+  const uploadServer = await vkApi(
+    "docs.getWallUploadServer",
+    { group_id: VK_GROUP_ID },
+    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+  );
+  if (!uploadServer || !uploadServer.upload_url) {
+    throw createVkError("docs.getWallUploadServer", "no_upload_url", "VK did not return document upload_url", context);
+  }
+
+  const form = new FormData();
+  form.append("file", new Blob([image.bytes], { type: image.mime || "image/jpeg" }), "preview." + (image.ext || "jpg"));
+
+  let uploadedResponse;
+  let uploaded = {};
+  try {
+    uploadedResponse = await fetch(uploadServer.upload_url, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(45000)
+    });
+    uploaded = await uploadedResponse.json().catch(function(){ return {}; });
+  } catch (error) {
+    logVkError("doc.upload", "network", error && error.message || error, context);
+    throw createVkError("doc.upload", "network", error && error.message || error, context);
+  }
+
+  if (!uploadedResponse.ok || !uploaded.file) {
+    const msg = uploaded && uploaded.error ? JSON.stringify(uploaded.error) : ("Invalid doc upload response HTTP " + uploadedResponse.status);
+    logVkError("doc.upload", uploadedResponse.status || "upload_invalid", msg, context);
+    throw createVkError("doc.upload", uploadedResponse.status || "upload_invalid", msg, context);
+  }
+
+  const saved = await vkApi(
+    "docs.save",
+    {
+      file: uploaded.file,
+      title: String(post && post.title || "News Factory").slice(0, 120)
+    },
+    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+  );
+
+  const doc = saved && saved.doc ? saved.doc : (Array.isArray(saved) ? saved[0] : null);
+  if (!doc || !doc.id || !doc.owner_id) {
+    logVkError("docs.save", "invalid_doc", "VK did not return saved document owner_id/id", context);
+    throw createVkError("docs.save", "invalid_doc", "VK did not return saved document owner_id/id", context);
+  }
+
+  return {
+    attachment: "doc" + doc.owner_id + "_" + doc.id,
+    ownerId: doc.owner_id,
+    docId: doc.id
+  };
+}
+
 async function publishVkPost(post) {
   if (!VK_PUBLISH_ENABLED) return null;
   const baseContext = vkPostContext(post);
@@ -2571,58 +2639,118 @@ async function publishVkPost(post) {
   }
 
   const context = Object.assign({}, baseContext, { slug: preview.slug });
-  const params = {
-    owner_id: VK_OWNER_ID,
-    from_group: 1,
-    message: formatVkPost(post, { includeSource: false }),
-    attachments: preview.url
-  };
+  const baseMessage = formatVkPost(post, { includeSource: false });
 
   try {
     const result = await vkApi(
       "wall.post",
-      params,
+      {
+        owner_id: VK_OWNER_ID,
+        from_group: 1,
+        message: baseMessage,
+        attachments: preview.url
+      },
       { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
     );
     await markPublicPostPublished(preview.slug);
-
     if (result && typeof result === "object") {
       result.mediaMode = "link_preview";
       result.mediaAttempts = 1;
       result.previewSlug = preview.slug;
       result.previewUrl = preview.url;
       result.previewImageUrl = preview.imageUrl;
+      console.log("VK_POST_PUBLISHED " + JSON.stringify({ post_id: result.post_id || null, slug: preview.slug, media_mode: result.mediaMode }));
     }
     return result || null;
-  } catch (error) {
-    error.mediaAttempts = 1;
-    error.previewSlug = preview.slug;
-    error.vkContext = Object.assign({}, error.vkContext || context, { slug: preview.slug });
-
-    if (!allowTextFallbackForPost(post)) {
-      error.mediaFailed = true;
-      await notifyVkMediaFailure(post, error, 1);
-      throw error;
+  } catch (linkError) {
+    if (!isVkLinkPreviewError(linkError)) {
+      linkError.mediaAttempts = 1;
+      linkError.previewSlug = preview.slug;
+      linkError.vkContext = Object.assign({}, linkError.vkContext || context, { slug: preview.slug });
+      if (!allowTextFallbackForPost(post)) {
+        linkError.mediaFailed = true;
+        await notifyVkMediaFailure(post, linkError, 1);
+        throw linkError;
+      }
     }
 
-    await notifyVkMediaFailure(post, error, 1);
-    const fallback = await vkApi(
-      "wall.post",
-      {
-        owner_id: VK_OWNER_ID,
-        from_group: 1,
-        message: formatVkPost(post, { includeSource: false })
-      },
-      { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-    );
-    if (fallback && typeof fallback === "object") {
-      fallback.mediaMode = "text_fallback";
-      fallback.mediaAttempts = 1;
-      fallback.previewSlug = preview.slug;
-      fallback.previewUrl = preview.url;
-      fallback.previewImageUrl = preview.imageUrl;
+    console.warn("VK_LINK_PREVIEW_UNAVAILABLE " + JSON.stringify({
+      post_id: context.postId,
+      slug: preview.slug,
+      error_code: linkError && linkError.vkErrorCode != null ? linkError.vkErrorCode : null,
+      error_msg: String(linkError && (linkError.vkErrorMsg || linkError.message) || "")
+    }));
+
+    try {
+      const doc = await uploadVkWallImageDocument(preview.imageUrl, post, preview.slug);
+      let result;
+      try {
+        result = await vkApi(
+          "wall.post",
+          {
+            owner_id: VK_OWNER_ID,
+            from_group: 1,
+            message: baseMessage,
+            attachments: doc.attachment,
+            copyright: preview.url
+          },
+          { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+        );
+      } catch (copyrightError) {
+        result = await vkApi(
+          "wall.post",
+          {
+            owner_id: VK_OWNER_ID,
+            from_group: 1,
+            message: baseMessage + "\n\n" + preview.url,
+            attachments: doc.attachment
+          },
+          { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+        );
+      }
+
+      await markPublicPostPublished(preview.slug);
+      if (result && typeof result === "object") {
+        result.mediaMode = "doc_image_fallback";
+        result.mediaAttempts = 2;
+        result.previewSlug = preview.slug;
+        result.previewUrl = preview.url;
+        result.previewImageUrl = preview.imageUrl;
+        result.docAttachment = doc.attachment;
+        console.log("VK_POST_PUBLISHED " + JSON.stringify({ post_id: result.post_id || null, slug: preview.slug, media_mode: result.mediaMode, attachment: doc.attachment }));
+      }
+      return result || null;
+    } catch (docError) {
+      docError.mediaAttempts = 2;
+      docError.previewSlug = preview.slug;
+      docError.vkContext = Object.assign({}, docError.vkContext || context, { slug: preview.slug });
+
+      if (!allowTextFallbackForPost(post)) {
+        docError.mediaFailed = true;
+        await notifyVkMediaFailure(post, docError, 2);
+        throw docError;
+      }
+
+      await notifyVkMediaFailure(post, docError, 2);
+      const fallback = await vkApi(
+        "wall.post",
+        {
+          owner_id: VK_OWNER_ID,
+          from_group: 1,
+          message: baseMessage + "\n\n" + preview.url
+        },
+        { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+      );
+      if (fallback && typeof fallback === "object") {
+        fallback.mediaMode = "text_fallback";
+        fallback.mediaAttempts = 3;
+        fallback.previewSlug = preview.slug;
+        fallback.previewUrl = preview.url;
+        fallback.previewImageUrl = preview.imageUrl;
+        console.log("VK_POST_PUBLISHED " + JSON.stringify({ post_id: fallback.post_id || null, slug: preview.slug, media_mode: fallback.mediaMode }));
+      }
+      return fallback || null;
     }
-    return fallback || null;
   }
 }
 
