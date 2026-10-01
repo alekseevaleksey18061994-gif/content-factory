@@ -89,6 +89,12 @@ await test("writer result: title not repeated in body, VK has no tags", function
   assert.deepEqual(r.entities, ["Hongqi", "H5"]);
 });
 
+await test("album flag: defaults to single photo, true only when explicit", function() {
+  assert.equal(normalizeWriterResult(WRITER_OK, "auto").album, false);
+  assert.equal(normalizeWriterResult(Object.assign({}, WRITER_OK, { album: true }), "auto").album, true);
+  assert.equal(normalizeWriterResult(Object.assign({}, WRITER_OK, { album: "yes" }), "auto").album, false);
+});
+
 await test("writer result without title/text is rejected", function() {
   assert.throws(function(){ normalizeWriterResult({ status: "ok", title: "" }, "auto"); });
 });

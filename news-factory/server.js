@@ -3508,6 +3508,15 @@ async function collectOnce(trigger) {
           rewrite = v2.rewrite;
           qc = v2.qc;
           editorialV2Meta = v2.meta;
+          // Several photos only where the writer says they show different, relevant things.
+          if (!v2.meta.album && Array.isArray(media.mediaPackUrls) && media.mediaPackUrls.length > 1) {
+            media.mediaPackUrls = media.mediaPackUrls.slice(0, 1);
+            if (Array.isArray(media.originalMediaUrls)) media.originalMediaUrls = media.originalMediaUrls.slice(0, 1);
+            if (!media.videoUrl) media.mediaType = "photo";
+            baseItem.metadata.mediaPackUrls = media.mediaPackUrls;
+            baseItem.metadata.originalMediaUrls = media.originalMediaUrls || [];
+            baseItem.metadata.mediaType = media.mediaType;
+          }
         } else {
           try {
             rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "" });
@@ -6714,6 +6723,7 @@ async function runEditorialV2(sources, options) {
     endingType: post.endingType || "",
     titleEmoji: post.titleEmoji || "",
     crosspromoTarget: post.crosspromoTarget || null,
+    album: Boolean(post.album),
     legalFlags: post.legalFlags || [],
     conflicts: post.conflicts || null,
     cover: post.cover || null,
