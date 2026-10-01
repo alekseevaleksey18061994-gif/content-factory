@@ -1886,6 +1886,52 @@ button{line-height:1.2!important}
   .conn-group-head b{font-size:13.5px!important}
 }
 
+
+/* v0.30.0 — Copyright Safe controls */
+.copyright-safe-note{
+  margin:10px 0 12px!important;
+  padding:12px 13px!important;
+  border:1px solid rgba(24,182,123,.18)!important;
+  border-radius:14px;
+  background:rgba(234,252,245,.72)!important;
+  color:#315f53!important;
+}
+.copyright-safe-note b{color:#0d7f5c}
+.source-license{
+  min-height:40px;
+  width:auto;
+  max-width:190px;
+  padding:8px 30px 8px 10px;
+  border-radius:12px;
+  font-size:10.5px;
+  font-weight:750;
+  color:#324b6d;
+  background:rgba(248,252,255,.96);
+  border:1px solid rgba(65,131,188,.18);
+}
+.source-license-badge{
+  display:inline-flex;
+  align-items:center;
+  margin-left:7px;
+  padding:4px 7px;
+  border-radius:999px;
+  font-size:9px;
+  font-weight:800;
+  white-space:nowrap;
+}
+.source-license-badge.unknown{color:#8b671d;background:rgba(255,245,219,.9);border:1px solid rgba(220,164,42,.18)}
+.source-license-badge.allowed{color:#0b7b56;background:rgba(225,249,239,.96);border:1px solid rgba(24,182,123,.18)}
+.source-license-badge.forbidden{color:#b33f4b;background:rgba(255,238,240,.92);border:1px solid rgba(222,86,94,.16)}
+.copyright-media-badge{
+  color:#0b7b56!important;
+  border-color:rgba(24,182,123,.22)!important;
+  background:rgba(225,249,239,.88)!important;
+}
+@media(max-width:760px){
+  .source-ranked-actions{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important}
+  .source-ranked-actions .source-license{grid-column:1/-1;width:100%;max-width:none}
+}
+
 </style>
 </head>
 <body>
@@ -2021,6 +2067,7 @@ button{line-height:1.2!important}
             <div class="source-summary-box source-summary-bad"><b id="sourceReplaceCount">0</b><span>На замену</span></div>
           </div>
           <div class="notice source-rating-note">Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.</div>
+          <div class="notice copyright-safe-note"><b>Copyright Safe включён.</b> По умолчанию из источника берутся только факты и ссылка. Чужие фото/видео не публикуются: система делает собственную AI-обложку. Разрешайте исходное медиа только когда у вас есть право на его использование.</div>
           <div id="sources" class="source-ranked-list"></div>
           <div class="two" style="margin-top:14px"><input id="sourceName" placeholder="Название источника"><input id="sourceUrl" placeholder="https://..."></div>
           <button style="margin-top:8px" onclick="addSource()">+ Добавить источник</button>
@@ -2328,6 +2375,14 @@ function statusRu(v){
   };
   return map[v]||v||'—';
 }
+function mediaLicenseLabel(v){
+  var x=String(v||'unknown');
+  return x==='allowed'?'Медиа разрешено':x==='forbidden'?'Медиа запрещено':'Медиа: не проверено';
+}
+function mediaLicenseClass(v){
+  var x=String(v||'unknown');
+  return x==='allowed'?'allowed':x==='forbidden'?'forbidden':'unknown';
+}
 function safeDate(v){try{return v?new Date(v).toLocaleString('ru-RU'):''}catch{return ''}}
 function ageRu(v){
   if(!v)return '';
@@ -2611,7 +2666,7 @@ function render(){
     return '<div class="source source-ranked-card '+(!s.enabled?'source-disabled':'')+'">'+
       '<div class="source-rank-number">#'+esc(r.rank||'—')+'</div>'+
       '<div class="source-ranked-main"><div class="source-ranked-title"><div class="name">'+esc(s.name)+'</div><span class="source-rating '+cls+'">'+esc(rating)+'/100 · '+esc(r.status)+'</span></div>'+
-      '<div class="meta">'+group+(s.enabled?' · включён':' · выключен')+'</div>'+
+      '<div class="meta">'+group+(s.enabled?' · включён':' · выключен')+'<span class="source-license-badge '+mediaLicenseClass(s.mediaLicense)+'">'+esc(mediaLicenseLabel(s.mediaLicense))+'</span></div>'+
       '<div class="url">'+esc(s.url)+'</div>'+
       '<div class="source-metrics">'+
         '<span>Проверок <b>'+esc(r.checks||0)+'</b></span>'+
@@ -2622,7 +2677,7 @@ function render(){
         '<span>Средний AI <b>'+esc(avg)+'</b></span>'+
         (r.errors?'<span class="source-error-metric">Ошибок <b>'+esc(r.errors)+'</b></span>':'')+
       '</div></div>'+
-      '<div class="actions source-ranked-actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включён':'Выключен')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div>'+
+      '<div class="actions source-ranked-actions"><select class="source-license" onchange="setSourceMediaLicense(\''+s.id+'\',this.value)"><option value="unknown" '+((s.mediaLicense||'unknown')==='unknown'?'selected':'')+'>Медиа: не проверено</option><option value="allowed" '+(s.mediaLicense==='allowed'?'selected':'')+'>Медиа: разрешено</option><option value="forbidden" '+(s.mediaLicense==='forbidden'?'selected':'')+'>Медиа: запрещено</option></select><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включён':'Выключен')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div>'+
     '</div>';
   }).join('');
   el('queueCount').textContent=(state.queue||[]).length;
@@ -2663,6 +2718,7 @@ function render(){
           '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status '+esc(q.status||'queued')+'">'+esc(statusRu(q.status||'queued'))+'</span></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
+          ((q.mediaOrigin==='ai_generated'||q.mediaStatus==='copyright_pending'||q.copyrightSafe)?'<span class="media-badge copyright-media-badge">Copyright Safe · '+(q.mediaStatus==='copyright_pending'?'своя обложка при публикации':'AI-обложка')+'</span>':'')+
           (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
           (videoBonus?'<span class="media-badge video-score-badge">🎬 +'+videoBonus+' · итог '+effectiveScore+'/100</span>':'')+
           (q.aiScoreReason?'<div class="queue-meta">AI: '+esc(q.aiScoreReason)+'</div>':'')+
@@ -2680,7 +2736,7 @@ function render(){
         '</div>'+
         '<div class="queue-action-row secondary">'+
           '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
-          (q.videoUrl?'<div class="queue-video-priority">🎬 Видео в приоритете</div>':((q.originalImageUrl||q.imageUrl)?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Перегенерировать</button>':'<div class="queue-video-priority">Медиа готово</div>'))+
+          (q.videoUrl?'<div class="queue-video-priority">🎬 Видео в приоритете</div>':((q.originalImageUrl||q.imageUrl||q.mediaStatus==='copyright_pending')?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Новая AI-обложка</button>':'<div class="queue-video-priority">Медиа готово</div>'))+
         '</div>'+
         '<div class="queue-action-row secondary">'+
           '<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
@@ -3336,6 +3392,7 @@ function clearAI(){
   el('aiResult').style.display='none';el('aiEmpty').style.display='grid';el('aiRewriteStatus').textContent='Модель использует только переданный текст и не должна добавлять факты от себя.';lastAIResult=null;
 }
 async function addSource(){var name=el('sourceName').value.trim(),url=el('sourceUrl').value.trim();if(!name||!url){toast('Заполните название и ссылку');return}await api('/api/sources',{method:'POST',body:JSON.stringify({name:name,url:url})});el('sourceName').value='';el('sourceUrl').value='';await load();toast('Источник добавлен')}
+async function setSourceMediaLicense(id,mediaLicense){await api('/api/sources/media-license',{method:'POST',body:JSON.stringify({id:id,mediaLicense:mediaLicense})});await load();toast(mediaLicense==='allowed'?'Медиа источника разрешено':mediaLicense==='forbidden'?'Медиа источника запрещено':'Медиа источника не используется без разрешения')}
 async function toggleSource(id){await api('/api/sources/toggle',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function removeSource(id){await api('/api/sources/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function addDraft(){var title=prompt('Заголовок черновика');if(title===null)return;var text=prompt('Текст поста');if(!text)return;await api('/api/queue',{method:'POST',body:JSON.stringify({title:title,text:text})});await load();toast('Черновик добавлен')}
@@ -3343,10 +3400,10 @@ async function enhanceQueuePhoto(id){
   var item=(state.queue||[]).find(function(q){return q.id===id});
   if(!item)return;
   if(item.videoUrl){toast('У этой новости приоритет у видео');return}
-  toast('Улучшаю фото через AI…');
+  toast('Готовлю безопасную AI-обложку…');
   try{
     await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id})});
-    toast('Фото улучшено');
+    toast('AI-обложка готова');
     await load();
     openQueuePreview(id);
   }catch(e){toast('Фото: '+e.message)}
