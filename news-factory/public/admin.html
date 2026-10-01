@@ -1389,13 +1389,196 @@ body{
   .conn small{font-size:11px}
 }
 
+/* v0.28.2 — readable light pages + no-wrap controls + workspace account UI */
+.page.active{
+  color:var(--text)!important;
+  border-radius:28px;
+  padding:20px!important;
+  background:
+    radial-gradient(circle at 92% 8%,rgba(32,212,220,.11),transparent 29%),
+    radial-gradient(circle at 9% 91%,rgba(22,140,255,.075),transparent 31%),
+    linear-gradient(145deg,rgba(224,248,255,.88),rgba(238,248,255,.83))!important;
+  border:1px solid rgba(72,143,193,.12);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.82);
+}
+.page-head{
+  color:var(--text)!important;
+  padding:18px 20px!important;
+  margin:0 0 18px!important;
+  border-radius:22px;
+  background:linear-gradient(145deg,rgba(255,255,255,.97),rgba(247,252,255,.93))!important;
+  border:1px solid rgba(70,132,188,.15);
+  box-shadow:0 9px 26px rgba(45,98,144,.065),inset 0 1px 0 rgba(255,255,255,.98);
+}
+.page-head h2,.page-head p,.publish-section .panel-title h3,.publish-section .panel-title p{
+  opacity:1!important;
+  visibility:visible!important;
+}
+.publish-section{color:var(--text)!important;background:transparent!important}
+button,.quick a,.source-toggle,.chip,.status,.news-status,.media-badge,.slot-chip,.target-pill,.conn-group-count{
+  white-space:nowrap!important;
+  word-break:normal!important;
+  overflow-wrap:normal!important;
+  hyphens:none!important;
+}
+button{line-height:1.2!important}
+.page-head>button,.panel-title>button,.actions>button{flex:0 0 auto}
+.panel-title{flex-wrap:wrap}
+.menu-toggle{
+  padding:0!important;
+  align-items:center!important;
+  justify-content:center!important;
+  line-height:0!important;
+  flex:0 0 auto;
+}
+.menu-toggle svg{
+  width:24px;
+  height:24px;
+  display:block;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:2;
+  stroke-linecap:round;
+}
+.top-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.account-switcher{position:relative}
+.account-button{
+  min-height:48px;
+  max-width:270px;
+  display:flex;
+  align-items:center;
+  gap:9px;
+  padding:6px 10px 6px 7px;
+  border-radius:16px;
+  text-align:left;
+}
+.account-avatar{
+  width:36px;height:36px;flex:0 0 36px;
+  display:grid;place-items:center;
+  border-radius:12px;
+  color:#fff;
+  font-size:12px;font-weight:850;
+  background:linear-gradient(135deg,#20d4dc,#168cff 72%,#665cff);
+  box-shadow:0 7px 18px rgba(22,140,255,.20);
+}
+.account-copy{min-width:0;display:flex;flex-direction:column;gap:1px}
+.account-copy b{
+  max-width:150px;
+  color:#0a1734;
+  font-size:12.5px;
+  line-height:1.2;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.account-copy small{
+  max-width:150px;
+  color:#667797;
+  font-size:10px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.account-chevron{color:#667797;font-size:16px;transform:translateY(-1px)}
+.account-menu{
+  display:none;
+  position:absolute;
+  right:0;
+  top:calc(100% + 10px);
+  width:min(340px,88vw);
+  z-index:95;
+  padding:10px;
+  border:1px solid rgba(70,132,188,.17);
+  border-radius:20px;
+  background:rgba(255,255,255,.97);
+  box-shadow:0 22px 60px rgba(35,83,126,.18);
+  backdrop-filter:blur(22px);
+  -webkit-backdrop-filter:blur(22px);
+}
+.account-menu.open{display:block}
+.account-menu-title{
+  padding:5px 8px 9px;
+  color:#627696;
+  font-size:10px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.11em;
+}
+.account-workspaces{display:grid;gap:6px}
+.account-workspace-option{
+  width:100%;
+  min-height:48px;
+  display:flex;
+  align-items:center;
+  gap:9px;
+  justify-content:flex-start;
+  padding:7px 9px;
+  border-radius:14px;
+}
+.account-workspace-option.active{
+  border-color:rgba(22,140,255,.30);
+  background:linear-gradient(100deg,rgba(32,212,220,.14),rgba(22,140,255,.12));
+}
+.account-workspace-option .workspace-option-copy{min-width:0;display:flex;flex-direction:column;text-align:left}
+.account-workspace-option b{font-size:12px;color:#0b1735;overflow:hidden;text-overflow:ellipsis}
+.account-workspace-option small{font-size:10px;color:#657896;overflow:hidden;text-overflow:ellipsis}
+.account-menu-profile{width:100%;margin-top:9px;min-height:44px}
+.account-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(330px,.85fr);gap:18px}
+.account-create-card{grid-column:1/-1}
+.account-settings-card,.account-list-card,.account-create-card{min-width:0}
+.account-avatar-large{width:48px;height:48px;flex-basis:48px;border-radius:15px;font-size:15px}
+.account-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.account-field{display:grid;gap:6px;min-width:0}
+.account-field span{color:#526986;font-size:11px;font-weight:700}
+.account-save-btn,.account-create-btn{margin-top:14px;min-height:48px}
+.workspace-list{display:grid;gap:10px}
+.workspace-card{
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  align-items:center;
+  gap:10px;
+  padding:12px;
+  border:1px solid rgba(70,132,188,.15);
+  border-radius:17px;
+  background:rgba(255,255,255,.78);
+}
+.workspace-card.active{border-color:rgba(22,140,255,.33);box-shadow:0 7px 20px rgba(22,140,255,.08)}
+.workspace-card-copy{min-width:0}
+.workspace-card-copy b{display:block;color:#0b1735;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.workspace-card-copy small{display:block;color:#657895;font-size:10.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.workspace-card-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.workspace-card-actions button{min-height:36px;padding:7px 10px;font-size:10.5px}
+@media(max-width:900px){
+  .account-layout{grid-template-columns:1fr}
+  .account-create-card{grid-column:auto}
+}
+@media(max-width:560px){
+  .page.active{padding:12px!important;border-radius:22px}
+  .page-head{padding:16px!important;border-radius:19px}
+  .page-head{align-items:stretch!important}
+  .page-head>button{width:100%;max-width:100%}
+  .top{align-items:center!important}
+  .top-actions .health{display:none!important}
+  .account-button{width:48px;min-width:48px;height:48px;padding:5px;justify-content:center}
+  .account-copy,.account-chevron{display:none}
+  .account-avatar{width:36px;height:36px;flex-basis:36px}
+  .account-menu{position:fixed;left:12px;right:12px;top:96px;width:auto}
+  .account-form-grid{grid-template-columns:1fr}
+  .workspace-card{grid-template-columns:auto minmax(0,1fr)}
+  .workspace-card-actions{grid-column:1/-1;justify-content:stretch}
+  .workspace-card-actions button{flex:1}
+  .panel-title{align-items:flex-start}
+  .connections-toolbar{grid-template-columns:1fr!important}
+  .connections-check-summary{justify-self:start!important}
+}
+
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="side" id="appSidebar">
     <button class="mobile-close" id="drawerClose" type="button">×</button>
-    <div class="side-brand"><div class="side-mark">AI</div><div><b>News Factory</b><small>Что там у ИИ? · <span id="sidebarVersion">v—</span></small></div></div>
+    <div class="side-brand"><div class="side-mark" id="sidebarWorkspaceIcon">AI</div><div><b>News Factory</b><small><span id="sidebarWorkspaceName">Что там у ИИ?</span> · <span id="sidebarVersion">v—</span></small></div></div>
 
     <div class="side-group">
       <div class="side-title">Основное</div>
@@ -1436,18 +1619,34 @@ body{
     <div class="shell">
       <div class="top">
         <div class="top-left">
-          <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">☰</button>
-          <div class="brand"><div class="mark">AI</div><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
+          <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>
+          </button>
+          <div class="brand"><div class="mark" id="topWorkspaceIcon">AI</div><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
         </div>
-        <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
+        <div class="top-actions">
+          <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
+          <div class="account-switcher" id="accountSwitcher">
+            <button class="account-button" id="accountButton" type="button" onclick="toggleAccountMenu()" aria-label="Открыть личный кабинет">
+              <span class="account-avatar" id="accountAvatar">AI</span>
+              <span class="account-copy"><b id="accountButtonName">Что там у ИИ?</b><small id="accountButtonHandle">@chtotamai</small></span>
+              <span class="account-chevron">⌄</span>
+            </button>
+            <div class="account-menu" id="accountMenu">
+              <div class="account-menu-title">Каналы</div>
+              <div class="account-workspaces" id="accountWorkspaceMenu"></div>
+              <button class="account-menu-profile" type="button" onclick="goPage('accountPage');toggleAccountMenu(false)">Личный кабинет</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <section class="page active" id="homePage">
         <div class="hero home-hero">
           <div class="home-hero-top">
             <div class="hero-channel">
-              <div class="hero-icon">AI</div>
-              <div class="hero-channel-copy"><h2>Что там у ИИ?</h2><p>@chtotamai · новости нейросетей и технологий</p></div>
+              <div class="hero-icon" id="homeWorkspaceIcon">AI</div>
+              <div class="hero-channel-copy"><h2 id="homeWorkspaceName">Что там у ИИ?</h2><p id="homeWorkspaceSubtitle">@chtotamai · новости нейросетей и технологий</p></div>
             </div>
             <button class="primary home-hero-cta" onclick="goPage('publishPage')">+ Новый пост</button>
           </div>
@@ -1675,14 +1874,14 @@ body{
             <div class="social-platform-top">
               <div class="social-card-main">
                 <div class="social-icon">TG</div>
-                <div><h3>Telegram</h3><p>@chtotamai · основной канал</p></div>
+                <div><h3>Telegram</h3><p id="socialTgSubtitle">@chtotamai · текущий канал</p></div>
               </div>
               <span class="status wait social-connect-status" id="socialTgStatus">Проверка…</span>
             </div>
             <div class="social-platform-controls">
               <button class="source-toggle on" id="autoTgToggle" onclick="toggleAutoPublish('telegram')"><span class="switch-knob"></span><b id="autoTgLabel">Авто: включено</b></button>
               <span class="social-auto-hint">Определяет только автоматические публикации по расписанию. Ручная публикация работает отдельно.</span>
-              <a class="link" href="https://t.me/chtotamai" target="_blank">Открыть Telegram</a>
+              <a class="link" id="socialTgLink" href="https://t.me/chtotamai" target="_blank">Открыть Telegram</a>
             </div>
           </section>
           <section class="social-card social-platform-card">
@@ -1704,6 +1903,37 @@ body{
           <div class="row"><div><div class="label">Автопубликация</div><div class="name" id="socialAutoSummary">Загружаю настройки…</div></div><span class="chip" id="socialAutoStatus">Проверка…</span></div>
           <div class="notice" style="margin-top:10px">Переключатели выше действуют только в режиме AUTO. Если площадка выключена, следующий автоматический пост туда не отправляется. Ручная публикация и выбор площадок в очереди остаются доступными отдельно.</div>
         </section>
+      </section>
+
+      <section class="page" id="accountPage">
+        <div class="page-head"><div><h2>Личный кабинет</h2><p>Каналы переключаются как отдельные кабинеты. У каждого свои источники, очередь, календарь, история и настройки.</p></div><span class="chip">Мультиаккаунт</span></div>
+        <div class="account-layout">
+          <section class="card account-settings-card">
+            <div class="panel-title"><div><h3>Текущий кабинет</h3><p>Название и Telegram-канал этого аккаунта.</p></div><span class="account-avatar account-avatar-large" id="accountPageAvatar">AI</span></div>
+            <div class="account-form-grid">
+              <label class="account-field"><span>Название</span><input id="accountNameInput" placeholder="Что там у ИИ?"></label>
+              <label class="account-field"><span>Инициалы</span><input id="accountInitialsInput" maxlength="3" placeholder="AI"></label>
+              <label class="account-field"><span>Telegram-канал</span><input id="accountTelegramChannelInput" placeholder="@channel"></label>
+              <label class="account-field"><span>Публичный username</span><input id="accountTelegramUsernameInput" placeholder="channel"></label>
+            </div>
+            <button class="primary account-save-btn" type="button" onclick="saveCurrentWorkspace()">Сохранить кабинет</button>
+            <div class="notice" style="margin-top:12px">Один Telegram-бот может публиковать в несколько каналов, если он добавлен администратором в каждый из них.</div>
+          </section>
+
+          <section class="card account-list-card">
+            <div class="panel-title"><div><h3>Мои каналы</h3><p>Переключение меняет весь рабочий контекст News Factory.</p></div><span class="chip" id="accountWorkspaceCount">1 кабинет</span></div>
+            <div class="workspace-list" id="workspaceList"></div>
+          </section>
+
+          <section class="card account-create-card">
+            <div class="panel-title"><div><h3>Добавить канал</h3><p>Создаст чистый кабинет со своими источниками и публикациями.</p></div><span class="chip">Новый</span></div>
+            <div class="account-form-grid">
+              <label class="account-field"><span>Название канала</span><input id="newWorkspaceName" placeholder="Например: Что там у тачек?"></label>
+              <label class="account-field"><span>Telegram username</span><input id="newWorkspaceTelegram" placeholder="@new_channel"></label>
+            </div>
+            <button class="primary account-create-btn" type="button" onclick="createWorkspace()">+ Создать кабинет</button>
+          </section>
+        </div>
       </section>
 
       <section class="page" id="connectionsPage">
@@ -1751,6 +1981,7 @@ body{
 
 <script>
 var state={},systemStatus={},newsItems=[],calendarPickerTarget=null;
+var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={};
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -1780,6 +2011,117 @@ function ageRu(v){
 }
 
 
+function workspaceHandle(ws){
+  var handle=String(ws&&ws.telegramPublicUsername||ws&&ws.slug||ws&&ws.telegramChannel||'').replace(/^@/,'').trim();
+  return handle?'@'+handle:'Telegram не настроен';
+}
+function toggleAccountMenu(force){
+  var menu=el('accountMenu');if(!menu)return;
+  var next=typeof force==='boolean'?force:!menu.classList.contains('open');
+  menu.classList.toggle('open',next);
+}
+async function loadWorkspaces(){
+  var j=await api('/api/workspaces',{headers:{'x-workspace-id':activeWorkspaceId||''}});
+  workspaces=Array.isArray(j.workspaces)?j.workspaces:[];
+  if(!workspaces.some(function(ws){return ws.id===activeWorkspaceId})){
+    activeWorkspaceId=j.activeWorkspaceId||j.defaultWorkspaceId||(workspaces[0]&&workspaces[0].id)||'';
+    if(activeWorkspaceId)localStorage.setItem('nf_workspace',activeWorkspaceId);
+  }
+  currentWorkspaceMeta=workspaces.find(function(ws){return ws.id===activeWorkspaceId})||workspaces[0]||{};
+  return j;
+}
+function renderWorkspaceChrome(){
+  var ws=currentWorkspaceMeta||{};
+  var initials=String(ws.initials||'NF').slice(0,3);
+  var handle=workspaceHandle(ws);
+  ['accountAvatar','accountPageAvatar','topWorkspaceIcon','homeWorkspaceIcon','sidebarWorkspaceIcon'].forEach(function(id){if(el(id))el(id).textContent=initials});
+  if(el('accountButtonName'))el('accountButtonName').textContent=ws.name||'Кабинет';
+  if(el('accountButtonHandle'))el('accountButtonHandle').textContent=handle;
+  if(el('sidebarWorkspaceName'))el('sidebarWorkspaceName').textContent=ws.name||'Кабинет';
+  if(el('homeWorkspaceName'))el('homeWorkspaceName').textContent=ws.name||'Кабинет';
+  if(el('homeWorkspaceSubtitle'))el('homeWorkspaceSubtitle').textContent=handle+' · отдельный контент-канал';
+  if(el('socialTgSubtitle'))el('socialTgSubtitle').textContent=handle+' · текущий канал';
+  if(el('socialTgLink')){
+    var username=String(ws.telegramPublicUsername||ws.slug||'').replace(/^@/,'');
+    el('socialTgLink').href=username?'https://t.me/'+encodeURIComponent(username):'#';
+    el('socialTgLink').style.display=username?'inline-flex':'none';
+  }
+  if(el('accountNameInput'))el('accountNameInput').value=ws.name||'';
+  if(el('accountInitialsInput'))el('accountInitialsInput').value=ws.initials||'';
+  if(el('accountTelegramChannelInput'))el('accountTelegramChannelInput').value=ws.telegramChannel||'';
+  if(el('accountTelegramUsernameInput'))el('accountTelegramUsernameInput').value=ws.telegramPublicUsername||'';
+  if(el('accountWorkspaceCount'))el('accountWorkspaceCount').textContent=workspaces.length+' '+(workspaces.length===1?'кабинет':'кабинета');
+
+  var menu=el('accountWorkspaceMenu');
+  if(menu)menu.innerHTML=workspaces.map(function(item){
+    var active=item.id===activeWorkspaceId;
+    return '<button class="account-workspace-option '+(active?'active':'')+'" type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">'+
+      '<span class="account-avatar">'+esc(item.initials||'NF')+'</span>'+
+      '<span class="workspace-option-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
+    '</button>';
+  }).join('');
+
+  var list=el('workspaceList');
+  if(list)list.innerHTML=workspaces.map(function(item){
+    var active=item.id===activeWorkspaceId;
+    return '<div class="workspace-card '+(active?'active':'')+'">'+
+      '<span class="account-avatar">'+esc(item.initials||'NF')+'</span>'+
+      '<span class="workspace-card-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+(active?' · текущий':'')+'</small></span>'+
+      '<span class="workspace-card-actions">'+
+        (!active?'<button type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">Переключить</button>':'<span class="chip">Активен</span>')+
+        ((!active&&workspaces.length>1)?'<button class="danger" type="button" onclick="removeWorkspace(\''+esc(item.id)+'\')">Удалить</button>':'')+
+      '</span>'+
+    '</div>';
+  }).join('');
+
+  var currentRoute=(location.hash||'#home').slice(1);
+  if(el('topSubtitleText')&&currentRoute!=='system'&&currentRoute!=='connections'){
+    el('topSubtitleText').textContent=currentRoute==='account'?'Кабинет · '+(ws.name||'News Factory')+' · ':(ws.name||'News Factory')+' · ';
+  }
+}
+function switchWorkspace(id){
+  if(!id||id===activeWorkspaceId){toggleAccountMenu(false);return}
+  activeWorkspaceId=id;
+  localStorage.setItem('nf_workspace',id);
+  toggleAccountMenu(false);
+  location.reload();
+}
+async function saveCurrentWorkspace(){
+  if(!activeWorkspaceId)return;
+  var body={
+    id:activeWorkspaceId,
+    name:el('accountNameInput').value.trim(),
+    initials:el('accountInitialsInput').value.trim(),
+    telegramChannel:el('accountTelegramChannelInput').value.trim(),
+    telegramPublicUsername:el('accountTelegramUsernameInput').value.trim().replace(/^@/,'')
+  };
+  if(!body.name){toast('Укажите название кабинета');return}
+  await api('/api/workspaces/update',{method:'POST',body:JSON.stringify(body)});
+  await loadWorkspaces();renderWorkspaceChrome();toast('Кабинет сохранён');
+}
+async function createWorkspace(){
+  var name=el('newWorkspaceName').value.trim();
+  var telegram=el('newWorkspaceTelegram').value.trim();
+  if(!name){toast('Укажите название нового канала');return}
+  var j=await api('/api/workspaces',{method:'POST',body:JSON.stringify({
+    name:name,
+    slug:telegram.replace(/^@/,''),
+    telegramChannel:telegram,
+    telegramPublicUsername:telegram.replace(/^@/,'')
+  })});
+  if(j.workspace&&j.workspace.id){
+    activeWorkspaceId=j.workspace.id;
+    localStorage.setItem('nf_workspace',activeWorkspaceId);
+    location.reload();
+  }
+}
+async function removeWorkspace(id){
+  if(!id||id===activeWorkspaceId)return;
+  if(!confirm('Удалить этот кабинет? Его локальные настройки и очередь будут удалены.'))return;
+  await api('/api/workspaces/remove',{method:'POST',body:JSON.stringify({id:id})});
+  await loadWorkspaces();renderWorkspaceChrome();toast('Кабинет удалён');
+}
+
 function setDrawer(open){el('appSidebar').classList.toggle('mobile-open',!!open);el('drawerBackdrop').classList.toggle('open',!!open);document.body.classList.toggle('drawer-open',!!open)}
 var pageRoutes={
   homePage:'home',
@@ -1792,6 +2134,7 @@ var pageRoutes={
   historyPage:'history',
   modePage:'mode',
   socialPage:'social',
+  accountPage:'account',
   connectionsPage:'connections'
 };
 var routePages=Object.fromEntries(Object.keys(pageRoutes).map(function(id){return [pageRoutes[id],id]}));
@@ -1802,15 +2145,17 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',connectionsPage:'Система и подключения'};
+  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
-  if(el('topSubtitleText'))el('topSubtitleText').textContent=id==='connectionsPage'?'Состояние News Factory, интеграции и хранение данных.':'Что там у ИИ? · ';
+  var workspaceName=currentWorkspaceMeta.name||'News Factory';
+  if(el('topSubtitleText'))el('topSubtitleText').textContent=id==='connectionsPage'?'Состояние News Factory, интеграции и хранение данных.':(id==='accountPage'?'Кабинет · '+workspaceName+' · ':workspaceName+' · ');
   if(el('topVersion'))el('topVersion').style.display=id==='connectionsPage'?'none':'inline';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
   if(id==='newsPage'){loadNews();loadCollectorStatus();}
   if(id==='calendarPage'){renderCalendar();}
   if(id==='statsPage'){loadAnalytics(false);}
+  if(id==='accountPage'){renderWorkspaceChrome();}
 }
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
@@ -1823,11 +2168,12 @@ window.addEventListener('hashchange',openRouteFromHash);
 el('menuToggle').addEventListener('click',function(){setDrawer(true)});
 el('drawerClose').addEventListener('click',function(){setDrawer(false)});
 el('drawerBackdrop').addEventListener('click',function(){setDrawer(false)});
-document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeModal('previewModal');closeModal('calendarPickerModal');setDrawer(false)}});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeModal('previewModal');closeModal('calendarPickerModal');setDrawer(false);toggleAccountMenu(false)}});
+document.addEventListener('click',function(e){var sw=el('accountSwitcher');if(sw&&!sw.contains(e.target))toggleAccountMenu(false)});
 document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListener('click',function(){goPage(btn.dataset.page)})});
 
-async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
-async function load(){var j=await api('/api/dashboard');state=j.state;render();renderConnections(false).catch(function(e){toast(e.message)})}
+async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});if(activeWorkspaceId)opt.headers['x-workspace-id']=activeWorkspaceId;var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
+async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderConnections(false).catch(function(e){toast(e.message)})}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode(\''+m+'\')">'+labels[m]+'</button>'}).join('');
@@ -2154,6 +2500,7 @@ function setSocialStatus(id,value){
   if(value&&value.detail)node.title=value.detail;
 }
 function renderSocialControls(){
+  renderWorkspaceChrome();
   var settings=(state.topicSettings&&state.topicSettings.default)||{};
   var tg=settings.auto_publish_telegram!==false;
   var vk=settings.auto_publish_vk!==false;
@@ -2236,7 +2583,9 @@ async function renderConnections(force){
   var botInfo=details.telegramBot||{};
   if(el('publishBotNotice')){
     var botLabel=botInfo.username?'@'+botInfo.username:(botInfo.displayName||'Telegram-бот');
-    el('publishBotNotice').innerHTML='Публикация → <a class="link" target="_blank" href="https://t.me/chtotamai">Telegram @chtotamai</a> + <a class="link" target="_blank" href="https://vk.ru/chtotamai">VK Что там у ИИ?</a>. Если фото/видео не указано, система сама подготовит медиа.';
+    var ws=currentWorkspaceMeta||{},tgUser=String(ws.telegramPublicUsername||ws.slug||'').replace(/^@/,'');
+    var tgPart=tgUser?('<a class="link" target="_blank" href="https://t.me/'+esc(tgUser)+'">Telegram @'+esc(tgUser)+'</a>'):'Telegram не настроен';
+    el('publishBotNotice').innerHTML='Публикация → '+tgPart+' + <a class="link" target="_blank" href="https://vk.ru/chtotamai">VK</a>. Если фото/видео не указано, система сама подготовит медиа.';
   }
   el('topStatusText').textContent=(sm.connected||0)+'/'+(sm.total||0)+' подключено';el('sideStatusText').textContent=(sm.connected||0)+' подключено · '+(sm.partial||0)+' частично';
   el('sideStatusDot').classList.toggle('warn',(sm.missing||0)>0||(sm.partial||0)>0);
