@@ -2163,27 +2163,37 @@ function secretMatches(provided, expected) {
   return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function createVkPkcePair() {
+  const verifier = base64Url(crypto.randomBytes(64));
+  const challenge = base64Url(crypto.createHash("sha256").update(verifier).digest());
+  return { verifier: verifier, challenge: challenge };
+}
+
 function buildVkOAuthUrl() {
   if (!VK_APP_ID) throw new Error("VK_APP_ID не задан");
   const oauthState = base64Url(crypto.randomBytes(24));
+  const pkce = createVkPkcePair();
   vkOAuthSession = {
-    mode: "legacy",
+    mode: "vkid",
     state: oauthState,
+    codeVerifier: pkce.verifier,
     createdAt: Date.now()
   };
 
-  const normalizedScope = VK_OAUTH_SCOPE.split(/[\s,]+/).filter(Boolean).join(",");
   const params = new URLSearchParams({
     client_id: VK_APP_ID,
-    display: "page",
+    app_id: VK_APP_ID,
     redirect_uri: VK_OAUTH_REDIRECT_URI,
-    scope: normalizedScope,
-    response_type: "token",
-    v: VK_API_VERSION,
+    response_type: "code",
+    code_challenge: pkce.challenge,
+    code_challenge_method: "s256",
+    scope: VK_OAUTH_SCOPE,
     state: oauthState,
-    revoke: "1"
+    prompt: "consent",
+    v: "2.6.1",
+    sdk_type: "vkid"
   });
-  return "https://oauth.vk.com/authorize?" + params.toString();
+  return "https://id.vk.ru/authorize?" + params.toString();
 }
 
 function assertVkOAuthSession(returnedState) {
@@ -2197,7 +2207,7 @@ function assertVkOAuthSession(returnedState) {
   return session;
 }
 
-async function captureVkOAuthToken(accessToken, returnedState, userId) {
+async function captureVkOAuthToken(accessToken, returnedState, userId, extra) {
   const token = String(accessToken || "").trim();
   if (!token) throw new Error("VK не вернул access_token.");
   assertVkOAuthSession(String(returnedState || ""));
@@ -2212,8 +2222,13 @@ async function captureVkOAuthToken(accessToken, returnedState, userId) {
     }
   );
 
+  const details = extra || {};
   vkOAuthHandoff = {
     accessToken: token,
+    refreshToken: String(details.refreshToken || ""),
+    deviceId: String(details.deviceId || ""),
+    expiresIn: Number(details.expiresIn || 0) || 0,
+    scope: String(details.scope || ""),
     userId: String(userId || ""),
     createdAt: Date.now()
   };
@@ -2221,7 +2236,49 @@ async function captureVkOAuthToken(accessToken, returnedState, userId) {
   return { ok: true };
 }
 
-function vkOAuthCallbackHtml() {
+async function exchangeVkIdAuthorizationCode(code, deviceId, returnedState) {
+  const session = assertVkOAuthSession(String(returnedState || ""));
+  if (!session.codeVerifier) throw new Error("VK OAuth PKCE verifier не найден.");
+  if (!code) throw new Error("VK не вернул authorization code.");
+  if (!deviceId) throw new Error("VK не вернул device_id.");
+
+  const query = new URLSearchParams({
+    grant_type: "authorization_code",
+    redirect_uri: VK_OAUTH_REDIRECT_URI,
+    client_id: VK_APP_ID,
+    code_verifier: session.codeVerifier,
+    state: String(returnedState || ""),
+    device_id: String(deviceId || "")
+  });
+
+  const response = await fetch("https://id.vk.ru/oauth2/auth?" + query.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ code: String(code) }).toString(),
+    signal: AbortSignal.timeout(20000)
+  });
+  const data = await response.json().catch(function(){ return {}; });
+  if (!response.ok || data.error) {
+    const message = String(data.error_description || data.error || ("HTTP " + response.status));
+    throw new Error("VK ID token exchange: " + message);
+  }
+  if (String(data.state || "") !== String(returnedState || "")) {
+    throw new Error("VK ID state не совпал после обмена кода.");
+  }
+
+  await captureVkOAuthToken(data.access_token, returnedState, data.user_id, {
+    refreshToken: data.refresh_token,
+    deviceId: deviceId,
+    expiresIn: data.expires_in,
+    scope: data.scope
+  });
+  return data;
+}
+
+function vkOAuthCallbackHtml(ok, message) {
+  const cls = ok ? "ok" : "bad";
+  const title = ok ? "VK подключён" : "Ошибка подключения VK";
+  const safeMessage = escapeHtml(String(message || ""));
   return `<!doctype html>
 <html lang="ru">
 <head>
@@ -2231,52 +2288,18 @@ function vkOAuthCallbackHtml() {
 <title>VK OAuth — News Factory</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b0f17;color:#fff;margin:0;padding:28px}
-.card{max-width:560px;margin:8vh auto;background:#111722;border:1px solid #293347;border-radius:22px;padding:24px}
+.card{max-width:620px;margin:8vh auto;background:#111722;border:1px solid #293347;border-radius:22px;padding:24px}
 h2{margin:0 0 12px}.muted{color:#9aa7ba;line-height:1.5}.ok{color:#71e0a7}.bad{color:#ff8d8d}
 a{color:#8db0ff}
 </style>
 </head>
 <body>
 <div class="card">
-<h2>Авторизация VK</h2>
-<p id="vkOauthStatus" class="muted">Подтверждаю доступ для публикации фото…</p>
+<h2>${title}</h2>
+<p class="${cls}">${safeMessage}</p>
+<p class="muted">Эту вкладку можно закрыть и вернуться в ChatGPT.</p>
 <p><a href="/admin#social">Вернуться в News Factory</a></p>
 </div>
-<script>
-(async function(){
-  var status=document.getElementById("vkOauthStatus");
-  var hash=new URLSearchParams((location.hash||"").replace(/^#/,""));
-  var error=hash.get("error");
-  if(error){
-    status.className="bad";
-    status.textContent="VK не дал доступ: "+(hash.get("error_description")||error);
-    return;
-  }
-  var token=hash.get("access_token");
-  var oauthState=hash.get("state");
-  var userId=hash.get("user_id")||"";
-  if(!token){
-    status.className="bad";
-    status.textContent="VK не вернул пользовательский токен. Запустите авторизацию ещё раз.";
-    return;
-  }
-  history.replaceState(null,"",location.pathname);
-  try{
-    var r=await fetch("/api/vk/oauth/capture",{
-      method:"POST",
-      headers:{"content-type":"application/json"},
-      body:JSON.stringify({accessToken:token,state:oauthState,userId:userId})
-    });
-    var j=await r.json().catch(function(){return {}});
-    if(!r.ok||!j.ok)throw new Error(j.error||"Ошибка подтверждения VK");
-    status.className="ok";
-    status.textContent="VK авторизован для публикации фото. Вернитесь в ChatGPT — настройка завершится автоматически.";
-  }catch(e){
-    status.className="bad";
-    status.textContent="Не удалось подтвердить доступ VK: "+String(e&&e.message||e);
-  }
-})();
-</script>
 </body>
 </html>`;
 }
@@ -3587,12 +3610,39 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/callback") {
-      res.writeHead(200, {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-store",
-        "referrer-policy": "no-referrer"
-      });
-      return res.end(vkOAuthCallbackHtml());
+      try {
+        let payload = {};
+        const rawPayload = url.searchParams.get("payload");
+        if (rawPayload) {
+          try { payload = JSON.parse(rawPayload); } catch {}
+        }
+        const code = url.searchParams.get("code") || payload.code || "";
+        const deviceId = url.searchParams.get("device_id") || payload.device_id || "";
+        const returnedState = url.searchParams.get("state") || payload.state || "";
+        const oauthError = url.searchParams.get("error") || payload.error || "";
+        if (oauthError) {
+          throw new Error(String(url.searchParams.get("error_description") || payload.error_description || oauthError));
+        }
+
+        await exchangeVkIdAuthorizationCode(code, deviceId, returnedState);
+        const body = vkOAuthCallbackHtml(true, "Авторизация VK завершена. Пользовательский токен проверен для загрузки фото на стену.");
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": Buffer.byteLength(body),
+          "cache-control": "no-store",
+          "referrer-policy": "no-referrer"
+        });
+        return res.end(body);
+      } catch (error) {
+        const body = vkOAuthCallbackHtml(false, String(error && error.message || error));
+        res.writeHead(400, {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": Buffer.byteLength(body),
+          "cache-control": "no-store",
+          "referrer-policy": "no-referrer"
+        });
+        return res.end(body);
+      }
     }
 
     if (req.method === "POST" && p === "/api/vk/oauth/capture") {
@@ -3619,6 +3669,10 @@ const server = http.createServer(async function(req, res) {
         ok: true,
         ready: true,
         accessToken: handoff.accessToken,
+        refreshToken: handoff.refreshToken || "",
+        deviceId: handoff.deviceId || "",
+        expiresIn: Number(handoff.expiresIn || 0),
+        scope: handoff.scope || "",
         userId: handoff.userId || ""
       }, { "cache-control": "no-store" });
     }
