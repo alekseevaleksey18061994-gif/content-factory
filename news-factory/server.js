@@ -4065,7 +4065,7 @@ async function publishVkPost(post) {
   }
 
   const context = Object.assign({}, baseContext, { slug: preview.slug });
-  const baseMessage = formatVkPost(post, { includeSource: false });
+  const baseMessage = formatVkPost(post, { includeSource: true });
 
   // Primary mode: upload the prepared 1200x630 JPEG through the community-token messages
   // upload server and attach it to the wall post as a real photo. VK's link snippet
