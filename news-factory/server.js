@@ -2907,6 +2907,30 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, mode: mode });
     }
 
+    if (req.method === "GET" && p === "/api/topic-settings") {
+      return sendJson(res, 200, {
+        ok: true,
+        topics: state.topicSettings || structuredClone(defaultState.topicSettings)
+      });
+    }
+
+    if (req.method === "POST" && p === "/api/topic-settings") {
+      const body = await readJson(req);
+      const topicId = String(body.topicId || body.topic_id || "default").trim() || "default";
+      if (!state.topicSettings || typeof state.topicSettings !== "object") {
+        state.topicSettings = structuredClone(defaultState.topicSettings);
+      }
+      state.topicSettings[topicId] = Object.assign({}, state.topicSettings[topicId] || {}, {
+        allow_text_fallback: body.allow_text_fallback === true
+      });
+      saveState();
+      return sendJson(res, 200, {
+        ok: true,
+        topicId: topicId,
+        settings: state.topicSettings[topicId]
+      });
+    }
+
     if (req.method === "POST" && p === "/api/test") {
       const marker = crypto.randomBytes(3).toString("hex");
       const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «Что там у ИИ?» работает.\nТест: " + marker);
