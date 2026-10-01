@@ -2283,7 +2283,7 @@ async function generateStoryMediaPack(payload, count) {
 let imageEnhanceSlotTail = Promise.resolve();
 let imageEnhanceLastStartedAt = 0;
 
-function sleepMs(ms) {
+function sleepImageMs(ms) {
   return new Promise(function(resolve){ setTimeout(resolve, Math.max(0, Number(ms || 0))); });
 }
 
@@ -2294,7 +2294,7 @@ async function reserveImageEnhanceSlot() {
   await previous;
   try {
     const wait = Math.max(0, IMAGE_ENHANCE_MIN_GAP_MS - (Date.now() - imageEnhanceLastStartedAt));
-    if (wait) await sleepMs(wait);
+    if (wait) await sleepImageMs(wait);
     imageEnhanceLastStartedAt = Date.now();
   } finally {
     release();
@@ -2377,7 +2377,7 @@ async function enhanceNewsImage(payload) {
           if (response.status === 429 && attempt < 3) {
             const delay = imageRetryDelayMs(response, data);
             console.warn("Image enhancement rate-limited; retrying in " + delay + "ms");
-            await sleepMs(delay);
+            await sleepImageMs(delay);
             continue;
           }
           break;
@@ -2397,7 +2397,7 @@ async function enhanceNewsImage(payload) {
       } catch (error) {
         lastError = String(error && error.message || error);
         if (attempt < 3 && /429|rate limit|timeout|fetch failed|ECONNRESET/i.test(lastError)) {
-          await sleepMs(15000);
+          await sleepImageMs(15000);
           continue;
         }
         break;
