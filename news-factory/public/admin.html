@@ -2743,6 +2743,7 @@ function render(){
     var bt=new Date((b&&b.articlePublishedAt)||(b&&b.createdAt)||0).getTime()||0;
     return bt-at;
   });
+  var vkAllowed=!!(currentWorkspaceMeta&&currentWorkspaceMeta.vkPublishingAllowed);
   el('queue').innerHTML=sortedQueue.length?sortedQueue.map(function(q){
     var parts=postParts(q);
     var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
@@ -2785,7 +2786,7 @@ function render(){
         '<div class="publish-targets">'+
           '<label class="target-pill all"><input id="all_'+q.id+'" type="checkbox" checked onchange="setQueueAll(\''+q.id+'\',this.checked)"> Все</label>'+
           '<label class="target-pill"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> Telegram</label>'+
-          '<label class="target-pill"><input id="vk_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> VK</label>'+
+          '<label class="target-pill"><input id="vk_'+q.id+'" type="checkbox" '+(vkAllowed?'checked':'disabled')+' onchange="syncQueueAll(\''+q.id+'\')"> '+(vkAllowed?'VK':'VK · не подключён')+'</label>'+
         '</div>'+
         '<div class="queue-action-row secondary">'+
           '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
@@ -3175,7 +3176,12 @@ async function renderConnections(force){
     var botLabel=botInfo.username?'@'+botInfo.username:(botInfo.displayName||'Telegram-бот');
     var ws=currentWorkspaceMeta||{},tgUser=String(ws.telegramPublicUsername||ws.slug||'').replace(/^@/,'');
     var tgPart=tgUser?('<a class="link" target="_blank" href="https://t.me/'+esc(tgUser)+'">Telegram @'+esc(tgUser)+'</a>'):'Telegram не настроен';
-    el('publishBotNotice').innerHTML='Публикация → '+tgPart+' + <a class="link" target="_blank" href="https://vk.ru/chtotamai">VK</a>. Если фото/видео не указано, система сама подготовит медиа.';
+    var vkAllowed=!!ws.vkPublishingAllowed;
+    var vkPart=vkAllowed?' + <a class="link" target="_blank" href="https://vk.ru/chtotamai">VK</a>':'';
+    el('publishBotNotice').innerHTML='Публикация → '+tgPart+vkPart+'. Если фото/видео не указано, система сама подготовит медиа.';
+    var publishVk=el('publishVk');
+    if(publishVk){publishVk.disabled=!vkAllowed;publishVk.checked=vkAllowed}
+    syncPublishAll();
   }
   el('topStatusText').textContent=(sm.connected||0)+'/'+(sm.total||0)+' подключено';el('sideStatusText').textContent=(sm.connected||0)+' подключено · '+(sm.partial||0)+' частично';
   el('sideStatusDot').classList.toggle('warn',(sm.missing||0)>0||(sm.partial||0)>0);
@@ -3185,12 +3191,12 @@ async function renderConnections(force){
 async function refreshConnections(){await renderConnections(true);toast('Статусы обновлены')}
 async function setMode(mode){await api('/api/mode',{method:'POST',body:JSON.stringify({mode:mode})});await load();toast('Режим: '+statusRu(mode))}
 async function testPost(){var j=await api('/api/test',{method:'POST',body:'{}'});toast('Тест опубликован #'+j.messageId);await load()}
-function setPublishAll(on){el('publishTg').checked=!!on;el('publishVk').checked=!!on;el('publishAll').checked=!!on}
-function syncPublishAll(){el('publishAll').checked=el('publishTg').checked&&el('publishVk').checked}
-function manualTargets(){return {telegram:!!el('publishTg').checked,vk:!!el('publishVk').checked}}
-function setQueueAll(id,on){var tg=el('tg_'+id),vk=el('vk_'+id),all=el('all_'+id);if(tg)tg.checked=!!on;if(vk)vk.checked=!!on;if(all)all.checked=!!on}
-function syncQueueAll(id){var tg=el('tg_'+id),vk=el('vk_'+id),all=el('all_'+id);if(all&&tg&&vk)all.checked=tg.checked&&vk.checked}
-function queueTargets(id){var tg=el('tg_'+id),vk=el('vk_'+id);return {telegram:!!(tg&&tg.checked),vk:!!(vk&&vk.checked)}}
+function setPublishAll(on){var vk=el('publishVk');el('publishTg').checked=!!on;if(vk&&!vk.disabled)vk.checked=!!on;el('publishAll').checked=!!on}
+function syncPublishAll(){var vk=el('publishVk');el('publishAll').checked=el('publishTg').checked&&(!vk||vk.disabled||vk.checked)}
+function manualTargets(){var vk=el('publishVk');return {telegram:!!el('publishTg').checked,vk:!!(vk&&!vk.disabled&&vk.checked)}}
+function setQueueAll(id,on){var tg=el('tg_'+id),vk=el('vk_'+id),all=el('all_'+id);if(tg)tg.checked=!!on;if(vk&&!vk.disabled)vk.checked=!!on;if(all)all.checked=!!on}
+function syncQueueAll(id){var tg=el('tg_'+id),vk=el('vk_'+id),all=el('all_'+id);if(all&&tg)all.checked=tg.checked&&(!vk||vk.disabled||vk.checked)}
+function queueTargets(id){var tg=el('tg_'+id),vk=el('vk_'+id);return {telegram:!!(tg&&tg.checked),vk:!!(vk&&!vk.disabled&&vk.checked)}}
 function publishToast(j){
   var parts=[];if(j.telegramPublished)parts.push('Telegram');if(j.vkPublished)parts.push('VK');
   if(j.status==='media_failed'||j.vkStatus==='media_failed'){
