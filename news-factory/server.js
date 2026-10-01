@@ -38,7 +38,8 @@ const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MED
 const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
 const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
 const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
-const SOURCE_IMAGE_ENHANCE_CONCURRENCY = Math.max(1, Math.min(3, Number(process.env.SOURCE_IMAGE_ENHANCE_CONCURRENCY || 2)));
+const SOURCE_IMAGE_ENHANCE_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.SOURCE_IMAGE_ENHANCE_CONCURRENCY || 1)));
+const IMAGE_ENHANCE_MIN_GAP_MS = Math.max(8000, Number(process.env.IMAGE_ENHANCE_MIN_GAP_MS || 13000));
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
 const VK_ACCESS_TOKEN = String(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || "").trim();
 const VK_USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_USER_ACCESS_TOKEN || "").trim();
@@ -2278,6 +2279,38 @@ async function generateStoryMediaPack(payload, count) {
   return items;
 }
 
+
+let imageEnhanceSlotTail = Promise.resolve();
+let imageEnhanceLastStartedAt = 0;
+
+function sleepMs(ms) {
+  return new Promise(function(resolve){ setTimeout(resolve, Math.max(0, Number(ms || 0))); });
+}
+
+async function reserveImageEnhanceSlot() {
+  let release;
+  const previous = imageEnhanceSlotTail;
+  imageEnhanceSlotTail = new Promise(function(resolve){ release = resolve; });
+  await previous;
+  try {
+    const wait = Math.max(0, IMAGE_ENHANCE_MIN_GAP_MS - (Date.now() - imageEnhanceLastStartedAt));
+    if (wait) await sleepMs(wait);
+    imageEnhanceLastStartedAt = Date.now();
+  } finally {
+    release();
+  }
+}
+
+function imageRetryDelayMs(response, data) {
+  const retryHeader = response && response.headers && response.headers.get("retry-after");
+  const retrySeconds = Number(retryHeader);
+  if (Number.isFinite(retrySeconds) && retrySeconds > 0) return Math.ceil(retrySeconds * 1000) + 1200;
+  const message = String(data && data.error && data.error.message || "");
+  const match = message.match(/try again in\s+([0-9.]+)s/i);
+  if (match) return Math.ceil(Number(match[1]) * 1000) + 1200;
+  return 15000;
+}
+
 async function enhanceNewsImage(payload) {
   if (!OPENAI_API_KEY || !IMAGE_ENHANCEMENT_ENABLED) {
     throw new Error("AI-улучшение изображений отключено");
@@ -2320,38 +2353,55 @@ async function enhanceNewsImage(payload) {
   let lastError = "";
 
   for (const model of models) {
-    try {
-      const form = new FormData();
-      form.append("model", model);
-      form.append("image[]", new Blob([bytes], { type: contentType }), "source." + ext);
-      form.append("prompt", prompt);
-      form.append("size", "1536x1024");
-      form.append("quality", OPENAI_IMAGE_QUALITY);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await reserveImageEnhanceSlot();
 
-      const response = await fetch("https://api.openai.com/v1/images/edits", {
-        method: "POST",
-        headers: { authorization: "Bearer " + OPENAI_API_KEY },
-        body: form,
-        signal: AbortSignal.timeout(120000)
-      });
-      const data = await response.json().catch(function(){ return {}; });
-      if (!response.ok) {
-        lastError = (data && data.error && data.error.message) || ("OpenAI image edit HTTP " + response.status);
-        continue;
-      }
-      const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
-      if (!b64) {
-        lastError = "OpenAI image edit не вернул изображение";
-        continue;
-      }
+        const form = new FormData();
+        form.append("model", model);
+        form.append("image[]", new Blob([bytes], { type: contentType }), "source." + ext);
+        form.append("prompt", prompt);
+        form.append("size", "1536x1024");
+        form.append("quality", OPENAI_IMAGE_QUALITY);
 
-      ensureDataDir();
-      const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
-      const fileName = "enhanced_" + safeId + "_" + Date.now() + ".png";
-      fs.writeFileSync(path.join(MEDIA_DIR, fileName), Buffer.from(b64, "base64"));
-      return { url: mediaPublicUrl(fileName), model: model, fileName: fileName };
-    } catch (error) {
-      lastError = String(error && error.message || error);
+        const response = await fetch("https://api.openai.com/v1/images/edits", {
+          method: "POST",
+          headers: { authorization: "Bearer " + OPENAI_API_KEY },
+          body: form,
+          signal: AbortSignal.timeout(120000)
+        });
+        const data = await response.json().catch(function(){ return {}; });
+
+        if (!response.ok) {
+          lastError = (data && data.error && data.error.message) || ("OpenAI image edit HTTP " + response.status);
+          if (response.status === 429 && attempt < 3) {
+            const delay = imageRetryDelayMs(response, data);
+            console.warn("Image enhancement rate-limited; retrying in " + delay + "ms");
+            await sleepMs(delay);
+            continue;
+          }
+          break;
+        }
+
+        const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
+        if (!b64) {
+          lastError = "OpenAI image edit не вернул изображение";
+          break;
+        }
+
+        ensureDataDir();
+        const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+        const fileName = "enhanced_" + safeId + "_" + Date.now() + ".png";
+        fs.writeFileSync(path.join(MEDIA_DIR, fileName), Buffer.from(b64, "base64"));
+        return { url: mediaPublicUrl(fileName), model: model, fileName: fileName };
+      } catch (error) {
+        lastError = String(error && error.message || error);
+        if (attempt < 3 && /429|rate limit|timeout|fetch failed|ECONNRESET/i.test(lastError)) {
+          await sleepMs(15000);
+          continue;
+        }
+        break;
+      }
     }
   }
 
@@ -2473,7 +2523,7 @@ async function backfillQueueImageEnhancements(options) {
       .concat([item.originalImageUrl || ""])
       .filter(Boolean);
     if (!originals.length) return false;
-    if (!force && item.mediaEnhancementBackfillVersion === "v2") return false;
+    if (!force && item.mediaEnhancementBackfillVersion === "v3") return false;
     return true;
   });
 
@@ -2493,7 +2543,7 @@ async function backfillQueueImageEnhancements(options) {
         )).slice(0, MEDIA_DIRECTOR_MAX_IMAGES);
 
         if (!originals.length) {
-          item.mediaEnhancementBackfillVersion = "v2";
+          item.mediaEnhancementBackfillVersion = "v3";
           skipped += 1;
           continue;
         }
@@ -2522,8 +2572,8 @@ async function backfillQueueImageEnhancements(options) {
 
         const genuinelyEnhanced = logs.some(function(entry){ return entry.enhanced; });
         if (!enhancedUrls.length || !genuinelyEnhanced) {
-          item.mediaEnhancementBackfillVersion = "v2";
           item.mediaEnhancementError = logs.map(function(x){ return x.error; }).filter(Boolean).join("; ").slice(0, 600) || "AI-улучшение не выполнено";
+          item.mediaEnhancementRetryAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
           failed += 1;
           saveState();
           continue;
@@ -2533,7 +2583,7 @@ async function backfillQueueImageEnhancements(options) {
         item.enhancedImageUrl = enhancedUrls[0];
         item.mediaPackUrls = enhancedUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES);
         item.mediaEnhancementLog = logs;
-        item.mediaEnhancementBackfillVersion = "v2";
+        item.mediaEnhancementBackfillVersion = "v3";
         item.mediaEnhancementError = logs.some(function(x){ return x.error; }) ? "Часть фотографий оставлена в исходном качестве" : "";
         item.mediaOrigin = "ai_enhanced_source";
         item.enhancedAt = new Date().toISOString();
@@ -2580,8 +2630,8 @@ async function backfillQueueImageEnhancements(options) {
         saveState();
       } catch (error) {
         failed += 1;
-        item.mediaEnhancementBackfillVersion = "v2";
         item.mediaEnhancementError = String(error && error.message || error).slice(0, 600);
+        item.mediaEnhancementRetryAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
         console.warn("Queue image enhancement backfill failed:", item.id, error.message);
         saveState();
       }
@@ -8205,6 +8255,21 @@ setTimeout(function() {
     }
   })();
 }, 4000);
+
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try {
+          const result = await backfillQueueImageEnhancements();
+          if (result.total) console.log("Queue image enhancement retry " + ws.id + ":", JSON.stringify(result));
+        } catch (error) {
+          console.warn("Queue image enhancement retry " + ws.id + " failed:", error.message);
+        }
+      });
+    }
+  })();
+}, 3 * 60 * 1000);
 await workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, async function(){ await discoverTelegramAlertChat(); });
 startCollectorScheduler();
 
