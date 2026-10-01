@@ -53,6 +53,8 @@ const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
 const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
+const AI_STRONG_NEWS_SCORE = Math.max(60, Math.min(95, Number(process.env.AI_STRONG_NEWS_SCORE || 75)));
+const AI_TOP_NEWS_SCORE = Math.max(AI_STRONG_NEWS_SCORE, Math.min(100, Number(process.env.AI_TOP_NEWS_SCORE || 88)));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
@@ -248,6 +250,11 @@ function pruneQueueItems(targetState) {
   }
 
   automatic.sort(function(a, b) {
+    const aAi = Number(a && a.aiScore);
+    const bAi = Number(b && b.aiScore);
+    const aScore = Number.isFinite(aAi) ? aAi : 0;
+    const bScore = Number.isFinite(bAi) ? bAi : 0;
+    if (bScore !== aScore) return bScore - aScore;
     return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
   });
 
@@ -1489,6 +1496,9 @@ async function collectOnce(trigger) {
         baseItem.confidence = rewrite.confidence;
         baseItem.metadata.model = rewrite.model;
         baseItem.metadata.notes = rewrite.notes;
+        baseItem.metadata.editorialScore = rewrite.editorialScore;
+        baseItem.metadata.scoreBreakdown = rewrite.scoreBreakdown;
+        baseItem.metadata.scoreReason = rewrite.scoreReason;
 
         const postText = rewrite.text;
 
@@ -1566,7 +1576,11 @@ async function collectOnce(trigger) {
             mediaPriority: media.mediaPriority || 99,
             canEnhance: Boolean(media.canEnhance),
             sourceName: source.name,
-            newsId: id
+            newsId: id,
+            aiScore: rewrite.editorialScore,
+            aiScoreBreakdown: rewrite.scoreBreakdown,
+            aiScoreReason: rewrite.scoreReason,
+            aiTier: rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal")
           });
           pruneQueueItems(state);
           summary.queued += 1;
@@ -1658,11 +1672,26 @@ function dynamicItemAgeMs(item) {
 
 function dynamicItemScore(item) {
   const ageMinutes = dynamicItemAgeMs(item) / 60000;
-  let score = Math.max(0, 100 - ageMinutes * 0.45);
-  const source = (state.sources || []).find(function(src){ return src && src.name === item.sourceName; });
-  if (source && Number(source.priority) === 1) score += 18;
-  if (item.videoUrl) score += 8;
-  else if (item.generatedImageUrl || item.imageUrl) score += 4;
+  const aiScore = Number(item && item.aiScore);
+  let score;
+
+  if (Number.isFinite(aiScore)) {
+    // Editorial quality is the main signal. Freshness/source/media are tie-breakers.
+    score = Math.max(0, Math.min(100, aiScore));
+    score -= Math.min(36, ageMinutes * 0.05);
+    const source = (state.sources || []).find(function(src){ return src && src.name === item.sourceName; });
+    if (source && Number(source.priority) === 1) score += 6;
+    if (item.videoUrl) score += 4;
+    else if (item.generatedImageUrl || item.imageUrl) score += 2;
+  } else {
+    // Backward compatibility for old queue items created before AI editorial scoring.
+    score = Math.max(0, 100 - ageMinutes * 0.45);
+    const source = (state.sources || []).find(function(src){ return src && src.name === item.sourceName; });
+    if (source && Number(source.priority) === 1) score += 18;
+    if (item.videoUrl) score += 8;
+    else if (item.generatedImageUrl || item.imageUrl) score += 4;
+  }
+
   return score;
 }
 
@@ -3452,8 +3481,19 @@ async function callOpenAIRewrite(payload) {
     "",
     "Тон: современно, уверенно, без холодного пресс-релиза. Читатель должен понять новость за 20–30 секунд и захотеть дочитать.",
     "",
+    "ОЦЕНКА РЕДАКЦИОННОЙ СИЛЫ НОВОСТИ:",
+    "- оцени саму новость, а не качество своего текста;",
+    "- importance 0–25: масштаб события и влияние;",
+    "- audience_interest 0–20: насколько это интересно широкой аудитории канала про ИИ;",
+    "- novelty 0–20: новизна и необычность;",
+    "- virality 0–15: вероятность обсуждений, пересылок и реакций;",
+    "- usefulness 0–10: практическая ценность для читателя;",
+    "- credibility 0–10: надёжность и прямота источника;",
+    "- editorial_score — сумма этих шести оценок, строго 0–100;",
+    "- score_reason — одна короткая причина оценки без выдумывания фактов.",
+    "",
     "Верни СТРОГО JSON без кодового блока:",
-    "{\"title\":\"...\",\"text\":\"...\",\"confidence\":\"high|medium|low\",\"notes\":\"...\"}",
+    "{\"title\":\"...\",\"text\":\"...\",\"confidence\":\"high|medium|low\",\"notes\":\"...\",\"editorial_score\":0,\"score_breakdown\":{\"importance\":0,\"audience_interest\":0,\"novelty\":0,\"virality\":0,\"usefulness\":0,\"credibility\":0},\"score_reason\":\"...\"}",
     "",
     "Исходный заголовок: " + (title || "не указан"),
     "Источник: " + (sourceUrl || "не указан"),
@@ -3495,11 +3535,33 @@ async function callOpenAIRewrite(payload) {
       } catch {
         parsed = { title: title || "Что там у ИИ?", text: output, confidence: "medium", notes: "Ответ модели не был JSON" };
       }
+      const rawBreakdown = parsed.score_breakdown && typeof parsed.score_breakdown === "object" ? parsed.score_breakdown : {};
+      const clampScore = function(value, max) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return 0;
+        return Math.max(0, Math.min(max, Math.round(n)));
+      };
+      const breakdown = {
+        importance: clampScore(rawBreakdown.importance, 25),
+        audience_interest: clampScore(rawBreakdown.audience_interest, 20),
+        novelty: clampScore(rawBreakdown.novelty, 20),
+        virality: clampScore(rawBreakdown.virality, 15),
+        usefulness: clampScore(rawBreakdown.usefulness, 10),
+        credibility: clampScore(rawBreakdown.credibility, 10)
+      };
+      const breakdownTotal = Object.values(breakdown).reduce(function(sum, value){ return sum + value; }, 0);
+      const parsedScore = Number(parsed.editorial_score);
+      const editorialScore = Number.isFinite(parsedScore)
+        ? Math.max(0, Math.min(100, Math.round(parsedScore)))
+        : breakdownTotal;
       const result = {
         title: String(parsed.title || title || "Что там у ИИ?").trim(),
         text: String(parsed.text || "").trim(),
         confidence: ["high","medium","low"].includes(String(parsed.confidence)) ? String(parsed.confidence) : "medium",
         notes: String(parsed.notes || "").trim(),
+        editorialScore: editorialScore,
+        scoreBreakdown: breakdown,
+        scoreReason: String(parsed.score_reason || "").trim(),
         model: model
       };
       if (!result.text) throw new Error("OpenAI не вернул текст новости");
