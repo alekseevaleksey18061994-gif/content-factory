@@ -2563,7 +2563,7 @@ async function uploadVkMessagesPhoto(imageUrl, post, previewSlug) {
 
   const uploadServer = await vkApi(
     "photos.getMessagesUploadServer",
-    {},
+    { peer_id: VK_OWNER_ID },
     { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
   );
   if (!uploadServer || !uploadServer.upload_url) {
@@ -2588,7 +2588,14 @@ async function uploadVkMessagesPhoto(imageUrl, post, previewSlug) {
   }
 
   if (!uploadResponse.ok || !uploaded.server || !uploaded.photo || !uploaded.hash) {
-    const msg = uploaded && uploaded.error ? JSON.stringify(uploaded.error) : ("Invalid messages photo upload response HTTP " + uploadResponse.status);
+    const safeShape = {
+      http: uploadResponse.status,
+      keys: uploaded && typeof uploaded === "object" ? Object.keys(uploaded).sort() : [],
+      has_server: Boolean(uploaded && uploaded.server),
+      photo_length: uploaded && uploaded.photo != null ? String(uploaded.photo).length : 0,
+      hash_length: uploaded && uploaded.hash != null ? String(uploaded.hash).length : 0
+    };
+    const msg = uploaded && uploaded.error ? "VK upload returned error" : ("Invalid messages photo upload response " + JSON.stringify(safeShape));
     logVkError("messages-photo.upload", uploadResponse.status || "upload_invalid", msg, context);
     throw createVkError("messages-photo.upload", uploadResponse.status || "upload_invalid", msg, context);
   }
