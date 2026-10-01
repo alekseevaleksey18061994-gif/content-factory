@@ -5198,12 +5198,129 @@ async function publishVkPost(post) {
   }
 }
 
+
+function postForPlatform(post, platform) {
+  const out = Object.assign({}, post || {});
+  const variants = out.platformVariants && typeof out.platformVariants === "object" ? out.platformVariants : {};
+  const variant = variants[platform] && typeof variants[platform] === "object" ? variants[platform] : null;
+  if (variant) {
+    if (String(variant.title || "").trim()) out.title = String(variant.title).trim();
+    if (String(variant.text || "").trim()) out.text = String(variant.text).trim();
+  }
+  out.platformVariant = platform;
+  return out;
+}
+
+function publishErrorLooksRepairable(error) {
+  const text = String(error && (error.vkErrorMsg || error.message) || error || "").toLowerCase();
+  return /media|photo|video|image|file|upload|caption|too long|400|413|preview|размер|фото|видео|медиа/.test(text);
+}
+
+async function repairPostForPublishing(post, platform, error, attempt) {
+  const out = Object.assign({}, post || {});
+  out.repairLog = Array.isArray(out.repairLog) ? out.repairLog.slice() : [];
+  const reason = String(error && (error.vkErrorMsg || error.message) || error || "").slice(0, 280);
+  const action = [];
+
+  if (Array.isArray(out.mediaPackUrls) && out.mediaPackUrls.length > 1) {
+    out.mediaPackUrls = out.mediaPackUrls.slice(0, 1);
+    action.push("album→single");
+  }
+
+  if (out.videoUrl && publishErrorLooksRepairable(error)) {
+    out.originalVideoUrl = out.originalVideoUrl || out.videoUrl;
+    out.videoUrl = "";
+    action.push("video→image");
+  }
+
+  if (out.originalImageUrl && (!out.imageUrl || !isLocalMediaUrl(out.imageUrl))) {
+    try {
+      const prepared = await prepareReusableSourceImage(out.originalImageUrl, String(out.newsId || out.postId || out.id || "repair") + "_" + platform);
+      if (prepared.imageUrl) {
+        out.imageUrl = prepared.imageUrl;
+        action.push("cache-source-photo");
+      }
+    } catch {}
+  }
+
+  if (!out.imageUrl && out.generatedImageUrl) {
+    out.imageUrl = out.generatedImageUrl;
+    action.push("generated→primary");
+  }
+
+  if (!out.imageUrl && !out.videoUrl && GENERATE_COVER_IF_MISSING) {
+    try {
+      const generated = await generateNewsCover({
+        id: String(out.newsId || out.postId || out.id || newId("repair")) + "_" + platform + "_" + attempt,
+        title: out.title || currentWorkspace().name,
+        text: out.text || "",
+        sourceName: out.sourceName || ""
+      });
+      out.generatedImageUrl = generated.url;
+      out.imageUrl = generated.url;
+      out.mediaType = "generated";
+      out.mediaStatus = "generated";
+      out.mediaOrigin = "ai_generated";
+      action.push("generate-fallback");
+    } catch (generateError) {
+      action.push("fallback-failed");
+    }
+  }
+
+  out.repairLog.push({
+    platform: platform,
+    attempt: attempt,
+    reason: reason,
+    action: action.join(", ") || "retry"
+  });
+  return out;
+}
+
+async function sendTelegramPostWithRepair(post) {
+  let candidate = Object.assign({}, post);
+  const repairLog = [];
+  for (let attempt = 1; attempt <= PUBLISH_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await sendTelegramPost(candidate);
+      return { result: result, post: candidate, repairLog: repairLog.concat(candidate.repairLog || []) };
+    } catch (error) {
+      if (attempt >= PUBLISH_REPAIR_MAX_ATTEMPTS || !publishErrorLooksRepairable(error)) throw error;
+      candidate = await repairPostForPublishing(candidate, "telegram", error, attempt + 1);
+      repairLog.push.apply(repairLog, candidate.repairLog || []);
+      candidate.repairLog = [];
+    }
+  }
+  throw new Error("Telegram repair loop exhausted");
+}
+
+async function publishVkPostWithRepair(post) {
+  let candidate = Object.assign({}, post);
+  const repairLog = [];
+  let lastError = null;
+  for (let attempt = 1; attempt <= PUBLISH_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await publishVkPost(candidate);
+      return { result: result, post: candidate, repairLog: repairLog.concat(candidate.repairLog || []) };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= PUBLISH_REPAIR_MAX_ATTEMPTS || !publishErrorLooksRepairable(error)) throw error;
+      candidate = await repairPostForPublishing(candidate, "vk", error, attempt + 1);
+      repairLog.push.apply(repairLog, candidate.repairLog || []);
+      candidate.repairLog = [];
+    }
+  }
+  throw lastError || new Error("VK repair loop exhausted");
+}
+
 async function sendMultiPlatformPost(post, targets) {
   const selected = normalizePublishTargets(targets);
   if (!selected.telegram && !selected.vk) throw new Error("Выберите хотя бы одну соцсеть");
 
-  const copyrightSafePost = await enforceCopyrightSafeMedia(post);
-  const prepared = selected.telegram ? await preparePostForSingleTelegramCaption(copyrightSafePost) : Object.assign({}, copyrightSafePost);
+  const safeBase = await enforceCopyrightSafeMedia(post);
+  let telegramPrepared = postForPlatform(safeBase, "telegram");
+  let vkPrepared = postForPlatform(safeBase, "vk");
+  if (selected.telegram) telegramPrepared = await preparePostForSingleTelegramCaption(telegramPrepared);
+
   const result = {
     message_id: null,
     vkPostId: null,
@@ -5211,29 +5328,42 @@ async function sendMultiPlatformPost(post, targets) {
     vkPublished: false,
     vkStatus: selected.vk ? "pending" : "not_selected",
     vkMediaAttempts: 0,
-    publishedText: prepared.text || "",
-    publishedTitle: prepared.title || "",
+    publishedText: selected.telegram ? (telegramPrepared.text || "") : (vkPrepared.text || ""),
+    publishedTitle: selected.telegram ? (telegramPrepared.title || "") : (vkPrepared.title || ""),
+    publishedTelegramText: telegramPrepared.text || "",
+    publishedTelegramTitle: telegramPrepared.title || "",
+    publishedVkText: vkPrepared.text || "",
+    publishedVkTitle: vkPrepared.title || "",
+    repairLog: [],
     safeMedia: {
-      imageUrl: prepared.imageUrl || "",
-      originalImageUrl: prepared.originalImageUrl || "",
-      originalVideoUrl: prepared.originalVideoUrl || "",
-      generatedImageUrl: prepared.generatedImageUrl || "",
-      videoUrl: prepared.videoUrl || "",
-      mediaPackUrls: Array.isArray(prepared.mediaPackUrls) ? prepared.mediaPackUrls.slice(0, 10) : [],
-      mediaType: prepared.mediaType || "",
-      mediaStatus: prepared.mediaStatus || "",
-      mediaLicense: prepared.mediaLicense || "unknown",
-      mediaOrigin: prepared.mediaOrigin || "",
+      imageUrl: safeBase.imageUrl || "",
+      originalImageUrl: safeBase.originalImageUrl || "",
+      originalVideoUrl: safeBase.originalVideoUrl || "",
+      generatedImageUrl: safeBase.generatedImageUrl || "",
+      videoUrl: safeBase.videoUrl || "",
+      mediaPackUrls: Array.isArray(safeBase.mediaPackUrls) ? safeBase.mediaPackUrls.slice(0, 10) : [],
+      mediaType: safeBase.mediaType || "",
+      mediaStatus: safeBase.mediaStatus || "",
+      mediaLicense: safeBase.mediaLicense || "unknown",
+      mediaOrigin: safeBase.mediaOrigin || "",
       copyrightSafe: COPYRIGHT_SAFE_MODE,
-      copyrightPolicyVersion: "v1",
-      copyrightMediaDecision: prepared.copyrightMediaDecision || ""
+      copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      copyrightPolicyVersion: "v2",
+      copyrightMediaDecision: safeBase.copyrightMediaDecision || ""
     }
   };
 
   if (selected.telegram) {
-    const tg = await sendTelegramPost(prepared);
+    const tgAttempt = await sendTelegramPostWithRepair(telegramPrepared);
+    const tg = tgAttempt.result;
+    telegramPrepared = tgAttempt.post;
     result.message_id = tg.message_id;
     result.telegramPublished = true;
+    result.repairLog.push.apply(result.repairLog, tgAttempt.repairLog || []);
+    result.publishedText = telegramPrepared.text || result.publishedText;
+    result.publishedTitle = telegramPrepared.title || result.publishedTitle;
+    result.publishedTelegramText = telegramPrepared.text || "";
+    result.publishedTelegramTitle = telegramPrepared.title || "";
   }
 
   if (selected.vk) {
@@ -5242,7 +5372,12 @@ async function sendMultiPlatformPost(post, targets) {
       result.vkError = "VK не настроен для публикации";
     } else {
       try {
-        const vk = await publishVkPost(prepared);
+        const vkAttempt = await publishVkPostWithRepair(vkPrepared);
+        const vk = vkAttempt.result;
+        vkPrepared = vkAttempt.post;
+        result.repairLog.push.apply(result.repairLog, vkAttempt.repairLog || []);
+        result.publishedVkText = vkPrepared.text || "";
+        result.publishedVkTitle = vkPrepared.title || "";
         if (vk && vk.post_id) {
           result.vkPostId = vk.post_id;
           result.vkPublished = true;
