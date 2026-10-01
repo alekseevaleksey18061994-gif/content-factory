@@ -3306,6 +3306,26 @@ const server = http.createServer(async function(req, res) {
       });
     }
 
+    if (req.method === "POST" && p === "/internal/vk-preview-test-page") {
+      if (req.headers["x-admin-key"] !== ADMIN_KEY) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      try {
+        const marker = crypto.randomBytes(4).toString("hex");
+        const preview = await createPublicPostPage({
+          id: "vk_preview_smoke_" + marker,
+          postId: "vk_preview_smoke_" + marker,
+          topicId: "smoke",
+          title: "News Factory VK preview smoke test",
+          text: "Тест публичной страницы, Open Graph изображения и VK link preview. Маркер: " + marker,
+          sourceName: "News Factory",
+          sourceUrl: PUBLIC_BASE_URL + "/health"
+        });
+        const preflight = await preflightPublicPostPage(preview);
+        return sendJson(res, 200, { ok: true, preview: preview, preflight: preflight }, { "cache-control": "no-store" });
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) }, { "cache-control": "no-store" });
+      }
+    }
+
     if (req.method === "GET" && p === "/api/vk/oauth/callback") {
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
