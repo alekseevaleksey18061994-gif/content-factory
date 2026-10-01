@@ -1051,7 +1051,7 @@ async function collectOnce(trigger) {
           state.history.unshift({
             id: newId("hist"),
             title: rewrite.title || originalTitle,
-            text: postText,
+            text: tg.publishedText || postText,
             messageId: tg.message_id,
             vkPostId: tg.vkPostId || null,
             publishedAt: baseItem.publishedAt,
@@ -1285,7 +1285,7 @@ async function publishDynamicSlot() {
   state.history.unshift({
     id: newId("hist"),
     title: item.title || "Публикация",
-    text: item.text || "",
+    text: result.publishedText || item.text || "",
     messageId: result.message_id,
     vkPostId: result.vkPostId || null,
     vkError: result.vkError || "",
@@ -2587,7 +2587,14 @@ const server = http.createServer(async function(req, res) {
       state.history = state.history.slice(0, 100);
       state.stats.published += 1;
       saveState();
-      return sendJson(res, 200, { ok: true, messageId: result.message_id });
+      return sendJson(res, 200, {
+        ok: true,
+        messageId: result.message_id,
+        vkPostId: result.vkPostId || null,
+        telegramPublished: result.telegramPublished,
+        vkPublished: result.vkPublished,
+        vkError: result.vkError || ""
+      });
     }
 
     if (req.method === "POST" && p === "/api/publish") {
@@ -2612,11 +2619,11 @@ const server = http.createServer(async function(req, res) {
         imageUrl: media.imageUrl,
         generatedImageUrl: media.generatedImageUrl,
         videoUrl: media.videoUrl
-      });
+      }, body.targets || body.platforms);
       state.history.unshift({
         id: newId("hist"),
         title: String(body.title || "Публикация"),
-        text: text,
+        text: result.publishedText || text,
         messageId: result.message_id,
         vkPostId: result.vkPostId || null,
         publishedAt: new Date().toISOString()
@@ -2624,7 +2631,14 @@ const server = http.createServer(async function(req, res) {
       state.history = state.history.slice(0, 100);
       state.stats.published += 1;
       saveState();
-      return sendJson(res, 200, { ok: true, messageId: result.message_id });
+      return sendJson(res, 200, {
+        ok: true,
+        messageId: result.message_id,
+        vkPostId: result.vkPostId || null,
+        telegramPublished: result.telegramPublished,
+        vkPublished: result.vkPublished,
+        vkError: result.vkError || ""
+      });
     }
 
     if (req.method === "POST" && p === "/api/sources") {
@@ -2769,14 +2783,14 @@ const server = http.createServer(async function(req, res) {
         imageUrl: media.imageUrl,
         generatedImageUrl: media.generatedImageUrl,
         videoUrl: media.videoUrl
-      });
+      }, body.targets || body.platforms);
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
       removeQueueIdFromSchedule(state, body.id);
       ensureScheduleAssignments(state);
       state.history.unshift({
         id: newId("hist"),
         title: item.title,
-        text: item.text,
+        text: result.publishedText || item.text,
         messageId: result.message_id,
         vkPostId: result.vkPostId || null,
         publishedAt: new Date().toISOString()
@@ -2784,7 +2798,14 @@ const server = http.createServer(async function(req, res) {
       state.history = state.history.slice(0, 100);
       state.stats.published += 1;
       saveState();
-      return sendJson(res, 200, { ok: true, messageId: result.message_id });
+      return sendJson(res, 200, {
+        ok: true,
+        messageId: result.message_id,
+        vkPostId: result.vkPostId || null,
+        telegramPublished: result.telegramPublished,
+        vkPublished: result.vkPublished,
+        vkError: result.vkError || ""
+      });
     }
 
     if (req.method === "POST" && p === "/publish") {
@@ -2810,8 +2831,15 @@ const server = http.createServer(async function(req, res) {
         imageUrl: media.imageUrl,
         generatedImageUrl: media.generatedImageUrl,
         videoUrl: media.videoUrl
+      }, body.targets || body.platforms);
+      return sendJson(res, 200, {
+        ok: true,
+        messageId: result.message_id,
+        vkPostId: result.vkPostId || null,
+        telegramPublished: result.telegramPublished,
+        vkPublished: result.vkPublished,
+        vkError: result.vkError || ""
       });
-      return sendJson(res, 200, { ok: true, messageId: result.message_id });
     }
 
     return sendJson(res, 404, { ok: false, error: "not found" });
