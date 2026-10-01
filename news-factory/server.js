@@ -1186,6 +1186,7 @@ function dynamicBestQueueItem() {
   return (state.queue || [])
     .filter(function(item) {
       return item && item.id && item.newsId && item.articlePublishedAt &&
+        item.status !== "media_failed" &&
         !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge;
     })
     .sort(function(a, b) {
@@ -1294,38 +1295,98 @@ async function publishDynamicSlot() {
     return { ok: true, skipped: "auto_disabled", prepared: queueId };
   }
 
-  const result = await sendMultiPlatformPost(item);
+  const targets = {
+    telegram: item.telegramPublished !== true,
+    vk: item.vkPublished !== true
+  };
+  const result = await sendMultiPlatformPost(Object.assign({}, item, {
+    postId: item.id,
+    topicId: item.topicId || "default",
+    allow_text_fallback: allowTextFallbackForPost(item)
+  }), targets);
   const publishedAt = new Date().toISOString();
 
-  state.history.unshift({
-    id: newId("hist"),
-    title: item.title || "Публикация",
-    text: result.publishedText || item.text || "",
-    messageId: result.message_id,
-    vkPostId: result.vkPostId || null,
-    vkError: result.vkError || "",
-    publishedAt: publishedAt,
-    sourceUrl: item.sourceUrl || "",
-    imageUrl: item.imageUrl || "",
-    originalImageUrl: item.originalImageUrl || item.imageUrl || "",
-    generatedImageUrl: item.generatedImageUrl || "",
-    videoUrl: item.videoUrl || "",
-    mediaType: item.mediaType || "",
-    mediaStatus: item.mediaStatus || ""
-  });
-  state.history = state.history.slice(0, 300);
-  state.stats.published = Number(state.stats.published || 0) + 1;
-  state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
-  delete schedule.assignments[day][time];
+  if (result.telegramPublished) {
+    item.telegramPublished = true;
+    item.telegramMessageId = result.message_id;
+    item.telegramPublishedAt = publishedAt;
+  }
+  if (result.vkPublished) {
+    item.vkPublished = true;
+    item.vkPostId = result.vkPostId || null;
+    item.vkStatus = "published";
+    item.vkPublishedAt = publishedAt;
+  } else if (result.vkStatus === "media_failed") {
+    item.status = "media_failed";
+    item.vkStatus = "media_failed";
+    item.vkError = result.vkError || "";
+    item.vkErrorCode = result.vkErrorCode;
+    item.vkMediaAttempts = result.vkMediaAttempts || 3;
+    item.vkFailedAt = publishedAt;
+  }
 
+  let historyItem = item.historyId
+    ? (state.history || []).find(function(h){ return h && h.id === item.historyId; })
+    : null;
+
+  if (!historyItem && (result.telegramPublished || result.vkPublished)) {
+    historyItem = {
+      id: newId("hist"),
+      queueId: item.id,
+      newsId: item.newsId || "",
+      title: item.title || "Публикация",
+      text: result.publishedText || item.text || "",
+      messageId: result.message_id || item.telegramMessageId || null,
+      vkPostId: result.vkPostId || item.vkPostId || null,
+      vkStatus: result.vkStatus || item.vkStatus || "",
+      vkError: result.vkError || item.vkError || "",
+      publishedAt: publishedAt,
+      sourceUrl: item.sourceUrl || "",
+      imageUrl: item.imageUrl || "",
+      originalImageUrl: item.originalImageUrl || item.imageUrl || "",
+      generatedImageUrl: item.generatedImageUrl || "",
+      videoUrl: item.videoUrl || "",
+      mediaType: item.mediaType || "",
+      mediaStatus: item.mediaStatus || ""
+    };
+    state.history.unshift(historyItem);
+    state.history = state.history.slice(0, 300);
+    item.historyId = historyItem.id;
+    state.stats.published = Number(state.stats.published || 0) + 1;
+  } else if (historyItem) {
+    historyItem.messageId = historyItem.messageId || result.message_id || item.telegramMessageId || null;
+    historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
+    historyItem.vkStatus = result.vkStatus || item.vkStatus || historyItem.vkStatus || "";
+    historyItem.vkError = result.vkError || item.vkError || "";
+  }
+
+  delete schedule.assignments[day][time];
   state.dynamicScheduler.lastPublishedSlot = slotKey;
   state.dynamicScheduler.lastPublishedAt = publishedAt;
 
+  const mediaFailed = result.vkStatus === "media_failed";
+  if (!mediaFailed && (!targets.telegram || item.telegramPublished) && (!targets.vk || item.vkPublished)) {
+    state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
+  }
+
   if (db && dbReady && item.newsId) {
     try {
+      const dbStatus = mediaFailed ? "media_failed" : "published";
       await db.query(
-        "UPDATE news_items SET status='published', telegram_message_id=$2, published_at=$3, metadata=COALESCE(metadata,'{}'::jsonb) || $4::jsonb WHERE id=$1",
-        [item.newsId, result.message_id, publishedAt, JSON.stringify({ vkPostId: result.vkPostId || null, vkError: result.vkError || "" })]
+        "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb WHERE id=$1",
+        [
+          item.newsId,
+          dbStatus,
+          result.message_id || item.telegramMessageId || null,
+          (result.telegramPublished || result.vkPublished) ? publishedAt : null,
+          JSON.stringify({
+            vkPostId: result.vkPostId || item.vkPostId || null,
+            vkStatus: result.vkStatus || item.vkStatus || "",
+            vkError: result.vkError || item.vkError || "",
+            vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
+            vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0
+          })
+        ]
       );
     } catch (error) {
       console.warn("Dynamic publish DB update failed:", error.message);
@@ -1334,11 +1395,13 @@ async function publishDynamicSlot() {
 
   saveState();
   return {
-    ok: true,
-    published: true,
-    messageId: result.message_id,
-    vkPostId: result.vkPostId || null,
-    vkError: result.vkError || "",
+    ok: !mediaFailed,
+    published: Boolean(result.telegramPublished || result.vkPublished),
+    status: mediaFailed ? "media_failed" : "published",
+    messageId: result.message_id || item.telegramMessageId || null,
+    vkPostId: result.vkPostId || item.vkPostId || null,
+    vkStatus: result.vkStatus || item.vkStatus || "",
+    vkError: result.vkError || item.vkError || "",
     slot: time
   };
 }
