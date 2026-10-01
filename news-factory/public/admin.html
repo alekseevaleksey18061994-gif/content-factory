@@ -1492,8 +1492,8 @@ async function loadNews(){
       var media=md.videoUrl?'<div class="news-placeholder">▶ Видео</div>':image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">AI</div>';
       var ms=md.mediaStatus||(image?(md.generatedImageUrl?'generated':'found'):(md.videoUrl?'found':'missing'));
       var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
-      var editorialScore=Number(n.aiScore);
-      if(!Number.isFinite(editorialScore))editorialScore=Number(md.editorialScore);
+      var editorialScore=(n.aiScore===null||n.aiScore===undefined||n.aiScore==='')?NaN:Number(n.aiScore);
+      if(!Number.isFinite(editorialScore))editorialScore=(md.editorialScore===null||md.editorialScore===undefined||md.editorialScore==='')?NaN:Number(md.editorialScore);
       var tier=String(n.aiTier||'');
       var scoreLabel=Number.isFinite(editorialScore)
         ? ('Рейтинг '+Math.round(editorialScore)+'/100'+(tier==='top'?' · Топ':tier==='strong'?' · Сильная':''))
