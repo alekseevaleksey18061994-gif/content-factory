@@ -28,4 +28,5 @@ jobs:
         with:
           node-version: "20"
       - run: npm install --no-audit --no-fund
+      - run: node --check server.js
       - run: npm run test:editorial
