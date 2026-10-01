@@ -98,6 +98,19 @@ const CURATED_SOURCES = [
   { id: "the-batch", name: "DeepLearning.AI — The Batch", type: "web", group: "media", priority: 2, url: "https://www.deeplearning.ai/the-batch", enabled: true }
 ];
 
+const RUSSIAN_AI_SOURCES = [
+  { id: "ru-yandex-ai", name: "Yandex AI / Алиса AI", type: "web", group: "official", priority: 1, url: "https://www.yandex.ru/company/news?tag=yandex+ai+studio", enabled: true },
+  { id: "ru-sber-ai", name: "Sber AI / GigaChat", type: "web", group: "official", priority: 1, url: "https://habr.com/ru/companies/sberbank/news/page1/", enabled: true },
+  { id: "ru-mws-ai", name: "MWS AI", type: "web", group: "official", priority: 1, url: "https://mts.ai/news/", enabled: true },
+  { id: "ru-vk-ai", name: "VK AI", type: "web", group: "official", priority: 1, url: "https://vk.company.ru/ru/press/releases/", enabled: true },
+  { id: "ru-tbank-ai", name: "T-Bank AI", type: "web", group: "official", priority: 1, url: "https://ai.tbank.ru/", enabled: true },
+  { id: "ru-just-ai", name: "Just AI", type: "web", group: "official", priority: 1, url: "https://just-ai.com/blog/news", enabled: true },
+  { id: "ru-ntechlab", name: "NtechLab", type: "web", group: "official", priority: 1, url: "https://ntechlab.ru/news", enabled: true },
+  { id: "ru-airi", name: "Институт AIRI", type: "web", group: "official", priority: 1, url: "https://airi.net/ru/events/", enabled: true },
+  { id: "ru-zheltyi-ai", name: "Жёлтый AI", type: "web", group: "creator", priority: 2, url: "https://t.me/s/zheltyi_ai", enabled: true },
+  { id: "ru-ai-happens", name: "AI Happens", type: "web", group: "creator", priority: 2, url: "https://t.me/s/AIhappens", enabled: true }
+];
+
 const CAR_SOURCES = [
   { id: "cars-tesla", name: "Tesla Blog", type: "web", group: "official", priority: 1, url: "https://www.tesla.com/blog", enabled: true },
   { id: "cars-byd", name: "BYD Global", type: "web", group: "official", priority: 1, url: "https://www.bydglobal.com/en/news", enabled: true },
@@ -547,6 +560,23 @@ function persistWorkspaceStore() {
 
 function ensureConfiguredWorkspaces() {
   let changed = false;
+
+  const aiWorkspace = getWorkspaceById(DEFAULT_WORKSPACE_ID) || workspaceStore.workspaces[0];
+  if (aiWorkspace && aiWorkspace.state) {
+    aiWorkspace.state.migrations = Array.isArray(aiWorkspace.state.migrations) ? aiWorkspace.state.migrations : [];
+    const russianAiMigration = "v0.29.3-ai-russian-sources-10";
+    if (!aiWorkspace.state.migrations.includes(russianAiMigration)) {
+      const existingIds = new Set((aiWorkspace.state.sources || []).map(function(source){ return source && source.id; }));
+      for (const source of RUSSIAN_AI_SOURCES) {
+        if (!existingIds.has(source.id)) aiWorkspace.state.sources.push(structuredClone(source));
+      }
+      aiWorkspace.state.russianSourcesBootstrapPending = true;
+      aiWorkspace.state.migrations.push(russianAiMigration);
+      aiWorkspace.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+
   let cars = workspaceStore.workspaces.find(function(ws){
     const slug = String(ws.slug || ws.telegramPublicUsername || ws.telegramChannel || "").replace(/^@/, "").toLowerCase();
     return slug === "chtotamtachki" || String(ws.name || "").trim().toLowerCase() === "что там у тачек?";
@@ -1849,10 +1879,11 @@ async function collectOnce(trigger) {
       noteSourceEvent(source, "check");
       try {
         const html = await fetchText(source.url, 15000);
-        const links = (source.group === "blogger"
+        const isTelegramCreator = source.group === "blogger" || source.group === "creator";
+        const links = (isTelegramCreator
           ? extractTelegramSourcePosts(html, source.url)
           : extractArticleLinks(html, source.url)
-        ).slice(0, source.group === "blogger" ? 18 : 12);
+        ).slice(0, isTelegramCreator ? 18 : 12);
         for (const link of links) {
           if (selectedUrls.has(link.url)) continue;
           if (await seenOriginalUrl(link.url)) {
@@ -1887,7 +1918,7 @@ async function collectOnce(trigger) {
 
       try {
         const articleHtml = await fetchText(url, 15000);
-        const isBlogger = source.group === "blogger";
+        const isBlogger = source.group === "blogger" || source.group === "creator";
         const originalTitle = isBlogger
           ? (candidate.link.title || extractTitle(articleHtml) || source.name)
           : (extractTitle(articleHtml) || candidate.link.title);
@@ -4243,8 +4274,16 @@ async function callOpenAIRewrite(payload) {
     "- используй только факты из исходного текста;",
     "- ничего не придумывай: даты, цены, характеристики, цитаты, сравнения и цифры нельзя добавлять от себя;",
     "- если факт не подтверждён исходником — не используй его;",
-    sourceGroup === "blogger" ? "- это материал автоблогера «" + sourceName + "»: его личные оценки, предположения и впечатления обязательно атрибутируй автору и не выдавай за установленный факт;" : "- отделяй факты от оценок и предположений источника;",
-    sourceGroup === "blogger" ? "- если блогер показывает собственный автомобиль, эксперимент, покупку или тест — прямо укажи, что это произошло у автора/в его проекте;" : "- сохраняй нейтральную атрибуцию источника там, где это важно;",
+    sourceGroup === "blogger"
+      ? "- это материал автоблогера «" + sourceName + "»: его личные оценки, предположения и впечатления обязательно атрибутируй автору и не выдавай за установленный факт;"
+      : sourceGroup === "creator"
+        ? "- это авторский источник «" + sourceName + "»: личные оценки и предположения обязательно атрибутируй автору и не выдавай за установленный факт;"
+        : "- отделяй факты от оценок и предположений источника;",
+    sourceGroup === "blogger"
+      ? "- если блогер показывает собственный автомобиль, эксперимент, покупку или тест — прямо укажи, что это произошло у автора/в его проекте;"
+      : sourceGroup === "creator"
+        ? "- если автор делится собственным опытом, мнением или экспериментом — прямо укажи, что это позиция автора;"
+        : "- сохраняй нейтральную атрибуцию источника там, где это важно;",
     "- не копируй формулировки источника дословно длинными кусками;",
     "- не копируй стиль конкурентов один в один: у канала «" + channelName + "» должен быть собственный голос;",
     "- для политических, трагических, медицинских и других чувствительных тем — нейтрально, без шуток и оценочных призывов;",
@@ -5641,6 +5680,21 @@ setTimeout(function() {
           }
         });
       }
+    }
+
+    const ai = getWorkspaceById(DEFAULT_WORKSPACE_ID);
+    if (ai && ai.state && ai.state.russianSourcesBootstrapPending) {
+      await workspaceContext.run({ workspaceId: ai.id }, async function(){
+        try {
+          const result = await collectOnce("ai-russian-bootstrap");
+          state.russianSourcesBootstrapPending = false;
+          state.russianSourcesBootstrappedAt = new Date().toISOString();
+          saveState();
+          console.log("AI Russian sources bootstrap:", JSON.stringify(result));
+        } catch (error) {
+          console.warn("AI Russian sources bootstrap failed:", error.message);
+        }
+      });
     }
 
     const cars = workspaceStore.workspaces.find(function(ws){ return ws && ws.id === "chtotamtachki"; });
