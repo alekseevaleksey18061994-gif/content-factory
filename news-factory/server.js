@@ -3827,6 +3827,12 @@ async function publishDynamicSlot(kind) {
     historyItem.vkError = result.vkError || item.vkError || "";
     historyItem.vkPreviewSlug = result.vkPreviewSlug || historyItem.vkPreviewSlug || "";
     historyItem.vkPreviewUrl = result.vkPreviewUrl || historyItem.vkPreviewUrl || "";
+    historyItem.repairLog = (historyItem.repairLog || []).concat(Array.isArray(result.repairLog) ? result.repairLog : []);
+    historyItem.qualityScore = item.qualityScore == null ? historyItem.qualityScore : Number(item.qualityScore);
+    historyItem.qcStatus = item.qcStatus || historyItem.qcStatus || "";
+    historyItem.topicEntities = normalizeTopicEntities(item.topicEntities || historyItem.topicEntities);
+    historyItem.platformVariants = item.platformVariants || historyItem.platformVariants || null;
+    historyItem.decisionExplanation = buildDecisionExplanation(item);
     historyItem.publicationOrigin = publishKind === "blogger"
       ? "blogger-schedule"
       : (publishKind === "russian-ai" ? "russian-ai-schedule" : "schedule");
@@ -7211,7 +7217,9 @@ const server = http.createServer(async function(req, res) {
       if (cleanup.removed) saveState();
       for (const item of (state.queue || [])) {
         if (!item) continue;
+        item.priorityScore = Math.round(dynamicItemScore(item));
         item.decisionExplanation = buildDecisionExplanation(item);
+        item.decisionExplanation.priorityScore = item.priorityScore;
       }
       return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings() });
     }
@@ -7811,6 +7819,12 @@ const server = http.createServer(async function(req, res) {
         historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
         historyItem.vkStatus = result.vkStatus || item.vkStatus || historyItem.vkStatus || "";
         historyItem.vkError = result.vkError || item.vkError || "";
+        historyItem.repairLog = (historyItem.repairLog || []).concat(Array.isArray(result.repairLog) ? result.repairLog : []);
+        historyItem.qualityScore = item.qualityScore == null ? historyItem.qualityScore : Number(item.qualityScore);
+        historyItem.qcStatus = item.qcStatus || historyItem.qcStatus || "";
+        historyItem.topicEntities = normalizeTopicEntities(item.topicEntities || historyItem.topicEntities);
+        historyItem.platformVariants = item.platformVariants || historyItem.platformVariants || null;
+        historyItem.decisionExplanation = buildDecisionExplanation(item);
       }
 
       removeQueueIdFromSchedule(state, body.id);
@@ -7840,8 +7854,19 @@ const server = http.createServer(async function(req, res) {
                 mediaLicense: item.mediaLicense || "unknown",
                 mediaOrigin: item.mediaOrigin || "",
                 copyrightSafe: COPYRIGHT_SAFE_MODE,
-                copyrightPolicyVersion: "v1",
-                copyrightMediaDecision: item.copyrightMediaDecision || ""
+                copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+                copyrightPolicyVersion: "v2",
+                copyrightMediaDecision: item.copyrightMediaDecision || "",
+                repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
+                qualityScore: item.qualityScore == null ? null : Number(item.qualityScore),
+                qualityBreakdown: item.qualityBreakdown || null,
+                qcStatus: item.qcStatus || "",
+                qcIssues: Array.isArray(item.qcIssues) ? item.qcIssues : [],
+                topicEntities: normalizeTopicEntities(item.topicEntities),
+                sourceRole: item.sourceRole || sourceEditorialRole(item),
+                platformVariants: item.platformVariants || null,
+                decisionSummary: item.decisionSummary || "",
+                storyUpdateOf: item.storyUpdateOf || ""
               }),
               result.vkPostId || item.vkPostId || null,
               result.vkStatus || item.vkStatus || "",
