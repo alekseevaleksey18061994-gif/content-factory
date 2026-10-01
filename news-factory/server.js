@@ -98,9 +98,44 @@ const CURATED_SOURCES = [
   { id: "the-batch", name: "DeepLearning.AI — The Batch", type: "web", group: "media", priority: 2, url: "https://www.deeplearning.ai/the-batch", enabled: true }
 ];
 
+const CAR_SOURCES = [
+  { id: "cars-tesla", name: "Tesla Blog", type: "web", group: "official", priority: 1, url: "https://www.tesla.com/blog", enabled: true },
+  { id: "cars-byd", name: "BYD Global", type: "web", group: "official", priority: 1, url: "https://www.bydglobal.com/en/news", enabled: true },
+  { id: "cars-geely", name: "Geely Newsroom", type: "web", group: "official", priority: 1, url: "https://newsroom.geely.com/", enabled: true },
+  { id: "cars-chery", name: "Chery International", type: "web", group: "official", priority: 1, url: "https://www.cheryinternational.com/", enabled: true },
+  { id: "cars-nio", name: "NIO Newsroom", type: "web", group: "official", priority: 1, url: "https://www.nio.com/news", enabled: true },
+  { id: "cars-xpeng", name: "XPENG Pressroom", type: "web", group: "official", priority: 1, url: "https://www.xpeng.com/nl/pressroom", enabled: true },
+  { id: "cars-zeekr", name: "ZEEKR Global", type: "web", group: "official", priority: 1, url: "https://www.zeekrglobal.com/", enabled: true },
+  { id: "cars-gwm", name: "GWM Global", type: "web", group: "official", priority: 1, url: "https://www.gwm-global.com/news/", enabled: true },
+  { id: "cars-toyota", name: "Toyota Global Newsroom", type: "web", group: "official", priority: 1, url: "https://global.toyota/en/newsroom/", enabled: true },
+  { id: "cars-vw", name: "Volkswagen Newsroom", type: "web", group: "official", priority: 1, url: "https://www.volkswagen-newsroom.com/en/press-releases", enabled: true },
+  { id: "cars-bmw", name: "BMW Group PressClub", type: "web", group: "official", priority: 1, url: "https://www.press.bmwgroup.com/global/", enabled: true },
+  { id: "cars-mercedes", name: "Mercedes-Benz Media", type: "web", group: "official", priority: 1, url: "https://media.mercedes-benz.com/", enabled: true },
+
+  { id: "cars-reuters", name: "Reuters Autos & Transportation", type: "web", group: "media", priority: 2, url: "https://www.reuters.com/business/autos-transportation/", enabled: true },
+  { id: "cars-carnewschina", name: "CarNewsChina", type: "web", group: "media", priority: 2, url: "https://carnewschina.com/", enabled: true },
+  { id: "cars-cnevpost", name: "CnEVPost", type: "web", group: "media", priority: 2, url: "https://cnevpost.com/", enabled: true },
+  { id: "cars-gasgoo", name: "Gasgoo Auto News", type: "web", group: "media", priority: 2, url: "https://autonews.gasgoo.com/", enabled: true },
+  { id: "cars-electrek", name: "Electrek", type: "web", group: "media", priority: 2, url: "https://electrek.co/", enabled: true },
+  { id: "cars-insideevs", name: "InsideEVs", type: "web", group: "media", priority: 2, url: "https://insideevs.com/news/", enabled: true },
+  { id: "cars-motor1", name: "Motor1", type: "web", group: "media", priority: 2, url: "https://www.motor1.com/news/", enabled: true },
+  { id: "cars-carscoops", name: "Carscoops", type: "web", group: "media", priority: 2, url: "https://www.carscoops.com/category/news/", enabled: true },
+  { id: "cars-autocar", name: "Autocar", type: "web", group: "media", priority: 2, url: "https://www.autocar.co.uk/car-news", enabled: true },
+  { id: "cars-topgear", name: "Top Gear", type: "web", group: "media", priority: 2, url: "https://www.topgear.com/car-news", enabled: true },
+  { id: "cars-caranddriver", name: "Car and Driver", type: "web", group: "media", priority: 2, url: "https://www.caranddriver.com/news/", enabled: true },
+  { id: "cars-thedrive", name: "The Drive", type: "web", group: "media", priority: 2, url: "https://www.thedrive.com/news", enabled: true },
+  { id: "cars-jalopnik", name: "Jalopnik", type: "web", group: "media", priority: 2, url: "https://www.jalopnik.com/", enabled: true },
+  { id: "cars-autonews-ru", name: "Autonews.ru", type: "web", group: "media", priority: 2, url: "https://www.autonews.ru/", enabled: true },
+  { id: "cars-motor-ru", name: "Motor.ru", type: "web", group: "media", priority: 2, url: "https://motor.ru/", enabled: true },
+  { id: "cars-drom", name: "Drom Новости", type: "web", group: "media", priority: 2, url: "https://news.drom.ru/", enabled: true },
+  { id: "cars-quto", name: "Quto", type: "web", group: "media", priority: 2, url: "https://quto.ru/news/", enabled: true },
+  { id: "cars-autoevolution", name: "Autoevolution", type: "web", group: "media", priority: 2, url: "https://www.autoevolution.com/news/", enabled: true }
+];
+
 const defaultState = {
   mode: "REVIEW",
   sources: structuredClone(CURATED_SOURCES),
+  sourceStats: {},
   sourceCursor: 0,
   queuePolicy: {
     articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
@@ -406,6 +441,7 @@ function normalizeWorkspaceState(saved) {
   const source = saved && typeof saved === "object" ? saved : {};
   const loaded = Object.assign({}, structuredClone(defaultState), source);
   loaded.sources = Array.isArray(source.sources) ? source.sources : structuredClone(defaultState.sources);
+  loaded.sourceStats = source.sourceStats && typeof source.sourceStats === "object" ? source.sourceStats : {};
   loaded.migrations = Array.isArray(source.migrations) ? source.migrations : [];
   loaded.stats = Object.assign({ discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 }, source.stats || {});
   loaded.queue = Array.isArray(source.queue) ? source.queue : [];
@@ -421,6 +457,7 @@ function normalizeWorkspaceState(saved) {
 function freshWorkspaceState() {
   const fresh = structuredClone(defaultState);
   fresh.sources = [];
+  fresh.sourceStats = {};
   fresh.queue = [];
   fresh.history = [];
   fresh.stats = { discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 };
@@ -516,6 +553,15 @@ function ensureConfiguredWorkspaces() {
     if (!cars.slug) { cars.slug = "chtotamtachki"; changed = true; }
     if (!cars.name) { cars.name = "Что там у тачек?"; changed = true; }
   }
+  const carSourcesMigration = "v0.28.5-car-sources-30";
+  cars.state.migrations = Array.isArray(cars.state.migrations) ? cars.state.migrations : [];
+  if (!cars.state.migrations.includes(carSourcesMigration)) {
+    cars.state.sources = structuredClone(CAR_SOURCES);
+    cars.state.sourceStats = {};
+    cars.state.sourceCursor = 0;
+    cars.state.migrations.push(carSourcesMigration);
+    changed = true;
+  }
   if (changed) {
     cars.updatedAt = new Date().toISOString();
     persistWorkspaceStore();
@@ -531,6 +577,103 @@ const state = new Proxy({}, {
   has: function(_target, prop){ return prop in currentWorkspace().state; },
   getOwnPropertyDescriptor: function(_target, prop){ const d = Object.getOwnPropertyDescriptor(currentWorkspace().state, prop); return d || { configurable: true, enumerable: true, writable: true, value: currentWorkspace().state[prop] }; }
 });
+function sourceStatKey(sourceOrItem) {
+  if (!sourceOrItem) return "";
+  if (sourceOrItem.sourceId) return String(sourceOrItem.sourceId);
+  if (sourceOrItem.id && String(sourceOrItem.id).startsWith("cars-")) return String(sourceOrItem.id);
+  const name = String(sourceOrItem.sourceName || sourceOrItem.name || "").trim();
+  const found = (state.sources || []).find(function(src){ return src && src.name === name; });
+  return found ? String(found.id) : "";
+}
+
+function ensureSourceStat(sourceOrItem) {
+  state.sourceStats = state.sourceStats && typeof state.sourceStats === "object" ? state.sourceStats : {};
+  const key = sourceStatKey(sourceOrItem);
+  if (!key) return null;
+  if (!state.sourceStats[key]) {
+    state.sourceStats[key] = {
+      checks: 0, candidates: 0, discovered: 0, scored: 0, strong: 0, top: 0,
+      selected: 0, published: 0, errors: 0, scoreSum: 0,
+      lastCheckAt: "", lastCandidateAt: "", lastDiscoveredAt: "", lastStrongAt: "",
+      lastSelectedAt: "", lastPublishedAt: "", lastErrorAt: ""
+    };
+  }
+  return state.sourceStats[key];
+}
+
+function noteSourceEvent(sourceOrItem, event, extra) {
+  const stat = ensureSourceStat(sourceOrItem);
+  if (!stat) return;
+  const now = new Date().toISOString();
+  if (event === "check") { stat.checks = Number(stat.checks || 0) + 1; stat.lastCheckAt = now; }
+  else if (event === "candidate") { stat.candidates = Number(stat.candidates || 0) + 1; stat.lastCandidateAt = now; }
+  else if (event === "discovered") { stat.discovered = Number(stat.discovered || 0) + 1; stat.lastDiscoveredAt = now; }
+  else if (event === "score") {
+    const score = Math.max(0, Math.min(100, Number(extra && extra.score || 0)));
+    stat.scored = Number(stat.scored || 0) + 1;
+    stat.scoreSum = Number(stat.scoreSum || 0) + score;
+    if (score >= AI_STRONG_NEWS_SCORE) { stat.strong = Number(stat.strong || 0) + 1; stat.lastStrongAt = now; }
+    if (score >= AI_TOP_NEWS_SCORE) stat.top = Number(stat.top || 0) + 1;
+  } else if (event === "selected") { stat.selected = Number(stat.selected || 0) + 1; stat.lastSelectedAt = now; }
+  else if (event === "published") { stat.published = Number(stat.published || 0) + 1; stat.lastPublishedAt = now; }
+  else if (event === "error") { stat.errors = Number(stat.errors || 0) + 1; stat.lastErrorAt = now; }
+}
+
+function buildSourceRankings() {
+  const rows = (state.sources || []).map(function(source) {
+    const stat = ensureSourceStat(source) || {};
+    const checks = Number(stat.checks || 0);
+    const scored = Number(stat.scored || 0);
+    const selected = Number(stat.selected || 0);
+    const errors = Number(stat.errors || 0);
+    const avgScore = scored ? Number(stat.scoreSum || 0) / scored : 0;
+    const strongPerCheck = checks ? Number(stat.strong || 0) / checks : 0;
+    const selectedPerCheck = checks ? selected / checks : 0;
+    const reliability = checks ? Math.max(0, 1 - Math.min(1, errors / checks)) : 1;
+    let rating = null;
+    if (checks >= 5 || scored >= 2) {
+      rating = Math.round(
+        avgScore * 0.40 +
+        Math.min(100, strongPerCheck * 300) * 0.20 +
+        Math.min(100, selectedPerCheck * 500) * 0.30 +
+        reliability * 100 * 0.10
+      );
+      rating = Math.max(0, Math.min(100, rating));
+    }
+    let status = "Собираем данные";
+    if (checks >= 15 && selected === 0) status = "Не используется";
+    else if (rating != null && rating < 45) status = "На замену";
+    else if (rating != null && rating < 60) status = "Слабый";
+    else if (rating != null && rating < 75) status = "Рабочий";
+    else if (rating != null) status = "Сильный";
+    return {
+      id: source.id,
+      rating: rating,
+      status: status,
+      checks: checks,
+      candidates: Number(stat.candidates || 0),
+      discovered: Number(stat.discovered || 0),
+      scored: scored,
+      strong: Number(stat.strong || 0),
+      top: Number(stat.top || 0),
+      selected: selected,
+      published: Number(stat.published || 0),
+      errors: errors,
+      avgScore: scored ? Math.round(avgScore) : null,
+      lastSelectedAt: stat.lastSelectedAt || "",
+      lastPublishedAt: stat.lastPublishedAt || ""
+    };
+  });
+  rows.sort(function(a,b){
+    if (a.rating == null && b.rating == null) return b.selected - a.selected || b.scored - a.scored;
+    if (a.rating == null) return 1;
+    if (b.rating == null) return -1;
+    return b.rating - a.rating || b.selected - a.selected || b.scored - a.scored;
+  });
+  rows.forEach(function(row,index){ row.rank = index + 1; });
+  return rows;
+}
+
 const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000 }) : null;
 let dbReady = false;
 let collectorRunning = false;
@@ -1586,6 +1729,7 @@ async function collectOnce(trigger) {
       : [];
 
     const sourceResults = await Promise.all(rotatedSources.map(async function(source) {
+      noteSourceEvent(source, "check");
       try {
         const html = await fetchText(source.url, 15000);
         const links = extractArticleLinks(html, source.url).slice(0, 12);
@@ -1596,10 +1740,12 @@ async function collectOnce(trigger) {
             continue;
           }
           selectedUrls.add(link.url);
+          noteSourceEvent(source, "candidate");
           return { source: source, link: link };
         }
         return null;
       } catch (error) {
+        noteSourceEvent(source, "error");
         summary.errors.push(source.name + ": " + error.message);
         return null;
       }
@@ -1672,6 +1818,7 @@ async function collectOnce(trigger) {
         };
         summary.found += 1;
         state.stats.discovered += 1;
+        noteSourceEvent(source, "discovered");
 
         if (MEDIA_REQUIRED && !hasPublishableMedia(baseItem)) {
           baseItem.status = "missing_media";
@@ -1701,6 +1848,7 @@ async function collectOnce(trigger) {
         baseItem.metadata.editorialScore = rewrite.editorialScore;
         baseItem.metadata.scoreBreakdown = rewrite.scoreBreakdown;
         baseItem.metadata.scoreReason = rewrite.scoreReason;
+        noteSourceEvent(source, "score", { score: rewrite.editorialScore });
 
         const postText = rewrite.text;
 
@@ -1741,6 +1889,9 @@ async function collectOnce(trigger) {
             vkError: tg.vkError || "",
             vkMediaAttempts: tg.vkMediaAttempts || 0,
             publishedAt: baseItem.publishedAt,
+            sourceId: source.id,
+            sourceName: source.name,
+            sourceId: source.id,
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || "",
@@ -1753,6 +1904,7 @@ async function collectOnce(trigger) {
           });
           state.history = state.history.slice(0, 300);
           state.stats.published += 1;
+          noteSourceEvent(source, "published");
           summary.published += 1;
         } else {
           baseItem.status = "queued";
@@ -1791,6 +1943,7 @@ async function collectOnce(trigger) {
         await saveNewsItem(baseItem);
         saveState();
       } catch (error) {
+        noteSourceEvent(source, "error");
         summary.errors.push(url + ": " + error.message);
       }
     }
@@ -1941,6 +2094,10 @@ function dynamicAssignBest(day, time) {
   delete schedule.suppressed[day][time];
   item.preparedFor = day + " " + time;
   item.preparedAt = new Date().toISOString();
+  if (!item.sourceSelectedAt) {
+    noteSourceEvent(item, "selected");
+    item.sourceSelectedAt = item.preparedAt;
+  }
   state.dynamicScheduler = state.dynamicScheduler || {};
   state.dynamicScheduler.lastPreparedAt = item.preparedAt;
   saveState();
@@ -2093,6 +2250,8 @@ async function publishDynamicSlot() {
       vkPreviewSlug: result.vkPreviewSlug || item.vkPreviewSlug || "",
       vkPreviewUrl: result.vkPreviewUrl || item.vkPreviewUrl || "",
       publishedAt: publishedAt,
+      sourceId: item.sourceId || "",
+      sourceName: item.sourceName || "",
       sourceUrl: item.sourceUrl || "",
       imageUrl: item.imageUrl || "",
       originalImageUrl: item.originalImageUrl || item.imageUrl || "",
@@ -2107,6 +2266,7 @@ async function publishDynamicSlot() {
     state.history = state.history.slice(0, 300);
     item.historyId = historyItem.id;
     state.stats.published = Number(state.stats.published || 0) + 1;
+    noteSourceEvent(item, "published");
   } else if (historyItem) {
     historyItem.messageId = historyItem.messageId || result.message_id || item.telegramMessageId || null;
     historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
@@ -4494,7 +4654,7 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/dashboard") {
       const cleanup = pruneQueueItems(state);
       if (cleanup.removed) saveState();
-      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()) });
+      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings() });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
@@ -4768,7 +4928,7 @@ const server = http.createServer(async function(req, res) {
       const name = String(body.name || "").trim();
       const sourceUrl = String(body.url || "").trim();
       if (!name || !sourceUrl) return sendJson(res, 400, { ok: false, error: "Заполните название и ссылку" });
-      state.sources.push({ id: newId("src"), name: name, type: "web", url: sourceUrl, enabled: true });
+      state.sources.push({ id: newId("src"), name: name, type: "web", group: "custom", priority: 3, url: sourceUrl, enabled: true });
       saveState();
       return sendJson(res, 200, { ok: true });
     }
@@ -4785,6 +4945,7 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "POST" && p === "/api/sources/remove") {
       const body = await readJson(req);
       state.sources = state.sources.filter(function(x){ return x.id !== body.id; });
+      if (state.sourceStats && body.id) delete state.sourceStats[body.id];
       saveState();
       return sendJson(res, 200, { ok: true });
     }
