@@ -1178,8 +1178,18 @@ function findStoryClusterCandidate(newItem) {
 
 
 function sourceEditorialRole(sourceOrItem) {
-  const source = sourceOrItem && sourceOrItem.group ? sourceOrItem : findSourceForItem(sourceOrItem);
-  const group = String(source && source.group || sourceOrItem && sourceOrItem.sourceGroup || "").toLowerCase();
+  let group = String(sourceOrItem && (sourceOrItem.group || sourceOrItem.sourceGroup) || "").toLowerCase();
+  if (!group && sourceOrItem) {
+    const sourceId = String(sourceOrItem.sourceId || sourceOrItem.id || "");
+    const sourceName = String(sourceOrItem.sourceName || sourceOrItem.name || "");
+    const ws = currentWorkspace();
+    const source = ws && ws.state && Array.isArray(ws.state.sources)
+      ? ws.state.sources.find(function(item){
+          return item && ((sourceId && String(item.id || "") === sourceId) || (sourceName && String(item.name || "") === sourceName));
+        })
+      : null;
+    group = String(source && source.group || "").toLowerCase();
+  }
   if (group === "official") return "official_primary";
   if (group === "blogger" || group === "creator") return "author_opinion";
   if (group === "media") return "media_context";
