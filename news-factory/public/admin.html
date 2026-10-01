@@ -2495,7 +2495,7 @@ function render(){
   if(el('sourceWeakCount'))el('sourceWeakCount').textContent=statusCounts.weak;
   if(el('sourceReplaceCount'))el('sourceReplaceCount').textContent=statusCounts.replace;
   el('sources').innerHTML=sortedSources.map(function(s){
-    var group=s.group==='official'?'Официальный':s.group==='media'?'СМИ':s.group==='blogger'?'Автоблогер':'Свой';
+    var group=s.group==='official'?'Официальный':s.group==='media'?'СМИ':s.group==='blogger'?'Автоблогер':s.group==='creator'?'Блогер':'Свой';
     var r=rankingMap[s.id]||{rating:null,status:'Собираем данные',rank:'—',checks:0,scored:0,strong:0,selected:0,published:0,errors:0,avgScore:null};
     var rating=r.rating==null?'—':r.rating;
     var cls=r.status==='Сильный'?'source-rank-good':r.status==='Рабочий'?'source-rank-ok':r.status==='Слабый'?'source-rank-weak':(r.status==='На замену'||r.status==='Не используется')?'source-rank-bad':'source-rank-new';
