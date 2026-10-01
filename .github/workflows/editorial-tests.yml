@@ -1,0 +1,33 @@
+name: News Factory Editorial Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "news-factory/lib/editorial-v2.js"
+      - "news-factory/prompts/chto-tam.md"
+      - "news-factory/scripts/editorial-v2-test.js"
+      - "news-factory/package.json"
+      - ".github/workflows/editorial-tests.yml"
+  pull_request:
+    paths:
+      - "news-factory/lib/editorial-v2.js"
+      - "news-factory/prompts/chto-tam.md"
+      - "news-factory/scripts/editorial-v2-test.js"
+      - "news-factory/package.json"
+
+jobs:
+  editorial:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: news-factory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: news-factory/package-lock.json
+      - run: npm ci
+      - run: npm run test:editorial
