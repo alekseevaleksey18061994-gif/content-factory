@@ -600,6 +600,32 @@ button,.quick button,.quick a{
   #newsPage .news-feed-head>div{min-width:0}
   #newsPage .news-refresh-btn{min-width:116px;max-width:128px;padding-left:12px;padding-right:12px}
 }
+
+/* v0.27.0 — unified publishing + live news feed */
+.publish-section{margin-top:2px}
+.publish-section>.panel-title{padding:0 4px 10px}
+.publish-openai-test{white-space:nowrap;min-width:max-content}
+.news-list-head{align-items:center}
+.news-refresh{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  white-space:nowrap;min-width:132px;flex:0 0 auto;
+  padding-left:16px;padding-right:16px;
+  background:linear-gradient(180deg,#182131,#111824);
+  border-color:#35435a;font-weight:750;
+}
+.news-refresh span{font-size:18px;line-height:1}
+.news-refresh.loading span{animation:newsSpin .8s linear infinite}
+@keyframes newsSpin{to{transform:rotate(360deg)}}
+.news-badges{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
+.news-score{border-color:rgba(100,128,255,.35);background:rgba(56,76,145,.16)}
+.news-score.score-strong{border-color:rgba(82,201,150,.38);background:rgba(35,115,82,.16)}
+.news-score.score-top{border-color:rgba(255,189,78,.42);background:rgba(139,91,22,.18)}
+.news-score-reason{margin-top:7px;max-width:720px}
+@media(max-width:560px){
+  .news-list-head{align-items:flex-start}
+  .news-refresh{width:auto;min-width:128px}
+  .publish-openai-test{width:100%}
+}
 </style>
 </head>
 <body>
@@ -611,17 +637,16 @@ button,.quick button,.quick a{
     <div class="side-group">
       <div class="side-title">Основное</div>
       <button class="nav active" data-page="homePage"><span class="ico">⌂</span><b>Главная</b></button>
-      <button class="nav" data-page="sourcesPage"><span class="ico">⌁</span><b>Источники</b></button>
       <button class="nav" data-page="newsPage"><span class="ico">◫</span><b>Лента новостей</b></button>
-      <button class="nav" data-page="aiPage"><span class="ico">✦</span><b>AI-редактор</b></button>
       <button class="nav" data-page="queuePage"><span class="ico">☷</span><b>Очередь</b></button>
+      <button class="nav" data-page="sourcesPage"><span class="ico">⌁</span><b>Источники</b></button>
       <button class="nav" data-page="publishPage"><span class="ico">➤</span><b>Публикация</b></button>
     </div>
 
     <div class="side-group">
       <div class="side-title">Контроль</div>
-      <button class="nav" data-page="statsPage"><span class="ico">↗</span><b>Статистика</b></button>
       <button class="nav" data-page="calendarPage"><span class="ico">▦</span><b>Календарь публикаций</b></button>
+      <button class="nav" data-page="statsPage"><span class="ico">↗</span><b>Статистика</b></button>
       <button class="nav" data-page="historyPage"><span class="ico">◫</span><b>История</b></button>
       <button class="nav" data-page="modePage"><span class="ico">⚙</span><b>Режим работы</b></button>
     </div>
@@ -691,7 +716,7 @@ button,.quick button,.quick a{
         <section class="card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Быстрые действия</h3><p>Основные операции без лишних переходов</p></div></div>
           <div class="quick">
-            <button onclick="goPage('aiPage')">AI-редактор</button>
+            <button onclick="goPage('publishPage')">Публикация + AI</button>
             <button onclick="goPage('queuePage')">Открыть очередь</button>
             <button onclick="goPage('sourcesPage')">Источники</button>
             <button onclick="goPage('socialPage')">Соцсети</button>
@@ -734,44 +759,46 @@ button,.quick button,.quick a{
         </section>
       </section>
 
-      <section class="page" id="aiPage">
-        <div class="page-head">
-          <div><h2>AI-редактор</h2><p>Переписывает исходную новость в живой стиль канала «Что там у ИИ?» без добавления выдуманных фактов.</p></div>
-          <button onclick="testOpenAI()">Проверить OpenAI</button>
-        </div>
-        <div class="ai-layout">
-          <section class="card ai-source">
-            <div class="label">Исходная новость</div>
-            <input id="aiTitle" placeholder="Исходный заголовок — необязательно">
-            <input id="aiSourceUrl" style="margin-top:8px" placeholder="Ссылка на источник — необязательно">
-            <textarea id="aiSourceText" style="margin-top:8px" placeholder="Вставь сюда исходный текст новости…"></textarea>
-            <button class="primary" id="aiRewriteBtn" style="margin-top:8px;width:100%" onclick="rewriteAI()">✦ Переписать в стиле канала</button>
-            <div class="notice" id="aiRewriteStatus" style="margin-top:10px">Модель использует только переданный текст и не должна добавлять факты от себя.</div>
-          </section>
-          <section class="card ai-result">
-            <div class="label">Готовый пост</div>
-            <div id="aiEmpty" class="ai-empty">После обработки здесь появится готовая версия поста.</div>
-            <div id="aiResult" style="display:none">
-              <input id="aiResultTitle" placeholder="Заголовок">
-              <textarea id="aiResultText" style="margin-top:8px" placeholder="Текст"></textarea>
-              <div class="ai-meta">
-                <span class="chip" id="aiModel">Модель —</span>
-                <span class="chip" id="aiConfidence">Уверенность —</span>
-              </div>
-              <div class="notice" id="aiNotes"></div>
-              <div class="ai-toolbar">
-                <button onclick="queueAI()">Добавить в очередь</button>
-                <button class="primary" onclick="publishAI()">Опубликовать везде</button>
-                <button onclick="clearAI()">Очистить</button>
-              </div>
-            </div>
-          </section>
-        </div>
-      </section>
-
       <section class="page" id="publishPage">
-        <div class="page-head"><div><h2>Публикация</h2><p>Ручной пост в канал «Что там у ИИ?».</p></div></div>
-        <section class="card">
+        <div class="page-head">
+          <div><h2>Публикация</h2><p>AI-редактор и ручная публикация в одном разделе.</p></div>
+          <button class="publish-openai-test" onclick="testOpenAI()">Проверить OpenAI</button>
+        </div>
+
+        <section class="publish-section">
+          <div class="panel-title"><div><h3>AI-редактор</h3><p>Подготовить новость в стиле канала и сразу отправить в очередь или опубликовать.</p></div><span class="chip">AI</span></div>
+          <div class="ai-layout">
+            <section class="card ai-source">
+              <div class="label">Исходная новость</div>
+              <input id="aiTitle" placeholder="Исходный заголовок — необязательно">
+              <input id="aiSourceUrl" style="margin-top:8px" placeholder="Ссылка на источник — необязательно">
+              <textarea id="aiSourceText" style="margin-top:8px" placeholder="Вставь сюда исходный текст новости…"></textarea>
+              <button class="primary" id="aiRewriteBtn" style="margin-top:8px;width:100%" onclick="rewriteAI()">✦ Переписать в стиле канала</button>
+              <div class="notice" id="aiRewriteStatus" style="margin-top:10px">Модель использует только переданный текст и не должна добавлять факты от себя.</div>
+            </section>
+            <section class="card ai-result">
+              <div class="label">Готовый пост</div>
+              <div id="aiEmpty" class="ai-empty">После обработки здесь появится готовая версия поста.</div>
+              <div id="aiResult" style="display:none">
+                <input id="aiResultTitle" placeholder="Заголовок">
+                <textarea id="aiResultText" style="margin-top:8px" placeholder="Текст"></textarea>
+                <div class="ai-meta">
+                  <span class="chip" id="aiModel">Модель —</span>
+                  <span class="chip" id="aiConfidence">Уверенность —</span>
+                </div>
+                <div class="notice" id="aiNotes"></div>
+                <div class="ai-toolbar">
+                  <button onclick="queueAI()">Добавить в очередь</button>
+                  <button class="primary" onclick="publishAI()">Опубликовать везде</button>
+                  <button onclick="clearAI()">Очистить</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="card publish-manual-card" style="margin-top:14px">
+          <div class="panel-title"><div><h3>Ручная публикация</h3><p>Написать готовый пост вручную и выбрать площадки.</p></div><span class="chip">Telegram + VK</span></div>
           <textarea id="publishText" placeholder="Напиши текст поста…"></textarea>
           <div class="publish-targets manual">
             <label class="target-pill all"><input id="publishAll" type="checkbox" checked onchange="setPublishAll(this.checked)"> Все</label>
@@ -959,7 +986,6 @@ var pageRoutes={
   homePage:'home',
   sourcesPage:'sources',
   newsPage:'news',
-  aiPage:'ai',
   queuePage:'queue',
   publishPage:'publish',
   statsPage:'stats',
@@ -977,7 +1003,7 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',connectionsPage:'Система и подключения'};
+  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
@@ -988,6 +1014,7 @@ function goPage(id,options){
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
   if(route==='system')route='connections';
+  if(route==='ai')route='publish';
   goPage(routePages[route]||'homePage',{fromHash:true,instant:true});
 }
 window.goPage=goPage;
@@ -1478,7 +1505,9 @@ function openNewsPreview(id){
   });
 }
 
-async function loadNews(){
+async function loadNews(manualRefresh){
+  var refreshBtn=el('newsRefreshBtn');
+  if(manualRefresh&&refreshBtn){refreshBtn.disabled=true;refreshBtn.classList.add('loading');}
   try{
     var j=await api('/api/news?limit=300');
     newsItems=j.items||[];
@@ -1492,36 +1521,22 @@ async function loadNews(){
       var media=md.videoUrl?'<div class="news-placeholder">▶ Видео</div>':image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">AI</div>';
       var ms=md.mediaStatus||(image?(md.generatedImageUrl?'generated':'found'):(md.videoUrl?'found':'missing'));
       var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
-      var editorialScore=(n.aiScore===null||n.aiScore===undefined||n.aiScore==='')?NaN:Number(n.aiScore);
-      if(!Number.isFinite(editorialScore))editorialScore=(md.editorialScore===null||md.editorialScore===undefined||md.editorialScore==='')?NaN:Number(md.editorialScore);
+      var editorialScore=Number(n.aiScore);
+      if(!Number.isFinite(editorialScore))editorialScore=Number(md.editorialScore);
       var tier=String(n.aiTier||'');
-      var scoreLabel=Number.isFinite(editorialScore)
-        ? ('Рейтинг '+Math.round(editorialScore)+'/100'+(tier==='top'?' · Топ':tier==='strong'?' · Сильная':''))
-        : 'Рейтинг —';
-      var scoreBadge='<span class="media-badge news-score-badge">'+esc(scoreLabel)+'</span>';
-      var scheduleMeta=n.scheduledSlot?'<div class="news-runtime-meta">Слот: '+esc(n.scheduledSlot)+'</div>':'';
-      var scoreReason=n.aiScoreReason?'<div class="news-score-reason">AI: '+esc(n.aiScoreReason)+'</div>':'';
-      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><div class="news-badges"><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div>'+scheduleMeta+'</div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+scoreReason+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
+      var scoreText=Number.isFinite(editorialScore)?('AI '+Math.round(editorialScore)+'/100'+(tier==='top'?' · Топ':tier==='strong'?' · Сильная':'')):'AI —';
+      var scoreBadge='<span class="media-badge news-score '+(tier==='top'?'score-top':tier==='strong'?'score-strong':'')+'">'+esc(scoreText)+'</span>';
+      var scoreReason=String(n.aiScoreReason||md.scoreReason||'');
+      var statusLabel=statusRu(status);
+      if(status==='scheduled'&&n.scheduledSlot)statusLabel+=' · '+String(n.scheduledSlot).slice(-5);
+      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><div class="news-badges"><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div>'+(scoreReason?'<div class="queue-meta news-score-reason">'+esc(scoreReason)+'</div>':'')+'</div><span class="news-status '+esc(status)+'">'+esc(statusLabel)+'</span></div>'+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
       return '<article class="news-card" onclick="openNewsPreview(\''+n.id+'\')"><div class="news-card-body">'+media+main+'</div></article>';
     }).join(''):'<div class="empty">Пока ничего не найдено. Нажмите «Собрать сейчас».</div>';
   }catch(e){el('newsList').innerHTML='<div class="empty">Ошибка: '+esc(e.message)+'</div>'}
-}
-async function refreshNewsFeed(btn){
-  var original=btn&&btn.textContent||'↻ Обновить';
-  if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
-  try{
-    await loadNews();
-    toast('Лента и статусы обновлены');
-  }catch(e){
-    toast('Обновление: '+e.message);
-  }finally{
-    if(btn){btn.disabled=false;btn.textContent=original}
+  finally{
+    if(refreshBtn){refreshBtn.disabled=false;refreshBtn.classList.remove('loading');}
   }
-  api('/api/news/backfill-scores',{method:'POST',body:'{}'}).then(function(r){
-    if(r&&r.scored){loadNews();toast('Добавлены AI-рейтинги: '+r.scored)}
-  }).catch(function(){});
 }
-
 async function runCollector(){
   var btn=el('collectorRunBtn');
   btn.disabled=true;btn.textContent='Собираю…';
