@@ -33,6 +33,11 @@ const VK_PUBLISH_ENABLED = String(process.env.VK_PUBLISH_ENABLED || "false").toL
 const VK_APP_ID = String(process.env.VK_APP_ID || "").trim();
 const VK_OAUTH_REDIRECT_URI = String(process.env.VK_OAUTH_REDIRECT_URI || (PUBLIC_BASE_URL + "/api/vk/oauth/callback")).trim();
 const VK_OAUTH_SCOPE = String(process.env.VK_OAUTH_SCOPE || "photos wall groups offline").trim();
+const VK_OAUTH_MODE = String(process.env.VK_OAUTH_MODE || "legacy").trim().toLowerCase();
+const VK_OAUTH_HANDOFF_SECRET = String(process.env.VK_OAUTH_HANDOFF_SECRET || "").trim();
+const VK_OAUTH_TTL_MS = 10 * 60 * 1000;
+let vkOAuthSession = null;
+let vkOAuthHandoff = null;
 const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
@@ -1839,36 +1844,128 @@ function base64Url(buffer) {
   return Buffer.from(buffer).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-function createVkPkcePair() {
-  const verifier = base64Url(crypto.randomBytes(48));
-  const challenge = base64Url(crypto.createHash("sha256").update(verifier).digest());
-  return { verifier: verifier, challenge: challenge };
+function secretMatches(provided, expected) {
+  const a = Buffer.from(String(provided || ""));
+  const b = Buffer.from(String(expected || ""));
+  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function buildVkOAuthUrl() {
   if (!VK_APP_ID) throw new Error("VK_APP_ID не задан");
-  const pkce = createVkPkcePair();
   const oauthState = base64Url(crypto.randomBytes(24));
-  state.vkOAuth = {
+  vkOAuthSession = {
+    mode: "legacy",
     state: oauthState,
-    codeVerifier: pkce.verifier,
-    createdAt: new Date().toISOString()
+    createdAt: Date.now()
   };
-  saveState();
 
+  const normalizedScope = VK_OAUTH_SCOPE.split(/[\s,]+/).filter(Boolean).join(",");
   const params = new URLSearchParams({
-    response_type: "code",
     client_id: VK_APP_ID,
-    app_id: VK_APP_ID,
+    display: "page",
     redirect_uri: VK_OAUTH_REDIRECT_URI,
-    code_challenge: pkce.challenge,
-    code_challenge_method: "s256",
+    scope: normalizedScope,
+    response_type: "token",
+    v: VK_API_VERSION,
     state: oauthState,
-    scope: VK_OAUTH_SCOPE,
-    v: "2.6.1",
-    sdk_type: "vkid"
+    revoke: "1"
   });
-  return "https://id.vk.ru/authorize?" + params.toString();
+  return "https://oauth.vk.com/authorize?" + params.toString();
+}
+
+function assertVkOAuthSession(returnedState) {
+  const session = vkOAuthSession;
+  if (!session || !session.state) throw new Error("Сессия VK OAuth не найдена. Запустите авторизацию заново.");
+  if (Date.now() - Number(session.createdAt || 0) > VK_OAUTH_TTL_MS) {
+    vkOAuthSession = null;
+    throw new Error("Сессия VK OAuth истекла. Запустите авторизацию заново.");
+  }
+  if (!returnedState || returnedState !== session.state) throw new Error("VK OAuth state не совпал.");
+  return session;
+}
+
+async function captureVkOAuthToken(accessToken, returnedState, userId) {
+  const token = String(accessToken || "").trim();
+  if (!token) throw new Error("VK не вернул access_token.");
+  assertVkOAuthSession(String(returnedState || ""));
+
+  await vkApi(
+    "photos.getWallUploadServer",
+    { group_id: VK_GROUP_ID },
+    {
+      token: token,
+      tokenKind: "oauth-user",
+      context: { topicId: "system", postId: "oauth-verify", attempt: 1 }
+    }
+  );
+
+  vkOAuthHandoff = {
+    accessToken: token,
+    userId: String(userId || ""),
+    createdAt: Date.now()
+  };
+  vkOAuthSession = null;
+  return { ok: true };
+}
+
+function vkOAuthCallbackHtml() {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>VK OAuth — News Factory</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b0f17;color:#fff;margin:0;padding:28px}
+.card{max-width:560px;margin:8vh auto;background:#111722;border:1px solid #293347;border-radius:22px;padding:24px}
+h2{margin:0 0 12px}.muted{color:#9aa7ba;line-height:1.5}.ok{color:#71e0a7}.bad{color:#ff8d8d}
+a{color:#8db0ff}
+</style>
+</head>
+<body>
+<div class="card">
+<h2>Авторизация VK</h2>
+<p id="vkOauthStatus" class="muted">Подтверждаю доступ для публикации фото…</p>
+<p><a href="/admin#social">Вернуться в News Factory</a></p>
+</div>
+<script>
+(async function(){
+  var status=document.getElementById("vkOauthStatus");
+  var hash=new URLSearchParams((location.hash||"").replace(/^#/,""));
+  var error=hash.get("error");
+  if(error){
+    status.className="bad";
+    status.textContent="VK не дал доступ: "+(hash.get("error_description")||error);
+    return;
+  }
+  var token=hash.get("access_token");
+  var oauthState=hash.get("state");
+  var userId=hash.get("user_id")||"";
+  if(!token){
+    status.className="bad";
+    status.textContent="VK не вернул пользовательский токен. Запустите авторизацию ещё раз.";
+    return;
+  }
+  history.replaceState(null,"",location.pathname);
+  try{
+    var r=await fetch("/api/vk/oauth/capture",{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({accessToken:token,state:oauthState,userId:userId})
+    });
+    var j=await r.json().catch(function(){return {}});
+    if(!r.ok||!j.ok)throw new Error(j.error||"Ошибка подтверждения VK");
+    status.className="ok";
+    status.textContent="VK авторизован для публикации фото. Вернитесь в ChatGPT — настройка завершится автоматически.";
+  }catch(e){
+    status.className="bad";
+    status.textContent="Не удалось подтвердить доступ VK: "+String(e&&e.message||e);
+  }
+})();
+</script>
+</body>
+</html>`;
 }
 
 
@@ -2879,8 +2976,40 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/callback") {
-      res.writeHead(409, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK OAuth</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>Токен VK не сохраняется приложением</h2><p>По политике News Factory секреты хранятся только в переменных окружения Railway. Добавьте пользовательский токен администратора группы как <b>VK_USER_TOKEN</b>, затем вернитесь в News Factory.</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться</a></p></body>");
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer"
+      });
+      return res.end(vkOAuthCallbackHtml());
+    }
+
+    if (req.method === "POST" && p === "/api/vk/oauth/capture") {
+      try {
+        const body = await readJson(req);
+        await captureVkOAuthToken(body.accessToken, body.state, body.userId);
+        return sendJson(res, 200, { ok: true, verified: true });
+      } catch (error) {
+        return sendJson(res, 400, { ok: false, error: String(error && error.message || error) });
+      }
+    }
+
+    if (req.method === "GET" && p === "/api/vk/oauth/handoff") {
+      if (!VK_OAUTH_HANDOFF_SECRET) return sendJson(res, 503, { ok: false, error: "handoff is not configured" });
+      const provided = String(req.headers["x-oauth-handoff-secret"] || "");
+      if (!secretMatches(provided, VK_OAUTH_HANDOFF_SECRET)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      if (!vkOAuthHandoff || !vkOAuthHandoff.accessToken || Date.now() - Number(vkOAuthHandoff.createdAt || 0) > VK_OAUTH_TTL_MS) {
+        vkOAuthHandoff = null;
+        return sendJson(res, 404, { ok: false, ready: false });
+      }
+      const handoff = vkOAuthHandoff;
+      vkOAuthHandoff = null;
+      return sendJson(res, 200, {
+        ok: true,
+        ready: true,
+        accessToken: handoff.accessToken,
+        userId: handoff.userId || ""
+      }, { "cache-control": "no-store" });
     }
 
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
@@ -2905,8 +3034,10 @@ const server = http.createServer(async function(req, res) {
         appId: VK_APP_ID,
         redirectUri: VK_OAUTH_REDIRECT_URI,
         scope: VK_OAUTH_SCOPE,
+        mode: VK_OAUTH_MODE,
         userTokenConfigured: Boolean(getVkUserToken()),
         envTokenConfigured: Boolean(process.env.VK_USER_TOKEN),
+        handoffReady: Boolean(vkOAuthHandoff && vkOAuthHandoff.accessToken && Date.now() - Number(vkOAuthHandoff.createdAt || 0) <= VK_OAUTH_TTL_MS),
         storage: "environment_only"
       });
     }
