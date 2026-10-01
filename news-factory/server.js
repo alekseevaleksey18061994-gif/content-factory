@@ -1005,6 +1005,7 @@ async function collectOnce(trigger) {
         const lastPublishedAt = lastPublished ? new Date(lastPublished.publishedAt).getTime() : 0;
         const enoughTimePassed = !lastPublishedAt || (Date.now() - lastPublishedAt) >= AUTO_PUBLISH_MIN_INTERVAL_MINUTES * 60 * 1000;
         const canAutoPublish =
+          trigger === "legacy-auto" &&
           state.mode === "AUTO" &&
           AUTO_PUBLISH_ENABLED &&
           enoughTimePassed &&
@@ -1045,6 +1046,7 @@ async function collectOnce(trigger) {
           baseItem.status = "queued";
           baseItem.metadata.autoPublishBlocked = state.mode === "AUTO" ? (
             !AUTO_PUBLISH_ENABLED ? "disabled" :
+            trigger !== "legacy-auto" ? "slot_scheduler" :
             !enoughTimePassed ? "rate_limited" :
             "run_limit"
           ) : "review_mode";
