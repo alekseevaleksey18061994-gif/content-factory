@@ -1771,7 +1771,13 @@ async function collectOnce(trigger) {
       return summary;
     }
 
-    const enabledSources = (state.sources || []).filter(function(src){ return src.enabled && /^https?:\/\//i.test(src.url || ""); });
+    const bloggerRun = String(trigger || "").startsWith("blogger-");
+    const enabledSources = (state.sources || []).filter(function(src){
+      if (!src || !src.enabled || !/^https?:\/\//i.test(src.url || "")) return false;
+      if (bloggerRun) return src.group === "blogger";
+      if (String(trigger || "").startsWith("slot-")) return src.group !== "blogger";
+      return true;
+    });
     const ordered = [];
     const selectedUrls = new Set();
 
@@ -2053,7 +2059,13 @@ function dynamicScheduledHistorySlot(item) {
 function dynamicDailyPublishedCount(dayKey) {
   return (state.history || []).filter(function(item) {
     const slot = dynamicScheduledHistorySlot(item);
-    return slot && slot.startsWith(dayKey + " ");
+    return slot && slot.startsWith(dayKey + " ") && item.publicationOrigin !== "blogger-schedule";
+  }).length;
+}
+function bloggerDailyPublishedCount(dayKey) {
+  return (state.history || []).filter(function(item) {
+    const slot = dynamicScheduledHistorySlot(item);
+    return slot && slot.startsWith(dayKey + " ") && item.publicationOrigin === "blogger-schedule";
   }).length;
 }
 
@@ -2103,14 +2115,14 @@ function dynamicUsedQueueIds() {
   return used;
 }
 
-function dynamicBestQueueItem() {
+function dynamicBestQueueItem(kind) {
   const used = dynamicUsedQueueIds();
   const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
+  const wantsBlogger = kind === "blogger";
   return (state.queue || [])
     .filter(function(item) {
-      return item && item.id && item.newsId &&
-        item.status !== "media_failed" &&
-        !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge;
+      if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
+      return wantsBlogger ? isBloggerSource(item) : !isBloggerSource(item);
     })
     .sort(function(a, b) {
       const scoreDiff = dynamicItemScore(b) - dynamicItemScore(a);
@@ -2132,8 +2144,8 @@ function dynamicBestQueueItem() {
     })[0] || null;
 }
 
-function dynamicAssignBest(day, time) {
-  const item = dynamicBestQueueItem();
+function dynamicAssignBest(day, time, kind) {
+  const item = dynamicBestQueueItem(kind);
   const schedule = ensureScheduleShape(state);
   if (!schedule.assignments[day]) schedule.assignments[day] = {};
   if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
@@ -2145,6 +2157,7 @@ function dynamicAssignBest(day, time) {
   schedule.assignments[day][time] = item.id;
   delete schedule.suppressed[day][time];
   item.preparedFor = day + " " + time;
+  item.preparedKind = kind === "blogger" ? "blogger" : "regular";
   item.preparedAt = new Date().toISOString();
   if (!item.sourceSelectedAt) {
     noteSourceEvent(item, "selected");
@@ -2187,7 +2200,26 @@ async function prepareDynamicSlot() {
   };
 }
 
-async function publishDynamicSlot() {
+async function prepareBloggerSlot(time) {
+  const now = new Date();
+  const day = moscowDateKey(now);
+  const slotTime = String(time || "");
+  if (!BLOGGER_SLOTS.includes(slotTime)) return { ok: true, skipped: "invalid_blogger_slot" };
+  if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
+
+  const schedule = ensureScheduleShape(state);
+  if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
+
+  const collector = await collectOnce("blogger-slot-prep");
+  const item = dynamicAssignBest(day, slotTime, "blogger");
+  state.bloggerScheduler = state.bloggerScheduler || {};
+  state.bloggerScheduler.lastPreparedAt = new Date().toISOString();
+  saveState();
+  return { ok: true, slot: slotTime, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
+}
+
+async function publishDynamicSlot(kind) {
+  const publishKind = kind === "blogger" ? "blogger" : "regular";
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
   const hour = Math.floor(nowMinutes / 60);
@@ -2196,14 +2228,19 @@ async function publishDynamicSlot() {
   }
 
   const day = moscowDateKey(now);
-  const time = String(hour).padStart(2, "0") + ":00";
+  const time = String(hour).padStart(2, "0") + (publishKind === "blogger" ? ":30" : ":00");
+  if (publishKind === "blogger" && !BLOGGER_SLOTS.includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   const slotKey = day + " " + time;
   state.dynamicScheduler = state.dynamicScheduler || {};
+  state.bloggerScheduler = state.bloggerScheduler || {};
+  const schedulerState = publishKind === "blogger" ? state.bloggerScheduler : state.dynamicScheduler;
 
-  if (state.dynamicScheduler.lastPublishedSlot === slotKey) {
+  if (schedulerState.lastPublishedSlot === slotKey) {
     return { ok: true, skipped: "already_done" };
   }
-  if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
+  if (publishKind === "blogger") {
+    if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
+  } else if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
     return { ok: true, skipped: "daily_max" };
   }
 
@@ -2211,16 +2248,16 @@ async function publishDynamicSlot() {
   let queueId = schedule.assignments[day] && schedule.assignments[day][time];
 
   if (!queueId) {
-    let lastChanceItem = dynamicAssignBest(day, time);
+    let lastChanceItem = dynamicAssignBest(day, time, publishKind === "blogger" ? "blogger" : undefined);
     if (!lastChanceItem && !collectorRunning) {
-      await collectOnce("slot-last-chance");
-      lastChanceItem = dynamicAssignBest(day, time);
+      await collectOnce(publishKind === "blogger" ? "blogger-slot-last-chance" : "slot-last-chance");
+      lastChanceItem = dynamicAssignBest(day, time, publishKind === "blogger" ? "blogger" : undefined);
     }
     queueId = lastChanceItem && lastChanceItem.id || "";
   }
 
   if (!queueId) {
-    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    schedulerState.lastPublishedSlot = slotKey;
     saveState();
     return { ok: true, skipped: "empty_slot" };
   }
@@ -2228,7 +2265,7 @@ async function publishDynamicSlot() {
   const item = (state.queue || []).find(function(q){ return q && q.id === queueId; });
   if (!item) {
     delete schedule.assignments[day][time];
-    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    schedulerState.lastPublishedSlot = slotKey;
     saveState();
     return { ok: true, skipped: "missing_item" };
   }
@@ -2236,7 +2273,7 @@ async function publishDynamicSlot() {
   if (dynamicItemAgeMs(item) > DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
-    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    schedulerState.lastPublishedSlot = slotKey;
     saveState();
     return { ok: true, skipped: "stale" };
   }
@@ -2253,7 +2290,7 @@ async function publishDynamicSlot() {
 
   if (!targets.telegram && !targets.vk) {
     delete schedule.assignments[day][time];
-    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    schedulerState.lastPublishedSlot = slotKey;
     saveState();
     return { ok: true, skipped: "auto_targets_disabled", slot: time };
   }
@@ -2311,7 +2348,7 @@ async function publishDynamicSlot() {
       videoUrl: item.videoUrl || "",
       mediaType: item.mediaType || "",
       mediaStatus: item.mediaStatus || "",
-      publicationOrigin: "schedule",
+      publicationOrigin: publishKind === "blogger" ? "blogger-schedule" : "schedule",
       scheduledSlot: slotKey
     };
     state.history.unshift(historyItem);
@@ -2326,13 +2363,13 @@ async function publishDynamicSlot() {
     historyItem.vkError = result.vkError || item.vkError || "";
     historyItem.vkPreviewSlug = result.vkPreviewSlug || historyItem.vkPreviewSlug || "";
     historyItem.vkPreviewUrl = result.vkPreviewUrl || historyItem.vkPreviewUrl || "";
-    historyItem.publicationOrigin = "schedule";
+    historyItem.publicationOrigin = publishKind === "blogger" ? "blogger-schedule" : "schedule";
     historyItem.scheduledSlot = slotKey;
   }
 
   delete schedule.assignments[day][time];
-  state.dynamicScheduler.lastPublishedSlot = slotKey;
-  state.dynamicScheduler.lastPublishedAt = publishedAt;
+  schedulerState.lastPublishedSlot = slotKey;
+  schedulerState.lastPublishedAt = publishedAt;
 
   const mediaFailed = result.vkStatus === "media_failed";
   if (!mediaFailed && (!targets.telegram || item.telegramPublished) && (!targets.vk || item.vkPublished)) {
@@ -2391,9 +2428,18 @@ async function dynamicSchedulerTick() {
   const day = moscowDateKey(now);
 
   let action = "";
-  if (minute === DYNAMIC_SLOT_PREP_MINUTE && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
+  let bloggerTime = "";
+  if (minute === 15) {
+    bloggerTime = String(hour).padStart(2, "0") + ":30";
+    if (BLOGGER_SLOTS.includes(bloggerTime)) action = "blogger_prepare";
+  }
+  if (!action && minute === 30) {
+    bloggerTime = String(hour).padStart(2, "0") + ":30";
+    if (BLOGGER_SLOTS.includes(bloggerTime)) action = "blogger_publish";
+  }
+  if (!action && minute === DYNAMIC_SLOT_PREP_MINUTE && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
     action = "prepare";
-  } else if (minute === 0 && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
+  } else if (!action && minute === 0 && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
     action = "publish";
   }
   if (!action) return;
@@ -2405,7 +2451,13 @@ async function dynamicSchedulerTick() {
   saveState();
 
   try {
-    const result = action === "prepare" ? await prepareDynamicSlot() : await publishDynamicSlot();
+    const result = action === "prepare"
+      ? await prepareDynamicSlot()
+      : action === "publish"
+        ? await publishDynamicSlot()
+        : action === "blogger_prepare"
+          ? await prepareBloggerSlot(bloggerTime)
+          : await publishDynamicSlot("blogger");
     console.log("Dynamic scheduler " + action + ":", JSON.stringify(result));
   } catch (error) {
     console.error("Dynamic scheduler " + action + " failed:", error.message);
@@ -2427,7 +2479,7 @@ function startCollectorScheduler() {
     dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
   }, 30000);
   dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
-  console.log("Dynamic scheduler: multi-workspace · search at :45, publish on the hour, 08:00-23:00 Moscow");
+  console.log("Dynamic scheduler: multi-workspace · regular hourly + blogger slots 10:30/12:30/15:30/18:30/21:30 Moscow");
 }
 
 function sendJson(res, status, payload, headers) {
