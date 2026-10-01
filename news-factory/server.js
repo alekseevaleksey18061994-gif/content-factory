@@ -53,8 +53,10 @@ const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
 const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
-const AI_STRONG_NEWS_SCORE = Math.max(60, Math.min(95, Number(process.env.AI_STRONG_NEWS_SCORE || 75)));
-const AI_TOP_NEWS_SCORE = Math.max(AI_STRONG_NEWS_SCORE, Math.min(100, Number(process.env.AI_TOP_NEWS_SCORE || 88)));
+const AI_STRONG_NEWS_SCORE_RAW = Number(process.env.AI_STRONG_NEWS_SCORE || 75);
+const AI_STRONG_NEWS_SCORE = Math.max(60, Math.min(95, Number.isFinite(AI_STRONG_NEWS_SCORE_RAW) ? AI_STRONG_NEWS_SCORE_RAW : 75));
+const AI_TOP_NEWS_SCORE_RAW = Number(process.env.AI_TOP_NEWS_SCORE || 88);
+const AI_TOP_NEWS_SCORE = Math.max(AI_STRONG_NEWS_SCORE, Math.min(100, Number.isFinite(AI_TOP_NEWS_SCORE_RAW) ? AI_TOP_NEWS_SCORE_RAW : 88));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
@@ -1685,11 +1687,13 @@ function dynamicItemScore(item) {
     else if (item.generatedImageUrl || item.imageUrl) score += 2;
   } else {
     // Backward compatibility for old queue items created before AI editorial scoring.
-    score = Math.max(0, 100 - ageMinutes * 0.45);
+    // Keep them eligible, but do not let a temporary no-score item outrank newly scored strong news.
+    score = Math.max(0, 68 - ageMinutes * 0.2);
     const source = (state.sources || []).find(function(src){ return src && src.name === item.sourceName; });
-    if (source && Number(source.priority) === 1) score += 18;
-    if (item.videoUrl) score += 8;
-    else if (item.generatedImageUrl || item.imageUrl) score += 4;
+    if (source && Number(source.priority) === 1) score += 4;
+    if (item.videoUrl) score += 2;
+    else if (item.generatedImageUrl || item.imageUrl) score += 1;
+    score = Math.min(74, score);
   }
 
   return score;
