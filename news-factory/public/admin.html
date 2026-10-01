@@ -1811,6 +1811,81 @@ button{line-height:1.2!important}
   .kpi b{font-size:28px!important}
 }
 
+
+/* v0.29.5 — mobile long-label layout audit */
+@media(max-width:560px){
+  /* Статистика: длинный статус площадки не сжимает название */
+  .platform-head{
+    display:grid!important;
+    grid-template-columns:1fr!important;
+    gap:10px!important;
+    align-items:start!important;
+  }
+  .platform-head>div:first-child{
+    display:grid!important;
+    grid-template-columns:auto minmax(0,1fr)!important;
+    gap:12px!important;
+    width:100%;
+    align-items:center!important;
+  }
+  .platform-head h3{
+    font-size:19px!important;
+    white-space:nowrap!important;
+    word-break:normal!important;
+    overflow-wrap:normal!important;
+  }
+  .platform-head>.chip{
+    justify-self:start!important;
+    max-width:100%!important;
+    white-space:nowrap!important;
+  }
+
+  /* Система: длинное название режима должно помещаться внутри карточки */
+  #statusMode{
+    font-size:18px!important;
+    line-height:1.15!important;
+    white-space:nowrap!important;
+    word-break:normal!important;
+    overflow-wrap:normal!important;
+  }
+
+  /* Группы подключений: заголовок и счётчик не конкурируют за ширину */
+  .conn-group-head{
+    display:grid!important;
+    grid-template-columns:1fr!important;
+    gap:10px!important;
+    align-items:start!important;
+  }
+  .conn-group-head>span:first-child{
+    width:100%!important;
+    min-width:0!important;
+  }
+  .conn-group-head>span:first-child>span:last-child{
+    min-width:0!important;
+  }
+  .conn-group-head b{
+    white-space:nowrap!important;
+    word-break:normal!important;
+    overflow-wrap:normal!important;
+    font-size:14px!important;
+  }
+  .conn-group-head small{
+    white-space:nowrap!important;
+    word-break:normal!important;
+    overflow-wrap:normal!important;
+  }
+  .conn-group-count{
+    justify-self:start!important;
+    max-width:none!important;
+    white-space:nowrap!important;
+  }
+}
+@media(max-width:390px){
+  #statusMode{font-size:16.5px!important}
+  .platform-head h3{font-size:18px!important}
+  .conn-group-head b{font-size:13.5px!important}
+}
+
 </style>
 </head>
 <body>
