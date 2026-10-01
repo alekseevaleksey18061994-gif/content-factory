@@ -1662,9 +1662,51 @@ async function sendTelegram(text) {
   });
 }
 
-async function vkApi(method, params, tokenOverride) {
-  const token = String(tokenOverride || VK_ACCESS_TOKEN || "").trim();
-  if (!token || !VK_GROUP_ID) throw new Error("VK configuration is incomplete");
+function vkPostContext(post, extra) {
+  const p = post || {};
+  return Object.assign({
+    topicId: String(p.topicId || p.topic_id || "default"),
+    postId: String(p.postId || p.id || p.newsId || "unknown")
+  }, extra || {});
+}
+
+function vkErrorPayload(method, errorCode, errorMsg, context) {
+  const ctx = context || {};
+  return {
+    method: String(method || ""),
+    error_code: errorCode == null ? null : errorCode,
+    error_msg: String(errorMsg || ""),
+    topic_id: String(ctx.topicId || "default"),
+    post_id: String(ctx.postId || "unknown"),
+    attempt: Number(ctx.attempt || 0) || undefined,
+    token_kind: String(ctx.tokenKind || "")
+  };
+}
+
+function logVkError(method, errorCode, errorMsg, context) {
+  const payload = vkErrorPayload(method, errorCode, errorMsg, context);
+  console.error("VK_API_ERROR " + JSON.stringify(payload));
+}
+
+function createVkError(method, errorCode, errorMsg, context) {
+  const error = new Error("VK " + method + " " + (errorCode == null ? "error" : errorCode) + ": " + String(errorMsg || "unknown error"));
+  error.vkMethod = method;
+  error.vkErrorCode = errorCode;
+  error.vkErrorMsg = String(errorMsg || "");
+  error.vkContext = context || {};
+  return error;
+}
+
+async function vkApi(method, params, options) {
+  const opts = options || {};
+  const token = String(opts.token || VK_ACCESS_TOKEN || "").trim();
+  const tokenKind = String(opts.tokenKind || (opts.token ? "custom" : "community"));
+  const context = Object.assign({}, opts.context || {}, { tokenKind: tokenKind });
+  if (!token || !VK_GROUP_ID) {
+    logVkError(method, "config_missing", "VK token or group ID is missing", context);
+    throw createVkError(method, "config_missing", "VK token or group ID is missing", context);
+  }
+
   const body = new URLSearchParams();
   Object.entries(params || {}).forEach(function(entry) {
     const key = entry[0], value = entry[1];
@@ -1672,17 +1714,30 @@ async function vkApi(method, params, tokenOverride) {
   });
   body.set("access_token", token);
   body.set("v", VK_API_VERSION);
-  const response = await fetch("https://api.vk.com/method/" + method, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-    signal: AbortSignal.timeout(20000)
-  });
-  const data = await response.json().catch(function(){ return {}; });
+
+  let response;
+  let data = {};
+  try {
+    response = await fetch("https://api.vk.com/method/" + method, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      signal: AbortSignal.timeout(20000)
+    });
+    data = await response.json().catch(function(){ return {}; });
+  } catch (error) {
+    logVkError(method, "network", error && error.message || error, context);
+    throw createVkError(method, "network", error && error.message || error, context);
+  }
+
   if (!response.ok || data.error) {
     const err = data && data.error;
-    throw new Error(err ? ("VK " + method + " " + err.error_code + ": " + err.error_msg) : ("VK " + method + " HTTP " + response.status));
+    const code = err ? err.error_code : response.status;
+    const msg = err ? err.error_msg : ("HTTP " + response.status);
+    logVkError(method, code, msg, context);
+    throw createVkError(method, code, msg, context);
   }
+
   return data.response;
 }
 
@@ -1702,49 +1757,180 @@ function formatVkPost(post) {
   return out.trim();
 }
 
-async function uploadVkWallPhoto(imageUrl) {
-  if (!imageUrl) throw new Error("VK: нет фото для публикации");
-  const mediaToken = VK_USER_ACCESS_TOKEN || VK_ACCESS_TOKEN;
-  const uploadServer = await vkApi("photos.getWallUploadServer", { group_id: VK_GROUP_ID }, mediaToken);
-  if (!uploadServer || !uploadServer.upload_url) throw new Error("VK: не получен сервер загрузки фото");
+function sleepMs(ms) {
+  return new Promise(function(resolve){ setTimeout(resolve, ms); });
+}
 
-  let sourceUrl = String(imageUrl || "").trim();
-  if (sourceUrl.startsWith("/")) sourceUrl = PUBLIC_BASE_URL + sourceUrl;
-  const imageResponse = await fetch(sourceUrl, {
-    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryVK/1.0)" },
-    signal: AbortSignal.timeout(20000)
-  });
-  if (!imageResponse.ok) throw new Error("VK: фото недоступно, HTTP " + imageResponse.status);
-  const bytes = await imageResponse.arrayBuffer();
-  const mime = String(imageResponse.headers.get("content-type") || "image/jpeg").split(";")[0];
-  const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
-  const form = new FormData();
-  form.append("photo", new Blob([bytes], { type: mime }), "news." + ext);
+function allowTextFallbackForPost(post) {
+  const p = post || {};
+  if (p.allow_text_fallback === true || p.allowTextFallback === true) return true;
+  const topicId = String(p.topicId || p.topic_id || "default");
+  const topics = state && state.topicSettings && typeof state.topicSettings === "object" ? state.topicSettings : {};
+  const topic = topics[topicId] || topics.default || {};
+  return topic.allow_text_fallback === true || topic.allowTextFallback === true;
+}
 
-  const uploadResponse = await fetch(uploadServer.upload_url, {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(30000)
-  });
-  const uploaded = await uploadResponse.json().catch(function(){ return {}; });
-  if (!uploadResponse.ok || !uploaded.server || !uploaded.photo || !uploaded.hash) {
-    throw new Error("VK: загрузка фото не завершена");
+async function notifyVkMediaFailure(post, error, attempts) {
+  const context = vkPostContext(post);
+  const text = [
+    "⚠️ News Factory: VK media_failed",
+    "Тема: " + context.topicId,
+    "Пост: " + context.postId,
+    "Попыток: " + String(attempts || 3),
+    "Ошибка: " + String(error && (error.vkErrorMsg || error.message) || "неизвестная ошибка")
+  ].join("\n");
+
+  if (!TELEGRAM_ALERT_CHAT_ID) {
+    console.warn("VK_MEDIA_ALERT_SKIPPED " + JSON.stringify({
+      topic_id: context.topicId,
+      post_id: context.postId,
+      reason: "TELEGRAM_ALERT_CHAT_ID is not configured"
+    }));
+    return false;
   }
 
-  const saved = await vkApi("photos.saveWallPhoto", {
-    group_id: VK_GROUP_ID,
-    server: uploaded.server,
-    photo: uploaded.photo,
-    hash: uploaded.hash
-  }, mediaToken);
-  const photo = Array.isArray(saved) ? saved[0] : (saved && saved.items ? saved.items[0] : null);
-  if (!photo || !photo.id) throw new Error("VK: фото не сохранено");
-  return "photo" + photo.owner_id + "_" + photo.id;
+  try {
+    await telegramApi("sendMessage", {
+      chat_id: TELEGRAM_ALERT_CHAT_ID,
+      text: text,
+      disable_web_page_preview: true
+    });
+    return true;
+  } catch (alertError) {
+    console.error("VK_MEDIA_ALERT_FAILED " + JSON.stringify({
+      topic_id: context.topicId,
+      post_id: context.postId,
+      error: String(alertError && alertError.message || alertError)
+    }));
+    return false;
+  }
+}
+
+async function downloadVkImage(imageUrl, context) {
+  let sourceUrl = String(imageUrl || "").trim();
+  if (!sourceUrl) throw createVkError("image.download", "no_image", "No image URL for VK publication", context);
+  if (sourceUrl.startsWith("/")) sourceUrl = PUBLIC_BASE_URL + sourceUrl;
+
+  let response;
+  try {
+    response = await fetch(sourceUrl, {
+      headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryVK/1.0)" },
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    logVkError("image.download", "network", error && error.message || error, context);
+    throw createVkError("image.download", "network", error && error.message || error, context);
+  }
+
+  if (!response.ok) {
+    logVkError("image.download", response.status, "Image HTTP " + response.status, context);
+    throw createVkError("image.download", response.status, "Image HTTP " + response.status, context);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length) {
+    logVkError("image.download", "empty", "Downloaded image is empty", context);
+    throw createVkError("image.download", "empty", "Downloaded image is empty", context);
+  }
+
+  const mime = String(response.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+  const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+  return { bytes: bytes, mime: mime, ext: ext };
+}
+
+async function uploadVkWallPhoto(imageUrl, post) {
+  const baseContext = vkPostContext(post);
+  if (!VK_USER_TOKEN) {
+    const error = createVkError("photos.getWallUploadServer", "user_token_missing", "VK_USER_TOKEN is not configured", baseContext);
+    logVkError("photos.getWallUploadServer", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, baseContext, { attempt: 1, tokenKind: "user" }));
+    error.mediaFailed = true;
+    error.mediaAttempts = 0;
+    throw error;
+  }
+
+  const image = await downloadVkImage(imageUrl, baseContext);
+  let lastError = null;
+  const delays = [1000, 2500];
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const context = Object.assign({}, baseContext, { attempt: attempt, tokenKind: "user" });
+    try {
+      const uploadServer = await vkApi(
+        "photos.getWallUploadServer",
+        { group_id: VK_GROUP_ID },
+        { token: VK_USER_TOKEN, tokenKind: "user", context: context }
+      );
+      if (!uploadServer || !uploadServer.upload_url) {
+        logVkError("photos.getWallUploadServer", "no_upload_url", "VK did not return upload_url", context);
+        throw createVkError("photos.getWallUploadServer", "no_upload_url", "VK did not return upload_url", context);
+      }
+
+      const form = new FormData();
+      form.append("photo", new Blob([image.bytes], { type: image.mime }), "news." + image.ext);
+
+      let uploadResponse;
+      let uploaded = {};
+      try {
+        uploadResponse = await fetch(uploadServer.upload_url, {
+          method: "POST",
+          body: form,
+          signal: AbortSignal.timeout(45000)
+        });
+        uploaded = await uploadResponse.json().catch(function(){ return {}; });
+      } catch (error) {
+        logVkError("photo.upload", "network", error && error.message || error, context);
+        throw createVkError("photo.upload", "network", error && error.message || error, context);
+      }
+
+      if (!uploadResponse.ok || !uploaded.server || !uploaded.photo || !uploaded.hash) {
+        const msg = uploaded && uploaded.error ? JSON.stringify(uploaded.error) : ("Invalid upload response HTTP " + uploadResponse.status);
+        logVkError("photo.upload", uploadResponse.status || "upload_invalid", msg, context);
+        throw createVkError("photo.upload", uploadResponse.status || "upload_invalid", msg, context);
+      }
+
+      const saved = await vkApi(
+        "photos.saveWallPhoto",
+        {
+          group_id: VK_GROUP_ID,
+          server: uploaded.server,
+          photo: uploaded.photo,
+          hash: uploaded.hash
+        },
+        { token: VK_USER_TOKEN, tokenKind: "user", context: context }
+      );
+
+      const photo = Array.isArray(saved) ? saved[0] : (saved && saved.items ? saved.items[0] : null);
+      if (!photo || !photo.id || !photo.owner_id) {
+        logVkError("photos.saveWallPhoto", "invalid_photo", "VK did not return saved photo owner_id/id", context);
+        throw createVkError("photos.saveWallPhoto", "invalid_photo", "VK did not return saved photo owner_id/id", context);
+      }
+
+      return {
+        attachment: "photo" + photo.owner_id + "_" + photo.id,
+        attempts: attempt,
+        ownerId: photo.owner_id,
+        photoId: photo.id
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await sleepMs(delays[attempt - 1]);
+    }
+  }
+
+  const failed = lastError || createVkError("photo.upload", "unknown", "VK photo upload failed", baseContext);
+  failed.mediaFailed = true;
+  failed.mediaAttempts = 3;
+  throw failed;
 }
 
 async function publishVkPost(post) {
   if (!VK_PUBLISH_ENABLED) return null;
-  if (!VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) throw new Error("VK: подключение настроено не полностью");
+  const context = vkPostContext(post);
+  if (!VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
+    const error = createVkError("wall.post", "config_missing", "VK community publishing configuration is incomplete", context);
+    logVkError("wall.post", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, context, { tokenKind: "community" }));
+    throw error;
+  }
 
   let imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
   if (!imageUrl && GENERATE_COVER_IF_MISSING) {
@@ -1759,17 +1945,24 @@ async function publishVkPost(post) {
 
   let attachment = "";
   let mediaMode = "text";
+  let mediaAttempts = 0;
+
   if (imageUrl) {
     try {
-      attachment = await uploadVkWallPhoto(imageUrl);
+      const uploaded = await uploadVkWallPhoto(imageUrl, post);
+      attachment = uploaded.attachment;
+      mediaAttempts = uploaded.attempts;
       mediaMode = "photo";
     } catch (error) {
-      // Community tokens can publish wall text but VK rejects wall-photo upload methods.
-      // Do not pass a raw external URL in attachments: VK may reject it with
-      // link_photo_sizing_rule. Publish safely without attachments instead.
-      console.warn("VK photo upload unavailable, falling back to text post:", error.message, VK_USER_ACCESS_TOKEN ? "(user token configured)" : "(community token only)");
-      attachment = "";
+      const attempts = Number(error && error.mediaAttempts || 3);
+      await notifyVkMediaFailure(post, error, attempts);
+      if (!allowTextFallbackForPost(post)) {
+        error.mediaFailed = true;
+        error.mediaAttempts = attempts;
+        throw error;
+      }
       mediaMode = "text_fallback";
+      mediaAttempts = attempts;
     }
   }
 
@@ -1780,8 +1973,16 @@ async function publishVkPost(post) {
   };
   if (attachment) params.attachments = attachment;
 
-  const result = await vkApi("wall.post", params);
-  if (result && typeof result === "object") result.mediaMode = mediaMode;
+  const result = await vkApi(
+    "wall.post",
+    params,
+    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+  );
+
+  if (result && typeof result === "object") {
+    result.mediaMode = mediaMode;
+    result.mediaAttempts = mediaAttempts;
+  }
   return result || null;
 }
 
@@ -1795,6 +1996,8 @@ async function sendMultiPlatformPost(post, targets) {
     vkPostId: null,
     telegramPublished: false,
     vkPublished: false,
+    vkStatus: selected.vk ? "pending" : "not_selected",
+    vkMediaAttempts: 0,
     publishedText: prepared.text || "",
     publishedTitle: prepared.title || ""
   };
@@ -1807,6 +2010,7 @@ async function sendMultiPlatformPost(post, targets) {
 
   if (selected.vk) {
     if (!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
+      result.vkStatus = "failed";
       result.vkError = "VK не настроен для публикации";
     } else {
       try {
@@ -1814,10 +2018,15 @@ async function sendMultiPlatformPost(post, targets) {
         if (vk && vk.post_id) {
           result.vkPostId = vk.post_id;
           result.vkPublished = true;
+          result.vkStatus = "published";
+          result.vkMediaMode = vk.mediaMode || "";
+          result.vkMediaAttempts = Number(vk.mediaAttempts || 0);
         }
       } catch (error) {
-        console.warn("VK publish failed:", error.message);
-        result.vkError = String(error.message || error);
+        result.vkStatus = error && error.mediaFailed ? "media_failed" : "failed";
+        result.vkMediaAttempts = Number(error && error.mediaAttempts || 0);
+        result.vkErrorCode = error && error.vkErrorCode != null ? error.vkErrorCode : null;
+        result.vkError = String(error && (error.vkErrorMsg || error.message) || error);
       }
     }
   }
