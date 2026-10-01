@@ -3823,11 +3823,18 @@ async function buildSystemStatus(force) {
     storageDetail = "Нет записи в " + DATA_DIR;
   }
 
-  const botProbe = BOT_TOKEN ? await telegramProbe("getMe") : { ok: false, error: "TELEGRAM_BOT_TOKEN не задан" };
-  const chatProbe = BOT_TOKEN && CHANNEL ? await telegramProbe("getChat", { chat_id: CHANNEL }) : { ok: false, error: "Канал или токен не заданы" };
-  const openaiProbe = OPENAI_API_KEY ? await openAIModelProbe() : { ok: false, error: "OPENAI_API_KEY не задан" };
-  const vkStatusProbe = VK_ACCESS_TOKEN && VK_GROUP_ID ? await vkProbe() : { ok: false, error: "VK не настроен" };
-  const githubAutomation = await githubAutomationProbe();
+  const probes = await Promise.all([
+    BOT_TOKEN ? telegramProbe("getMe") : Promise.resolve({ ok: false, error: "TELEGRAM_BOT_TOKEN не задан" }),
+    BOT_TOKEN && CHANNEL ? telegramProbe("getChat", { chat_id: CHANNEL }) : Promise.resolve({ ok: false, error: "Канал или токен не заданы" }),
+    OPENAI_API_KEY ? openAIModelProbe() : Promise.resolve({ ok: false, error: "OPENAI_API_KEY не задан" }),
+    VK_ACCESS_TOKEN && VK_GROUP_ID ? vkProbe() : Promise.resolve({ ok: false, error: "VK не настроен" }),
+    githubAutomationProbe()
+  ]);
+  const botProbe = probes[0];
+  const chatProbe = probes[1];
+  const openaiProbe = probes[2];
+  const vkStatusProbe = probes[3];
+  const githubAutomation = probes[4];
 
   const railwayConnected = Boolean(
     process.env.RAILWAY_PROJECT_ID ||
@@ -3841,7 +3848,7 @@ async function buildSystemStatus(force) {
     githubAutomation.latestStatus === "queued" ||
     githubAutomation.latestConclusion === "success"
   );
-  const publicEndpointOk = /^https:\/\//i.test(String(NEWS_FACTORY_PUBLIC_URL || ""));
+  const publicEndpointOk = /^https:\/\//i.test(String(PUBLIC_BASE_URL || ""));
 
   const details = {
     railway: {
@@ -3869,7 +3876,7 @@ async function buildSystemStatus(force) {
     publicEndpoint: {
       state: publicEndpointOk ? "connected" : "missing",
       description: publicEndpointOk ? "Публичный HTTPS endpoint News Factory настроен" : "Публичный HTTPS endpoint не настроен",
-      detail: publicEndpointOk ? String(NEWS_FACTORY_PUBLIC_URL) + " · /p/ + /media/" : "",
+      detail: publicEndpointOk ? String(PUBLIC_BASE_URL) + " · /p/ + /media/" : "",
       next: publicEndpointOk ? "" : "Проверить NEWS_FACTORY_PUBLIC_URL и Railway domain"
     },
     telegramBot: {
