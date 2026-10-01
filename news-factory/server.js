@@ -2291,10 +2291,17 @@ async function collectOnce(trigger) {
             allow_text_fallback: allowTextFallbackForPost({ topicId: "default" }),
             title: rewrite.title,
             text: rewrite.text,
+            sourceId: source.id,
+            sourceName: source.name,
             sourceUrl: url,
             imageUrl: media.imageUrl,
+            originalImageUrl: media.originalImageUrl || imageUrl || "",
+            originalVideoUrl: media.originalVideoUrl || videoUrl || "",
             generatedImageUrl: media.generatedImageUrl,
-            videoUrl: media.videoUrl
+            videoUrl: media.videoUrl,
+            mediaStatus: media.mediaStatus || "",
+            mediaOrigin: media.mediaOrigin || "",
+            mediaLicense: media.mediaLicense || sourceMediaLicense(source)
           });
           baseItem.status = "published";
           baseItem.telegramMessageId = tg.message_id;
@@ -5630,8 +5637,13 @@ const server = http.createServer(async function(req, res) {
         text: text,
         sourceUrl: String(body.sourceUrl || "").trim(),
         imageUrl: media.imageUrl,
+        originalImageUrl: media.originalImageUrl || "",
+        originalVideoUrl: media.originalVideoUrl || "",
         generatedImageUrl: media.generatedImageUrl,
-        videoUrl: media.videoUrl
+        videoUrl: media.videoUrl,
+        mediaStatus: media.mediaStatus || "",
+        mediaOrigin: media.mediaOrigin || "",
+        mediaLicense: media.mediaLicense || "user_provided"
       }, body.targets || body.platforms);
 
       const historyItem = {
@@ -5878,10 +5890,17 @@ const server = http.createServer(async function(req, res) {
         allow_text_fallback: allowTextFallbackForPost(item),
         title: item.title,
         text: item.text,
+        sourceId: item.sourceId || "",
+        sourceName: item.sourceName || "",
         sourceUrl: item.sourceUrl || "",
         imageUrl: media.imageUrl,
+        originalImageUrl: item.originalImageUrl || media.originalImageUrl || "",
+        originalVideoUrl: item.originalVideoUrl || media.originalVideoUrl || "",
         generatedImageUrl: media.generatedImageUrl,
-        videoUrl: media.videoUrl
+        videoUrl: media.videoUrl,
+        mediaStatus: media.mediaStatus || item.mediaStatus || "",
+        mediaOrigin: item.mediaOrigin || media.mediaOrigin || "",
+        mediaLicense: item.mediaLicense || media.mediaLicense || sourceMediaLicense(item)
       }, effectiveTargets);
 
       if (result.safeMedia) Object.assign(item, result.safeMedia);
@@ -6032,8 +6051,13 @@ const server = http.createServer(async function(req, res) {
         text: text,
         sourceUrl: String(body.sourceUrl || "").trim(),
         imageUrl: media.imageUrl,
+        originalImageUrl: media.originalImageUrl || "",
+        originalVideoUrl: media.originalVideoUrl || "",
         generatedImageUrl: media.generatedImageUrl,
-        videoUrl: media.videoUrl
+        videoUrl: media.videoUrl,
+        mediaStatus: media.mediaStatus || "",
+        mediaOrigin: media.mediaOrigin || "",
+        mediaLicense: media.mediaLicense || "user_provided"
       }, body.targets || body.platforms);
 
       const mediaFailed = result.vkStatus === "media_failed";
@@ -6157,7 +6181,8 @@ setTimeout(function() {
                 text: item.text,
                 sourceName: item.sourceName || "Контрольная публикация",
                 imageUrl: "",
-                videoUrl: ""
+                videoUrl: "",
+                mediaLicense: sourceMediaLicense(item)
               });
               item.imageUrl = media.imageUrl || "";
               item.generatedImageUrl = media.generatedImageUrl || "";
@@ -6173,10 +6198,16 @@ setTimeout(function() {
               title: item.title,
               text: item.text,
               sourceName: item.sourceName || "",
+              sourceId: item.sourceId || "",
               sourceUrl: item.sourceUrl || "",
               imageUrl: item.imageUrl || media.imageUrl || "",
+              originalImageUrl: item.originalImageUrl || media.originalImageUrl || "",
+              originalVideoUrl: item.originalVideoUrl || media.originalVideoUrl || "",
               generatedImageUrl: item.generatedImageUrl || media.generatedImageUrl || "",
-              videoUrl: item.videoUrl || media.videoUrl || ""
+              videoUrl: item.videoUrl || media.videoUrl || "",
+              mediaStatus: item.mediaStatus || media.mediaStatus || "",
+              mediaOrigin: item.mediaOrigin || media.mediaOrigin || "",
+              mediaLicense: item.mediaLicense || media.mediaLicense || sourceMediaLicense(item)
             }, { telegram: true, vk: false });
 
             if (!result.telegramPublished) throw new Error("Telegram не подтвердил публикацию");
