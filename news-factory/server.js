@@ -33,7 +33,7 @@ const VK_PUBLISH_ENABLED = String(process.env.VK_PUBLISH_ENABLED || "false").toL
 const VK_APP_ID = String(process.env.VK_APP_ID || "").trim();
 const VK_OAUTH_REDIRECT_URI = String(process.env.VK_OAUTH_REDIRECT_URI || (PUBLIC_BASE_URL + "/api/vk/oauth/callback")).trim();
 const VK_OAUTH_SCOPE = String(process.env.VK_OAUTH_SCOPE || "photos wall groups offline").trim();
-const getVkUserToken()_FILE = path.join(DATA_DIR, "vk-user-token.secret");
+const VK_USER_TOKEN_FILE = path.join(DATA_DIR, "vk-user-token.secret");
 const VK_USER_REFRESH_FILE = path.join(DATA_DIR, "vk-user-refresh.secret");
 const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
@@ -1783,7 +1783,7 @@ function writeSecretFile(filePath, value) {
 }
 
 function getVkUserToken() {
-  return String(process.env.getVkUserToken() || process.env.VK_USER_ACCESS_TOKEN || readSecretFile(getVkUserToken()_FILE) || "").trim();
+  return String(process.env.VK_USER_TOKEN || process.env.VK_USER_ACCESS_TOKEN || readSecretFile(VK_USER_TOKEN_FILE) || "").trim();
 }
 
 function getVkUserRefreshToken() {
@@ -1854,7 +1854,7 @@ async function exchangeVkOAuthCode(code, deviceId, returnedState) {
     throw new Error("VK OAuth exchange failed: " + String(msg));
   }
 
-  writeSecretFile(getVkUserToken()_FILE, data.access_token);
+  writeSecretFile(VK_USER_TOKEN_FILE, data.access_token);
   if (data.refresh_token) writeSecretFile(VK_USER_REFRESH_FILE, data.refresh_token);
 
   state.vkOAuth = {
@@ -1863,14 +1863,14 @@ async function exchangeVkOAuthCode(code, deviceId, returnedState) {
     userId: data.user_id == null ? "" : String(data.user_id),
     scope: VK_OAUTH_SCOPE,
     tokenStored: true,
-    envTokenConfigured: Boolean(process.env.getVkUserToken())
+    envTokenConfigured: Boolean(process.env.VK_USER_TOKEN)
   };
   saveState();
   return {
     ok: true,
     userId: state.vkOAuth.userId,
     scope: VK_OAUTH_SCOPE,
-    envTokenConfigured: Boolean(process.env.getVkUserToken())
+    envTokenConfigured: Boolean(process.env.VK_USER_TOKEN)
   };
 }
 
@@ -2054,7 +2054,7 @@ async function downloadVkImage(imageUrl, context) {
 async function uploadVkWallPhoto(imageUrl, post) {
   const baseContext = vkPostContext(post);
   if (!getVkUserToken()) {
-    const error = createVkError("photos.getWallUploadServer", "user_token_missing", "getVkUserToken() is not configured", baseContext);
+    const error = createVkError("photos.getWallUploadServer", "user_token_missing", "VK_USER_TOKEN is not configured", baseContext);
     logVkError("photos.getWallUploadServer", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, baseContext, { attempt: 1, tokenKind: "user" }));
     error.mediaFailed = true;
     error.mediaAttempts = 0;
@@ -2772,7 +2772,7 @@ async function buildSystemStatus(force) {
         ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · " + (getVkUserToken() ? "текст + фото" : "текст; для фото нужен getVkUserToken()"))
         : String(vkStatusProbe.error || ""),
       next: vkStatusProbe.ok
-        ? (getVkUserToken() ? "" : "Добавить getVkUserToken() с правами photos,wall,groups,offline")
+        ? (getVkUserToken() ? "" : "Авторизовать VK для фото (photos,wall,groups,offline)")
         : "Проверить права ключа сообщества VK"
     },
     collector: {
