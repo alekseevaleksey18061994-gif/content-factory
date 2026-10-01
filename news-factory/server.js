@@ -3762,6 +3762,52 @@ function hasEnv() {
   return true;
 }
 
+async function githubAutomationProbe() {
+  const repoName = String(process.env.GITHUB_REPOSITORY || "alekseevaleksey18061994-gif/content-factory").trim();
+  const headers = {
+    "user-agent": "NewsFactoryStatus/1.0",
+    "accept": "application/vnd.github+json"
+  };
+  const result = {
+    repo: repoName,
+    repoOk: false,
+    workflowOk: false,
+    latestStatus: "",
+    latestConclusion: "",
+    latestRunNumber: null,
+    error: ""
+  };
+
+  try {
+    const repoResponse = await fetch("https://api.github.com/repos/" + repoName, {
+      headers: headers,
+      signal: AbortSignal.timeout(7000)
+    });
+    result.repoOk = repoResponse.ok;
+
+    const workflowResponse = await fetch("https://api.github.com/repos/" + repoName + "/actions/workflows/claude.yml/runs?per_page=1", {
+      headers: headers,
+      signal: AbortSignal.timeout(7000)
+    });
+    const workflowData = await workflowResponse.json().catch(function(){ return {}; });
+    if (workflowResponse.ok) {
+      result.workflowOk = true;
+      const run = Array.isArray(workflowData.workflow_runs) ? workflowData.workflow_runs[0] : null;
+      if (run) {
+        result.latestStatus = String(run.status || "");
+        result.latestConclusion = String(run.conclusion || "");
+        result.latestRunNumber = run.run_number == null ? null : Number(run.run_number);
+      }
+    } else {
+      result.error = "GitHub Actions HTTP " + workflowResponse.status;
+    }
+  } catch (error) {
+    result.error = String(error && error.message || error);
+  }
+
+  return result;
+}
+
 async function buildSystemStatus(force) {
   const now = Date.now();
   if (!force && statusCache.value && now - statusCache.at < 30000) return statusCache.value;
@@ -3781,6 +3827,7 @@ async function buildSystemStatus(force) {
   const chatProbe = BOT_TOKEN && CHANNEL ? await telegramProbe("getChat", { chat_id: CHANNEL }) : { ok: false, error: "Канал или токен не заданы" };
   const openaiProbe = OPENAI_API_KEY ? await openAIModelProbe() : { ok: false, error: "OPENAI_API_KEY не задан" };
   const vkStatusProbe = VK_ACCESS_TOKEN && VK_GROUP_ID ? await vkProbe() : { ok: false, error: "VK не настроен" };
+  const githubAutomation = await githubAutomationProbe();
 
   const railwayConnected = Boolean(
     process.env.RAILWAY_PROJECT_ID ||
@@ -3788,7 +3835,13 @@ async function buildSystemStatus(force) {
     process.env.RAILWAY_ENVIRONMENT_ID ||
     process.env.RAILWAY_PUBLIC_DOMAIN
   );
-  const gitConnected = Boolean(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_REPO_NAME);
+  const gitConnected = Boolean(process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_REPO_NAME || githubAutomation.repoOk);
+  const claudeLatestOk = githubAutomation.workflowOk && (
+    githubAutomation.latestStatus === "in_progress" ||
+    githubAutomation.latestStatus === "queued" ||
+    githubAutomation.latestConclusion === "success"
+  );
+  const publicEndpointOk = /^https:\/\//i.test(String(NEWS_FACTORY_PUBLIC_URL || ""));
 
   const details = {
     railway: {
@@ -3799,9 +3852,25 @@ async function buildSystemStatus(force) {
     },
     github: {
       state: gitConnected ? "connected" : "partial",
-      description: gitConnected ? "Деплой идёт из GitHub" : "Исходники есть в GitHub, runtime не отдал commit metadata",
-      detail: process.env.RAILWAY_GIT_COMMIT_SHA ? "Commit: " + process.env.RAILWAY_GIT_COMMIT_SHA.slice(0, 8) : "Repo: content-factory/news-factory",
+      description: gitConnected ? "GitHub-репозиторий доступен, код используется для деплоя" : "Связь с GitHub подтверждена не полностью",
+      detail: process.env.RAILWAY_GIT_COMMIT_SHA
+        ? "Commit: " + process.env.RAILWAY_GIT_COMMIT_SHA.slice(0, 8)
+        : ("Repo: " + (githubAutomation.repo || "content-factory")),
       next: gitConnected ? "" : "Проверить source connection в Railway"
+    },
+    claudeCode: {
+      state: claudeLatestOk ? "connected" : (githubAutomation.workflowOk ? "partial" : "missing"),
+      description: claudeLatestOk ? "Claude Code подключён через GitHub Actions" : (githubAutomation.workflowOk ? "Workflow Claude Code найден, последний запуск требует внимания" : "Workflow Claude Code не подтверждён"),
+      detail: githubAutomation.workflowOk
+        ? ("Последний run #" + (githubAutomation.latestRunNumber || "—") + " · " + (githubAutomation.latestStatus || "unknown") + (githubAutomation.latestConclusion ? " · " + githubAutomation.latestConclusion : ""))
+        : String(githubAutomation.error || "GitHub Actions workflow недоступен"),
+      next: claudeLatestOk ? "" : "Проверить Claude Code workflow и ANTHROPIC_API_KEY в GitHub Actions"
+    },
+    publicEndpoint: {
+      state: publicEndpointOk ? "connected" : "missing",
+      description: publicEndpointOk ? "Публичный HTTPS endpoint News Factory настроен" : "Публичный HTTPS endpoint не настроен",
+      detail: publicEndpointOk ? String(NEWS_FACTORY_PUBLIC_URL) + " · /p/ + /media/" : "",
+      next: publicEndpointOk ? "" : "Проверить NEWS_FACTORY_PUBLIC_URL и Railway domain"
     },
     telegramBot: {
       state: botProbe.ok ? "connected" : (BOT_TOKEN ? "partial" : "missing"),
@@ -3833,9 +3902,15 @@ async function buildSystemStatus(force) {
     },
     openai: {
       state: openaiProbe.ok ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
-      description: openaiProbe.ok ? "OpenAI API подключён и модель доступна" : (OPENAI_API_KEY ? "Ключ найден, но API не подтверждён" : "AI rewrite пока не подключён"),
-      detail: openaiProbe.ok ? "Модель: " + openaiProbe.model : String(openaiProbe.error || "OPENAI_API_KEY отсутствует"),
-      next: openaiProbe.ok ? "" : (OPENAI_API_KEY ? "Проверить ключ, доступ к модели и биллинг OpenAI" : "Подключить OpenAI API для переписывания новостей")
+      description: openaiProbe.ok ? "OpenAI API подключён и текстовая модель доступна" : (OPENAI_API_KEY ? "Ключ найден, но API не подтверждён" : "OpenAI API не подключён"),
+      detail: openaiProbe.ok ? "Текстовая модель: " + openaiProbe.model : String(openaiProbe.error || "OPENAI_API_KEY отсутствует"),
+      next: openaiProbe.ok ? "" : (OPENAI_API_KEY ? "Проверить ключ, доступ к модели и биллинг OpenAI" : "Подключить OpenAI API")
+    },
+    openaiImage: {
+      state: openaiProbe.ok && IMAGE_ENHANCEMENT_ENABLED && OPENAI_IMAGE_MODEL ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
+      description: openaiProbe.ok && IMAGE_ENHANCEMENT_ENABLED ? "AI-обработка изображений включена" : "AI-обработка изображений настроена не полностью",
+      detail: "Модель: " + String(OPENAI_IMAGE_MODEL || "не задана") + " · улучшение фото " + (IMAGE_ENHANCEMENT_ENABLED ? "включено" : "выключено"),
+      next: openaiProbe.ok && IMAGE_ENHANCEMENT_ENABLED ? "" : "Проверить IMAGE_ENHANCEMENT_ENABLED и OPENAI_IMAGE_MODEL"
     },
     mediaEngine: {
       state: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
@@ -3850,12 +3925,12 @@ async function buildSystemStatus(force) {
       next: dbReady ? "" : "Проверить PostgreSQL в Railway"
     },
     vk: {
-      state: vkStatusProbe.ok ? "connected" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
-      description: vkStatusProbe.ok ? "VK подключён через API" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
+      state: vkStatusProbe.ok ? "partial" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
+      description: vkStatusProbe.ok ? "VK API подключён; текст публикуется, изображение через API ещё не подтверждено" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
       detail: vkStatusProbe.ok && vkStatusProbe.group
-        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · фото через HTTPS link preview + Open Graph")
+        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · community token")
         : String(vkStatusProbe.error || ""),
-      next: vkStatusProbe.ok ? "" : "Проверить права ключа сообщества VK"
+      next: vkStatusProbe.ok ? "Довести подтверждённый способ публикации изображения в VK" : "Проверить права ключа сообщества VK"
     },
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
