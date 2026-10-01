@@ -1552,6 +1552,37 @@ button{line-height:1.2!important}
   .account-layout{grid-template-columns:1fr}
   .account-create-card{grid-column:auto}
 }
+ .account-avatar img,.mark img,.hero-icon img,.side-mark img,.account-avatar-preview img{
+  width:100%;height:100%;display:block;object-fit:cover;border-radius:inherit;
+}
+.account-avatar.has-photo,.mark.has-photo,.hero-icon.has-photo,.side-mark.has-photo{
+  background:#eaf4ff;
+  box-shadow:0 7px 18px rgba(25,88,145,.14);
+}
+.account-avatar-uploader{
+  display:grid;
+  grid-template-columns:92px minmax(0,1fr);
+  gap:16px;
+  align-items:center;
+  margin:4px 0 18px;
+  padding:14px;
+  border:1px solid rgba(70,132,188,.15);
+  border-radius:18px;
+  background:linear-gradient(145deg,rgba(255,255,255,.88),rgba(246,251,255,.82));
+}
+.account-avatar-preview{
+  width:92px;height:92px;flex-basis:92px;
+  border-radius:22px;
+  font-size:24px;
+}
+.account-avatar-upload-copy{min-width:0;display:grid;gap:6px}
+.account-avatar-upload-copy>b{font-size:14px;color:#0b1735}
+.account-avatar-upload-copy>span{font-size:11px;color:#657895;line-height:1.4}
+.account-avatar-upload-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:3px}
+.account-avatar-upload-actions button{min-height:40px}
+.workspace-card .account-avatar,.account-workspace-option .account-avatar{overflow:hidden}
+.avatar-upload-busy{opacity:.55;pointer-events:none}
+
 @media(max-width:560px){
   .page.active{padding:12px!important;border-radius:22px}
   .page-head{padding:16px!important;border-radius:19px}
@@ -1564,6 +1595,9 @@ button{line-height:1.2!important}
   .account-avatar{width:36px;height:36px;flex-basis:36px}
   .account-menu{position:fixed;left:12px;right:12px;top:96px;width:auto}
   .account-form-grid{grid-template-columns:1fr}
+  .account-avatar-uploader{grid-template-columns:72px minmax(0,1fr);gap:12px}
+  .account-avatar-preview{width:72px;height:72px;flex-basis:72px;border-radius:18px;font-size:20px}
+  .account-avatar-upload-actions button{flex:1}
   .workspace-card{grid-template-columns:auto minmax(0,1fr)}
   .workspace-card-actions{grid-column:1/-1;justify-content:stretch}
   .workspace-card-actions button{flex:1}
@@ -1909,10 +1943,22 @@ button{line-height:1.2!important}
         <div class="page-head"><div><h2>Личный кабинет</h2><p>Каналы переключаются как отдельные кабинеты. У каждого свои источники, очередь, календарь, история и настройки.</p></div><span class="chip">Мультиаккаунт</span></div>
         <div class="account-layout">
           <section class="card account-settings-card">
-            <div class="panel-title"><div><h3>Текущий кабинет</h3><p>Название и Telegram-канал этого аккаунта.</p></div><span class="account-avatar account-avatar-large" id="accountPageAvatar">AI</span></div>
+            <div class="panel-title"><div><h3>Текущий кабинет</h3><p>Название, фото и Telegram-канал этого аккаунта.</p></div><span class="account-avatar account-avatar-large" id="accountPageAvatar">AI</span></div>
+            <div class="account-avatar-uploader">
+              <div class="account-avatar-preview account-avatar" id="accountAvatarPreview">AI</div>
+              <div class="account-avatar-upload-copy">
+                <b>Фото аккаунта</b>
+                <span>Лучше квадратное изображение. Система сама обрежет его 1:1.</span>
+                <div class="account-avatar-upload-actions">
+                  <button type="button" onclick="chooseWorkspaceAvatar(activeWorkspaceId)">Загрузить фото</button>
+                  <button class="danger" id="removeAccountAvatarBtn" type="button" onclick="removeCurrentWorkspaceAvatar()">Удалить фото</button>
+                </div>
+              </div>
+            </div>
+            <input id="workspaceAvatarFile" type="file" accept="image/jpeg,image/png,image/webp" hidden onchange="handleWorkspaceAvatarFile(this)">
             <div class="account-form-grid">
               <label class="account-field"><span>Название</span><input id="accountNameInput" placeholder="Что там у ИИ?"></label>
-              <label class="account-field"><span>Инициалы</span><input id="accountInitialsInput" maxlength="3" placeholder="AI"></label>
+              <label class="account-field"><span>Инициалы, если фото нет</span><input id="accountInitialsInput" maxlength="3" placeholder="AI"></label>
               <label class="account-field"><span>Telegram-канал</span><input id="accountTelegramChannelInput" placeholder="@channel"></label>
               <label class="account-field"><span>Публичный username</span><input id="accountTelegramUsernameInput" placeholder="channel"></label>
             </div>
@@ -1981,7 +2027,7 @@ button{line-height:1.2!important}
 
 <script>
 var state={},systemStatus={},newsItems=[],calendarPickerTarget=null;
-var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={};
+var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -2015,6 +2061,75 @@ function workspaceHandle(ws){
   var handle=String(ws&&ws.telegramPublicUsername||ws&&ws.slug||ws&&ws.telegramChannel||'').replace(/^@/,'').trim();
   return handle?'@'+handle:'Telegram не настроен';
 }
+function workspaceAvatarHtml(ws){
+  var initials=esc(String(ws&&ws.initials||'NF').slice(0,3));
+  var url=String(ws&&ws.avatarUrl||'').trim();
+  return url?'<img src="'+esc(url)+'" alt="">':initials;
+}
+function applyWorkspaceAvatar(id,ws){
+  var node=el(id);if(!node)return;
+  var has=!!String(ws&&ws.avatarUrl||'').trim();
+  node.classList.toggle('has-photo',has);
+  node.innerHTML=workspaceAvatarHtml(ws);
+}
+function chooseWorkspaceAvatar(id){
+  avatarUploadWorkspaceId=id||activeWorkspaceId;
+  var input=el('workspaceAvatarFile');
+  if(input){input.value='';input.click()}
+}
+function imageFileToSquareDataUrl(file){
+  return new Promise(function(resolve,reject){
+    if(!file)return reject(new Error('Файл не выбран'));
+    if(!/^image\/(jpeg|png|webp)$/i.test(file.type||''))return reject(new Error('Поддерживаются JPG, PNG и WEBP'));
+    if(file.size>8*1024*1024)return reject(new Error('Фото должно быть не больше 8 МБ'));
+    var reader=new FileReader();
+    reader.onerror=function(){reject(new Error('Не удалось прочитать фото'))};
+    reader.onload=function(){
+      var img=new Image();
+      img.onerror=function(){reject(new Error('Не удалось открыть фото'))};
+      img.onload=function(){
+        var side=Math.min(img.naturalWidth||img.width,img.naturalHeight||img.height);
+        var sx=Math.max(0,((img.naturalWidth||img.width)-side)/2);
+        var sy=Math.max(0,((img.naturalHeight||img.height)-side)/2);
+        var canvas=document.createElement('canvas');
+        canvas.width=700;canvas.height=700;
+        var ctx=canvas.getContext('2d');
+        ctx.drawImage(img,sx,sy,side,side,0,0,700,700);
+        var data=canvas.toDataURL('image/webp',.9);
+        if(!/^data:image\/webp/i.test(data))data=canvas.toDataURL('image/jpeg',.9);
+        resolve(data);
+      };
+      img.src=reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+async function handleWorkspaceAvatarFile(input){
+  var file=input&&input.files&&input.files[0];if(!file)return;
+  var targetId=avatarUploadWorkspaceId||activeWorkspaceId;
+  document.body.classList.add('avatar-upload-busy');
+  try{
+    var image=await imageFileToSquareDataUrl(file);
+    var j=await api('/api/workspaces/avatar',{method:'POST',body:JSON.stringify({id:targetId,image:image})});
+    var idx=workspaces.findIndex(function(ws){return ws.id===targetId});
+    if(idx>=0&&j.workspace)workspaces[idx]=j.workspace;
+    if(targetId===activeWorkspaceId&&j.workspace)currentWorkspaceMeta=j.workspace;
+    renderWorkspaceChrome();
+    toast('Фото аккаунта сохранено');
+  }catch(e){toast(e.message||'Не удалось загрузить фото')}
+  finally{document.body.classList.remove('avatar-upload-busy');input.value=''}
+}
+async function removeCurrentWorkspaceAvatar(){
+  if(!activeWorkspaceId)return;
+  try{
+    var j=await api('/api/workspaces/avatar/remove',{method:'POST',body:JSON.stringify({id:activeWorkspaceId})});
+    var idx=workspaces.findIndex(function(ws){return ws.id===activeWorkspaceId});
+    if(idx>=0&&j.workspace)workspaces[idx]=j.workspace;
+    if(j.workspace)currentWorkspaceMeta=j.workspace;
+    renderWorkspaceChrome();
+    toast('Фото аккаунта удалено');
+  }catch(e){toast(e.message||'Не удалось удалить фото')}
+}
 function toggleAccountMenu(force){
   var menu=el('accountMenu');if(!menu)return;
   var next=typeof force==='boolean'?force:!menu.classList.contains('open');
@@ -2034,7 +2149,7 @@ function renderWorkspaceChrome(){
   var ws=currentWorkspaceMeta||{};
   var initials=String(ws.initials||'NF').slice(0,3);
   var handle=workspaceHandle(ws);
-  ['accountAvatar','accountPageAvatar','topWorkspaceIcon','homeWorkspaceIcon','sidebarWorkspaceIcon'].forEach(function(id){if(el(id))el(id).textContent=initials});
+  ['accountAvatar','accountPageAvatar','accountAvatarPreview','topWorkspaceIcon','homeWorkspaceIcon','sidebarWorkspaceIcon'].forEach(function(id){applyWorkspaceAvatar(id,ws)});
   if(el('accountButtonName'))el('accountButtonName').textContent=ws.name||'Кабинет';
   if(el('accountButtonHandle'))el('accountButtonHandle').textContent=handle;
   if(el('sidebarWorkspaceName'))el('sidebarWorkspaceName').textContent=ws.name||'Кабинет';
@@ -2051,12 +2166,13 @@ function renderWorkspaceChrome(){
   if(el('accountTelegramChannelInput'))el('accountTelegramChannelInput').value=ws.telegramChannel||'';
   if(el('accountTelegramUsernameInput'))el('accountTelegramUsernameInput').value=ws.telegramPublicUsername||'';
   if(el('accountWorkspaceCount'))el('accountWorkspaceCount').textContent=workspaces.length+' '+(workspaces.length===1?'кабинет':'кабинета');
+  if(el('removeAccountAvatarBtn'))el('removeAccountAvatarBtn').style.display=ws.avatarUrl?'inline-flex':'none';
 
   var menu=el('accountWorkspaceMenu');
   if(menu)menu.innerHTML=workspaces.map(function(item){
     var active=item.id===activeWorkspaceId;
     return '<button class="account-workspace-option '+(active?'active':'')+'" type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">'+
-      '<span class="account-avatar">'+esc(item.initials||'NF')+'</span>'+
+      '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
       '<span class="workspace-option-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
     '</button>';
   }).join('');
@@ -2065,9 +2181,10 @@ function renderWorkspaceChrome(){
   if(list)list.innerHTML=workspaces.map(function(item){
     var active=item.id===activeWorkspaceId;
     return '<div class="workspace-card '+(active?'active':'')+'">'+
-      '<span class="account-avatar">'+esc(item.initials||'NF')+'</span>'+
+      '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
       '<span class="workspace-card-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+(active?' · текущий':'')+'</small></span>'+
       '<span class="workspace-card-actions">'+
+        '<button type="button" onclick="chooseWorkspaceAvatar(\''+esc(item.id)+'\')">Фото</button>'+
         (!active?'<button type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">Переключить</button>':'<span class="chip">Активен</span>')+
         ((!active&&workspaces.length>1)?'<button class="danger" type="button" onclick="removeWorkspace(\''+esc(item.id)+'\')">Удалить</button>':'')+
       '</span>'+
