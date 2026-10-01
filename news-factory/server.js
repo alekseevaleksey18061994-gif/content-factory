@@ -5483,6 +5483,25 @@ setTimeout(function() {
 await workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, async function(){ await discoverTelegramAlertChat(); });
 startCollectorScheduler();
 
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      const hasBloggers = Array.isArray(ws.state && ws.state.sources) && ws.state.sources.some(function(source){ return source && source.enabled && source.group === "blogger"; });
+      if (!hasBloggers) continue;
+      const hasBloggerQueue = Array.isArray(ws.state.queue) && ws.state.queue.some(function(item){ return item && (item.sourceGroup === "blogger" || String(item.sourceId || "").startsWith("blogger-")); });
+      if (hasBloggerQueue) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try {
+          const result = await collectOnce("blogger-bootstrap");
+          console.log("Blogger bootstrap " + ws.id + ":", JSON.stringify(result));
+        } catch (error) {
+          console.warn("Blogger bootstrap " + ws.id + " failed:", error.message);
+        }
+      });
+    }
+  })();
+}, 5000);
+
 server.listen(PORT, "0.0.0.0", function() {
   console.log("News Factory listening on :" + PORT);
 });
