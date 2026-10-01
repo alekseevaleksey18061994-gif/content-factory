@@ -1932,6 +1932,52 @@ button{line-height:1.2!important}
   .source-ranked-actions .source-license{grid-column:1/-1;width:100%;max-width:none}
 }
 
+
+/* v0.31.0 — story clusters + media packs */
+.story-badge{
+  color:#6549b4!important;
+  border-color:rgba(121,92,210,.22)!important;
+  background:rgba(244,240,255,.92)!important;
+}
+.story-source-line{
+  margin-top:8px;
+  color:#566b88;
+  font-size:10.5px;
+  line-height:1.45;
+}
+.preview-media-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:6px;
+  padding:8px;
+}
+.preview-media-grid img{
+  width:100%;
+  aspect-ratio:3/2;
+  object-fit:cover;
+  border-radius:12px;
+  border:1px solid rgba(72,132,188,.15);
+  background:#e9f5fb;
+}
+.preview-media-grid img:first-child:nth-last-child(3){
+  grid-column:1/-1;
+}
+.story-source-links{
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px;
+  margin-top:14px;
+}
+.story-source-links a{
+  font-size:10.5px;
+  padding:6px 9px;
+  border-radius:999px;
+  border:1px solid rgba(22,140,255,.18);
+  background:rgba(22,140,255,.06);
+  color:#116fbd;
+  text-decoration:none;
+}
+
 </style>
 </head>
 <body>
@@ -2712,6 +2758,9 @@ function render(){
     var videoBonus=(hasVideo?(aiScore>=55?10:4):(hasEmbeddedVideo?(aiScore>=55?5:2):0));
     var effectiveScore=Number.isFinite(aiScore)?Math.min(100,Math.round(aiScore)+videoBonus):null;
     var aiLabel=Number.isFinite(aiScore)?('AI '+Math.round(aiScore)+'/100'+(aiTier==='top'?' · Топ':aiTier==='strong'?' · Сильная':'')):'';
+    var storyCount=(q.storySources&&q.storySources.length)||(q.storyCluster&&q.storyCluster.sourceCount)||0;
+    var packCount=Array.isArray(q.mediaPackUrls)?q.mediaPackUrls.length:0;
+    var storyNames=storyCount?(q.storySources||[]).map(function(s){return s.sourceName||s.name||''}).filter(Boolean).slice(0,5).join(' · '):'';
     return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+
         '<div class="queue-copy">'+
@@ -2720,8 +2769,12 @@ function render(){
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
           ((q.mediaOrigin==='ai_generated'||q.mediaStatus==='copyright_pending'||q.copyrightSafe)?'<span class="media-badge copyright-media-badge">Copyright Safe · '+(q.mediaStatus==='copyright_pending'?'своя обложка при публикации':'AI-обложка')+'</span>':'')+
           (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
+          (storyCount>1?'<span class="media-badge story-badge">🔥 Сюжет · '+storyCount+' источника</span>':'')+
+          (packCount>1?'<span class="media-badge story-badge">🖼 '+packCount+' фото</span>':'')+
+          (q.contentFormatLabel?'<span class="media-badge">'+esc(q.contentFormatLabel)+'</span>':'')+
           (videoBonus?'<span class="media-badge video-score-badge">🎬 +'+videoBonus+' · итог '+effectiveScore+'/100</span>':'')+
           (q.aiScoreReason?'<div class="queue-meta">AI: '+esc(q.aiScoreReason)+'</div>':'')+
+          (storyNames?'<div class="story-source-line">Источники: '+esc(storyNames)+'</div>':'')+
           (q.status==='media_failed'?'<div class="queue-meta" style="color:#ff8d94">VK media_failed · '+esc(q.vkMediaAttempts||0)+' попытки'+(q.vkError?' · '+esc(q.vkError):'')+'</div>':'')+
           '<div class="queue-text">'+esc(stripEditorialMarks(parts.text||''))+'</div>'+
           '<div class="card-click-note">Нажмите на карточку, чтобы посмотреть пост полностью</div>'+
@@ -3252,11 +3305,23 @@ function closeModal(id){var m=el(id);if(m)m.classList.remove('open');if(!documen
 function modalBackdropClose(event,id){if(event.target===el(id))closeModal(id)}
 function renderPreview(item){
   var pp=postParts(item),img=item.generatedImageUrl||item.imageUrl||'',video=item.videoUrl||'';
-  var media=video?'<video class="telegram-video" controls preload="metadata" src="'+esc(video)+'"></video>':img?'<img class="telegram-media" src="'+esc(img)+'" alt="">':'';
+  var pack=Array.isArray(item.mediaPackUrls)?item.mediaPackUrls.filter(Boolean).slice(0,4):[];
+  var media='';
+  if(video){
+    media='<video class="telegram-video" controls preload="metadata" src="'+esc(video)+'"></video>';
+  }else if(pack.length>1){
+    media='<div class="preview-media-grid">'+pack.map(function(url){return '<img src="'+esc(url)+'" alt="">'}).join('')+'</div>';
+  }else if(img){
+    media='<img class="telegram-media" src="'+esc(img)+'" alt="">';
+  }
+  var storySources=Array.isArray(item.storySources)?item.storySources.filter(function(s){return s&&(s.url||s.sourceUrl)}):[];
   var source=item.sourceUrl||item.originalUrl||'';
-  el('previewMeta').textContent=(item.sourceName||(currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
+  var sourceLinks=storySources.length>1
+    ? '<div class="story-source-links">'+storySources.slice(0,5).map(function(s,i){var url=s.url||s.sourceUrl||'';var name=s.sourceName||s.name||('Источник '+(i+1));return '<a href="'+esc(url)+'" target="_blank">🔗 '+esc(name)+'</a>'}).join('')+'</div>'
+    : (source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'');
+  el('previewMeta').textContent=(storySources.length>1?('Сюжет · '+storySources.length+' источника'):(item.sourceName||(currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory'))+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
   var body=editorialBodyHtml(pp.text||'Нет текста');
-  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">'+esc((currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory')+' · предпросмотр</div></div></div></div>';
+  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+sourceLinks+'<div class="telegram-foot">'+esc((currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory')+' · предпросмотр</div></div></div></div>';
   openModal('previewModal');
 }
 function openQueuePreview(id){
