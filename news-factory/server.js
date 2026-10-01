@@ -3603,7 +3603,7 @@ const server = http.createServer(async function(req, res) {
       });
     }
 
-    if (req.method === "GET" && p.startsWith("/p/")) {
+    if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
       const slug = decodeURIComponent(p.slice("/p/".length));
       if (!slug || !/^[a-z0-9_-]{8,120}$/i.test(slug)) return sendJson(res, 404, { ok: false, error: "page not found" });
       const page = await getPublicPostPage(slug);
@@ -3615,17 +3615,22 @@ const server = http.createServer(async function(req, res) {
         "cache-control": "public, max-age=300, s-maxage=300",
         "x-robots-tag": "index, follow"
       });
-      return res.end(body);
+      return req.method === "HEAD" ? res.end() : res.end(body);
     }
 
-    if (req.method === "GET" && p.startsWith("/media/")) {
+    if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/media/")) {
       const fileName = decodeURIComponent(p.slice("/media/".length));
       if (!fileName || fileName !== path.basename(fileName)) return sendJson(res, 400, { ok: false, error: "invalid media path" });
       const filePath = path.join(MEDIA_DIR, fileName);
       try {
-        const body = fs.readFileSync(filePath);
         const ext = path.extname(fileName).toLowerCase();
         const type = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "application/octet-stream";
+        if (req.method === "HEAD") {
+          const stat = fs.statSync(filePath);
+          res.writeHead(200, { "content-type": type, "content-length": stat.size, "cache-control": "public, max-age=31536000, immutable" });
+          return res.end();
+        }
+        const body = fs.readFileSync(filePath);
         res.writeHead(200, { "content-type": type, "content-length": body.length, "cache-control": "public, max-age=31536000, immutable" });
         return res.end(body);
       } catch {
