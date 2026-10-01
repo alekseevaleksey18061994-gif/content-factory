@@ -17,6 +17,7 @@ const DATABASE_URL = process.env.DATABASE_URL || "";
 const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase() !== "false";
 const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
 const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
+const AUTO_ENHANCE_SOURCE_IMAGES = String(process.env.AUTO_ENHANCE_SOURCE_IMAGES || "true").toLowerCase() !== "false";
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst";
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low";
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
@@ -550,10 +551,10 @@ async function generateNewsCover(payload) {
     "Create a premium editorial technology news image for the Telegram channel «Что там у ИИ?».",
     "Topic: " + String(payload.title || "AI technology news"),
     "Context: " + String(payload.text || "").slice(0, 1800),
-    "Visual direction: dark graphite premium technology editorial, realistic or polished cinematic illustration, strong central subject, clean composition, high contrast, modern AI/technology atmosphere.",
+    "Visual direction: premium modern AI-news editorial, cinematic but realistic, strong central subject, clean composition, deep contrast, sophisticated electric-blue/cyan accents, subtle depth and atmosphere, visually striking enough to stop a scroll without looking like cheap sci-fi.",
     "No text, no captions, no watermarks, no fake UI, no invented logos, no random letters.",
     "If a real company/product is mentioned, do not invent a different product design or fabricated branding.",
-    "Landscape 3:2 composition suitable for a Telegram news post."
+    "Landscape 3:2 composition suitable for Telegram and VK. Keep important faces/products inside a safe central area for mobile crops."
   ].join("\n");
 
   const candidates = [OPENAI_IMAGE_MODEL, "gpt-image-2"].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
@@ -622,12 +623,13 @@ async function enhanceNewsImage(payload) {
 
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : contentType.includes("gif") ? "gif" : "jpg";
   const prompt = [
-    "Improve this source image for a premium Telegram technology news channel.",
-    "Preserve the factual content and identity of the original image.",
-    "Do not add or remove people, products, logos, UI elements, text, numbers, charts, objects, or claims.",
-    "Do not alter the shape, color, branding, interface, product geometry, or identity of anything shown.",
-    "Only improve presentation where possible: clarity, sharpness, lighting, contrast, crop, visual balance, compression artifacts, and editorial polish.",
-    "Keep it realistic and faithful to the source. No invented text, no watermark, no decorative fake labels.",
+    "Transform this source photo into a premium, scroll-stopping editorial image for the AI-news brand «Что там у ИИ?».",
+    "ABSOLUTE FACT LOCK: preserve every real person, face, body, product, logo, screen, document, object and factual scene identity. No substitutions and no invented details.",
+    "Do not add text, captions, numbers, fake UI, logos, watermarks, people or products that were not in the source.",
+    "Make the presentation noticeably stronger: professional editorial crop, cleaner composition, better sharpness, natural skin tones, controlled highlights, deeper contrast, richer but realistic color, subtle cinematic depth.",
+    "Add only restrained non-factual visual treatment such as soft electric-blue/cyan light shaping, gentle background separation, vignette or atmospheric glow where it does not change the factual scene.",
+    "The result should feel like a high-end technology magazine cover image, not a filter and not fantasy sci-fi.",
+    "Keep it realistic, credible and mobile-readable. Landscape 3:2.",
     "Topic context: " + String(payload.title || "").slice(0, 500)
   ].join("\n");
 
@@ -690,8 +692,31 @@ async function ensureMediaForNews(payload) {
     };
   }
 
-  // Priority #2: original photo.
+  // Priority #2: source photo. By default we automatically create a stronger editorial version.
   if (imageUrl) {
+    if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES) {
+      try {
+        const enhanced = await enhanceNewsImage({
+          id: payload.id || newId("enhance"),
+          title: payload.title || "",
+          imageUrl: imageUrl
+        });
+        return {
+          videoUrl: "",
+          imageUrl: imageUrl,
+          originalImageUrl: imageUrl,
+          generatedImageUrl: enhanced.url,
+          mediaType: "photo",
+          mediaStatus: "enhanced",
+          mediaPriority: 2,
+          canEnhance: true,
+          enhancedBy: enhanced.model,
+          enhancedAt: new Date().toISOString()
+        };
+      } catch (error) {
+        console.warn("Auto image enhancement failed, using source photo:", error.message);
+      }
+    }
     return {
       videoUrl: "",
       imageUrl: imageUrl,
