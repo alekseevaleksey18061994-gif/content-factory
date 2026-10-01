@@ -2551,6 +2551,12 @@ async function uploadVkWallPhoto(imageUrl, post) {
 }
 
 
+function vkPostGuid(post, mode) {
+  const p = post || {};
+  const identity = String(p.postId || p.id || p.newsId || "unknown") + ":" + String(mode || "default");
+  return "nf_" + crypto.createHash("sha256").update(identity).digest("hex").slice(0, 28);
+}
+
 function isVkLinkPreviewError(error) {
   const code = String(error && error.vkErrorCode == null ? "" : error.vkErrorCode);
   const msg = String(error && (error.vkErrorMsg || error.message) || "").toLowerCase();
@@ -2716,7 +2722,8 @@ async function publishVkPost(post) {
         owner_id: VK_OWNER_ID,
         from_group: 1,
         message: baseMessage,
-        attachments: preview.url
+        attachments: preview.url,
+        guid: vkPostGuid(post, "link")
       },
       { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
     );
@@ -2760,7 +2767,8 @@ async function publishVkPost(post) {
             from_group: 1,
             message: baseMessage,
             attachments: photo.attachment,
-            copyright: preview.url
+            copyright: preview.url,
+            guid: vkPostGuid(post, "photo")
           },
           { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
         );
@@ -2771,7 +2779,8 @@ async function publishVkPost(post) {
             owner_id: VK_OWNER_ID,
             from_group: 1,
             message: baseMessage,
-            attachments: photo.attachment
+            attachments: photo.attachment,
+            guid: vkPostGuid(post, "photo")
           },
           { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
         );
@@ -2804,7 +2813,8 @@ async function publishVkPost(post) {
             owner_id: VK_OWNER_ID,
             from_group: 1,
             message: baseMessage,
-            attachments: doc.attachment
+            attachments: doc.attachment,
+            guid: vkPostGuid(post, "doc")
           },
           { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
         );
@@ -2836,7 +2846,8 @@ async function publishVkPost(post) {
           {
             owner_id: VK_OWNER_ID,
             from_group: 1,
-            message: baseMessage
+            message: baseMessage,
+            guid: vkPostGuid(post, "text")
           },
           { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
         );
@@ -3475,156 +3486,6 @@ const server = http.createServer(async function(req, res) {
   try {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
-
-    if (req.method === "GET" && p === "/internal/retry-vk-failed-4d2b1e9a7c6f") {
-      const item = (state.queue || []).find(function(q) {
-        return q && q.telegramPublished === true && q.vkPublished !== true && q.vkStatus === "media_failed";
-      });
-      if (!item) return sendJson(res, 404, { ok: false, error: "no failed VK item" }, { "cache-control": "no-store" });
-
-      const result = await sendMultiPlatformPost(Object.assign({}, item, {
-        postId: item.id,
-        topicId: item.topicId || "default",
-        allow_text_fallback: allowTextFallbackForPost(item)
-      }), { telegram: false, vk: true });
-
-      const publishedAt = new Date().toISOString();
-      if (result.vkPublished) {
-        item.vkPublished = true;
-        item.vkPostId = result.vkPostId || null;
-        item.vkStatus = "published";
-        item.vkError = "";
-        item.vkErrorCode = null;
-        item.vkPublishedAt = publishedAt;
-        item.vkPreviewSlug = result.vkPreviewSlug || "";
-        item.vkPreviewUrl = result.vkPreviewUrl || "";
-        item.status = "published";
-
-        const historyItem = (state.history || []).find(function(h) {
-          return h && (h.id === item.historyId || h.queueId === item.id);
-        });
-        if (historyItem) {
-          historyItem.vkPostId = result.vkPostId || null;
-          historyItem.vkStatus = "published";
-          historyItem.vkError = "";
-          historyItem.vkPreviewSlug = result.vkPreviewSlug || "";
-          historyItem.vkPreviewUrl = result.vkPreviewUrl || "";
-        }
-
-        if (db && dbReady && item.newsId) {
-          await db.query(
-            "UPDATE news_items SET status='published', vk_post_id=$2, vk_status='published', vk_error_code=NULL, vk_error_msg=NULL, vk_media_attempts=$3, metadata=COALESCE(metadata,'{}'::jsonb) || $4::jsonb, updated_at=NOW() WHERE id=$1",
-            [
-              item.newsId,
-              result.vkPostId || null,
-              Number(result.vkMediaAttempts || 0),
-              JSON.stringify({
-                vkPreviewSlug: result.vkPreviewSlug || "",
-                vkPreviewUrl: result.vkPreviewUrl || "",
-                vkMediaMode: result.vkMediaMode || ""
-              })
-            ]
-          );
-        }
-
-        state.queue = (state.queue || []).filter(function(q){ return q.id !== item.id; });
-        saveState();
-      }
-
-      return sendJson(res, result.vkPublished ? 200 : 502, {
-        ok: result.vkPublished === true,
-        queueId: item.id,
-        title: item.title || "",
-        vkPostId: result.vkPostId || null,
-        vkStatus: result.vkStatus || "",
-        vkMediaMode: result.vkMediaMode || "",
-        vkPreviewSlug: result.vkPreviewSlug || "",
-        vkPreviewUrl: result.vkPreviewUrl || "",
-        vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
-        vkError: result.vkError || ""
-      }, { "cache-control": "no-store" });
-    }
-
-    if (req.method === "GET" && p === "/internal/verify-vk-post-3-a57d1e2c") {
-      try {
-        const response = await vkApi(
-          "wall.getById",
-          { posts: String(VK_OWNER_ID) + "_3", extended: 0 },
-          { token: VK_ACCESS_TOKEN, tokenKind: "community", context: { topicId: "system", postId: "verify-3" } }
-        );
-        const items = Array.isArray(response) ? response : (response && Array.isArray(response.items) ? response.items : []);
-        const post = items[0] || null;
-        if (!post) return sendJson(res, 404, { ok: false, error: "post not found" }, { "cache-control": "no-store" });
-        const attachments = Array.isArray(post.attachments) ? post.attachments.map(function(a) {
-          const photo = a && a.photo;
-          return {
-            type: a && a.type || "",
-            ownerId: photo && photo.owner_id || null,
-            mediaId: photo && photo.id || null,
-            sizes: photo && Array.isArray(photo.sizes) ? photo.sizes.length : 0
-          };
-        }) : [];
-        return sendJson(res, 200, {
-          ok: true,
-          postId: post.id || null,
-          ownerId: post.owner_id || null,
-          attachmentCount: attachments.length,
-          attachments: attachments,
-          textPresent: Boolean(String(post.text || "").trim())
-        }, { "cache-control": "no-store" });
-      } catch (error) {
-        return sendJson(res, 502, {
-          ok: false,
-          errorCode: error && error.vkErrorCode != null ? error.vkErrorCode : null,
-          error: String(error && (error.vkErrorMsg || error.message) || error)
-        }, { "cache-control": "no-store" });
-      }
-    }
-
-    if (req.method === "GET" && p === "/internal/runtime-probe-8c4e31a7f39d4b51a2e6") {
-      const day = moscowDateKey(new Date());
-      const schedule = ensureScheduleShape(state);
-      const latestHistory = (state.history || []).slice(0, 8).map(function(item) {
-        return {
-          id: item && item.id || "",
-          queueId: item && item.queueId || "",
-          title: item && item.title || "",
-          publishedAt: item && item.publishedAt || "",
-          messageId: item && item.messageId || null,
-          vkPostId: item && item.vkPostId || null,
-          vkStatus: item && item.vkStatus || "",
-          vkError: item && item.vkError || "",
-          vkPreviewSlug: item && item.vkPreviewSlug || "",
-          vkPreviewUrl: item && item.vkPreviewUrl || ""
-        };
-      });
-      const queue = (state.queue || []).slice(0, 12).map(function(item) {
-        return {
-          id: item && item.id || "",
-          newsId: item && item.newsId || "",
-          title: item && item.title || "",
-          createdAt: item && item.createdAt || "",
-          articlePublishedAt: item && item.articlePublishedAt || "",
-          preparedFor: item && item.preparedFor || "",
-          telegramPublished: item && item.telegramPublished === true,
-          vkPublished: item && item.vkPublished === true,
-          vkStatus: item && item.vkStatus || "",
-          vkError: item && item.vkError || "",
-          status: item && item.status || ""
-        };
-      });
-      return sendJson(res, 200, {
-        ok: true,
-        mode: state.mode,
-        autoPublishEnabled: AUTO_PUBLISH_ENABLED,
-        vkPublishEnabled: VK_PUBLISH_ENABLED,
-        day: day,
-        dynamicScheduler: state.dynamicScheduler || {},
-        assignments: schedule.assignments && schedule.assignments[day] || {},
-        history: latestHistory,
-        queue: queue
-      }, { "cache-control": "no-store" });
-    }
 
     if (req.method === "GET" && p === "/health") {
       return sendJson(res, 200, {
