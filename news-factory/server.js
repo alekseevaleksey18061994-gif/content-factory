@@ -2928,8 +2928,11 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Введите текст" });
+
+      const manualId = newId("manual");
+      const topicId = String(body.topicId || body.topic_id || "default");
       const media = await ensureMediaForNews({
-        id: newId("manual"),
+        id: manualId,
         title: String(body.title || "Что там у ИИ?").trim(),
         text: text,
         sourceName: "Ручная публикация",
@@ -2939,7 +2942,15 @@ const server = http.createServer(async function(req, res) {
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить фото или видео для публикации" });
       }
+
       const result = await sendMultiPlatformPost({
+        id: manualId,
+        postId: manualId,
+        topicId: topicId,
+        allow_text_fallback: allowTextFallbackForPost({
+          topicId: topicId,
+          allow_text_fallback: body.allow_text_fallback === true
+        }),
         title: String(body.title || "").trim(),
         text: text,
         sourceUrl: String(body.sourceUrl || "").trim(),
@@ -2947,23 +2958,36 @@ const server = http.createServer(async function(req, res) {
         generatedImageUrl: media.generatedImageUrl,
         videoUrl: media.videoUrl
       }, body.targets || body.platforms);
-      state.history.unshift({
+
+      const historyItem = {
         id: newId("hist"),
+        sourceTaskId: manualId,
+        topicId: topicId,
         title: String(body.title || "Публикация"),
         text: result.publishedText || text,
         messageId: result.message_id,
         vkPostId: result.vkPostId || null,
+        vkStatus: result.vkStatus || "",
+        vkError: result.vkError || "",
+        vkMediaAttempts: result.vkMediaAttempts || 0,
+        status: result.vkStatus === "media_failed" ? "media_failed" : "published",
         publishedAt: new Date().toISOString()
-      });
+      };
+      state.history.unshift(historyItem);
       state.history = state.history.slice(0, 100);
-      state.stats.published += 1;
+      if (result.telegramPublished || result.vkPublished) state.stats.published += 1;
       saveState();
-      return sendJson(res, 200, {
-        ok: true,
+
+      const mediaFailed = result.vkStatus === "media_failed";
+      return sendJson(res, mediaFailed ? 207 : 200, {
+        ok: !mediaFailed,
+        status: mediaFailed ? "media_failed" : "published",
         messageId: result.message_id,
         vkPostId: result.vkPostId || null,
         telegramPublished: result.telegramPublished,
         vkPublished: result.vkPublished,
+        vkStatus: result.vkStatus || "",
+        vkMediaAttempts: result.vkMediaAttempts || 0,
         vkError: result.vkError || ""
       });
     }
@@ -3241,8 +3265,11 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "text is required" });
+
+      const legacyId = newId("legacy");
+      const topicId = String(body.topicId || body.topic_id || "default");
       const media = await ensureMediaForNews({
-        id: newId("legacy"),
+        id: legacyId,
         title: String(body.title || "Что там у ИИ?").trim(),
         text: text,
         sourceName: "API публикация",
@@ -3252,7 +3279,15 @@ const server = http.createServer(async function(req, res) {
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить медиа" });
       }
+
       const result = await sendMultiPlatformPost({
+        id: legacyId,
+        postId: legacyId,
+        topicId: topicId,
+        allow_text_fallback: allowTextFallbackForPost({
+          topicId: topicId,
+          allow_text_fallback: body.allow_text_fallback === true
+        }),
         title: String(body.title || "").trim(),
         text: text,
         sourceUrl: String(body.sourceUrl || "").trim(),
@@ -3260,12 +3295,17 @@ const server = http.createServer(async function(req, res) {
         generatedImageUrl: media.generatedImageUrl,
         videoUrl: media.videoUrl
       }, body.targets || body.platforms);
-      return sendJson(res, 200, {
-        ok: true,
+
+      const mediaFailed = result.vkStatus === "media_failed";
+      return sendJson(res, mediaFailed ? 207 : 200, {
+        ok: !mediaFailed,
+        status: mediaFailed ? "media_failed" : "published",
         messageId: result.message_id,
         vkPostId: result.vkPostId || null,
         telegramPublished: result.telegramPublished,
         vkPublished: result.vkPublished,
+        vkStatus: result.vkStatus || "",
+        vkMediaAttempts: result.vkMediaAttempts || 0,
         vkError: result.vkError || ""
       });
     }
