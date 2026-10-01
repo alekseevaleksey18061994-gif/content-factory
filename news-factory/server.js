@@ -2563,7 +2563,7 @@ async function uploadVkMessagesPhoto(imageUrl, post, previewSlug) {
 
   const uploadServer = await vkApi(
     "photos.getMessagesUploadServer",
-    { peer_id: VK_OWNER_ID },
+    {},
     { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
   );
   if (!uploadServer || !uploadServer.upload_url) {
@@ -2571,7 +2571,7 @@ async function uploadVkMessagesPhoto(imageUrl, post, previewSlug) {
   }
 
   const form = new FormData();
-  form.append("file", new Blob([image.bytes], { type: image.mime || "image/jpeg" }), "preview." + (image.ext || "jpg"));
+  form.append("photo", new Blob([image.bytes], { type: image.mime || "image/jpeg" }), "preview." + (image.ext || "jpg"));
 
   let uploadResponse;
   let uploaded = {};
