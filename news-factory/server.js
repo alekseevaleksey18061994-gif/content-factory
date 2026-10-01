@@ -3077,6 +3077,7 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const item = state.queue.find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Черновик не найден" });
+
       let media = {
         imageUrl: item.imageUrl || "",
         generatedImageUrl: item.generatedImageUrl || "",
@@ -3103,35 +3104,135 @@ const server = http.createServer(async function(req, res) {
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить фото или видео. Публикация заблокирована." });
       }
+
+      const requestedTargets = normalizePublishTargets(body.targets || body.platforms);
+      const effectiveTargets = {
+        telegram: requestedTargets.telegram && item.telegramPublished !== true,
+        vk: requestedTargets.vk && item.vkPublished !== true
+      };
+      if (!effectiveTargets.telegram && !effectiveTargets.vk) {
+        return sendJson(res, 200, {
+          ok: true,
+          alreadyPublished: true,
+          telegramPublished: item.telegramPublished === true,
+          vkPublished: item.vkPublished === true,
+          messageId: item.telegramMessageId || null,
+          vkPostId: item.vkPostId || null
+        });
+      }
+
       const result = await sendMultiPlatformPost({
+        id: item.id,
+        postId: item.id,
+        newsId: item.newsId || "",
+        topicId: item.topicId || "default",
+        allow_text_fallback: allowTextFallbackForPost(item),
         title: item.title,
         text: item.text,
         sourceUrl: item.sourceUrl || "",
         imageUrl: media.imageUrl,
         generatedImageUrl: media.generatedImageUrl,
         videoUrl: media.videoUrl
-      }, body.targets || body.platforms);
-      state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
+      }, effectiveTargets);
+
+      const publishedAt = new Date().toISOString();
+      if (result.telegramPublished) {
+        item.telegramPublished = true;
+        item.telegramMessageId = result.message_id;
+        item.telegramPublishedAt = publishedAt;
+      }
+      if (result.vkPublished) {
+        item.vkPublished = true;
+        item.vkPostId = result.vkPostId || null;
+        item.vkStatus = "published";
+        item.vkPublishedAt = publishedAt;
+        item.status = "queued";
+      } else if (result.vkStatus === "media_failed") {
+        item.status = "media_failed";
+        item.vkStatus = "media_failed";
+        item.vkError = result.vkError || "";
+        item.vkErrorCode = result.vkErrorCode;
+        item.vkMediaAttempts = result.vkMediaAttempts || 3;
+        item.vkFailedAt = publishedAt;
+      } else if (requestedTargets.vk && result.vkStatus === "failed") {
+        item.vkStatus = "failed";
+        item.vkError = result.vkError || "";
+      }
+
+      let historyItem = item.historyId
+        ? (state.history || []).find(function(h){ return h && h.id === item.historyId; })
+        : null;
+      if (!historyItem && (result.telegramPublished || result.vkPublished)) {
+        historyItem = {
+          id: newId("hist"),
+          queueId: item.id,
+          newsId: item.newsId || "",
+          title: item.title,
+          text: result.publishedText || item.text,
+          messageId: result.message_id || item.telegramMessageId || null,
+          vkPostId: result.vkPostId || item.vkPostId || null,
+          vkStatus: result.vkStatus || item.vkStatus || "",
+          vkError: result.vkError || item.vkError || "",
+          publishedAt: publishedAt,
+          sourceUrl: item.sourceUrl || "",
+          imageUrl: item.imageUrl || "",
+          generatedImageUrl: item.generatedImageUrl || "",
+          videoUrl: item.videoUrl || ""
+        };
+        state.history.unshift(historyItem);
+        state.history = state.history.slice(0, 100);
+        item.historyId = historyItem.id;
+        state.stats.published += 1;
+      } else if (historyItem) {
+        historyItem.messageId = historyItem.messageId || result.message_id || item.telegramMessageId || null;
+        historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
+        historyItem.vkStatus = result.vkStatus || item.vkStatus || historyItem.vkStatus || "";
+        historyItem.vkError = result.vkError || item.vkError || "";
+      }
+
       removeQueueIdFromSchedule(state, body.id);
-      ensureScheduleAssignments(state);
-      state.history.unshift({
-        id: newId("hist"),
-        title: item.title,
-        text: result.publishedText || item.text,
-        messageId: result.message_id,
-        vkPostId: result.vkPostId || null,
-        publishedAt: new Date().toISOString()
-      });
-      state.history = state.history.slice(0, 100);
-      state.stats.published += 1;
+      const mediaFailed = result.vkStatus === "media_failed";
+      const doneTelegram = !requestedTargets.telegram || item.telegramPublished === true;
+      const doneVk = !requestedTargets.vk || item.vkPublished === true;
+      if (!mediaFailed && doneTelegram && doneVk) {
+        state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
+      }
+
+      if (db && dbReady && item.newsId) {
+        try {
+          const status = mediaFailed ? "media_failed" : (doneTelegram && doneVk ? "published" : "queued");
+          await db.query(
+            "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb WHERE id=$1",
+            [
+              item.newsId,
+              status,
+              result.message_id || item.telegramMessageId || null,
+              (result.telegramPublished || result.vkPublished) ? publishedAt : null,
+              JSON.stringify({
+                vkPostId: result.vkPostId || item.vkPostId || null,
+                vkStatus: result.vkStatus || item.vkStatus || "",
+                vkError: result.vkError || item.vkError || "",
+                vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
+                vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0
+              })
+            ]
+          );
+        } catch (error) {
+          console.warn("Queue publish DB update failed:", error.message);
+        }
+      }
+
       saveState();
-      return sendJson(res, 200, {
-        ok: true,
-        messageId: result.message_id,
-        vkPostId: result.vkPostId || null,
-        telegramPublished: result.telegramPublished,
-        vkPublished: result.vkPublished,
-        vkError: result.vkError || ""
+      return sendJson(res, mediaFailed ? 207 : 200, {
+        ok: !mediaFailed,
+        status: mediaFailed ? "media_failed" : "published",
+        messageId: result.message_id || item.telegramMessageId || null,
+        vkPostId: result.vkPostId || item.vkPostId || null,
+        telegramPublished: result.telegramPublished || item.telegramPublished === true,
+        vkPublished: result.vkPublished || item.vkPublished === true,
+        vkStatus: result.vkStatus || item.vkStatus || "",
+        vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0,
+        vkError: result.vkError || item.vkError || ""
       });
     }
 
