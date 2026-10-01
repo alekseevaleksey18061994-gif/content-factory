@@ -2458,6 +2458,141 @@ async function repairBalancedQueueMedia() {
   return { repaired: repaired, failed: failed };
 }
 
+
+async function backfillQueueImageEnhancements(options) {
+  if (!IMAGE_ENHANCEMENT_ENABLED || !AUTO_ENHANCE_SOURCE_IMAGES) {
+    return { enhanced: 0, failed: 0, skipped: 0, total: 0 };
+  }
+
+  const opts = options || {};
+  const force = Boolean(opts.force);
+  const candidates = (state.queue || []).filter(function(item) {
+    if (!item) return false;
+    if (!mediaLicenseAllowsReuse(sourceMediaLicense(item))) return false;
+    const originals = (Array.isArray(item.originalMediaUrls) ? item.originalMediaUrls : [])
+      .concat([item.originalImageUrl || ""])
+      .filter(Boolean);
+    if (!originals.length) return false;
+    if (!force && item.mediaEnhancementBackfillVersion === "v2") return false;
+    return true;
+  });
+
+  let cursor = 0;
+  let enhanced = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  async function worker() {
+    while (cursor < candidates.length) {
+      const item = candidates[cursor++];
+      try {
+        const originals = Array.from(new Set(
+          (Array.isArray(item.originalMediaUrls) ? item.originalMediaUrls : [])
+            .concat([item.originalImageUrl || ""])
+            .filter(Boolean)
+        )).slice(0, MEDIA_DIRECTOR_MAX_IMAGES);
+
+        if (!originals.length) {
+          item.mediaEnhancementBackfillVersion = "v2";
+          skipped += 1;
+          continue;
+        }
+
+        const enhancedUrls = [];
+        const logs = [];
+
+        for (let i = 0; i < originals.length; i += 1) {
+          const original = originals[i];
+          const prepared = await prepareReusableSourceImage(original, String(item.newsId || item.id) + "_bf" + i);
+          const result = await enhanceSourceCandidate(
+            prepared.imageUrl || original,
+            { id: item.newsId || item.id, title: item.title || item.sourceOriginalTitle || "" },
+            "bf" + i
+          );
+          if (result.url) enhancedUrls.push(result.url);
+          logs.push({
+            originalUrl: original,
+            cachedUrl: prepared.imageUrl || "",
+            enhancedUrl: result.enhanced ? result.url : "",
+            enhanced: Boolean(result.enhanced),
+            model: result.model || "",
+            error: result.error || ""
+          });
+        }
+
+        const genuinelyEnhanced = logs.some(function(entry){ return entry.enhanced; });
+        if (!enhancedUrls.length || !genuinelyEnhanced) {
+          item.mediaEnhancementBackfillVersion = "v2";
+          item.mediaEnhancementError = logs.map(function(x){ return x.error; }).filter(Boolean).join("; ").slice(0, 600) || "AI-улучшение не выполнено";
+          failed += 1;
+          saveState();
+          continue;
+        }
+
+        item.imageUrl = enhancedUrls[0];
+        item.enhancedImageUrl = enhancedUrls[0];
+        item.mediaPackUrls = enhancedUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES);
+        item.mediaEnhancementLog = logs;
+        item.mediaEnhancementBackfillVersion = "v2";
+        item.mediaEnhancementError = logs.some(function(x){ return x.error; }) ? "Часть фотографий оставлена в исходном качестве" : "";
+        item.mediaOrigin = "ai_enhanced_source";
+        item.enhancedAt = new Date().toISOString();
+        item.canEnhance = false;
+
+        if (item.videoUrl) {
+          item.mediaStatus = "video_poster_enhanced";
+          item.mediaType = "video";
+          item.mediaPriority = 1;
+        } else {
+          item.mediaStatus = "enhanced";
+          item.mediaType = enhancedUrls.length > 1 ? "album" : "photo";
+          item.mediaPriority = 2;
+        }
+
+        if (item.generatedImageUrl && item.originalImageUrl) item.generatedImageUrl = "";
+
+        if (db && dbReady && item.newsId) {
+          try {
+            await db.query(
+              "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
+              [
+                item.newsId,
+                JSON.stringify({
+                  imageUrl: item.imageUrl || "",
+                  enhancedImageUrl: item.enhancedImageUrl || "",
+                  generatedImageUrl: item.generatedImageUrl || "",
+                  mediaPackUrls: item.mediaPackUrls || [],
+                  mediaEnhancementLog: item.mediaEnhancementLog || [],
+                  mediaStatus: item.mediaStatus || "",
+                  mediaType: item.mediaType || "",
+                  mediaOrigin: item.mediaOrigin || "",
+                  enhancedAt: item.enhancedAt || ""
+                }),
+                currentWorkspaceId()
+              ]
+            );
+          } catch (dbError) {
+            console.warn("Enhancement backfill DB update failed:", dbError.message);
+          }
+        }
+
+        enhanced += 1;
+        saveState();
+      } catch (error) {
+        failed += 1;
+        item.mediaEnhancementBackfillVersion = "v2";
+        item.mediaEnhancementError = String(error && error.message || error).slice(0, 600);
+        console.warn("Queue image enhancement backfill failed:", item.id, error.message);
+        saveState();
+      }
+    }
+  }
+
+  const workers = Math.min(SOURCE_IMAGE_ENHANCE_CONCURRENCY, Math.max(1, candidates.length));
+  await Promise.all(Array.from({ length: workers }, function(){ return worker(); }));
+  return { enhanced: enhanced, failed: failed, skipped: skipped, total: candidates.length };
+}
+
 async function ensureMediaForNews(payload) {
   const imageUrl = String(payload.imageUrl || "").trim();
   const videoUrl = String(payload.videoUrl || "").trim();
@@ -7274,6 +7409,12 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true });
     }
 
+    if (req.method === "POST" && p === "/api/media/enhance-queue") {
+      const body = await readJson(req);
+      const result = await backfillQueueImageEnhancements({ force: Boolean(body && body.force) });
+      return sendJson(res, 200, { ok: true, result: result });
+    }
+
     if (req.method === "GET" && p === "/api/dashboard") {
       const cleanup = pruneQueueItems(state);
       if (cleanup.removed) saveState();
@@ -8045,6 +8186,21 @@ setTimeout(function() {
     }
   })();
 }, 1500);
+
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try {
+          const result = await backfillQueueImageEnhancements();
+          console.log("Queue image enhancement backfill " + ws.id + ":", JSON.stringify(result));
+        } catch (error) {
+          console.warn("Queue image enhancement backfill " + ws.id + " failed:", error.message);
+        }
+      });
+    }
+  })();
+}, 4000);
 await workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, async function(){ await discoverTelegramAlertChat(); });
 startCollectorScheduler();
 
