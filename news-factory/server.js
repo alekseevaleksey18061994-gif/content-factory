@@ -1317,8 +1317,66 @@ async function saveNewsItem(item) {
   }
 }
 
+function scheduledSlotForQueueId(queueId) {
+  if (!queueId) return "";
+  const schedule = ensureScheduleShape(state);
+  for (const day of Object.keys(schedule.assignments || {})) {
+    for (const time of Object.keys(schedule.assignments[day] || {})) {
+      if (schedule.assignments[day][time] === queueId) return day + " " + time;
+    }
+  }
+  return "";
+}
+
+function enrichNewsFeedItem(row) {
+  const item = Object.assign({}, row);
+  const metadata = item.metadata && typeof item.metadata === "object" ? Object.assign({}, item.metadata) : {};
+  const queueItem = (state.queue || []).find(function(q){ return q && q.newsId === item.id; }) || null;
+  const historyItem = (state.history || []).find(function(h){ return h && h.newsId === item.id; }) || null;
+  const scheduledSlot = queueItem ? scheduledSlotForQueueId(queueItem.id) : "";
+
+  let runtimeStatus = String(item.status || "discovered");
+  if (historyItem) {
+    runtimeStatus = historyItem.status === "media_failed" || historyItem.vkStatus === "media_failed"
+      ? "media_failed"
+      : "published";
+  } else if (queueItem) {
+    runtimeStatus = queueItem.status === "media_failed"
+      ? "media_failed"
+      : (scheduledSlot ? "scheduled" : "queued");
+  }
+
+  const scoreCandidates = [
+    queueItem && queueItem.aiScore,
+    metadata.editorialScore
+  ];
+  let aiScore = null;
+  for (const value of scoreCandidates) {
+    if (value === null || value === undefined || value === "") continue;
+    const n = Number(value);
+    if (Number.isFinite(n)) {
+      aiScore = Math.max(0, Math.min(100, Math.round(n)));
+      break;
+    }
+  }
+
+  const aiTier = queueItem && queueItem.aiTier
+    ? String(queueItem.aiTier)
+    : (aiScore == null ? "" : (aiScore >= AI_TOP_NEWS_SCORE ? "top" : (aiScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal")));
+  const aiScoreReason = String((queueItem && queueItem.aiScoreReason) || metadata.scoreReason || "");
+
+  item.status = runtimeStatus;
+  item.runtimeStatus = runtimeStatus;
+  item.scheduledSlot = scheduledSlot || "";
+  item.aiScore = aiScore;
+  item.aiTier = aiTier;
+  item.aiScoreReason = aiScoreReason;
+  item.metadata = metadata;
+  return item;
+}
+
 async function listNewsItems(limit) {
-  const safeLimit = Math.max(1, Math.min(100, Number(limit || 30)));
+  const safeLimit = Math.max(1, Math.min(300, Number(limit || 100)));
   if (db && dbReady) {
     const cutoff = normalizeDate(state.newsVisibleAfter || "");
     const r = cutoff
@@ -1338,7 +1396,7 @@ async function listNewsItems(limit) {
           FROM news_items ORDER BY detected_at DESC LIMIT $1`,
           [safeLimit]
         );
-    return r.rows;
+    return r.rows.map(enrichNewsFeedItem);
   }
   return [];
 }
@@ -3577,6 +3635,128 @@ async function callOpenAIRewrite(payload) {
   throw new Error(lastError || "Не удалось получить ответ OpenAI");
 }
 
+async function callOpenAIEditorialScoreBatch(items) {
+  if (!OPENAI_API_KEY || !Array.isArray(items) || !items.length) return [];
+  const compact = items.slice(0, 10).map(function(item) {
+    return {
+      id: String(item.id || ""),
+      title: String(item.title || "").slice(0, 240),
+      source: String(item.sourceName || "").slice(0, 120),
+      text: String(item.text || "").slice(0, 1800)
+    };
+  });
+  const prompt = [
+    "Ты выпускающий редактор новостного канала «Что там у ИИ?».",
+    "Оцени каждую новость отдельно. Не переписывай текст и не добавляй факты.",
+    "Шкала строго 0–100 как сумма:",
+    "importance 0–25, audience_interest 0–20, novelty 0–20, virality 0–15, usefulness 0–10, credibility 0–10.",
+    "Верни строго JSON без markdown:",
+    "{\"scores\":[{\"id\":\"...\",\"editorial_score\":0,\"score_breakdown\":{\"importance\":0,\"audience_interest\":0,\"novelty\":0,\"virality\":0,\"usefulness\":0,\"credibility\":0},\"score_reason\":\"короткая причина\"}]}",
+    "",
+    JSON.stringify(compact)
+  ].join("\n");
+
+  const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 2200 }),
+        signal: AbortSignal.timeout(45000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) continue;
+      const output = extractOpenAIText(data);
+      if (!output) continue;
+      const parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      const scores = Array.isArray(parsed && parsed.scores) ? parsed.scores : [];
+      return scores.map(function(entry) {
+        const breakdownRaw = entry && entry.score_breakdown && typeof entry.score_breakdown === "object" ? entry.score_breakdown : {};
+        const clamp = function(value, max) {
+          const n = Number(value);
+          return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.round(n))) : 0;
+        };
+        const breakdown = {
+          importance: clamp(breakdownRaw.importance, 25),
+          audience_interest: clamp(breakdownRaw.audience_interest, 20),
+          novelty: clamp(breakdownRaw.novelty, 20),
+          virality: clamp(breakdownRaw.virality, 15),
+          usefulness: clamp(breakdownRaw.usefulness, 10),
+          credibility: clamp(breakdownRaw.credibility, 10)
+        };
+        const total = Object.values(breakdown).reduce(function(sum, value){ return sum + value; }, 0);
+        const explicit = Number(entry && entry.editorial_score);
+        const editorialScore = total > 0
+          ? Math.min(100, total)
+          : (Number.isFinite(explicit) ? Math.max(0, Math.min(100, Math.round(explicit))) : null);
+        return {
+          id: String(entry && entry.id || ""),
+          editorialScore: editorialScore,
+          scoreBreakdown: breakdown,
+          scoreReason: String(entry && entry.score_reason || "").trim()
+        };
+      }).filter(function(entry){ return entry.id && Number.isFinite(entry.editorialScore); });
+    } catch (error) {
+      console.warn("AI editorial score batch failed:", error.message);
+    }
+  }
+  return [];
+}
+
+async function backfillRecentNewsEditorialScores(limit) {
+  if (!db || !dbReady || !OPENAI_API_KEY) return { ok: false, scored: 0, skipped: "unavailable" };
+  const safeLimit = Math.max(1, Math.min(40, Number(limit || 30)));
+  const cutoff = normalizeDate(state.newsVisibleAfter || "");
+  const params = [];
+  let where = "(metadata->>'editorialScore' IS NULL OR metadata->>'editorialScore'='') AND COALESCE(rewritten_text, original_text, '') <> ''";
+  if (cutoff) {
+    params.push(cutoff);
+    where += " AND detected_at >= $" + params.length;
+  }
+  params.push(safeLimit);
+  const rows = await db.query(
+    `SELECT id, source_name AS "sourceName", COALESCE(rewritten_title, original_title) AS title,
+      COALESCE(rewritten_text, original_text) AS text
+      FROM news_items
+      WHERE ${where}
+      ORDER BY detected_at DESC
+      LIMIT $${params.length}`,
+    params
+  );
+  if (!rows.rows.length) return { ok: true, scored: 0 };
+
+  let scored = 0;
+  for (let offset = 0; offset < rows.rows.length; offset += 10) {
+    const batch = rows.rows.slice(offset, offset + 10);
+    const scores = await callOpenAIEditorialScoreBatch(batch);
+    const allowedIds = new Set(batch.map(function(item){ return String(item.id || ""); }));
+    for (const score of scores) {
+      if (!allowedIds.has(score.id)) continue;
+      const updated = await db.query(
+        "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1",
+        [score.id, JSON.stringify({
+          editorialScore: score.editorialScore,
+          scoreBreakdown: score.scoreBreakdown,
+          scoreReason: score.scoreReason,
+          scoreBackfilledAt: new Date().toISOString()
+        })]
+      );
+      if (!updated.rowCount) continue;
+      const queueItem = (state.queue || []).find(function(q){ return q && q.newsId === score.id; });
+      if (queueItem) {
+        queueItem.aiScore = score.editorialScore;
+        queueItem.aiScoreBreakdown = score.scoreBreakdown;
+        queueItem.aiScoreReason = score.scoreReason;
+        queueItem.aiTier = score.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (score.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal");
+      }
+      scored += 1;
+    }
+  }
+  if (scored) saveState();
+  return { ok: true, scored: scored };
+}
+
 function hasEnv() {
   for (const key of arguments) if (!process.env[key]) return false;
   return true;
@@ -3985,8 +4165,13 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, status);
     }
 
+    if (req.method === "POST" && p === "/api/news/backfill-scores") {
+      const result = await backfillRecentNewsEditorialScores(30);
+      return sendJson(res, 200, result);
+    }
+
     if (req.method === "GET" && p === "/api/news") {
-      const items = await listNewsItems(url.searchParams.get("limit") || 50);
+      const items = await listNewsItems(url.searchParams.get("limit") || 100);
       return sendJson(res, 200, { ok: true, items: items });
     }
 
@@ -4491,6 +4676,11 @@ const server = http.createServer(async function(req, res) {
 await initDb();
 const startupCleanup = pruneQueueItems(state);
 if (startupCleanup.removed) saveState();
+setTimeout(function() {
+  backfillRecentNewsEditorialScores(30)
+    .then(function(result){ if (result && result.scored) console.log("News score backfill:", JSON.stringify(result)); })
+    .catch(function(error){ console.warn("News score backfill failed:", error.message); });
+}, 1500);
 await discoverTelegramAlertChat();
 startCollectorScheduler();
 

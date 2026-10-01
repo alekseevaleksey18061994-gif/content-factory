@@ -576,6 +576,30 @@ button,.quick button,.quick a{
 .social-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.social-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px;border:1px solid var(--line);border-radius:18px;background:var(--panel2)}.social-card-main{display:flex;align-items:center;gap:14px;min-width:0}.social-icon{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;font-weight:800;font-size:15px;background:var(--soft);border:1px solid var(--line)}.social-card h3{margin:0 0 4px}.social-card p{margin:0;color:var(--muted);font-size:13px}.social-card .actions{flex:0 0 auto}@media(max-width:760px){.social-grid{grid-template-columns:1fr}.social-card{align-items:flex-start;flex-direction:column}.social-card .actions{width:100%}.social-card .actions a{width:100%;text-align:center}}
 @media(max-width:700px){.calendar-summary{grid-template-columns:repeat(2,1fr)}.calendar-slots{grid-template-columns:1fr}.calendar-slot{grid-template-columns:62px minmax(0,1fr) auto}.calendar-time{font-size:19px}.calendar-day-title{min-width:0}.calendar-toolbar{align-items:flex-start}.calendar-day-nav{width:100%;justify-content:space-between}}
 @media(max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.quick{grid-template-columns:1fr 1fr}.page-head{align-items:flex-start;flex-direction:column}.health{display:none}.hero h2{font-size:22px}.hero-icon{width:48px;height:48px}.news-card-body,.queue-card-main{grid-template-columns:1fr}.news-thumb,.queue-thumb,.news-placeholder,.queue-placeholder{width:100%;height:170px}.queue-head{align-items:flex-start}.queue-actions{display:grid;grid-template-columns:minmax(0,1fr) auto}.queue-actions .publish{width:100%}.queue-actions .remove{min-width:88px}.news-card-head{gap:8px}.news-status{font-size:10px}}
+
+/* v0.26.1 — news feed live status + mobile refresh */
+.news-feed-head{gap:14px;align-items:center}
+.news-feed-head>div{min-width:0;flex:1}
+.news-refresh-btn{
+  flex:0 0 auto;
+  min-width:122px;
+  white-space:nowrap;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+}
+.news-refresh-btn:disabled{opacity:.65;cursor:wait}
+.news-badges{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}
+.news-score-badge{color:#c9d6ff;border-color:rgba(111,147,255,.32);background:rgba(111,147,255,.07)}
+.news-score-reason{margin-top:8px;color:#9daac0;font-size:11px;line-height:1.45}
+.news-runtime-meta{margin-top:7px;color:#8fb0ff;font-size:11px}
+.news-status.scheduled{color:#9db5ff;border-color:rgba(157,181,255,.30);background:rgba(111,147,255,.07)}
+@media(max-width:560px){
+  #newsPage .news-feed-head{flex-direction:row;align-items:center}
+  #newsPage .news-feed-head>div{min-width:0}
+  #newsPage .news-refresh-btn{min-width:116px;max-width:128px;padding-left:12px;padding-right:12px}
+}
 </style>
 </head>
 <body>
@@ -705,7 +729,7 @@ button,.quick button,.quick a{
           <div class="notice" id="collectorInfo" style="margin-top:12px">Загружаю статус collector…</div>
         </section>
         <section class="card" style="margin-top:14px">
-          <div class="panel-title"><div><h3>Найденные новости</h3><p>Последние элементы из долговременного хранилища.</p></div><button onclick="loadNews()">Обновить</button></div>
+          <div class="panel-title news-feed-head"><div><h3>Найденные новости</h3><p>Все актуальные найденные новости со статусом и редакционным рейтингом.</p></div><button class="news-refresh-btn" onclick="refreshNewsFeed(this)">↻ Обновить</button></div>
           <div id="newsList" class="news-list"><div class="empty">Загружаю новости…</div></div>
         </section>
       </section>
@@ -906,7 +930,7 @@ function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setT
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function statusRu(v){
   var map={
-    queued:'В очереди',published:'Опубликовано',discovered:'Найдено',rewrite_error:'Ошибка AI',expired:'Устарело',media_failed:'Ошибка медиа VK',
+    queued:'В очереди',scheduled:'Запланировано',published:'Опубликовано',discovered:'Найдено',rewrite_error:'Ошибка AI',expired:'Устарело',media_failed:'Ошибка медиа VK',
     connected:'Подключено',partial:'Частично',missing:'Не подключено',
     running:'Работает',success:'Успешно',failed:'Ошибка',completed_with_errors:'Завершено с ошибками',
     disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',slot_scheduler:'Ждёт ближайший слот',review_mode:'На проверку',
@@ -1456,25 +1480,48 @@ function openNewsPreview(id){
 
 async function loadNews(){
   try{
-    var j=await api('/api/news?limit=50');
+    var j=await api('/api/news?limit=300');
     newsItems=j.items||[];
     el('newsList').innerHTML=newsItems.length?newsItems.map(function(n){
       var pp=postParts({title:n.rewrittenTitle||n.originalTitle,text:n.rewrittenText||n.originalText});
       var title=pp.title||'Без заголовка';
       var body=stripEditorialMarks(pp.text||'').slice(0,320);
-      var status=n.status||'discovered';
+      var status=n.runtimeStatus||n.status||'discovered';
       var md=n.metadata||{};
       var image=md.generatedImageUrl||md.imageUrl||'';
       var media=md.videoUrl?'<div class="news-placeholder">▶ Видео</div>':image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">AI</div>';
       var ms=md.mediaStatus||(image?(md.generatedImageUrl?'generated':'found'):(md.videoUrl?'found':'missing'));
       var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
-      var editorialScore=Number(md.editorialScore);
-      var scoreBadge=Number.isFinite(editorialScore)?'<span class="media-badge">AI '+Math.round(editorialScore)+'/100</span>':'';
-      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
+      var editorialScore=(n.aiScore===null||n.aiScore===undefined||n.aiScore==='')?NaN:Number(n.aiScore);
+      if(!Number.isFinite(editorialScore))editorialScore=(md.editorialScore===null||md.editorialScore===undefined||md.editorialScore==='')?NaN:Number(md.editorialScore);
+      var tier=String(n.aiTier||'');
+      var scoreLabel=Number.isFinite(editorialScore)
+        ? ('Рейтинг '+Math.round(editorialScore)+'/100'+(tier==='top'?' · Топ':tier==='strong'?' · Сильная':''))
+        : 'Рейтинг —';
+      var scoreBadge='<span class="media-badge news-score-badge">'+esc(scoreLabel)+'</span>';
+      var scheduleMeta=n.scheduledSlot?'<div class="news-runtime-meta">Слот: '+esc(n.scheduledSlot)+'</div>':'';
+      var scoreReason=n.aiScoreReason?'<div class="news-score-reason">AI: '+esc(n.aiScoreReason)+'</div>':'';
+      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><div class="news-badges"><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div>'+scheduleMeta+'</div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+scoreReason+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
       return '<article class="news-card" onclick="openNewsPreview(\''+n.id+'\')"><div class="news-card-body">'+media+main+'</div></article>';
     }).join(''):'<div class="empty">Пока ничего не найдено. Нажмите «Собрать сейчас».</div>';
   }catch(e){el('newsList').innerHTML='<div class="empty">Ошибка: '+esc(e.message)+'</div>'}
 }
+async function refreshNewsFeed(btn){
+  var original=btn&&btn.textContent||'↻ Обновить';
+  if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
+  try{
+    await loadNews();
+    toast('Лента и статусы обновлены');
+  }catch(e){
+    toast('Обновление: '+e.message);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=original}
+  }
+  api('/api/news/backfill-scores',{method:'POST',body:'{}'}).then(function(r){
+    if(r&&r.scored){loadNews();toast('Добавлены AI-рейтинги: '+r.scored)}
+  }).catch(function(){});
+}
+
 async function runCollector(){
   var btn=el('collectorRunBtn');
   btn.disabled=true;btn.textContent='Собираю…';
