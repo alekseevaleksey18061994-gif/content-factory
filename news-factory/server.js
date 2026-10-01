@@ -114,6 +114,7 @@ const defaultState = {
       allow_text_fallback: false
     }
   },
+  telegramAlertChatId: "",
   queue: [],
   newsVisibleAfter: "",
   history: [],
@@ -1741,6 +1742,31 @@ async function sendTelegram(text) {
   });
 }
 
+async function discoverTelegramAlertChat() {
+  if (TELEGRAM_ALERT_CHAT_ID || String(state.telegramAlertChatId || "").trim() || !BOT_TOKEN) return false;
+  try {
+    const updates = await telegramApi("getUpdates", {
+      limit: 100,
+      allowed_updates: ["message"]
+    });
+    const ids = new Set();
+    (Array.isArray(updates) ? updates : []).forEach(function(update) {
+      const chat = update && update.message && update.message.chat;
+      if (chat && chat.type === "private" && chat.id != null) ids.add(String(chat.id));
+    });
+    if (ids.size === 1) {
+      state.telegramAlertChatId = Array.from(ids)[0];
+      saveState();
+      console.log("Telegram private alert chat discovered");
+      return true;
+    }
+    console.log("Telegram alert chat discovery skipped: private chat count=" + ids.size);
+  } catch (error) {
+    console.warn("Telegram alert chat discovery failed:", error.message);
+  }
+  return false;
+}
+
 function vkPostContext(post, extra) {
   const p = post || {};
   return Object.assign({
@@ -1859,18 +1885,19 @@ async function notifyVkMediaFailure(post, error, attempts) {
     "Ошибка: " + String(error && (error.vkErrorMsg || error.message) || "неизвестная ошибка")
   ].join("\n");
 
-  if (!TELEGRAM_ALERT_CHAT_ID) {
+  const alertChatId = TELEGRAM_ALERT_CHAT_ID || String(state.telegramAlertChatId || "").trim();
+  if (!alertChatId) {
     console.warn("VK_MEDIA_ALERT_SKIPPED " + JSON.stringify({
       topic_id: context.topicId,
       post_id: context.postId,
-      reason: "TELEGRAM_ALERT_CHAT_ID is not configured"
+      reason: "No private Telegram alert chat discovered/configured"
     }));
     return false;
   }
 
   try {
     await telegramApi("sendMessage", {
-      chat_id: TELEGRAM_ALERT_CHAT_ID,
+      chat_id: alertChatId,
       text: text,
       disable_web_page_preview: true
     });
@@ -3314,6 +3341,7 @@ const server = http.createServer(async function(req, res) {
 await initDb();
 const startupCleanup = pruneQueueItems(state);
 if (startupCleanup.removed) saveState();
+await discoverTelegramAlertChat();
 startCollectorScheduler();
 
 server.listen(PORT, "0.0.0.0", function() {
