@@ -928,9 +928,9 @@ button,.quick button,.quick a{
         <section class="card" style="margin-top:14px"><div id="connections" class="connections"><div class="empty">Проверяю подключения…</div></div></section>
         <section class="card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Хранение данных</h3><p>Где сохраняются новости, очередь и код.</p></div></div>
-          <div class="pipeline-row"><div class="row"><b>PostgreSQL</b><span class="chip">Основная база</span></div><small>Новости, история запусков и снимки состояния.</small></div>
-          <div class="pipeline-row"><div class="row"><b>Railway Volume /data</b><span class="chip">Постоянные данные</span></div><small>Очередь, настройки и сгенерированные медиа сохраняются между деплоями.</small></div>
-          <div class="pipeline-row"><div class="row"><b>GitHub</b><span class="chip">Код и версии</span></div><small>Backend и интерфейс News Factory.</small></div>
+          <div class="pipeline-row"><div class="row"><b>PostgreSQL</b><span class="chip">Основная база</span></div><small>Новости, рейтинги, история запусков и состояние публикаций.</small></div>
+          <div class="pipeline-row"><div class="row"><b>Railway Volume /data</b><span class="chip">Постоянные файлы</span></div><small>Очередь, настройки и локальные медиа сохраняются между деплоями.</small></div>
+          <div class="pipeline-row"><div class="row"><b>GitHub + Claude Code</b><span class="chip">Код и разработка</span></div><small>Репозиторий, версии, GitHub Actions и AI-помощник для разработки.</small></div>
         </section>
       </section>
     </div>
@@ -1340,12 +1340,28 @@ function dashboardFromStatus(s){
 }
 async function renderConnections(force){
   var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;
-  var names={railway:'Railway',github:'GitHub',telegramBot:'Telegram-бот',telegramChannel:'Telegram-канал',storage:'Постоянное хранилище',adminUi:'Админ-панель',openai:'OpenAI API',mediaEngine:'Медиа-движок',supabase:'PostgreSQL',vk:'VK API',collector:'Сборщик новостей',scheduler:'Планировщик'};
+  var names={
+    railway:'Railway',
+    github:'GitHub',
+    claudeCode:'Claude Code / GitHub Actions',
+    publicEndpoint:'Публичный HTTPS endpoint',
+    storage:'Railway Volume /data',
+    adminUi:'Админ-панель',
+    supabase:'PostgreSQL',
+    openai:'OpenAI API',
+    openaiImage:'OpenAI Image',
+    mediaEngine:'Медиа-движок News Factory',
+    telegramBot:'Telegram-бот',
+    telegramChannel:'Telegram-канал',
+    vk:'VK API / сообщество',
+    collector:'Сборщик новостей',
+    scheduler:'Планировщик'
+  };
   var groups=[
-    {title:'Инфраструктура',icon:'▦',keys:['railway','github','storage','adminUi']},
+    {title:'Инфраструктура',icon:'▦',keys:['railway','github','publicEndpoint','storage','adminUi','supabase']},
+    {title:'Разработка и AI',icon:'✦',keys:['claudeCode','openai','openaiImage','mediaEngine']},
     {title:'Telegram',icon:'✈',keys:['telegramBot','telegramChannel']},
-    {title:'AI и данные',icon:'✦',keys:['openai','mediaEngine','supabase']},
-    {title:'Публикация',icon:'➤',keys:['vk']},
+    {title:'VK',icon:'VK',keys:['vk']},
     {title:'Автоматизация',icon:'⚙',keys:['collector','scheduler']}
   ];
   function meta(state){if(state==='connected')return {cls:'done',label:'Подключено',dot:'on'};if(state==='partial')return {cls:'work',label:'Частично',dot:'partial'};return {cls:'wait',label:'Не подключено',dot:''}}
