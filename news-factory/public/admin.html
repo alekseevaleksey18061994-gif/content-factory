@@ -1389,6 +1389,56 @@ body{
   .conn small{font-size:11px}
 }
 
+/* v0.28.5 — source performance ranking */
+.source-head-row{margin-bottom:12px}
+.source-ranking-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0 12px}
+.source-summary-box{padding:12px;border:1px solid rgba(70,132,188,.14);border-radius:15px;background:rgba(255,255,255,.72)}
+.source-summary-box b{display:block;font-size:21px;color:#0b1735}
+.source-summary-box span{display:block;margin-top:3px;font-size:10px;color:#657895}
+.source-summary-bad{border-color:rgba(222,86,94,.16);background:rgba(255,244,245,.72)}
+.source-rating-note{margin:0 0 8px;padding:10px 12px;border-radius:13px;background:rgba(22,140,255,.055)}
+.source-ranked-list{display:grid;gap:9px;margin-top:4px}
+.source-ranked-card{
+  display:grid!important;
+  grid-template-columns:42px minmax(0,1fr) auto!important;
+  gap:12px!important;
+  align-items:center;
+  padding:13px 0!important;
+}
+.source-rank-number{
+  width:38px;height:38px;display:grid;place-items:center;
+  border-radius:12px;
+  background:linear-gradient(145deg,rgba(32,212,220,.10),rgba(22,140,255,.09));
+  color:#3f6485;font-size:11px;font-weight:850
+}
+.source-ranked-main{min-width:0}
+.source-ranked-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.source-ranked-title .name{font-size:13px;color:#0b1735}
+.source-rating{display:inline-flex;align-items:center;border-radius:999px;padding:4px 8px;font-size:9.5px;font-weight:850;white-space:nowrap}
+.source-rank-good{background:rgba(28,181,123,.10);color:#16845d;border:1px solid rgba(28,181,123,.18)}
+.source-rank-ok{background:rgba(22,140,255,.09);color:#236ea9;border:1px solid rgba(22,140,255,.16)}
+.source-rank-weak{background:rgba(235,167,52,.10);color:#a36c16;border:1px solid rgba(235,167,52,.18)}
+.source-rank-bad{background:rgba(220,76,87,.09);color:#b23d48;border:1px solid rgba(220,76,87,.17)}
+.source-rank-new{background:rgba(101,121,151,.08);color:#667996;border:1px solid rgba(101,121,151,.14)}
+.source-metrics{display:flex;flex-wrap:wrap;gap:5px 12px;margin-top:7px}
+.source-metrics span{font-size:9.5px;color:#71839e;white-space:nowrap}
+.source-metrics b{color:#39516e}
+.source-error-metric,.source-error-metric b{color:#b14b53!important}
+.source-ranked-actions{justify-content:flex-end;flex-wrap:nowrap!important}
+.source-disabled{opacity:.58}
+@media(max-width:760px){
+  .source-ranking-summary{grid-template-columns:1fr 1fr}
+  .source-ranked-card{grid-template-columns:34px minmax(0,1fr)!important;align-items:start}
+  .source-rank-number{width:32px;height:32px;border-radius:10px}
+  .source-ranked-actions{grid-column:1/-1;justify-content:stretch!important;padding-left:46px}
+  .source-ranked-actions .source-toggle{flex:1}
+}
+@media(max-width:460px){
+  .source-ranking-summary{gap:7px}
+  .source-summary-box{padding:10px}
+  .source-metrics{display:grid;grid-template-columns:1fr 1fr;gap:5px 8px}
+}
+
 /* v0.28.2 — readable light pages + no-wrap controls + workspace account UI */
 .page.active{
   color:var(--text)!important;
@@ -1742,7 +1792,22 @@ button{line-height:1.2!important}
 
       <section class="page" id="sourcesPage">
         <div class="page-head"><div><h2>Источники</h2><p>Сайты, RSS и будущие Telegram-источники.</p></div></div>
-        <section class="card"><div class="row"><div><div class="label">Подключено</div><div class="big" id="sourceCount">0</div></div><span class="chip">официальные + свои</span></div><div id="sources"></div><div class="two" style="margin-top:12px"><input id="sourceName" placeholder="Название источника"><input id="sourceUrl" placeholder="https://... или t.me/..."></div><button style="margin-top:8px" onclick="addSource()">+ Добавить источник</button></section>
+        <section class="card">
+          <div class="row source-head-row">
+            <div><div class="label">Подключено</div><div class="big" id="sourceCount">0</div></div>
+            <span class="chip">рейтинг эффективности</span>
+          </div>
+          <div class="source-ranking-summary">
+            <div class="source-summary-box"><b id="sourceStrongCount">0</b><span>Сильные</span></div>
+            <div class="source-summary-box"><b id="sourceWorkingCount">0</b><span>Рабочие</span></div>
+            <div class="source-summary-box"><b id="sourceWeakCount">0</b><span>Слабые</span></div>
+            <div class="source-summary-box source-summary-bad"><b id="sourceReplaceCount">0</b><span>На замену</span></div>
+          </div>
+          <div class="notice source-rating-note">Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.</div>
+          <div id="sources" class="source-ranked-list"></div>
+          <div class="two" style="margin-top:14px"><input id="sourceName" placeholder="Название источника"><input id="sourceUrl" placeholder="https://..."></div>
+          <button style="margin-top:8px" onclick="addSource()">+ Добавить источник</button>
+        </section>
       </section>
 
       <section class="page" id="queuePage">
@@ -2028,7 +2093,7 @@ button{line-height:1.2!important}
 <div id="toast" class="toast"></div>
 
 <script>
-var state={},systemStatus={},newsItems=[],calendarPickerTarget=null;
+var state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[];
 var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
@@ -2292,13 +2357,53 @@ document.addEventListener('click',function(e){var sw=el('accountSwitcher');if(sw
 document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListener('click',function(){goPage(btn.dataset.page)})});
 
 async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});if(activeWorkspaceId)opt.headers['x-workspace-id']=activeWorkspaceId;var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
-async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderConnections(false).catch(function(e){toast(e.message)})}
+async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderConnections(false).catch(function(e){toast(e.message)})}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode(\''+m+'\')">'+labels[m]+'</button>'}).join('');
   ['discovered','rewritten','published','skipped'].forEach(function(k){el('s_'+k).textContent=(state.stats&&state.stats[k])||0});
   el('sourceCount').textContent=(state.sources||[]).length;
-  el('sources').innerHTML=(state.sources||[]).map(function(s){var group=s.group==='official'?'Официальный источник':s.group==='media'?'СМИ':'Источник';return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="meta">'+group+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включено':'Выключено')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div></div>'}).join('');
+  var rankingMap={};(sourceRankings||[]).forEach(function(r){rankingMap[r.id]=r});
+  var sortedSources=(state.sources||[]).slice().sort(function(a,b){
+    var ra=rankingMap[a.id],rb=rankingMap[b.id];
+    var ar=ra&&ra.rating!=null?ra.rating:-1,br=rb&&rb.rating!=null?rb.rating:-1;
+    if(br!==ar)return br-ar;
+    return String(a.name||'').localeCompare(String(b.name||''),'ru');
+  });
+  var statusCounts={strong:0,working:0,weak:0,replace:0};
+  sourceRankings.forEach(function(r){
+    if(r.status==='Сильный')statusCounts.strong++;
+    else if(r.status==='Рабочий')statusCounts.working++;
+    else if(r.status==='Слабый')statusCounts.weak++;
+    else if(r.status==='На замену'||r.status==='Не используется')statusCounts.replace++;
+  });
+  if(el('sourceStrongCount'))el('sourceStrongCount').textContent=statusCounts.strong;
+  if(el('sourceWorkingCount'))el('sourceWorkingCount').textContent=statusCounts.working;
+  if(el('sourceWeakCount'))el('sourceWeakCount').textContent=statusCounts.weak;
+  if(el('sourceReplaceCount'))el('sourceReplaceCount').textContent=statusCounts.replace;
+  el('sources').innerHTML=sortedSources.map(function(s){
+    var group=s.group==='official'?'Официальный':s.group==='media'?'СМИ':'Свой';
+    var r=rankingMap[s.id]||{rating:null,status:'Собираем данные',rank:'—',checks:0,scored:0,strong:0,selected:0,published:0,errors:0,avgScore:null};
+    var rating=r.rating==null?'—':r.rating;
+    var cls=r.status==='Сильный'?'source-rank-good':r.status==='Рабочий'?'source-rank-ok':r.status==='Слабый'?'source-rank-weak':(r.status==='На замену'||r.status==='Не используется')?'source-rank-bad':'source-rank-new';
+    var avg=r.avgScore==null?'—':r.avgScore;
+    return '<div class="source source-ranked-card '+(!s.enabled?'source-disabled':'')+'">'+
+      '<div class="source-rank-number">#'+esc(r.rank||'—')+'</div>'+
+      '<div class="source-ranked-main"><div class="source-ranked-title"><div class="name">'+esc(s.name)+'</div><span class="source-rating '+cls+'">'+esc(rating)+'/100 · '+esc(r.status)+'</span></div>'+
+      '<div class="meta">'+group+(s.enabled?' · включён':' · выключен')+'</div>'+
+      '<div class="url">'+esc(s.url)+'</div>'+
+      '<div class="source-metrics">'+
+        '<span>Проверок <b>'+esc(r.checks||0)+'</b></span>'+
+        '<span>Оценено <b>'+esc(r.scored||0)+'</b></span>'+
+        '<span>Сильных <b>'+esc(r.strong||0)+'</b></span>'+
+        '<span>Взято в календарь <b>'+esc(r.selected||0)+'</b></span>'+
+        '<span>Опубликовано <b>'+esc(r.published||0)+'</b></span>'+
+        '<span>Средний AI <b>'+esc(avg)+'</b></span>'+
+        (r.errors?'<span class="source-error-metric">Ошибок <b>'+esc(r.errors)+'</b></span>':'')+
+      '</div></div>'+
+      '<div class="actions source-ranked-actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включён':'Выключен')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div>'+
+    '</div>';
+  }).join('');
   el('queueCount').textContent=(state.queue||[]).length;
   var qp=state.queuePolicy||{};
   if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='AI оценивает силу новости по 100-балльной шкале. Лучший материал идёт в ближайший слот, остальные сильные новости остаются в очереди и конкурируют за следующие часы. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
