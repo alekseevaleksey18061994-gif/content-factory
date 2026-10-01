@@ -898,9 +898,21 @@ async function preflightPublicPostPage(page) {
     throw new Error("Preview URL должен быть абсолютным HTTPS");
   }
 
+  const requestHeaders = { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreflight/1.0)" };
+
+  const pageHead = await fetch(page.url, {
+    method: "HEAD",
+    redirect: "manual",
+    headers: requestHeaders,
+    signal: AbortSignal.timeout(15000)
+  });
+  if (pageHead.status !== 200) throw new Error("Public preview HEAD HTTP " + pageHead.status);
+  const pageHeadType = String(pageHead.headers.get("content-type") || "").toLowerCase();
+  if (!pageHeadType.includes("text/html")) throw new Error("Public preview HEAD имеет неверный Content-Type");
+
   const pageResponse = await fetch(page.url, {
     redirect: "manual",
-    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreflight/1.0)" },
+    headers: requestHeaders,
     signal: AbortSignal.timeout(15000)
   });
   if (pageResponse.status !== 200) throw new Error("Public preview HTTP " + pageResponse.status);
@@ -911,9 +923,23 @@ async function preflightPublicPostPage(page) {
     throw new Error("Public preview не содержит ожидаемый og:image");
   }
 
+  const imageHead = await fetch(page.imageUrl, {
+    method: "HEAD",
+    redirect: "manual",
+    headers: requestHeaders,
+    signal: AbortSignal.timeout(15000)
+  });
+  if (imageHead.status !== 200) throw new Error("og:image HEAD HTTP " + imageHead.status);
+  const imageHeadType = String(imageHead.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (imageHeadType !== "image/jpeg") throw new Error("og:image HEAD должен быть image/jpeg");
+  const imageHeadLength = Number(imageHead.headers.get("content-length") || 0);
+  if (!imageHeadLength || imageHeadLength > 1048576) {
+    throw new Error("og:image HEAD должен сообщать размер от 1 байта до 1 МБ");
+  }
+
   const imageResponse = await fetch(page.imageUrl, {
     redirect: "manual",
-    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreflight/1.0)" },
+    headers: requestHeaders,
     signal: AbortSignal.timeout(15000)
   });
   if (imageResponse.status !== 200) throw new Error("og:image HTTP " + imageResponse.status);
@@ -932,7 +958,17 @@ async function preflightPublicPostPage(page) {
       [page.slug]
     );
   }
-  return { ok: true, pageStatus: 200, imageStatus: 200, imageBytes: bytes.length, width: meta.width, height: meta.height };
+  return {
+    ok: true,
+    pageHeadStatus: pageHead.status,
+    pageStatus: pageResponse.status,
+    imageHeadStatus: imageHead.status,
+    imageStatus: imageResponse.status,
+    imageBytes: bytes.length,
+    imageHeadBytes: imageHeadLength,
+    width: meta.width,
+    height: meta.height
+  };
 }
 
 async function markPublicPostPreflightFailed(slug, error) {
@@ -3603,7 +3639,7 @@ const server = http.createServer(async function(req, res) {
       });
     }
 
-    if (req.method === "GET" && p.startsWith("/p/")) {
+    if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
       const slug = decodeURIComponent(p.slice("/p/".length));
       if (!slug || !/^[a-z0-9_-]{8,120}$/i.test(slug)) return sendJson(res, 404, { ok: false, error: "page not found" });
       const page = await getPublicPostPage(slug);
@@ -3615,17 +3651,22 @@ const server = http.createServer(async function(req, res) {
         "cache-control": "public, max-age=300, s-maxage=300",
         "x-robots-tag": "index, follow"
       });
-      return res.end(body);
+      return req.method === "HEAD" ? res.end() : res.end(body);
     }
 
-    if (req.method === "GET" && p.startsWith("/media/")) {
+    if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/media/")) {
       const fileName = decodeURIComponent(p.slice("/media/".length));
       if (!fileName || fileName !== path.basename(fileName)) return sendJson(res, 400, { ok: false, error: "invalid media path" });
       const filePath = path.join(MEDIA_DIR, fileName);
       try {
-        const body = fs.readFileSync(filePath);
         const ext = path.extname(fileName).toLowerCase();
         const type = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "application/octet-stream";
+        if (req.method === "HEAD") {
+          const stat = fs.statSync(filePath);
+          res.writeHead(200, { "content-type": type, "content-length": stat.size, "cache-control": "public, max-age=31536000, immutable" });
+          return res.end();
+        }
+        const body = fs.readFileSync(filePath);
         res.writeHead(200, { "content-type": type, "content-length": body.length, "cache-control": "public, max-age=31536000, immutable" });
         return res.end(body);
       } catch {
