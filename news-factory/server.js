@@ -1604,7 +1604,7 @@ async function buildMediaPackCollage(urls) {
 
 async function prepareVkPreviewImage(post, slug) {
   ensureDataDir();
-  const sourceUrl = String(post && (post.generatedImageUrl || post.imageUrl) || "").trim();
+  const sourceUrl = String(post && (post.imageUrl || post.generatedImageUrl) || "").trim();
   const mediaPackUrls = Array.isArray(post && post.mediaPackUrls) ? post.mediaPackUrls.filter(Boolean).slice(0, 4) : [];
   let input = null;
 
@@ -3683,7 +3683,7 @@ async function sendTelegramPost(post) {
   const mediaPackUrls = Array.from(new Set((Array.isArray(post.mediaPackUrls) ? post.mediaPackUrls : [])
     .map(function(url){ return String(url || "").trim(); })
     .filter(function(url){ return /^https?:\/\//i.test(url); }))).slice(0, 10);
-  let imageUrl = String(post.generatedImageUrl || post.imageUrl || mediaPackUrls[0] || "").trim();
+  let imageUrl = String(post.imageUrl || post.generatedImageUrl || mediaPackUrls[0] || "").trim();
   const videoUrl = String(post.videoUrl || "").trim();
 
   if (mediaPackUrls.length > 1 && !videoUrl) {
@@ -3743,7 +3743,7 @@ async function sendTelegramPost(post) {
     }
   }
 
-  imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
+  imageUrl = String(post.imageUrl || post.generatedImageUrl || "").trim();
 
   if (imageUrl && html.length <= 950) {
     try {
