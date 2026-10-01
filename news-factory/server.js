@@ -3876,7 +3876,9 @@ async function buildSystemStatus(force) {
     anthropic: {
       state: claudeLatestOk ? "connected" : (githubAutomation.workflowOk ? "partial" : "missing"),
       description: claudeLatestOk ? "Anthropic API подтверждён успешным Claude Code workflow" : "Anthropic API не подтверждён последним workflow",
-      detail: githubAutomation.workflowOk ? "GitHub Secret ANTHROPIC_API_KEY настроен; значение скрыто" : "Claude Code workflow недоступен",
+      detail: claudeLatestOk
+        ? "Anthropic подтверждён успешным Claude Code run · значение ANTHROPIC_API_KEY скрыто"
+        : (githubAutomation.workflowOk ? "Workflow найден; наличие ANTHROPIC_API_KEY подтвердит следующий успешный run" : "Claude Code workflow недоступен"),
       next: claudeLatestOk ? "" : "Проверить ANTHROPIC_API_KEY и биллинг Anthropic"
     },
     publicEndpoint: {
