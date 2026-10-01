@@ -22,7 +22,8 @@ const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunb
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low";
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
 const VK_ACCESS_TOKEN = String(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || "").trim();
-const VK_USER_ACCESS_TOKEN = String(process.env.VK_USER_ACCESS_TOKEN || "").trim();
+const VK_USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_USER_ACCESS_TOKEN || "").trim();
+const TELEGRAM_ALERT_CHAT_ID = String(process.env.TELEGRAM_ALERT_CHAT_ID || "").trim();
 const VK_GROUP_ID = Math.abs(Number(process.env.VK_GROUP_ID || 0)) || 0;
 const VK_OWNER_ID = Number(process.env.VK_OWNER_ID || (VK_GROUP_ID ? -VK_GROUP_ID : 0)) || 0;
 const VK_SCREEN_NAME = String(process.env.VK_SCREEN_NAME || "chtotamai").trim();
@@ -107,6 +108,11 @@ const defaultState = {
     lastPublishedAt: "",
     lastPublishedSlot: "",
     lastTickKey: ""
+  },
+  topicSettings: {
+    default: {
+      allow_text_fallback: false
+    }
   },
   queue: [],
   newsVisibleAfter: "",
