@@ -2218,46 +2218,6 @@ async function fetchVkAnalytics() {
 }
 
 
-async function retryLatestMissingVkOnce() {
-  if (!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) return;
-  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
-  const marker = "v0.20.2-retry-latest-missing-vk";
-  if (state.migrations.includes(marker)) return;
-
-  const latest = (state.history || []).find(function(item){ return item && !item.vkPostId; });
-  if (!latest) {
-    state.migrations.push(marker);
-    saveState();
-    return;
-  }
-
-  try {
-    const vk = await publishVkPost({
-      id: latest.id || newId("vk_retry"),
-      title: latest.title || "Что там у ИИ?",
-      text: latest.text || "",
-      sourceUrl: latest.sourceUrl || "",
-      imageUrl: latest.imageUrl || "",
-      generatedImageUrl: latest.generatedImageUrl || "",
-      videoUrl: latest.videoUrl || ""
-    });
-    if (vk && vk.post_id) {
-      latest.vkPostId = vk.post_id;
-      latest.vkError = "";
-      latest.vkRetriedAt = new Date().toISOString();
-      console.log("VK startup retry published post #" + vk.post_id);
-    }
-  } catch (error) {
-    latest.vkError = String(error && error.message || error);
-    latest.vkRetryFailedAt = new Date().toISOString();
-    console.warn("VK startup retry failed:", latest.vkError);
-  }
-
-  state.migrations.push(marker);
-  saveState();
-}
-
-
 let statusCache = { at: 0, value: null };
 let analyticsCache = { at: 0, value: null };
 
@@ -3354,7 +3314,6 @@ const server = http.createServer(async function(req, res) {
 await initDb();
 const startupCleanup = pruneQueueItems(state);
 if (startupCleanup.removed) saveState();
-await retryLatestMissingVkOnce();
 startCollectorScheduler();
 
 server.listen(PORT, "0.0.0.0", function() {
