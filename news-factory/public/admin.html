@@ -792,7 +792,7 @@ button,.quick button,.quick a{
       </section>
 
       <section class="page" id="calendarPage">
-        <div class="page-head"><div><h2>Календарь публикаций</h2><p>План канала «Что там у ИИ?» на 24 часа по московскому времени.</p></div><span class="chip">Москва · UTC+3</span></div>
+        <div class="page-head"><div><h2>Календарь публикаций</h2><p>Динамические публикации каждый час с 08:00 до 23:00 по Москве.</p></div><span class="chip">Москва · UTC+3</span></div>
         <section class="card">
           <div class="calendar-toolbar">
             <div class="calendar-day-nav">
@@ -805,11 +805,11 @@ button,.quick button,.quick a{
           <div class="calendar-summary">
             <div class="calendar-summary-box"><b id="calendarTarget">10</b><span>Цель в сутки</span></div>
             <div class="calendar-summary-box"><b id="calendarPublished">0</b><span>Опубликовано</span></div>
-            <div class="calendar-summary-box"><b id="calendarRegular">8</b><span>Плановых окон</span></div>
-            <div class="calendar-summary-box"><b id="calendarReserve">2</b><span>Резервных окон</span></div>
+            <div class="calendar-summary-box"><b id="calendarRegular">16</b><span>Окон 08–23</span></div>
+            <div class="calendar-summary-box"><b id="calendarReserve">15 мин</b><span>До поиска</span></div>
           </div>
           <div id="calendarSlots" class="calendar-slots"></div>
-          <div class="calendar-note" id="calendarNote">Автопубликация сейчас выключена. Календарь показывает утверждённый план: 8 плановых публикаций + до 2 резервных сильных новостей, максимум 12 постов за сутки.</div>
+          <div class="calendar-note" id="calendarNote">Новости не назначаются заранее. За 15 минут до каждого часа система ищет свежие новости, выбирает лучшую и готовит её к публикации.</div>
         </section>
       </section>
 
@@ -820,7 +820,7 @@ button,.quick button,.quick a{
 
       <section class="page" id="modePage">
         <div class="page-head"><div><h2>Режим работы</h2><p>Уровень автоматизации системы.</p></div></div>
-        <section class="card"><div id="modes" class="modes"></div><div class="notice" style="margin-top:12px">AUTO станет полноценным после запуска News Collector и scheduler.</div><button style="margin-top:12px" onclick="testPost()">Тест в Telegram</button></section>
+        <section class="card"><div id="modes" class="modes"></div><div class="notice" style="margin-top:12px">AUTO: за 15 минут до каждого часа система ищет свежую новость и публикует её одновременно в Telegram и VK с 08:00 до 23:00.</div><button style="margin-top:12px" onclick="testPost()">Тест в Telegram</button></section>
       </section>
 
       <section class="page" id="connectionsPage">
@@ -869,7 +869,7 @@ function statusRu(v){
     queued:'В очереди',published:'Опубликовано',discovered:'Найдено',rewrite_error:'Ошибка AI',expired:'Устарело',
     connected:'Подключено',partial:'Частично',missing:'Не подключено',
     running:'Работает',success:'Успешно',failed:'Ошибка',completed_with_errors:'Завершено с ошибками',
-    disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',review_mode:'На проверку',
+    disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',slot_scheduler:'Ждёт ближайший слот',review_mode:'На проверку',
     high:'Высокая',medium:'Средняя',low:'Низкая',
     found:'Медиа найдено',video_found:'Видео найдено',photo_found:'Фото найдено',enhanced:'Фото улучшено AI',generated:'Фото сгенерировано',missing:'Нет медиа',generation_error:'Ошибка генерации',missing_media:'Нет медиа',
     photo:'Фото',video:'Видео',generated_media:'Сгенерировано',
@@ -1009,10 +1009,10 @@ function renderCalendar(){
   var isToday=calendarDateKey===today;
   el('calendarDayTitle').textContent=(isToday?'Сегодня · ':'')+prettyCalendarDate(calendarDateKey);
   el('calendarTarget').textContent=schedule.targetPerDay||10;
-  var regular=slots.filter(function(x){return x.kind==='regular'}).length;
-  var reserve=slots.filter(function(x){return x.kind==='reserve'}).length;
+  var regular=slots.length;
+  var reserve=0;
   el('calendarRegular').textContent=regular;
-  el('calendarReserve').textContent=reserve;
+  el('calendarReserve').textContent='15 мин';
 
   var dayHistory=(state.history||[]).filter(function(h){return historyMoscowKey(h)===calendarDateKey});
   el('calendarPublished').textContent=dayHistory.length;
@@ -1043,21 +1043,16 @@ function renderCalendar(){
       var pp=postParts(item);
       title=pp.title||'Без заголовка';
       meta=(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
-      status='Запланировано';cls='wait';
+      status='Подготовлено';cls='wait';
       actions='<div class="calendar-slot-actions"><button onclick="openQueuePreview(\''+item.id+'\')">Посмотреть</button><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Заменить</button><button class="danger" onclick="calendarRemove(\''+calendarDateKey+'\',\''+slot.time+'\')">Убрать</button></div>';
-    }else if(slot.kind==='reserve'){
-      title='Новость не выбрана';
-      meta='Резерв используем только для сильной новости';
-      status='Резерв';cls='reserve';
-      actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Выбрать новость</button></div>';
     }else if(todayCmp<0 || (isToday&&slotMin<nowMin-55)){
       title='Публикации не было';
       meta='Окно уже прошло';
       status='Пропущено';cls='missed';
     }else{
-      title='Новость не выбрана';
-      meta='Выберите из свежей очереди';
-      status='Свободно';cls='wait';
+      title='Ждём свежую новость';
+      meta='Автопоиск начнётся за 15 минут до этого времени';
+      status='Ожидание';cls='wait';
       actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Выбрать</button><button onclick="calendarAuto(\''+calendarDateKey+'\',\''+slot.time+'\')">Автоподбор</button></div>';
     }
 
@@ -1065,7 +1060,7 @@ function renderCalendar(){
   }).join('');
 
   var autoOn=systemStatus&&systemStatus.details&&systemStatus.details.scheduler&&String(systemStatus.details.scheduler.detail||'').includes('включена');
-  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'Цель — '+(schedule.targetPerDay||10)+' постов в сутки: '+regular+' плановых + до '+reserve+' резервных. Каждое окно теперь привязано к конкретной новости.';
+  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'16 потенциальных окон с 08:00 до 23:00. За 15 минут до каждого часа система собирает свежие новости и выбирает лучшую. Если подходящей свежей новости нет — слот пропускается. Цель 10, максимум 12 постов в сутки.';
   renderDashboardCalendar();
 }
 function moveCalendarDay(delta){if(!calendarDateKey)calendarDateKey=moscowDateKey(new Date());calendarDateKey=addCalendarDays(calendarDateKey,delta);renderCalendar()}
@@ -1081,8 +1076,8 @@ function renderDashboardCalendar(){
   el('dashCalendar').innerHTML=upcoming.map(function(slot){
     var q=(state.queue||[]).find(function(x){return x.id===assignments[slot.time]});
     var pp=q?postParts(q):null;
-    var title=pp?pp.title:(slot.kind==='reserve'?'Резервное окно':'Новость не выбрана');
-    var meta=q?((q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):(slot.kind==='reserve'?'Только для сильной новости':'Откройте календарь для выбора');
+    var title=pp?pp.title:'Ждём свежую новость';
+    var meta=q?((q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):'Автопоиск за 15 минут до слота';
     return '<div class="dash-slot" onclick="'+(q?('openQueuePreview(\''+q.id+'\')'):"goPage('calendarPage')")+'"><div class="dash-slot-time">'+esc(slot.time)+'</div><div class="dash-slot-title">'+esc(title)+'</div><div class="dash-slot-meta">'+esc(meta)+'</div></div>';
   }).join('');
 }
@@ -1262,7 +1257,7 @@ async function loadCollectorStatus(){
   try{
     var s=await api('/api/collector/status');
     el('collectorEnabled').textContent=s.enabled?'Включён':'Выключен';
-    el('collectorInterval').textContent=(s.intervalMinutes||'—')+' мин';
+    el('collectorInterval').textContent=s.strategy==='dynamic-hourly'?'за 15 мин':((s.intervalMinutes||'—')+' мин');
     el('collectorDb').textContent=s.dbReady?'Подключён':'Нет';
     el('collectorAuto').textContent=s.autoPublishEnabled?'Включена':'Выключена';
     var last=s.lastRun;
@@ -1270,7 +1265,9 @@ async function loadCollectorStatus(){
     var lastTime=last&&(last.finishedAt||last.startedAt);
     el('collectorInfo').textContent=s.running
       ? 'Сборщик сейчас работает…'
-      : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. До '+(s.maxItemsPerRun||5)+' новых материалов за цикл. Новости старше '+(s.articleMaxAgeHours||24)+' ч отсекаются, очередь очищается через '+(s.queueMaxAgeHours||12)+' ч и хранит максимум '+(s.queueMaxAutoItems||20)+' свежих материалов. Медиа обязательно. Автопубликация '+(s.autoPublishEnabled?('не чаще 1 поста в '+(s.autoPublishMinIntervalMinutes||30)+' мин'):'отключена — новые новости идут в очередь')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
+      : (s.strategy==='dynamic-hourly'
+        ? 'Динамический режим: в :45 система проверяет источники и готовит лучшую свежую новость на следующий час. Публикации 08:00–23:00, цель 10, максимум 12 в сутки. Если свежей новости нет — слот пропускается. Telegram + VK.'
+        : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. До '+(s.maxItemsPerRun||5)+' новых материалов за цикл.')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
   }catch(e){el('collectorInfo').textContent='Ошибка статуса: '+e.message}
 }
 function postParts(item){
