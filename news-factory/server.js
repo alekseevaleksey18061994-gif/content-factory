@@ -2675,9 +2675,11 @@ async function buildSystemStatus(force) {
       state: vkStatusProbe.ok ? "connected" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
       description: vkStatusProbe.ok ? "VK подключён через API" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
       detail: vkStatusProbe.ok && vkStatusProbe.group
-        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · " + (VK_USER_ACCESS_TOKEN ? "текст + фото" : "текст; для фото нужен user token"))
+        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · " + (VK_USER_TOKEN ? "текст + фото" : "текст; для фото нужен VK_USER_TOKEN"))
         : String(vkStatusProbe.error || ""),
-      next: vkStatusProbe.ok ? "" : "Проверить права ключа сообщества VK"
+      next: vkStatusProbe.ok
+        ? (VK_USER_TOKEN ? "" : "Добавить VK_USER_TOKEN с правами photos,wall,groups,offline")
+        : "Проверить права ключа сообщества VK"
     },
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
