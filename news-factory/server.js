@@ -4959,6 +4959,7 @@ async function callOpenAIRewrite(payload) {
     editorialFormat.instruction,
     "- Не повторяй привычный шаблон соседних постов. Варьируй длину абзацев, тип хука, расположение акцента и наличие вопроса в финале.",
     "- Хук должен обещать ровно ту ценность, которую даёт пост: никаких ложных интриг, сенсационности и кликбейта.",
+    "- Перед финальным ответом мысленно придумай минимум 3 разных хука (факт, вопрос, следствие/контраст) и выбери самый точный для этой новости; варианты в ответ не выводи.",
     "- Если финальный вопрос не добавляет смысла, закончи сильным фактом или коротким выводом — вопрос не обязателен.",
     "",
     "ФОРМАТИРОВАНИЕ TELEGRAM:",
@@ -5231,18 +5232,21 @@ async function tryMergeStoryQueueItem(newItem) {
   if (!composed || composed.sameStory === false) return null;
 
   let mediaPack = [];
-  try {
-    mediaPack = await generateStoryMediaPack({
-      id: "story_" + stableHashNumber(sources.map(function(x){ return x.url || x.newsId; }).join("|")),
-      title: composed.title,
-      text: composed.text,
-      sourceName: sources.map(function(x){ return x.sourceName; }).join(", ")
-    }, STORY_MEDIA_PACK_COUNT);
-  } catch (error) {
-    console.warn("Story media pack failed:", error.message);
+  const existingPack = Array.isArray(target.mediaPackUrls) ? target.mediaPackUrls.filter(Boolean) : [];
+  if (existingPack.length < 2) {
+    try {
+      mediaPack = await generateStoryMediaPack({
+        id: "story_" + stableHashNumber(sources.map(function(x){ return x.url || x.newsId; }).join("|")),
+        title: composed.title,
+        text: composed.text,
+        sourceName: sources.map(function(x){ return x.sourceName; }).join(", ")
+      }, STORY_MEDIA_PACK_COUNT);
+    } catch (error) {
+      console.warn("Story media pack failed:", error.message);
+    }
   }
 
-  const fallbackUrls = [target.generatedImageUrl, newItem.generatedImageUrl].filter(Boolean);
+  const fallbackUrls = existingPack.concat([target.generatedImageUrl, newItem.generatedImageUrl].filter(Boolean));
   const mediaPackUrls = Array.from(new Set(
     mediaPack.map(function(x){ return x.url; }).concat(fallbackUrls)
   )).slice(0, STORY_MEDIA_PACK_COUNT);
