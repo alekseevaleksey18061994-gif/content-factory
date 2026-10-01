@@ -1997,6 +1997,25 @@ button{line-height:1.2!important}
   color:#116fbd;
   text-decoration:none;
 }
+/* v0.32.0 — Editorial Intelligence */
+.quality-badge{color:#116fbd!important;border-color:rgba(17,111,189,.2)!important;background:rgba(231,246,255,.9)!important}
+.quality-badge.hold{color:#b54c58!important;border-color:rgba(213,75,89,.22)!important;background:rgba(255,238,241,.94)!important}
+.priority-badge{color:#5b4aa4!important;border-color:rgba(91,74,164,.2)!important;background:rgba(242,239,255,.94)!important}
+.update-badge{color:#9b6500!important;border-color:rgba(222,157,31,.22)!important;background:rgba(255,247,226,.95)!important}
+.role-badge{color:#52657f!important;border-color:rgba(82,101,127,.16)!important;background:rgba(244,248,252,.95)!important}
+.why-panel{
+  display:none;margin-top:10px;padding:11px 12px;border-radius:14px;
+  background:rgba(246,250,255,.92);border:1px solid rgba(45,119,184,.13);
+  color:#405673;font-size:10.5px;line-height:1.5
+}
+.why-panel.open{display:block}
+.why-panel b{display:block;color:#173453;font-size:11px;margin-bottom:6px}
+.why-panel ul{margin:0;padding-left:17px}
+.why-panel li+li{margin-top:3px}
+.preview-platform-tabs{display:flex;gap:7px;padding:8px 8px 0}
+.preview-platform-tabs button{min-height:34px;padding:7px 12px;border-radius:999px;font-size:10.5px}
+.preview-platform-tabs button.active{background:#168cff;color:#fff;border-color:#168cff}
+
 
 </style>
 </head>
@@ -2423,7 +2442,7 @@ button{line-height:1.2!important}
 <div id="toast" class="toast"></div>
 
 <script>
-var state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[];
+var state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],previewCurrentItem=null;
 var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
@@ -2433,7 +2452,7 @@ function statusRu(v){
     queued:'В очереди',scheduled:'Запланировано',published:'Опубликовано',discovered:'Найдено',rewrite_error:'Ошибка AI',expired:'Устарело',media_failed:'Ошибка медиа VK',
     connected:'Подключено',partial:'Частично',missing:'Не подключено',
     running:'Работает',success:'Успешно',failed:'Ошибка',completed_with_errors:'Завершено с ошибками',
-    disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',slot_scheduler:'Ждёт ближайший слот',review_mode:'На проверку',
+    disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',slot_scheduler:'Ждёт ближайший слот',review_mode:'На проверку',quality_hold:'QC: на доработку',duplicate_story:'Дубль сюжета',
     high:'Высокая',medium:'Средняя',low:'Низкая',
     found:'Медиа найдено',video_found:'Видео найдено',photo_found:'Фото найдено',enhanced:'Фото улучшено AI',generated:'AI-обложка (fallback)',copyright_pending:'Медиа заблокировано',missing:'Нет медиа',generation_error:'Ошибка AI-обложки',missing_media:'Нет медиа',
     photo:'Фото',video:'Видео',generated_media:'Сгенерировано',
@@ -2448,6 +2467,18 @@ function mediaLicenseLabel(v){
 function mediaLicenseClass(v){
   var x=String(v||'unknown');
   return x==='allowed'?'allowed':x==='forbidden'?'forbidden':'unknown';
+}
+function sourceRoleRu(v){
+  var map={official_primary:'Официальный источник',author_opinion:'Авторское мнение',media_context:'СМИ / контекст',multi_source:'Несколько источников',context_source:'Контекстный источник'};
+  return map[String(v||'')]||'';
+}
+function whyPostHtml(q){
+  var d=q&&q.decisionExplanation||{},f=Array.isArray(d.factors)?d.factors:[];
+  var summary=d.summary||q.decisionSummary||'Система учитывает рейтинг новости, качество текста, разнообразие ленты и медиа.';
+  return '<div class="why-panel" id="why_'+esc(q.id)+'"><b>'+esc(summary)+'</b>'+(f.length?'<ul>'+f.map(function(x){return '<li>'+esc(x)+'</li>'}).join('')+'</ul>':'')+'</div>';
+}
+function toggleWhy(id){
+  var node=el('why_'+id);if(node)node.classList.toggle('open');
 }
 function safeDate(v){try{return v?new Date(v).toLocaleString('ru-RU'):''}catch{return ''}}
 function ageRu(v){
@@ -2748,9 +2779,11 @@ function render(){
   }).join('');
   el('queueCount').textContent=(state.queue||[]).length;
   var qp=state.queuePolicy||{};
-  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='AI оценивает силу новости по 100-балльной шкале. Лучший материал идёт в ближайший слот, остальные сильные новости остаются в очереди и конкурируют за следующие часы. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
+  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Редакторский контур оценивает и саму новость, и качество готового поста. AUTO публикует посты с QC не ниже '+((state.editorialPolicy&&state.editorialPolicy.autoQualityMin)||72)+'/100, учитывает разнообразие ленты, медиа и статистику аудитории. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
   var sortedQueue=(state.queue||[]).slice().sort(function(a,b){
     function score(q){
+      var priority=Number(q&&q.priorityScore);
+      if(Number.isFinite(priority))return priority;
       var base=Number(q&&q.aiScore);
       if(!Number.isFinite(base))return -1;
       var direct=!!(q&&q.videoUrl),embedded=!!(q&&q.hasEmbeddedVideo);
@@ -2782,6 +2815,9 @@ function render(){
     var videoBonus=(hasVideo?(aiScore>=55?10:4):(hasEmbeddedVideo?(aiScore>=55?5:2):0));
     var effectiveScore=Number.isFinite(aiScore)?Math.min(100,Math.round(aiScore)+videoBonus):null;
     var aiLabel=Number.isFinite(aiScore)?('AI '+Math.round(aiScore)+'/100'+(aiTier==='top'?' · Топ':aiTier==='strong'?' · Сильная':'')):'';
+    var qualityScore=Number(q.qualityScore),priorityScore=Number(q.priorityScore);
+    var qualityLabel=Number.isFinite(qualityScore)?('Пост '+Math.round(qualityScore)+'/100'):'';
+    var roleLabel=sourceRoleRu(q.sourceRole);
     var storyCount=(q.storySources&&q.storySources.length)||(q.storyCluster&&q.storyCluster.sourceCount)||0;
     var packCount=Array.isArray(q.mediaPackUrls)?q.mediaPackUrls.length:0;
     var storyNames=storyCount?(q.storySources||[]).map(function(s){return s.sourceName||s.name||''}).filter(Boolean).slice(0,5).join(' · '):'';
@@ -2793,6 +2829,11 @@ function render(){
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
           ((q.videoUrl||sourceImage)?'<span class="media-badge source-media-badge">'+(q.videoUrl?'Видео':'Фото')+' источника · ссылка сохранена</span>':(q.generatedImageUrl?'<span class="media-badge ai-fallback-badge">AI fallback · исходного медиа нет</span>':(q.mediaStatus==='copyright_pending'?'<span class="media-badge copyright-media-badge">Медиа источника заблокировано</span>':'')))+
           (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
+          (qualityLabel?'<span class="media-badge quality-badge '+(q.qcStatus==='hold'?'hold':'')+'">'+esc(qualityLabel)+(q.qcStatus==='hold'?' · HOLD':'')+'</span>':'')+
+          (Number.isFinite(priorityScore)?'<span class="media-badge priority-badge">Приоритет '+Math.round(priorityScore)+'/100</span>':'')+
+          (q.storyUpdateOf?'<span class="media-badge update-badge">↻ Обновление сюжета</span>':'')+
+          (roleLabel?'<span class="media-badge role-badge">'+esc(roleLabel)+'</span>':'')+
+          (q.platformVariants?'<span class="media-badge">TG/VK версии</span>':'')+
           (storyCount>1?'<span class="media-badge story-badge">🔥 Сюжет · '+storyCount+' источника</span>':'')+
           (packCount>1?'<span class="media-badge story-badge">🖼 '+packCount+' фото</span>':'')+
           (q.contentFormatLabel?'<span class="media-badge">'+esc(q.contentFormatLabel)+'</span>':'')+
@@ -2813,12 +2854,14 @@ function render(){
         '</div>'+
         '<div class="queue-action-row secondary">'+
           '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
+          '<button onclick="toggleWhy(\''+q.id+'\')">Почему этот пост?</button>'+
           (q.videoUrl?'<div class="queue-video-priority">🎬 Видео в приоритете</div>':((q.originalImageUrl||q.imageUrl||q.mediaStatus==='copyright_pending')?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Новая AI-обложка</button>':'<div class="queue-video-priority">Медиа готово</div>'))+
         '</div>'+
         '<div class="queue-action-row secondary">'+
           '<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
           '<button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button>'+
         '</div>'+
+        whyPostHtml(q)+
       '</div>'+
     '</article>';
   }).join(''):'<div class="empty">Очередь пока пустая</div>';
@@ -3332,8 +3375,13 @@ function editorialBodyHtml(text){
 function openModal(id){var m=el(id);if(m){m.classList.add('open');document.body.style.overflow='hidden'}}
 function closeModal(id){var m=el(id);if(m)m.classList.remove('open');if(!document.querySelector('.modal-backdrop.open'))document.body.style.overflow=''}
 function modalBackdropClose(event,id){if(event.target===el(id))closeModal(id)}
-function renderPreview(item){
-  var pp=postParts(item),img=item.imageUrl||item.originalImageUrl||item.generatedImageUrl||'',video=item.videoUrl||'';
+function renderPreview(item,platform){
+  previewCurrentItem=item;
+  platform=platform||item._previewPlatform||'telegram';
+  var variants=item.platformVariants||{};
+  var variant=variants[platform]||null;
+  var viewItem=variant?Object.assign({},item,{title:variant.title||item.title,text:variant.text||item.text}):item;
+  var pp=postParts(viewItem),img=item.imageUrl||item.originalImageUrl||item.generatedImageUrl||'',video=item.videoUrl||'';
   var pack=Array.isArray(item.mediaPackUrls)?item.mediaPackUrls.filter(Boolean).slice(0,4):[];
   var media='';
   if(video){
@@ -3350,8 +3398,12 @@ function renderPreview(item){
     : (source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'');
   el('previewMeta').textContent=(storySources.length>1?('Сюжет · '+storySources.length+' источника'):(item.sourceName||(currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory'))+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
   var body=editorialBodyHtml(pp.text||'Нет текста');
-  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+sourceLinks+'<div class="telegram-foot">'+esc((currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory')+' · предпросмотр</div></div></div></div>';
+  var tabs=(variants.telegram||variants.vk)?'<div class="preview-platform-tabs"><button class="'+(platform==='telegram'?'active':'')+'" onclick="switchPreviewPlatform(\'telegram\')">Telegram</button><button class="'+(platform==='vk'?'active':'')+'" onclick="switchPreviewPlatform(\'vk\')">VK</button></div>':'';
+  el('previewBody').innerHTML='<div class="telegram-preview">'+tabs+'<div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+sourceLinks+'<div class="telegram-foot">'+esc((currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory')+' · '+(platform==='vk'?'VK':'Telegram')+' предпросмотр</div></div></div></div>';
   openModal('previewModal');
+}
+function switchPreviewPlatform(platform){
+  if(previewCurrentItem)renderPreview(previewCurrentItem,platform);
 }
 function openQueuePreview(id){
   var item=(state.queue||[]).find(function(q){return q.id===id});
@@ -3370,6 +3422,12 @@ function openNewsPreview(id){
     originalImageUrl:md.originalImageUrl||md.imageUrl||'',
     generatedImageUrl:md.generatedImageUrl||'',
     videoUrl:md.videoUrl||'',
+    mediaPackUrls:md.mediaPackUrls||[],
+    platformVariants:md.platformVariants||null,
+    qualityScore:md.qualityScore,
+    qcStatus:md.qcStatus||'',
+    topicEntities:md.topicEntities||[],
+    sourceRole:md.sourceRole||'',
     articlePublishedAt:md.articlePublishedAt||n.detectedAt
   });
 }
