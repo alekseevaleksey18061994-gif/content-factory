@@ -3873,6 +3873,12 @@ async function buildSystemStatus(force) {
         : String(githubAutomation.error || "GitHub Actions workflow недоступен"),
       next: claudeLatestOk ? "" : "Проверить Claude Code workflow и ANTHROPIC_API_KEY в GitHub Actions"
     },
+    anthropic: {
+      state: claudeLatestOk ? "connected" : (githubAutomation.workflowOk ? "partial" : "missing"),
+      description: claudeLatestOk ? "Anthropic API подтверждён успешным Claude Code workflow" : "Anthropic API не подтверждён последним workflow",
+      detail: githubAutomation.workflowOk ? "GitHub Secret ANTHROPIC_API_KEY настроен; значение скрыто" : "Claude Code workflow недоступен",
+      next: claudeLatestOk ? "" : "Проверить ANTHROPIC_API_KEY и биллинг Anthropic"
+    },
     publicEndpoint: {
       state: publicEndpointOk ? "connected" : "missing",
       description: publicEndpointOk ? "Публичный HTTPS endpoint News Factory настроен" : "Публичный HTTPS endpoint не настроен",
@@ -3925,7 +3931,7 @@ async function buildSystemStatus(force) {
       detail: "Приоритет: видео → фото → генерация фото · найденные фото можно улучшать через " + OPENAI_IMAGE_MODEL,
       next: OPENAI_API_KEY && MEDIA_REQUIRED && GENERATE_COVER_IF_MISSING ? "" : "Проверить MEDIA_REQUIRED и GENERATE_COVER_IF_MISSING"
     },
-    supabase: {
+    postgresql: {
       state: dbReady ? "connected" : (DATABASE_URL ? "partial" : "missing"),
       description: dbReady ? "PostgreSQL подключён и доступен" : (DATABASE_URL ? "DATABASE_URL задан, база ещё не подтверждена" : "База данных не подключена"),
       detail: dbReady ? "Долговременное хранение news_items, collector_runs и snapshots" : (DATABASE_URL ? "Ожидание подключения PostgreSQL" : "Используется только /data/state.json"),
