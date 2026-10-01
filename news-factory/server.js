@@ -128,7 +128,9 @@ const defaultState = {
   },
   topicSettings: {
     default: {
-      allow_text_fallback: false
+      allow_text_fallback: false,
+      auto_publish_telegram: true,
+      auto_publish_vk: true
     }
   },
   telegramAlertChatId: "",
@@ -301,7 +303,11 @@ function loadState() {
       saved.topicSettings && typeof saved.topicSettings === "object" ? saved.topicSettings : {}
     );
     loaded.topicSettings.default = Object.assign(
-      { allow_text_fallback: false },
+      {
+        allow_text_fallback: false,
+        auto_publish_telegram: true,
+        auto_publish_vk: true
+      },
       loaded.topicSettings.default || {}
     );
 
@@ -1893,10 +1899,19 @@ async function publishDynamicSlot() {
     return { ok: true, skipped: "auto_disabled", prepared: queueId };
   }
 
+  const autoTargets = autoPublishTargetsForPost(item);
   const targets = {
-    telegram: item.telegramPublished !== true,
-    vk: item.vkPublished !== true
+    telegram: autoTargets.telegram && item.telegramPublished !== true,
+    vk: autoTargets.vk && item.vkPublished !== true
   };
+
+  if (!targets.telegram && !targets.vk) {
+    delete schedule.assignments[day][time];
+    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    saveState();
+    return { ok: true, skipped: "auto_targets_disabled", slot: time };
+  }
+
   const result = await sendMultiPlatformPost(Object.assign({}, item, {
     postId: item.id,
     topicId: item.topicId || "default",
@@ -2628,12 +2643,24 @@ function sleepMs(ms) {
   return new Promise(function(resolve){ setTimeout(resolve, ms); });
 }
 
-function allowTextFallbackForPost(post) {
+function topicSettingsForPost(post) {
   const p = post || {};
   const topicId = String(p.topicId || p.topic_id || "default");
   const topics = state && state.topicSettings && typeof state.topicSettings === "object" ? state.topicSettings : {};
-  const topic = topics[topicId] || topics.default || {};
+  return topics[topicId] || topics.default || {};
+}
+
+function allowTextFallbackForPost(post) {
+  const topic = topicSettingsForPost(post);
   return topic.allow_text_fallback === true || topic.allowTextFallback === true;
+}
+
+function autoPublishTargetsForPost(post) {
+  const topic = topicSettingsForPost(post);
+  return {
+    telegram: topic.auto_publish_telegram !== false,
+    vk: topic.auto_publish_vk !== false
+  };
 }
 
 async function notifyVkMediaFailure(post, error, attempts) {
@@ -3945,8 +3972,8 @@ async function buildSystemStatus(force) {
       next: dbReady ? "" : "Проверить PostgreSQL в Railway"
     },
     vk: {
-      state: vkStatusProbe.ok ? "partial" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
-      description: vkStatusProbe.ok ? "VK API подключён; текст публикуется, изображение через API ещё не подтверждено" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
+      state: vkStatusProbe.ok ? "connected" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
+      description: vkStatusProbe.ok ? "VK API и сообщество подключены" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
       detail: vkStatusProbe.ok && vkStatusProbe.group
         ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · community token")
         : String(vkStatusProbe.error || ""),
@@ -3962,7 +3989,11 @@ async function buildSystemStatus(force) {
       state: collectorTimer ? "connected" : (COLLECTOR_ENABLED ? "partial" : "missing"),
       description: collectorTimer ? "24/7 scheduler запущен" : "Scheduler ещё не стартовал",
       detail: collectorTimer
-        ? ("Окна 08:00–23:00 · поиск за 15 минут · Telegram + VK · автопубликация " + (AUTO_PUBLISH_ENABLED ? "включена" : "выключена"))
+        ? (function(){
+            const autoTargets = autoPublishTargetsForPost({ topicId: "default" });
+            const platforms = [autoTargets.telegram ? "Telegram" : "", autoTargets.vk ? "VK" : ""].filter(Boolean).join(" + ") || "нет активных площадок";
+            return "Окна 08:00–23:00 · поиск за 15 минут · автопубликация " + (AUTO_PUBLISH_ENABLED ? "включена" : "выключена") + " · " + platforms;
+          })()
         : "Режим: " + state.mode,
       next: collectorTimer ? "" : "Перезапустить сервис после включения collector"
     }
@@ -4286,6 +4317,7 @@ const server = http.createServer(async function(req, res) {
         articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
         queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS,
         autoPublishEnabled: AUTO_PUBLISH_ENABLED,
+        autoPublishTargets: autoPublishTargetsForPost({ topicId: "default" }),
         autoPublishMinIntervalMinutes: AUTO_PUBLISH_MIN_INTERVAL_MINUTES,
         mediaRequired: MEDIA_REQUIRED,
         generateCoverIfMissing: GENERATE_COVER_IF_MISSING,
@@ -4339,14 +4371,26 @@ const server = http.createServer(async function(req, res) {
       if (!state.topicSettings || typeof state.topicSettings !== "object") {
         state.topicSettings = structuredClone(defaultState.topicSettings);
       }
-      state.topicSettings[topicId] = Object.assign({}, state.topicSettings[topicId] || {}, {
-        allow_text_fallback: body.allow_text_fallback === true
-      });
+      const current = Object.assign({
+        allow_text_fallback: false,
+        auto_publish_telegram: true,
+        auto_publish_vk: true
+      }, state.topicSettings[topicId] || {});
+      if (Object.prototype.hasOwnProperty.call(body, "allow_text_fallback")) {
+        current.allow_text_fallback = body.allow_text_fallback === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "auto_publish_telegram")) {
+        current.auto_publish_telegram = body.auto_publish_telegram !== false;
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "auto_publish_vk")) {
+        current.auto_publish_vk = body.auto_publish_vk !== false;
+      }
+      state.topicSettings[topicId] = current;
       saveState();
       return sendJson(res, 200, {
         ok: true,
         topicId: topicId,
-        settings: state.topicSettings[topicId]
+        settings: current
       });
     }
 

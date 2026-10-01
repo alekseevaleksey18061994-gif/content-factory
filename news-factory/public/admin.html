@@ -606,6 +606,23 @@ button,.quick button,.quick a{
 .publish-section>.panel-title{padding:0 4px 10px}
 .publish-openai-test{white-space:nowrap;min-width:max-content}
 @media(max-width:560px){.publish-openai-test{width:100%}}
+
+/* v0.27.2 — social connection status + per-platform auto publish */
+.social-platform-card{align-items:stretch;flex-direction:column}
+.social-platform-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.social-platform-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding-top:13px;margin-top:13px;border-top:1px solid var(--line)}
+.social-platform-controls .link{margin-left:auto}
+.social-connect-status{font-weight:800}
+.social-connect-status.done{color:var(--green);border-color:rgba(75,208,139,.30);background:rgba(75,208,139,.08)}
+.social-connect-status.work{color:var(--amber);border-color:rgba(255,190,85,.30);background:rgba(255,190,85,.08)}
+.social-connect-status.wait{color:#9aa4b3}
+.social-auto-hint{font-size:11px;color:var(--muted);line-height:1.4;flex:1 1 180px}
+@media(max-width:760px){
+  .social-platform-top{align-items:flex-start}
+  .social-platform-controls{display:grid;grid-template-columns:1fr;align-items:stretch;width:100%}
+  .social-platform-controls .source-toggle{width:100%}
+  .social-platform-controls .link{margin-left:0;text-align:center;padding:10px}
+}
 </style>
 </head>
 <body>
@@ -865,32 +882,44 @@ button,.quick button,.quick a{
 
       <section class="page" id="modePage">
         <div class="page-head"><div><h2>Режим работы</h2><p>Уровень автоматизации системы.</p></div></div>
-        <section class="card"><div id="modes" class="modes"></div><div class="notice" style="margin-top:12px">AUTO: за 15 минут до каждого часа система ищет свежую новость и публикует её одновременно в Telegram и VK с 08:00 до 23:00.</div><button style="margin-top:12px" onclick="testPost()">Тест в Telegram</button></section>
+        <section class="card"><div id="modes" class="modes"></div><div class="notice" style="margin-top:12px">AUTO: за 15 минут до каждого часа система ищет свежую новость и публикует её с 08:00 до 23:00 в те площадки, которые включены в разделе «Соцсети».</div><button style="margin-top:12px" onclick="testPost()">Тест в Telegram</button></section>
       </section>
 
       <section class="page" id="socialPage">
-        <div class="page-head"><div><h2>Соцсети</h2><p>Каналы «Что там у ИИ?» и публикация News Factory.</p></div><span class="chip">Telegram + VK</span></div>
+        <div class="page-head"><div><h2>Соцсети</h2><p>Статус подключения и отдельное управление автопубликацией.</p></div><span class="chip">Telegram + VK</span></div>
         <div class="social-grid">
-          <section class="social-card">
-            <div class="social-card-main">
-              <div class="social-icon">TG</div>
-              <div><h3>Telegram</h3><p>@chtotamai · основной канал</p></div>
+          <section class="social-card social-platform-card">
+            <div class="social-platform-top">
+              <div class="social-card-main">
+                <div class="social-icon">TG</div>
+                <div><h3>Telegram</h3><p>@chtotamai · основной канал</p></div>
+              </div>
+              <span class="status wait social-connect-status" id="socialTgStatus">Проверка…</span>
             </div>
-            <div class="actions"><a class="link" href="https://t.me/chtotamai" target="_blank">Открыть Telegram</a></div>
+            <div class="social-platform-controls">
+              <button class="source-toggle on" id="autoTgToggle" onclick="toggleAutoPublish('telegram')"><span class="switch-knob"></span><b id="autoTgLabel">Авто: включено</b></button>
+              <span class="social-auto-hint">Определяет только автоматические публикации по расписанию. Ручная публикация работает отдельно.</span>
+              <a class="link" href="https://t.me/chtotamai" target="_blank">Открыть Telegram</a>
+            </div>
           </section>
-          <section class="social-card">
-            <div class="social-card-main">
-              <div class="social-icon">VK</div>
-              <div><h3>ВКонтакте</h3><p>Что там у ИИ? | Новости нейросетей</p></div>
+          <section class="social-card social-platform-card">
+            <div class="social-platform-top">
+              <div class="social-card-main">
+                <div class="social-icon">VK</div>
+                <div><h3>ВКонтакте</h3><p>Что там у ИИ? | Новости нейросетей</p></div>
+              </div>
+              <span class="status wait social-connect-status" id="socialVkStatus">Проверка…</span>
             </div>
-            <div class="actions">
+            <div class="social-platform-controls">
+              <button class="source-toggle on" id="autoVkToggle" onclick="toggleAutoPublish('vk')"><span class="switch-knob"></span><b id="autoVkLabel">Авто: включено</b></button>
+              <span class="social-auto-hint">Можно отключить VK от AUTO-режима, не отключая Telegram и ручные публикации.</span>
               <a class="link" href="https://vk.ru/chtotamai" target="_blank">Открыть VK</a>
             </div>
           </section>
         </div>
         <section class="card" style="margin-top:14px">
-          <div class="row"><div><div class="label">Автопубликация</div><div class="name">Один пост → Telegram + VK</div></div><span class="chip">Подключено</span></div>
-          <div class="notice" style="margin-top:10px">VK публикует карточку через уникальную публичную страницу News Factory с Open Graph-превью и локальным JPEG 1200×630. Пользовательский VK-токен для фото не требуется. Текстовый fallback включается только настройкой темы.</div>
+          <div class="row"><div><div class="label">Автопубликация</div><div class="name" id="socialAutoSummary">Загружаю настройки…</div></div><span class="chip" id="socialAutoStatus">Проверка…</span></div>
+          <div class="notice" style="margin-top:10px">Переключатели выше действуют только в режиме AUTO. Если площадка выключена, следующий автоматический пост туда не отправляется. Ручная публикация и выбор площадок в очереди остаются доступными отдельно.</div>
         </section>
       </section>
 
@@ -1057,6 +1086,7 @@ function render(){
   el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,20).map(function(h){return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+'</div></div></div>'}).join(''):'<div class="empty">Публикаций пока нет</div>';
   renderDashboard();
   renderCalendar();
+  renderSocialControls();
 }
 var calendarDateKey=null;
 function moscowDateKey(date){
@@ -1318,6 +1348,55 @@ function dashboardFromStatus(s){
   ];
   if(el('dashPipeline'))el('dashPipeline').innerHTML=stages.map(function(pair){var x=pair[1]||{state:'missing',description:'Не настроено'};var label=x.state==='connected'?'Готово':x.state==='partial'?'Частично':'Не готово';return '<div class="pipeline-row"><div class="row"><b>'+esc(pair[0])+'</b><span class="chip">'+label+'</span></div><small>'+esc(x.description||'')+'</small></div>'}).join('');
 }
+function socialConnectionMeta(value){
+  var st=String(value&&value.state||'missing');
+  if(st==='connected')return {cls:'done',label:'Подключено'};
+  if(st==='partial')return {cls:'work',label:'Частично'};
+  return {cls:'wait',label:'Не подключено'};
+}
+function setSocialStatus(id,value){
+  var node=el(id);if(!node)return;
+  var meta=socialConnectionMeta(value);
+  node.className='status social-connect-status '+meta.cls;
+  node.textContent=meta.label;
+  if(value&&value.detail)node.title=value.detail;
+}
+function renderSocialControls(){
+  var settings=(state.topicSettings&&state.topicSettings.default)||{};
+  var tg=settings.auto_publish_telegram!==false;
+  var vk=settings.auto_publish_vk!==false;
+  var tgBtn=el('autoTgToggle'),vkBtn=el('autoVkToggle');
+  if(tgBtn){tgBtn.classList.toggle('on',tg);tgBtn.classList.toggle('off',!tg)}
+  if(vkBtn){vkBtn.classList.toggle('on',vk);vkBtn.classList.toggle('off',!vk)}
+  if(el('autoTgLabel'))el('autoTgLabel').textContent='Авто: '+(tg?'включено':'выключено');
+  if(el('autoVkLabel'))el('autoVkLabel').textContent='Авто: '+(vk?'включено':'выключено');
+
+  var enabled=[tg?'Telegram':'',vk?'VK':''].filter(Boolean);
+  if(el('socialAutoSummary'))el('socialAutoSummary').textContent=enabled.length?('Авто → '+enabled.join(' + ')):'Автопубликация отключена для обеих площадок';
+  if(el('socialAutoStatus')){
+    var globallyOn=state.mode==='AUTO';
+    el('socialAutoStatus').textContent=globallyOn?(enabled.length?'AUTO активно':'AUTO без площадок'):'Режим '+statusRu(state.mode||'REVIEW');
+  }
+
+  var details=systemStatus&&systemStatus.details||{};
+  setSocialStatus('socialTgStatus',details.telegramChannel||details.telegramBot);
+  setSocialStatus('socialVkStatus',details.vk);
+}
+async function toggleAutoPublish(platform){
+  var settings=(state.topicSettings&&state.topicSettings.default)||{};
+  var field=platform==='telegram'?'auto_publish_telegram':'auto_publish_vk';
+  var current=settings[field]!==false;
+  var body={topicId:'default'};body[field]=!current;
+  try{
+    var result=await api('/api/topic-settings',{method:'POST',body:JSON.stringify(body)});
+    if(!state.topicSettings)state.topicSettings={};
+    state.topicSettings.default=result.settings||{};
+    renderSocialControls();
+    toast((platform==='telegram'?'Telegram':'VK')+' · автопубликация '+(!current?'включена':'выключена'));
+    loadCollectorStatus().catch(function(){});
+  }catch(e){toast('Настройка: '+e.message)}
+}
+
 async function renderConnections(force){
   var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;
   var names={
@@ -1369,6 +1448,7 @@ async function renderConnections(force){
   el('topStatusText').textContent=(sm.connected||0)+'/'+(sm.total||0)+' подключено';el('sideStatusText').textContent=(sm.connected||0)+' подключено · '+(sm.partial||0)+' частично';
   el('sideStatusDot').classList.toggle('warn',(sm.missing||0)>0||(sm.partial||0)>0);
   dashboardFromStatus(s);
+  renderSocialControls();
 }
 async function refreshConnections(){await renderConnections(true);toast('Статусы обновлены')}
 async function setMode(mode){await api('/api/mode',{method:'POST',body:JSON.stringify({mode:mode})});await load();toast('Режим: '+statusRu(mode))}
@@ -1408,7 +1488,11 @@ async function loadCollectorStatus(){
     el('collectorInfo').textContent=s.running
       ? 'Сборщик сейчас работает…'
       : (s.strategy==='dynamic-hourly'
-        ? 'Динамический режим: в :45 система проверяет источники и готовит лучшую свежую новость на следующий час. Публикации 08:00–23:00, цель 10, максимум 12 в сутки. Если свежей новости нет — слот пропускается. Telegram + VK.'
+        ? (function(){
+            var t=s.autoPublishTargets||{telegram:true,vk:true};
+            var platforms=[t.telegram?'Telegram':'',t.vk?'VK':''].filter(Boolean).join(' + ')||'площадки выключены';
+            return 'Динамический режим: в :45 система проверяет источники и готовит лучшую свежую новость на следующий час. Публикации 08:00–23:00, цель 10, максимум 12 в сутки. AUTO → '+platforms+'.';
+          })()
         : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. До '+(s.maxItemsPerRun||5)+' новых материалов за цикл.')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
   }catch(e){el('collectorInfo').textContent='Ошибка статуса: '+e.message}
 }
