@@ -1441,7 +1441,7 @@ async function publishDynamicSlot() {
     try {
       const dbStatus = mediaFailed ? "media_failed" : "published";
       await db.query(
-        "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb WHERE id=$1",
+        "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb, vk_post_id=COALESCE($6,vk_post_id), vk_status=$7, vk_error_code=$8, vk_error_msg=$9, vk_media_attempts=$10, updated_at=NOW() WHERE id=$1",
         [
           item.newsId,
           dbStatus,
@@ -1453,7 +1453,12 @@ async function publishDynamicSlot() {
             vkError: result.vkError || item.vkError || "",
             vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
             vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0
-          })
+          }),
+          result.vkPostId || item.vkPostId || null,
+          result.vkStatus || item.vkStatus || "",
+          result.vkErrorCode == null ? (item.vkErrorCode == null ? null : String(item.vkErrorCode)) : String(result.vkErrorCode),
+          result.vkError || item.vkError || "",
+          Number(result.vkMediaAttempts || item.vkMediaAttempts || 0)
         ]
       );
     } catch (error) {
