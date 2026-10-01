@@ -33,8 +33,6 @@ const VK_PUBLISH_ENABLED = String(process.env.VK_PUBLISH_ENABLED || "false").toL
 const VK_APP_ID = String(process.env.VK_APP_ID || "").trim();
 const VK_OAUTH_REDIRECT_URI = String(process.env.VK_OAUTH_REDIRECT_URI || (PUBLIC_BASE_URL + "/api/vk/oauth/callback")).trim();
 const VK_OAUTH_SCOPE = String(process.env.VK_OAUTH_SCOPE || "photos wall groups offline").trim();
-const VK_USER_TOKEN_FILE = path.join(DATA_DIR, "vk-user-token.secret");
-const VK_USER_REFRESH_FILE = path.join(DATA_DIR, "vk-user-refresh.secret");
 const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
@@ -51,6 +49,8 @@ const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MA
 const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
+const VK_USER_TOKEN_FILE = path.join(DATA_DIR, "vk-user-token.secret");
+const VK_USER_REFRESH_FILE = path.join(DATA_DIR, "vk-user-refresh.secret");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
