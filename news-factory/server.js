@@ -5665,6 +5665,248 @@ async function callOpenAIRewrite(payload) {
 }
 
 
+
+function fallbackEditorialQC(payload) {
+  const p = payload || {};
+  const hasMedia = Boolean(p.videoUrl || p.imageUrl || p.generatedImageUrl || (Array.isArray(p.mediaPackUrls) && p.mediaPackUrls.length));
+  const text = String(p.text || "").trim();
+  const title = String(p.title || "").trim();
+  let score = 72;
+  if (title.length >= 18 && title.length <= 100) score += 3;
+  if (text.length >= 350 && text.length <= 1100) score += 3;
+  if (hasMedia) score += 4;
+  if (!text) score = 35;
+  return {
+    title: title,
+    text: text,
+    qualityScore: Math.max(0, Math.min(100, score)),
+    qualityBreakdown: {
+      hook: title ? 14 : 4,
+      clarity: text ? 12 : 4,
+      factuality: 20,
+      originality: 11,
+      structure: text ? 8 : 3,
+      mediaFit: hasMedia ? 12 : 4
+    },
+    qcStatus: score >= AUTO_QUALITY_MIN ? "pass" : "hold",
+    qcIssues: [],
+    qcRepaired: false,
+    topicEntities: [],
+    platformVariants: {
+      telegram: { title: title, text: text },
+      vk: { title: title, text: text }
+    },
+    decisionSummary: "Базовая автоматическая проверка пройдена без отдельного AI-QC.",
+    model: ""
+  };
+}
+
+async function callOpenAIEditorialQC(payload) {
+  const p = payload || {};
+  if (!EDITORIAL_QC_ENABLED || !OPENAI_API_KEY) return fallbackEditorialQC(p);
+
+  const sourceRole = String(p.sourceRole || sourceEditorialRole(p));
+  const recent = recentHistoryItems(6).map(function(item) {
+    return {
+      title: String(item.title || "").slice(0, 160),
+      format: String(item.contentFormatLabel || item.contentFormat || ""),
+      entities: normalizeTopicEntities(item.topicEntities)
+    };
+  });
+  const mediaInfo = {
+    video: Boolean(p.videoUrl),
+    image: Boolean(p.imageUrl || p.generatedImageUrl),
+    albumCount: Array.isArray(p.mediaPackUrls) ? p.mediaPackUrls.length : 0,
+    mediaOrigin: String(p.mediaOrigin || ""),
+    mediaDirector: p.mediaDirector || null
+  };
+
+  const prompt = [
+    "Ты финальный выпускающий редактор канала «" + String(currentWorkspace().name || "News Factory") + "».",
+    "Проведи последний QC готового новостного поста и при необходимости сразу исправь его.",
+    "",
+    "НЕЛЬЗЯ добавлять факты, которых нет в исходном материале. Все числа, даты, характеристики, причины и цитаты сверяй только с SOURCE.",
+    "Роль источника: " + sourceRoleLabel(sourceRole) + ".",
+    sourceRole === "official_primary"
+      ? "Официальный источник — опора для дат, характеристик и заявлений компании."
+      : sourceRole === "author_opinion"
+        ? "Мнения, впечатления и выводы автора обязательно оставляй атрибутированными как мнение/опыт автора."
+        : "СМИ/контекстный источник — факты и оценки не смешивай.",
+    "",
+    "ПРОВЕРЬ:",
+    "- фактологию относительно SOURCE;",
+    "- сильный, но честный хук без кликбейта;",
+    "- естественный русский язык без канцелярита и типичных AI-фраз;",
+    "- отсутствие повторов, шаблонных финалов и лишнего вопроса ради вопроса;",
+    "- мобильную читаемость и короткие абзацы;",
+    "- соответствие медиа теме;",
+    "- отличие структуры от последних публикаций.",
+    "",
+    "Сделай ДВЕ адаптации одного и того же набора фактов:",
+    "Telegram: компактнее, живее, 450–850 знаков, 3–6 коротких блоков.",
+    "VK: чуть больше контекста, 600–1200 знаков, естественный первый абзац; не копируй Telegram дословно.",
+    "Ссылки на источник не вставляй — система добавит их сама.",
+    "",
+    "QUALITY SCORE 0–100 как сумма: hook 0–20, clarity 0–15, factuality 0–25, originality 0–15, structure 0–10, media_fit 0–15.",
+    "Если исходный черновик слабый — исправь его и оцени уже ИСПРАВЛЕННЫЙ вариант.",
+    "",
+    "Верни строго JSON:",
+    "{\"final_title\":\"...\",\"final_text\":\"...\",\"telegram\":{\"title\":\"...\",\"text\":\"...\"},\"vk\":{\"title\":\"...\",\"text\":\"...\"},\"quality_score\":0,\"quality_breakdown\":{\"hook\":0,\"clarity\":0,\"factuality\":0,\"originality\":0,\"structure\":0,\"media_fit\":0},\"issues\":[\"...\"],\"repaired\":true,\"entities\":[\"бренд/продукт/главная тема\"],\"decision_summary\":\"почему пост готов/не готов\"}",
+    "",
+    "SOURCE TITLE: " + String(p.sourceTitle || ""),
+    "SOURCE TEXT: " + String(p.sourceText || "").slice(0, 9000),
+    "",
+    "DRAFT TITLE: " + String(p.title || ""),
+    "DRAFT TEXT: " + String(p.text || ""),
+    "",
+    "MEDIA: " + JSON.stringify(mediaInfo),
+    "RECENT FEED: " + JSON.stringify(recent)
+  ].join("\n");
+
+  const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 2600 }),
+        signal: AbortSignal.timeout(55000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) {
+        lastError = data && data.error && data.error.message || ("OpenAI HTTP " + response.status);
+        continue;
+      }
+      const output = extractOpenAIText(data);
+      if (!output) { lastError = "QC вернул пустой ответ"; continue; }
+      let parsed;
+      try {
+        parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      } catch {
+        const first = output.indexOf("{"), last = output.lastIndexOf("}");
+        if (first >= 0 && last > first) {
+          try { parsed = JSON.parse(output.slice(first, last + 1)); } catch {}
+        }
+      }
+      if (!parsed) { lastError = "QC JSON не разобран"; continue; }
+
+      const clamp = function(value, max) {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.round(n))) : 0;
+      };
+      const raw = parsed.quality_breakdown && typeof parsed.quality_breakdown === "object" ? parsed.quality_breakdown : {};
+      const breakdown = {
+        hook: clamp(raw.hook, 20),
+        clarity: clamp(raw.clarity, 15),
+        factuality: clamp(raw.factuality, 25),
+        originality: clamp(raw.originality, 15),
+        structure: clamp(raw.structure, 10),
+        mediaFit: clamp(raw.media_fit, 15)
+      };
+      const sum = Object.values(breakdown).reduce(function(total, value){ return total + value; }, 0);
+      const explicit = Number(parsed.quality_score);
+      const score = sum > 0 ? sum : (Number.isFinite(explicit) ? Math.max(0, Math.min(100, Math.round(explicit))) : 70);
+      const finalTitle = String(parsed.final_title || p.title || "").trim();
+      const finalText = String(parsed.final_text || p.text || "").trim();
+      if (!finalText) { lastError = "QC не вернул текст"; continue; }
+
+      if (COPYRIGHT_SAFE_MODE && p.sourceText) {
+        const overlap = findVerbatimOverlap(p.sourceText, finalTitle + " " + finalText, COPYRIGHT_MAX_VERBATIM_WORDS);
+        if (overlap) { lastError = "QC оставил длинный дословный фрагмент"; continue; }
+      }
+
+      const tg = parsed.telegram && typeof parsed.telegram === "object" ? parsed.telegram : {};
+      const vk = parsed.vk && typeof parsed.vk === "object" ? parsed.vk : {};
+      return {
+        title: finalTitle,
+        text: finalText,
+        qualityScore: Math.max(0, Math.min(100, Math.round(score))),
+        qualityBreakdown: breakdown,
+        qcStatus: score >= AUTO_QUALITY_MIN ? "pass" : "hold",
+        qcIssues: Array.isArray(parsed.issues) ? parsed.issues.map(function(x){ return String(x || "").trim(); }).filter(Boolean).slice(0, 6) : [],
+        qcRepaired: Boolean(parsed.repaired),
+        topicEntities: normalizeTopicEntities(parsed.entities),
+        platformVariants: {
+          telegram: {
+            title: String(tg.title || finalTitle).trim(),
+            text: String(tg.text || finalText).trim()
+          },
+          vk: {
+            title: String(vk.title || finalTitle).trim(),
+            text: String(vk.text || finalText).trim()
+          }
+        },
+        decisionSummary: String(parsed.decision_summary || "").trim(),
+        model: model
+      };
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+
+  console.warn("Editorial QC fallback:", lastError);
+  const fallback = fallbackEditorialQC(p);
+  fallback.qcIssues = lastError ? ["AI-QC fallback: " + lastError.slice(0, 180)] : [];
+  return fallback;
+}
+
+async function classifyPublishedStoryRelationship(item) {
+  if (!item) return { relation: "new_story", candidate: null, reason: "" };
+  const cutoff = Date.now() - STORY_UPDATE_WINDOW_HOURS * 60 * 60 * 1000;
+  let best = null;
+  let bestScore = 0;
+
+  for (const h of (state.history || [])) {
+    if (!h || !h.publishedAt || new Date(h.publishedAt).getTime() < cutoff) continue;
+    const score = storySimilarity(item, h);
+    if (score > bestScore) { bestScore = score; best = h; }
+  }
+  if (!best || bestScore < 0.16) return { relation: "new_story", candidate: null, reason: "" };
+
+  if (!OPENAI_API_KEY) {
+    return bestScore >= 0.55
+      ? { relation: "possible_update", candidate: best, similarity: bestScore, reason: "Похож на недавно опубликованный сюжет" }
+      : { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+  }
+
+  const prompt = [
+    "Сравни новую новость с уже опубликованным постом.",
+    "Определи одно из трёх:",
+    "duplicate — по сути те же факты, существенного нового нет;",
+    "update — это развитие того же сюжета и есть новый важный факт/цифра/решение/дата;",
+    "new_story — отдельное событие, даже если компания/тема та же.",
+    "Не путай новости одной компании с одним событием.",
+    "Верни строго JSON: {\"relation\":\"duplicate|update|new_story\",\"new_fact\":\"что именно новое\",\"reason\":\"коротко\"}.",
+    "NEW: " + JSON.stringify({ title: item.title, text: String(item.text || "").slice(0, 2600), entities: item.topicEntities || [] }),
+    "PUBLISHED: " + JSON.stringify({ title: best.title, text: String(best.text || "").slice(0, 2600), entities: best.topicEntities || [] })
+  ].join("\n");
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+      body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
+      signal: AbortSignal.timeout(30000)
+    });
+    const data = await response.json().catch(function(){ return {}; });
+    if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+    const output = extractOpenAIText(data);
+    const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+    const relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
+    return {
+      relation: relation,
+      candidate: relation === "new_story" ? null : best,
+      similarity: bestScore,
+      newFact: String(parsed.new_fact || "").trim(),
+      reason: String(parsed.reason || "").trim()
+    };
+  } catch (error) {
+    console.warn("Story update classifier fallback:", error.message);
+    return { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+  }
+}
+
 async function callOpenAIStoryComposer(storySources, existingItem, incomingItem) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY не настроен");
   const sources = (storySources || []).slice(0, STORY_CLUSTER_MAX_SOURCES).map(function(source, index) {
