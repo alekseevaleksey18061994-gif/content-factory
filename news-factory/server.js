@@ -46,7 +46,7 @@ const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUT
 const DYNAMIC_SLOT_START_HOUR = 8;
 const DYNAMIC_SLOT_END_HOUR = 23;
 const DYNAMIC_SLOT_PREP_MINUTE = 45;
-const DYNAMIC_SLOT_MAX_AGE_HOURS = 4;
+const DYNAMIC_SLOT_MAX_AGE_HOURS = Math.max(4, Math.min(48, Number(process.env.DYNAMIC_SLOT_MAX_AGE_HOURS || 24)));
 const DYNAMIC_DAILY_TARGET = 10;
 const DYNAMIC_DAILY_MAX = 12;
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
@@ -3835,6 +3835,7 @@ const server = http.createServer(async function(req, res) {
         prepareMinutesBefore: 15,
         activeHours: "08:00–23:00",
         maxItemsPerRun: MAX_ITEMS_PER_RUN,
+        dynamicSlotMaxAgeHours: DYNAMIC_SLOT_MAX_AGE_HOURS,
         queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
         articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
         queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS,
