@@ -1774,6 +1774,43 @@ button{line-height:1.2!important}
   .connections-check-summary{justify-self:start!important}
 }
 
+
+/* v0.29.4 — ordered admin lists + no-wrap controls */
+.modes{
+  display:grid!important;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px!important;
+  flex-wrap:nowrap!important;
+}
+.modes button{
+  min-width:0!important;
+  width:100%;
+  white-space:nowrap!important;
+  overflow:hidden!important;
+  text-overflow:ellipsis;
+  padding-left:10px!important;
+  padding-right:10px!important;
+}
+.modes button.active{
+  color:#fff!important;
+  border-color:rgba(22,140,255,.34)!important;
+  background:linear-gradient(100deg,#20d4dc 0%,#168cff 76%,#5f63ee 112%)!important;
+}
+.home-hero-stat b,.system-box b,.collector-box b,.calendar-summary-box b,.kpi b,
+.source-rating,.source-rank-number,.chip,.status,.news-status,.media-badge,.slot-chip{
+  overflow-wrap:normal!important;
+  word-break:normal!important;
+  hyphens:none!important;
+}
+@media(max-width:560px){
+  .modes button{font-size:11px!important;padding:8px 6px!important}
+  .system-box b{font-size:22px!important;line-height:1.15!important}
+  .collector-box b{font-size:19px!important;line-height:1.15!important}
+  .calendar-summary-box b{font-size:20px!important;line-height:1.18!important}
+  .home-hero-stat b{font-size:14px!important}
+  .kpi b{font-size:28px!important}
+}
+
 </style>
 </head>
 <body>
@@ -1892,16 +1929,6 @@ button{line-height:1.2!important}
             <div id="dashAttention"><div class="empty">Проверяю систему…</div></div>
           </section>
         </div>
-
-        <section class="card" style="margin-top:14px">
-          <div class="panel-title"><div><h3>Быстрые действия</h3><p>Основные операции без лишних переходов</p></div></div>
-          <div class="quick">
-            <button onclick="goPage('publishPage')">Публикация + AI</button>
-            <button onclick="goPage('queuePage')">Открыть очередь</button>
-            <button onclick="goPage('sourcesPage')">Источники</button>
-            <button onclick="goPage('socialPage')">Соцсети</button>
-          </div>
-        </section>
 
       </section>
 
@@ -2480,8 +2507,12 @@ function render(){
   el('sourceCount').textContent=(state.sources||[]).length;
   var rankingMap={};(sourceRankings||[]).forEach(function(r){rankingMap[r.id]=r});
   var sortedSources=(state.sources||[]).slice().sort(function(a,b){
-    var ra=rankingMap[a.id],rb=rankingMap[b.id];
-    var ar=ra&&ra.rating!=null?ra.rating:-1,br=rb&&rb.rating!=null?rb.rating:-1;
+    var ra=rankingMap[a.id]||{},rb=rankingMap[b.id]||{};
+    var rankA=Number(ra.rank),rankB=Number(rb.rank);
+    var hasRankA=Number.isFinite(rankA)&&rankA>0,hasRankB=Number.isFinite(rankB)&&rankB>0;
+    if(hasRankA&&hasRankB&&rankA!==rankB)return rankA-rankB;
+    if(hasRankA!==hasRankB)return hasRankA?-1:1;
+    var ar=ra.rating!=null?Number(ra.rating):-1,br=rb.rating!=null?Number(rb.rating):-1;
     if(br!==ar)return br-ar;
     return String(a.name||'').localeCompare(String(b.name||''),'ru');
   });
@@ -2522,7 +2553,21 @@ function render(){
   el('queueCount').textContent=(state.queue||[]).length;
   var qp=state.queuePolicy||{};
   if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='AI оценивает силу новости по 100-балльной шкале. Лучший материал идёт в ближайший слот, остальные сильные новости остаются в очереди и конкурируют за следующие часы. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
-  el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){
+  var sortedQueue=(state.queue||[]).slice().sort(function(a,b){
+    function score(q){
+      var base=Number(q&&q.aiScore);
+      if(!Number.isFinite(base))return -1;
+      var direct=!!(q&&q.videoUrl),embedded=!!(q&&q.hasEmbeddedVideo);
+      var bonus=direct?(base>=55?10:4):(embedded?(base>=55?5:2):0);
+      return Math.min(100,Math.round(base)+bonus);
+    }
+    var as=score(a),bs=score(b);
+    if(bs!==as)return bs-as;
+    var at=new Date((a&&a.articlePublishedAt)||(a&&a.createdAt)||0).getTime()||0;
+    var bt=new Date((b&&b.articlePublishedAt)||(b&&b.createdAt)||0).getTime()||0;
+    return bt-at;
+  });
+  el('queue').innerHTML=sortedQueue.length?sortedQueue.map(function(q){
     var parts=postParts(q);
     var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
     var media=q.videoUrl?'<div class="queue-placeholder">▶ Видео</div>':effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt="">':'<div class="queue-placeholder">AI</div>';
