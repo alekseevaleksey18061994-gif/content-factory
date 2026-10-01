@@ -3437,6 +3437,8 @@ async function collectOnce(trigger) {
             mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
             originalMediaUrls: Array.isArray(media.originalMediaUrls) ? media.originalMediaUrls : [],
             mediaEnhancementLog: Array.isArray(media.mediaEnhancementLog) ? media.mediaEnhancementLog : [],
+            // Main photo already enhanced at collection time: the queue backfill must not redo it.
+            mediaEnhancementBackfillVersion: (Array.isArray(media.mediaEnhancementLog) && media.mediaEnhancementLog.some(function(x){ return x && x.enhanced; })) ? "v3" : undefined,
             mediaDirector: media.mediaDirector || null,
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
@@ -3677,6 +3679,8 @@ async function collectOnce(trigger) {
             mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
             originalMediaUrls: Array.isArray(media.originalMediaUrls) ? media.originalMediaUrls : [],
             mediaEnhancementLog: Array.isArray(media.mediaEnhancementLog) ? media.mediaEnhancementLog : [],
+            // Main photo already enhanced at collection time: the queue backfill must not redo it.
+            mediaEnhancementBackfillVersion: (Array.isArray(media.mediaEnhancementLog) && media.mediaEnhancementLog.some(function(x){ return x && x.enhanced; })) ? "v3" : undefined,
             mediaDirector: media.mediaDirector || null,
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
