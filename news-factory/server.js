@@ -20,6 +20,8 @@ const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase(
 const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
 const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_ENHANCE_SOURCE_IMAGES = String(process.env.AUTO_ENHANCE_SOURCE_IMAGES || "true").toLowerCase() !== "false";
+const COPYRIGHT_SAFE_MODE = String(process.env.COPYRIGHT_SAFE_MODE || "true").toLowerCase() !== "false";
+const COPYRIGHT_MAX_VERBATIM_WORDS = Math.max(8, Number(process.env.COPYRIGHT_MAX_VERBATIM_WORDS || 12));
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst";
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low";
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
@@ -171,6 +173,14 @@ const defaultState = {
     articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
     queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
     queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
+  },
+  copyrightPolicy: {
+    safeMode: COPYRIGHT_SAFE_MODE,
+    factsOnly: true,
+    requireSourceLink: true,
+    autoUseThirdPartyMedia: false,
+    maxVerbatimWords: COPYRIGHT_MAX_VERBATIM_WORDS,
+    version: "v1"
   },
   publicationSchedule: {
     timezone: "Europe/Moscow",
@@ -664,6 +674,55 @@ function ensureConfiguredWorkspaces() {
     cars.state.migrations.push(bloggerMigration);
     changed = true;
   }
+  const copyrightMigration = "v0.30.0-copyright-safe-v1";
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+    if (ws.state.migrations.includes(copyrightMigration)) continue;
+
+    ws.state.copyrightPolicy = Object.assign({
+      safeMode: COPYRIGHT_SAFE_MODE,
+      factsOnly: true,
+      requireSourceLink: true,
+      autoUseThirdPartyMedia: false,
+      maxVerbatimWords: COPYRIGHT_MAX_VERBATIM_WORDS,
+      version: "v1"
+    }, ws.state.copyrightPolicy || {});
+
+    const sourceMap = new Map();
+    for (const source of (ws.state.sources || [])) {
+      if (!source) continue;
+      source.mediaLicense = normalizeMediaLicense(source.mediaLicense || "unknown");
+      source.copyrightMode = source.copyrightMode || ((source.group === "blogger" || source.group === "creator") ? "facts_only_attributed" : "facts_only");
+      sourceMap.set(String(source.id || ""), source);
+    }
+
+    for (const item of (ws.state.queue || [])) {
+      if (!item) continue;
+      const source = sourceMap.get(String(item.sourceId || "")) || null;
+      const license = normalizeMediaLicense(item.mediaLicense || (source && source.mediaLicense) || "unknown");
+      item.mediaLicense = license;
+      item.copyrightMode = item.copyrightMode || ((source && (source.group === "blogger" || source.group === "creator")) ? "facts_only_attributed" : "facts_only");
+      const sourceReuseAllowed = mediaLicenseAllowsReuse(license);
+      const generatedIsIndependent = item.mediaStatus === "generated" || item.mediaOrigin === "ai_generated" || isIndependentGeneratedUrl(item.generatedImageUrl);
+      if (COPYRIGHT_SAFE_MODE && !sourceReuseAllowed && !generatedIsIndependent) {
+        item.originalImageUrl = item.originalImageUrl || item.imageUrl || "";
+        item.originalVideoUrl = item.originalVideoUrl || item.videoUrl || "";
+        item.imageUrl = "";
+        item.videoUrl = "";
+        item.generatedImageUrl = "";
+        item.mediaType = "none";
+        item.mediaStatus = "copyright_pending";
+        item.mediaOrigin = "source_media_blocked";
+        item.copyrightSafe = true;
+      }
+    }
+
+    ws.state.migrations.push(copyrightMigration);
+    ws.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+
   if (changed) {
     cars.updatedAt = new Date().toISOString();
     persistWorkspaceStore();
@@ -689,6 +748,83 @@ function findSourceForItem(item) {
   const sourceName = String(item.sourceName || item.name || "").trim();
   return (state.sources || []).find(function(source){ return source && String(source.name || "") === sourceName; }) || null;
 }
+function normalizeMediaLicense(value) {
+  const v = String(value || "unknown").trim().toLowerCase();
+  return ["allowed", "user_provided", "forbidden", "unknown"].includes(v) ? v : "unknown";
+}
+function mediaLicenseAllowsReuse(value) {
+  const v = normalizeMediaLicense(value);
+  return v === "allowed" || v === "user_provided";
+}
+function sourceMediaLicense(sourceOrItem) {
+  if (sourceOrItem && sourceOrItem.mediaLicense) return normalizeMediaLicense(sourceOrItem.mediaLicense);
+  const source = sourceOrItem && sourceOrItem.group ? sourceOrItem : findSourceForItem(sourceOrItem);
+  return normalizeMediaLicense(source && source.mediaLicense || "unknown");
+}
+function isIndependentGeneratedUrl(value) {
+  const v = String(value || "");
+  return /(?:^|\/)cover_[a-zA-Z0-9_-]+\.png(?:\?|$)/.test(v);
+}
+function findVerbatimOverlap(sourceText, outputText, minWords) {
+  const normalize = function(value) {
+    return String(value || "").toLowerCase()
+      .replace(/[^0-9a-zа-яё]+/gi, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  };
+  const sourceWords = normalize(sourceText);
+  const outputWords = normalize(outputText);
+  const width = Math.max(8, Number(minWords || COPYRIGHT_MAX_VERBATIM_WORDS));
+  if (sourceWords.length < width || outputWords.length < width) return "";
+  const sourcePhrases = new Set();
+  for (let i = 0; i <= sourceWords.length - width; i += 1) sourcePhrases.add(sourceWords.slice(i, i + width).join(" "));
+  for (let i = 0; i <= outputWords.length - width; i += 1) {
+    const phrase = outputWords.slice(i, i + width).join(" ");
+    if (sourcePhrases.has(phrase)) return phrase;
+  }
+  return "";
+}
+async function enforceCopyrightSafeMedia(post) {
+  const out = Object.assign({}, post || {});
+  const license = sourceMediaLicense(out);
+  out.mediaLicense = license;
+  out.copyrightSafe = COPYRIGHT_SAFE_MODE;
+  out.copyrightPolicyVersion = "v1";
+  if (!COPYRIGHT_SAFE_MODE || mediaLicenseAllowsReuse(license)) return out;
+
+  const generatedIndependent =
+    out.mediaStatus === "generated" ||
+    out.mediaOrigin === "ai_generated" ||
+    isIndependentGeneratedUrl(out.generatedImageUrl);
+
+  out.originalImageUrl = out.originalImageUrl || out.imageUrl || "";
+  out.originalVideoUrl = out.originalVideoUrl || out.videoUrl || "";
+  out.imageUrl = "";
+  out.videoUrl = "";
+
+  if (!generatedIndependent) out.generatedImageUrl = "";
+  if (!out.generatedImageUrl) {
+    if (!GENERATE_COVER_IF_MISSING) {
+      if (MEDIA_REQUIRED) throw new Error("Copyright Safe Mode: стороннее медиа заблокировано, а генерация собственной обложки отключена");
+      return out;
+    }
+    const generated = await generateNewsCover({
+      id: out.newsId || out.postId || out.id || newId("copyright"),
+      title: out.title || currentWorkspace().name || "News Factory",
+      text: out.text || "",
+      sourceName: out.sourceName || ""
+    });
+    out.generatedImageUrl = generated.url;
+    out.generatedBy = generated.model;
+  }
+  out.mediaType = "generated";
+  out.mediaStatus = "generated";
+  out.mediaOrigin = "ai_generated";
+  out.copyrightMediaDecision = "third_party_media_blocked";
+  return out;
+}
+
 function isBloggerSource(sourceOrItem) {
   const source = sourceOrItem && sourceOrItem.group ? sourceOrItem : findSourceForItem(sourceOrItem);
   return Boolean(source && source.group === "blogger");
@@ -1421,6 +1557,8 @@ async function generateNewsCover(payload) {
     "Topic: " + String(payload.title || "AI technology news"),
     "Context: " + String(payload.text || "").slice(0, 1800),
     "Visual direction: premium modern editorial, cinematic but realistic, strong central subject, clean composition, deep contrast, restrained accents appropriate to the subject, subtle depth and atmosphere, visually striking enough to stop a scroll without looking artificial.",
+    "Create an independent original visual from the factual description only. Do not reproduce, trace, closely imitate, or restage any source photograph, video frame, artwork, poster, thumbnail, or distinctive composition.",
+    "Do not imitate a living artist or a recognizable copyrighted visual style. Use generic high-end editorial visual language.",
     "No text, no captions, no watermarks, no fake UI, no invented logos, no random letters.",
     "If a real company/product is mentioned, do not invent a different product design or fabricated branding.",
     "Landscape 3:2 composition suitable for Telegram and VK. Keep important faces/products inside a safe central area for mobile crops."
@@ -1548,21 +1686,81 @@ async function enhanceNewsImage(payload) {
 async function ensureMediaForNews(payload) {
   const imageUrl = String(payload.imageUrl || "").trim();
   const videoUrl = String(payload.videoUrl || "").trim();
+  const mediaLicense = normalizeMediaLicense(payload.mediaLicense || "unknown");
+  const sourceReuseAllowed = !COPYRIGHT_SAFE_MODE || mediaLicenseAllowsReuse(mediaLicense);
 
-  // Priority #1: video. Keep a found photo as fallback in case Telegram cannot fetch/send the video.
+  // Copyright Safe Mode: source media is provenance only unless the source is explicitly licensed.
+  if (!sourceReuseAllowed && (imageUrl || videoUrl)) {
+    if (GENERATE_COVER_IF_MISSING) {
+      try {
+        const generated = await generateNewsCover(payload);
+        return {
+          videoUrl: "",
+          imageUrl: "",
+          originalImageUrl: imageUrl,
+          originalVideoUrl: videoUrl,
+          generatedImageUrl: generated.url,
+          mediaType: "generated",
+          mediaStatus: "generated",
+          mediaPriority: 2,
+          mediaLicense: mediaLicense,
+          mediaOrigin: "ai_generated",
+          copyrightSafe: true,
+          copyrightMediaDecision: "third_party_media_blocked",
+          generatedBy: generated.model
+        };
+      } catch (error) {
+        return {
+          videoUrl: "",
+          imageUrl: "",
+          originalImageUrl: imageUrl,
+          originalVideoUrl: videoUrl,
+          generatedImageUrl: "",
+          mediaType: "none",
+          mediaStatus: "generation_error",
+          mediaPriority: 99,
+          mediaLicense: mediaLicense,
+          mediaOrigin: "source_media_blocked",
+          copyrightSafe: true,
+          copyrightMediaDecision: "third_party_media_blocked",
+          mediaError: error.message
+        };
+      }
+    }
+    return {
+      videoUrl: "",
+      imageUrl: "",
+      originalImageUrl: imageUrl,
+      originalVideoUrl: videoUrl,
+      generatedImageUrl: "",
+      mediaType: "none",
+      mediaStatus: "copyright_pending",
+      mediaPriority: 99,
+      mediaLicense: mediaLicense,
+      mediaOrigin: "source_media_blocked",
+      copyrightSafe: true,
+      copyrightMediaDecision: "third_party_media_blocked"
+    };
+  }
+
+  // Explicitly licensed/user-provided video can be reused.
   if (videoUrl) {
     return {
       videoUrl: videoUrl,
       imageUrl: imageUrl,
       originalImageUrl: imageUrl,
+      originalVideoUrl: videoUrl,
       generatedImageUrl: "",
       mediaType: "video",
       mediaStatus: "video_found",
-      mediaPriority: 1
+      mediaPriority: 1,
+      mediaLicense: mediaLicense,
+      mediaOrigin: "licensed_source",
+      copyrightSafe: COPYRIGHT_SAFE_MODE
     };
   }
 
-  // Priority #2: source photo. By default we automatically create a stronger editorial version.
+  // Explicitly licensed/user-provided photo may be enhanced.
   if (imageUrl) {
     if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES) {
       try {
@@ -1575,31 +1773,39 @@ async function ensureMediaForNews(payload) {
           videoUrl: "",
           imageUrl: imageUrl,
           originalImageUrl: imageUrl,
+          originalVideoUrl: "",
           generatedImageUrl: enhanced.url,
           mediaType: "photo",
           mediaStatus: "enhanced",
           mediaPriority: 2,
           canEnhance: true,
+          mediaLicense: mediaLicense,
+          mediaOrigin: "licensed_derivative",
+          copyrightSafe: COPYRIGHT_SAFE_MODE,
           enhancedBy: enhanced.model,
           enhancedAt: new Date().toISOString()
         };
       } catch (error) {
-        console.warn("Auto image enhancement failed, using source photo:", error.message);
+        console.warn("Auto image enhancement failed, using licensed source photo:", error.message);
       }
     }
     return {
       videoUrl: "",
       imageUrl: imageUrl,
       originalImageUrl: imageUrl,
+      originalVideoUrl: "",
       generatedImageUrl: "",
       mediaType: "photo",
       mediaStatus: "photo_found",
       mediaPriority: 2,
-      canEnhance: IMAGE_ENHANCEMENT_ENABLED
+      canEnhance: IMAGE_ENHANCEMENT_ENABLED,
+      mediaLicense: mediaLicense,
+      mediaOrigin: "licensed_source",
+      copyrightSafe: COPYRIGHT_SAFE_MODE
     };
   }
 
-  // Priority #3: generate a photo only when neither video nor photo was found.
+  // No source media: generate an independent editorial visual.
   if (GENERATE_COVER_IF_MISSING) {
     try {
       const generated = await generateNewsCover(payload);
@@ -1607,10 +1813,14 @@ async function ensureMediaForNews(payload) {
         videoUrl: "",
         imageUrl: "",
         originalImageUrl: "",
+        originalVideoUrl: "",
         generatedImageUrl: generated.url,
         mediaType: "generated",
         mediaStatus: "generated",
         mediaPriority: 3,
+        mediaLicense: mediaLicense,
+        mediaOrigin: "ai_generated",
+        copyrightSafe: COPYRIGHT_SAFE_MODE,
         generatedBy: generated.model
       };
     } catch (error) {
@@ -1618,16 +1828,32 @@ async function ensureMediaForNews(payload) {
         videoUrl: "",
         imageUrl: "",
         originalImageUrl: "",
+        originalVideoUrl: "",
         generatedImageUrl: "",
         mediaType: "none",
         mediaStatus: "generation_error",
         mediaPriority: 99,
+        mediaLicense: mediaLicense,
+        mediaOrigin: "none",
+        copyrightSafe: COPYRIGHT_SAFE_MODE,
         mediaError: error.message
       };
     }
   }
 
-  return { videoUrl: "", imageUrl: "", originalImageUrl: "", generatedImageUrl: "", mediaType: "none", mediaStatus: "missing", mediaPriority: 99 };
+  return {
+    videoUrl: "",
+    imageUrl: "",
+    originalImageUrl: "",
+    originalVideoUrl: "",
+    generatedImageUrl: "",
+    mediaType: "none",
+    mediaStatus: "missing",
+    mediaPriority: 99,
+    mediaLicense: mediaLicense,
+    mediaOrigin: "none",
+    copyrightSafe: COPYRIGHT_SAFE_MODE
+  };
 }
 
 function hasPublishableMedia(item) {
@@ -1973,7 +2199,8 @@ async function collectOnce(trigger) {
           text: originalText,
           sourceName: source.name,
           imageUrl: imageUrl,
-          videoUrl: videoUrl
+          videoUrl: videoUrl,
+          mediaLicense: sourceMediaLicense(source)
         });
         const baseItem = {
           id: id,
@@ -1989,13 +2216,21 @@ async function collectOnce(trigger) {
             trigger: trigger || "scheduler",
             articlePublishedAt: articlePublishedAt || "",
             imageUrl: media.imageUrl || "",
-            originalImageUrl: media.originalImageUrl || media.imageUrl || "",
+            originalImageUrl: media.originalImageUrl || media.imageUrl || imageUrl || "",
+            originalVideoUrl: media.originalVideoUrl || videoUrl || "",
             videoUrl: media.videoUrl || "",
             hasEmbeddedVideo: Boolean(candidate.link && candidate.link.hasVideo),
             generatedImageUrl: media.generatedImageUrl || "",
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaPriority: media.mediaPriority || 99,
+            mediaLicense: media.mediaLicense || sourceMediaLicense(source),
+            mediaOrigin: media.mediaOrigin || "",
+            copyrightSafe: COPYRIGHT_SAFE_MODE,
+            copyrightPolicyVersion: "v1",
+            copyrightMediaDecision: media.copyrightMediaDecision || "",
+            sourceAttributionRequired: true,
+            factsOnly: true,
             canEnhance: Boolean(media.canEnhance),
             mediaError: media.mediaError || "",
             generatedBy: media.generatedBy || ""
@@ -2109,12 +2344,18 @@ async function collectOnce(trigger) {
             sourceGroup: source.group || "",
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
-            originalImageUrl: media.originalImageUrl || media.imageUrl || "",
+            originalImageUrl: media.originalImageUrl || media.imageUrl || imageUrl || "",
+            originalVideoUrl: media.originalVideoUrl || videoUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
             videoUrl: media.videoUrl || "",
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaPriority: media.mediaPriority || 99,
+            mediaLicense: media.mediaLicense || sourceMediaLicense(source),
+            mediaOrigin: media.mediaOrigin || "",
+            copyrightSafe: COPYRIGHT_SAFE_MODE,
+            copyrightPolicyVersion: "v1",
+            copyrightMediaDecision: media.copyrightMediaDecision || "",
             canEnhance: Boolean(media.canEnhance),
             sourceName: source.name,
             newsId: id,
@@ -2475,6 +2716,7 @@ async function publishDynamicSlot(kind) {
     topicId: item.topicId || "default",
     allow_text_fallback: allowTextFallbackForPost(item)
   }), targets);
+  if (result.safeMedia) Object.assign(item, result.safeMedia);
   const publishedAt = new Date().toISOString();
 
   if (result.telegramPublished) {
@@ -3943,7 +4185,8 @@ async function sendMultiPlatformPost(post, targets) {
   const selected = normalizePublishTargets(targets);
   if (!selected.telegram && !selected.vk) throw new Error("Выберите хотя бы одну соцсеть");
 
-  const prepared = selected.telegram ? await preparePostForSingleTelegramCaption(post) : Object.assign({}, post);
+  const copyrightSafePost = await enforceCopyrightSafeMedia(post);
+  const prepared = selected.telegram ? await preparePostForSingleTelegramCaption(copyrightSafePost) : Object.assign({}, copyrightSafePost);
   const result = {
     message_id: null,
     vkPostId: null,
@@ -3952,7 +4195,21 @@ async function sendMultiPlatformPost(post, targets) {
     vkStatus: selected.vk ? "pending" : "not_selected",
     vkMediaAttempts: 0,
     publishedText: prepared.text || "",
-    publishedTitle: prepared.title || ""
+    publishedTitle: prepared.title || "",
+    safeMedia: {
+      imageUrl: prepared.imageUrl || "",
+      originalImageUrl: prepared.originalImageUrl || "",
+      originalVideoUrl: prepared.originalVideoUrl || "",
+      generatedImageUrl: prepared.generatedImageUrl || "",
+      videoUrl: prepared.videoUrl || "",
+      mediaType: prepared.mediaType || "",
+      mediaStatus: prepared.mediaStatus || "",
+      mediaLicense: prepared.mediaLicense || "unknown",
+      mediaOrigin: prepared.mediaOrigin || "",
+      copyrightSafe: COPYRIGHT_SAFE_MODE,
+      copyrightPolicyVersion: "v1",
+      copyrightMediaDecision: prepared.copyrightMediaDecision || ""
+    }
   };
 
   if (selected.telegram) {
@@ -4373,7 +4630,10 @@ async function callOpenAIRewrite(payload) {
       : sourceGroup === "creator"
         ? "- если автор делится собственным опытом, мнением или экспериментом — прямо укажи, что это позиция автора;"
         : "- сохраняй нейтральную атрибуцию источника там, где это важно;",
-    "- не копируй формулировки источника дословно длинными кусками;",
+    "- COPYRIGHT SAFE: извлекай факты, но пиши текст заново с собственной структурой, порядком предложений и формулировками;",
+    "- не делай близкий рерайт абзац-в-абзац и не сохраняй синтаксис исходника;",
+    "- не копируй формулировки источника дословно; прямые цитаты используй только когда без них теряется смысл, максимум 8 слов подряд, с явной атрибуцией автору;",
+    "- заголовок тоже формулируй самостоятельно, если это не официальное название продукта/события;",
     "- не копируй стиль конкурентов один в один: у канала «" + channelName + "» должен быть собственный голос;",
     "- для политических, трагических, медицинских и других чувствительных тем — нейтрально, без шуток и оценочных призывов;",
     "",
@@ -4488,6 +4748,15 @@ async function callOpenAIRewrite(payload) {
         model: model
       };
       if (!result.text) throw new Error("OpenAI не вернул текст новости");
+      if (COPYRIGHT_SAFE_MODE) {
+        const overlap = findVerbatimOverlap(sourceText, result.title + " " + result.text, COPYRIGHT_MAX_VERBATIM_WORDS);
+        if (overlap) {
+          lastError = "Copyright Safe Mode: найден слишком длинный дословный фрагмент";
+          continue;
+        }
+      }
+      result.copyrightSafe = COPYRIGHT_SAFE_MODE;
+      result.copyrightPolicyVersion = "v1";
       return result;
     } catch (error) {
       lastError = String(error && error.message || error);
@@ -5342,7 +5611,8 @@ const server = http.createServer(async function(req, res) {
         text: text,
         sourceName: "Ручная публикация",
         imageUrl: String(body.imageUrl || "").trim(),
-        videoUrl: String(body.videoUrl || "").trim()
+        videoUrl: String(body.videoUrl || "").trim(),
+        mediaLicense: "user_provided"
       });
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить фото или видео для публикации" });
@@ -5403,9 +5673,23 @@ const server = http.createServer(async function(req, res) {
       const name = String(body.name || "").trim();
       const sourceUrl = String(body.url || "").trim();
       if (!name || !sourceUrl) return sendJson(res, 400, { ok: false, error: "Заполните название и ссылку" });
-      state.sources.push({ id: newId("src"), name: name, type: "web", group: "custom", priority: 3, url: sourceUrl, enabled: true });
+      state.sources.push({ id: newId("src"), name: name, type: "web", group: "custom", priority: 3, url: sourceUrl, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only" });
       saveState();
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && p === "/api/sources/media-license") {
+      const body = await readJson(req);
+      const src = state.sources.find(function(x){ return x.id === body.id; });
+      if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
+      const license = normalizeMediaLicense(body.mediaLicense);
+      if (!["unknown", "allowed", "forbidden"].includes(license)) {
+        return sendJson(res, 400, { ok: false, error: "Недопустимый режим медиа" });
+      }
+      src.mediaLicense = license;
+      src.mediaLicenseUpdatedAt = new Date().toISOString();
+      saveState();
+      return sendJson(res, 200, { ok: true, mediaLicense: license });
     }
 
     if (req.method === "POST" && p === "/api/sources/toggle") {
@@ -5461,9 +5745,35 @@ const server = http.createServer(async function(req, res) {
       if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — улучшать фото не требуется" });
 
       const sourceImage = String(item.originalImageUrl || item.imageUrl || "").trim();
-      if (!sourceImage) return sendJson(res, 400, { ok: false, error: "У новости нет найденного фото для улучшения" });
 
       try {
+        const license = sourceMediaLicense(item);
+        if (COPYRIGHT_SAFE_MODE && !mediaLicenseAllowsReuse(license)) {
+          const generated = await generateNewsCover({
+            id: item.newsId || item.id,
+            title: item.title,
+            text: item.text,
+            sourceName: item.sourceName || ""
+          });
+          item.originalImageUrl = item.originalImageUrl || sourceImage || "";
+          item.imageUrl = "";
+          item.videoUrl = "";
+          item.generatedImageUrl = generated.url;
+          item.mediaType = "generated";
+          item.mediaStatus = "generated";
+          item.mediaPriority = 2;
+          item.mediaLicense = license;
+          item.mediaOrigin = "ai_generated";
+          item.copyrightSafe = true;
+          item.copyrightMediaDecision = "third_party_media_blocked";
+          item.generatedBy = generated.model;
+          item.generatedAt = new Date().toISOString();
+          item.canEnhance = false;
+          saveState();
+          return sendJson(res, 200, { ok: true, imageUrl: generated.url, model: generated.model, copyrightSafe: true });
+        }
+
+        if (!sourceImage) return sendJson(res, 400, { ok: false, error: "У новости нет найденного фото для улучшения" });
         const enhanced = await enhanceNewsImage({
           id: item.newsId || item.id,
           title: item.title,
@@ -5476,6 +5786,9 @@ const server = http.createServer(async function(req, res) {
         item.mediaType = "enhanced";
         item.mediaStatus = "enhanced";
         item.mediaPriority = 2;
+        item.mediaLicense = license;
+        item.mediaOrigin = "licensed_derivative";
+        item.copyrightSafe = COPYRIGHT_SAFE_MODE;
         item.enhancedBy = enhanced.model;
         item.enhancedAt = new Date().toISOString();
         item.canEnhance = true;
@@ -5490,6 +5803,10 @@ const server = http.createServer(async function(req, res) {
               mediaType: "enhanced",
               mediaStatus: "enhanced",
               mediaPriority: 2,
+              mediaLicense: license,
+              mediaOrigin: "licensed_derivative",
+              copyrightSafe: COPYRIGHT_SAFE_MODE,
+              copyrightPolicyVersion: "v1",
               enhancedBy: enhanced.model,
               enhancedAt: item.enhancedAt
             });
@@ -5523,7 +5840,8 @@ const server = http.createServer(async function(req, res) {
           text: item.text,
           sourceName: item.sourceName || "Очередь",
           imageUrl: "",
-          videoUrl: ""
+          videoUrl: "",
+          mediaLicense: sourceMediaLicense(item)
         });
         item.imageUrl = media.imageUrl || "";
         item.generatedImageUrl = media.generatedImageUrl || "";
@@ -5566,6 +5884,7 @@ const server = http.createServer(async function(req, res) {
         videoUrl: media.videoUrl
       }, effectiveTargets);
 
+      if (result.safeMedia) Object.assign(item, result.safeMedia);
       const publishedAt = new Date().toISOString();
       if (result.telegramPublished) {
         item.telegramPublished = true;
@@ -5646,7 +5965,12 @@ const server = http.createServer(async function(req, res) {
                 vkStatus: result.vkStatus || item.vkStatus || "",
                 vkError: result.vkError || item.vkError || "",
                 vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
-                vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0
+                vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0,
+                mediaLicense: item.mediaLicense || "unknown",
+                mediaOrigin: item.mediaOrigin || "",
+                copyrightSafe: COPYRIGHT_SAFE_MODE,
+                copyrightPolicyVersion: "v1",
+                copyrightMediaDecision: item.copyrightMediaDecision || ""
               }),
               result.vkPostId || item.vkPostId || null,
               result.vkStatus || item.vkStatus || "",
@@ -5689,7 +6013,8 @@ const server = http.createServer(async function(req, res) {
         text: text,
         sourceName: "API публикация",
         imageUrl: String(body.imageUrl || "").trim(),
-        videoUrl: String(body.videoUrl || "").trim()
+        videoUrl: String(body.videoUrl || "").trim(),
+        mediaLicense: "user_provided"
       });
       if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
         return sendJson(res, 422, { ok: false, error: "Не удалось подготовить медиа" });
