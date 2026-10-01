@@ -2769,7 +2769,7 @@ async function buildSystemStatus(force) {
       state: vkStatusProbe.ok ? "connected" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
       description: vkStatusProbe.ok ? "VK подключён через API" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
       detail: vkStatusProbe.ok && vkStatusProbe.group
-        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · " + (getVkUserToken() ? "текст + фото" : "текст; для фото нужен getVkUserToken()"))
+        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · " + (getVkUserToken() ? "текст + фото" : "текст; для фото нужен VK_USER_TOKEN"))
         : String(vkStatusProbe.error || ""),
       next: vkStatusProbe.ok
         ? (getVkUserToken() ? "" : "Авторизовать VK для фото (photos,wall,groups,offline)")
@@ -2880,12 +2880,56 @@ const server = http.createServer(async function(req, res) {
       });
     }
 
+    if (req.method === "GET" && p === "/api/vk/oauth/callback") {
+      const oauthError = String(url.searchParams.get("error") || "");
+      const oauthErrorDescription = String(url.searchParams.get("error_description") || "");
+      if (oauthError) {
+        res.writeHead(400, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK OAuth</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>Авторизация VK не завершена</h2><p>" + escapeTelegramHtml(oauthErrorDescription || oauthError) + "</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться в News Factory</a></p></body>");
+      }
+
+      try {
+        const result = await exchangeVkOAuthCode(
+          String(url.searchParams.get("code") || ""),
+          String(url.searchParams.get("device_id") || ""),
+          String(url.searchParams.get("state") || "")
+        );
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK подключён</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>VK успешно авторизован ✅</h2><p>Права для загрузки фото сохранены. Токен не показывается и не пишется в логи.</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться в News Factory</a></p></body>");
+      } catch (error) {
+        console.error("VK_OAUTH_CALLBACK_ERROR", String(error && error.message || error));
+        res.writeHead(500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK OAuth error</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>Не удалось завершить авторизацию VK</h2><p>" + escapeTelegramHtml(String(error && error.message || error)) + "</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться</a></p></body>");
+      }
+    }
+
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
 
     if (req.method === "GET" && p === "/api/dashboard") {
       const cleanup = pruneQueueItems(state);
       if (cleanup.removed) saveState();
       return sendJson(res, 200, { ok: true, state: state });
+    }
+
+    if (req.method === "GET" && p === "/api/vk/oauth/start") {
+      try {
+        return redirect(res, buildVkOAuthUrl());
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) });
+      }
+    }
+
+    if (req.method === "GET" && p === "/api/vk/oauth/status") {
+      return sendJson(res, 200, {
+        ok: true,
+        appId: VK_APP_ID,
+        redirectUri: VK_OAUTH_REDIRECT_URI,
+        scope: VK_OAUTH_SCOPE,
+        userTokenConfigured: Boolean(getVkUserToken()),
+        envTokenConfigured: Boolean(process.env.VK_USER_TOKEN),
+        connectedAt: state.vkOAuth && state.vkOAuth.connectedAt || "",
+        userId: state.vkOAuth && state.vkOAuth.userId || ""
+      });
     }
 
     if (req.method === "POST" && p === "/api/calendar/assign") {
