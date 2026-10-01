@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
+import sharp from "sharp";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -57,6 +58,10 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
+const VK_PREVIEW_WIDTH = 1200;
+const VK_PREVIEW_HEIGHT = 630;
+const VK_PREVIEW_MAX_BYTES = Math.max(200000, Math.min(1048576, Number(process.env.VK_PREVIEW_MAX_BYTES || 950000)));
+const VK_PREVIEW_JPEG_QUALITY = Math.max(45, Math.min(90, Number(process.env.VK_PREVIEW_JPEG_QUALITY || 82)));
 let APP_VERSION = "0.0.0";
 try {
   APP_VERSION = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")).version || APP_VERSION;
@@ -607,6 +612,288 @@ function extractMetaVideo(html, pageUrl) {
 
 function mediaPublicUrl(fileName) {
   return PUBLIC_BASE_URL + "/media/" + encodeURIComponent(fileName);
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function previewDescription(post) {
+  const title = String(post && post.title || "").replace(/[*_>#`]/g, " ").replace(/\s+/g, " ").trim();
+  const body = String(post && post.text || "").replace(/[*_>#`]/g, " ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim();
+  return (title + (body ? " — " + body : "")).slice(0, 280);
+}
+
+function previewSlug(post) {
+  const base = String(post && (post.postId || post.id || post.newsId) || "post")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "post";
+  return base + "-" + Date.now().toString(36) + "-" + crypto.randomBytes(5).toString("hex");
+}
+
+function previewPageUrl(slug) {
+  return PUBLIC_BASE_URL + "/p/" + encodeURIComponent(slug);
+}
+
+function localMediaPathFromUrl(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl || ""), PUBLIC_BASE_URL);
+    const base = new URL(PUBLIC_BASE_URL);
+    if (u.origin !== base.origin || !u.pathname.startsWith("/media/")) return "";
+    const fileName = decodeURIComponent(u.pathname.slice("/media/".length));
+    if (!fileName || fileName !== path.basename(fileName)) return "";
+    return path.join(MEDIA_DIR, fileName);
+  } catch {
+    return "";
+  }
+}
+
+async function loadPreviewSourceBytes(rawUrl) {
+  const sourceUrl = String(rawUrl || "").trim();
+  if (!sourceUrl) return null;
+  const localPath = localMediaPathFromUrl(sourceUrl);
+  if (localPath) {
+    const bytes = fs.readFileSync(localPath);
+    if (!bytes.length) throw new Error("Локальное изображение пустое");
+    return bytes;
+  }
+
+  const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
+  if (!/^https:\/\//i.test(absolute)) throw new Error("Для preview требуется HTTPS-изображение");
+  const response = await fetch(absolute, {
+    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreview/1.0)" },
+    redirect: "follow",
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!response.ok) throw new Error("Не удалось скачать preview-изображение: HTTP " + response.status);
+  const type = String(response.headers.get("content-type") || "").toLowerCase();
+  if (!type.startsWith("image/")) throw new Error("Preview-источник не является изображением");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length) throw new Error("Preview-изображение пустое");
+  if (bytes.length > 20 * 1024 * 1024) throw new Error("Preview-изображение слишком большое");
+  return bytes;
+}
+
+function wrapPreviewTitle(value, maxChars, maxLines) {
+  const words = String(value || "Что там у ИИ?").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? line + " " + word : word;
+    if (next.length <= maxChars || !line) {
+      line = next;
+    } else {
+      lines.push(line);
+      line = word;
+      if (lines.length >= maxLines - 1) break;
+    }
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  if (words.join(" ").length > lines.join(" ").length && lines.length) {
+    lines[lines.length - 1] = lines[lines.length - 1].replace(/[.…]*$/, "") + "…";
+  }
+  return lines.slice(0, maxLines);
+}
+
+function buildTemplatePreviewSvg(post) {
+  const lines = wrapPreviewTitle(post && post.title, 34, 3);
+  const tspans = lines.map(function(line, index) {
+    return '<tspan x="82" dy="' + (index === 0 ? "0" : "72") + '">' + escapeHtml(line) + "</tspan>";
+  }).join("");
+  const topic = escapeHtml(String(post && post.topicId || "default").toUpperCase());
+  return Buffer.from(
+    '<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">' +
+    '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset=".55" stop-color="#10265f"/><stop offset="1" stop-color="#31156e"/></linearGradient>' +
+    '<radialGradient id="r" cx=".78" cy=".18" r=".7"><stop stop-color="#42d5ff" stop-opacity=".34"/><stop offset="1" stop-color="#42d5ff" stop-opacity="0"/></radialGradient></defs>' +
+    '<rect width="1200" height="630" fill="url(#g)"/><rect width="1200" height="630" fill="url(#r)"/>' +
+    '<circle cx="1010" cy="115" r="150" fill="#7b4dff" opacity=".18"/><circle cx="1080" cy="505" r="210" fill="#20c9ff" opacity=".10"/>' +
+    '<rect x="82" y="70" width="96" height="96" rx="28" fill="#5166ff"/><text x="130" y="135" text-anchor="middle" font-family="Arial,sans-serif" font-size="42" font-weight="800" fill="#fff">AI</text>' +
+    '<text x="204" y="112" font-family="Arial,sans-serif" font-size="28" font-weight="700" fill="#d9e5ff">NEWS FACTORY</text>' +
+    '<text x="204" y="148" font-family="Arial,sans-serif" font-size="20" fill="#8ea7d7">Что там у ИИ? · ' + topic + '</text>' +
+    '<text x="82" y="285" font-family="Arial,sans-serif" font-size="58" font-weight="800" fill="#fff">' + tspans + '</text>' +
+    '<text x="82" y="565" font-family="Arial,sans-serif" font-size="20" fill="#91a8d2">Новости нейросетей и технологий</text>' +
+    '</svg>'
+  );
+}
+
+async function encodePreviewJpeg(inputBytes) {
+  const qualities = Array.from(new Set([
+    VK_PREVIEW_JPEG_QUALITY,
+    Math.max(45, VK_PREVIEW_JPEG_QUALITY - 8),
+    Math.max(45, VK_PREVIEW_JPEG_QUALITY - 16),
+    58,
+    50,
+    45
+  ]));
+  let last = null;
+  for (const quality of qualities) {
+    const out = await sharp(inputBytes, { limitInputPixels: 80 * 1000 * 1000 })
+      .rotate()
+      .resize(VK_PREVIEW_WIDTH, VK_PREVIEW_HEIGHT, { fit: "cover", position: "centre" })
+      .jpeg({ quality: quality, mozjpeg: true, chromaSubsampling: "4:2:0" })
+      .toBuffer({ resolveWithObject: true });
+    last = out;
+    if (out.data.length <= VK_PREVIEW_MAX_BYTES) return out;
+  }
+  if (!last || last.data.length > 1048576) throw new Error("Не удалось уложить preview JPEG в 1 МБ");
+  return last;
+}
+
+async function prepareVkPreviewImage(post, slug) {
+  ensureDataDir();
+  const sourceUrl = String(post && (post.generatedImageUrl || post.imageUrl) || "").trim();
+  let input = null;
+  if (sourceUrl) {
+    try {
+      input = await loadPreviewSourceBytes(sourceUrl);
+    } catch (error) {
+      console.warn("VK_PREVIEW_SOURCE_FAILED " + JSON.stringify({
+        post_id: String(post && (post.postId || post.id) || "unknown"),
+        slug: slug,
+        error: String(error && error.message || error)
+      }));
+    }
+  }
+  if (!input) input = buildTemplatePreviewSvg(post);
+
+  let encoded;
+  try {
+    encoded = await encodePreviewJpeg(input);
+  } catch (error) {
+    if (sourceUrl) encoded = await encodePreviewJpeg(buildTemplatePreviewSvg(post));
+    else throw error;
+  }
+
+  const fileName = "vk_preview_" + slug + ".jpg";
+  fs.writeFileSync(path.join(MEDIA_DIR, fileName), encoded.data);
+  return {
+    fileName: fileName,
+    url: mediaPublicUrl(fileName),
+    width: encoded.info.width || VK_PREVIEW_WIDTH,
+    height: encoded.info.height || VK_PREVIEW_HEIGHT,
+    bytes: encoded.data.length
+  };
+}
+
+async function createPublicPostPage(post) {
+  if (!db || !dbReady) throw new Error("PostgreSQL недоступен — public preview нельзя создать");
+  const slug = previewSlug(post);
+  const image = await prepareVkPreviewImage(post, slug);
+  const title = String(post && post.title || "Что там у ИИ?").trim() || "Что там у ИИ?";
+  const bodyText = String(post && post.text || "").trim();
+  const description = previewDescription(post);
+  const sourceName = String(post && post.sourceName || "").trim();
+  const sourceUrl = String(post && post.sourceUrl || "").trim();
+  const postId = String(post && (post.postId || post.id || post.newsId) || slug);
+  const topicId = String(post && (post.topicId || post.topic_id) || "default");
+
+  await db.query(
+    `INSERT INTO public_post_pages
+      (slug, post_id, topic_id, title, body_text, description, source_name, source_url, image_filename, image_url, image_width, image_height, image_bytes)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [slug, postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, image.fileName, image.url, image.width, image.height, image.bytes]
+  );
+
+  return {
+    slug: slug,
+    url: previewPageUrl(slug),
+    title: title,
+    description: description,
+    imageUrl: image.url,
+    imageWidth: image.width,
+    imageHeight: image.height,
+    imageBytes: image.bytes
+  };
+}
+
+async function getPublicPostPage(slug) {
+  if (!db || !dbReady) return null;
+  const result = await db.query(
+    `SELECT slug, post_id AS "postId", topic_id AS "topicId", title, body_text AS "bodyText",
+            description, source_name AS "sourceName", source_url AS "sourceUrl",
+            image_filename AS "imageFilename", image_url AS "imageUrl",
+            image_width AS "imageWidth", image_height AS "imageHeight", image_bytes AS "imageBytes",
+            created_at AS "createdAt", published_at AS "publishedAt"
+       FROM public_post_pages WHERE slug=$1 LIMIT 1`,
+    [slug]
+  );
+  return result.rowCount ? result.rows[0] : null;
+}
+
+function renderPublicPostPage(page) {
+  const canonical = previewPageUrl(page.slug);
+  const title = escapeHtml(page.title);
+  const description = escapeHtml(page.description || "");
+  const imageUrl = escapeHtml(page.imageUrl);
+  const sourceLink = page.sourceUrl
+    ? '<p class="source">Источник: <a href="' + escapeHtml(page.sourceUrl) + '" rel="nofollow noopener">' + escapeHtml(page.sourceName || page.sourceUrl) + "</a></p>"
+    : "";
+  return '<!doctype html><html lang="ru"><head>' +
+    '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>' + title + '</title>' +
+    '<meta name="description" content="' + description + '">' +
+    '<link rel="canonical" href="' + escapeHtml(canonical) + '">' +
+    '<meta property="og:title" content="' + title + '">' +
+    '<meta property="og:description" content="' + description + '">' +
+    '<meta property="og:type" content="article">' +
+    '<meta property="og:url" content="' + escapeHtml(canonical) + '">' +
+    '<meta property="og:image" content="' + imageUrl + '">' +
+    '<meta property="og:image:width" content="' + Number(page.imageWidth || VK_PREVIEW_WIDTH) + '">' +
+    '<meta property="og:image:height" content="' + Number(page.imageHeight || VK_PREVIEW_HEIGHT) + '">' +
+    '<meta name="twitter:card" content="summary_large_image">' +
+    '<meta name="twitter:title" content="' + title + '">' +
+    '<meta name="twitter:description" content="' + description + '">' +
+    '<meta name="twitter:image" content="' + imageUrl + '">' +
+    '<style>body{margin:0;background:#080b12;color:#f6f8fc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:860px;margin:0 auto;padding:24px}.card{background:#111722;border:1px solid #273246;border-radius:24px;overflow:hidden}.hero{display:block;width:100%;height:auto;aspect-ratio:1200/630;object-fit:cover}.content{padding:24px 26px 30px}h1{font-size:34px;line-height:1.12;margin:0 0 18px}.body{font-size:18px;line-height:1.55;white-space:pre-wrap;color:#dbe3ef}.source{margin-top:22px;color:#8fa0b8}.source a{color:#8eb0ff}@media(max-width:640px){.wrap{padding:0}.card{border-radius:0;border-left:0;border-right:0}.content{padding:20px}h1{font-size:28px}.body{font-size:17px}}</style>' +
+    '</head><body><main class="wrap"><article class="card"><img class="hero" src="' + imageUrl + '" width="' + Number(page.imageWidth || VK_PREVIEW_WIDTH) + '" height="' + Number(page.imageHeight || VK_PREVIEW_HEIGHT) + '" alt=""><div class="content"><h1>' + title + '</h1><div class="body">' + escapeHtml(page.bodyText) + '</div>' + sourceLink + '</div></article></main></body></html>';
+}
+
+async function preflightPublicPostPage(page) {
+  if (!/^https:\/\//i.test(page.url) || !/^https:\/\//i.test(page.imageUrl)) {
+    throw new Error("Preview URL должен быть абсолютным HTTPS");
+  }
+
+  const pageResponse = await fetch(page.url, {
+    redirect: "manual",
+    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreflight/1.0)" },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (pageResponse.status !== 200) throw new Error("Public preview HTTP " + pageResponse.status);
+  const pageType = String(pageResponse.headers.get("content-type") || "").toLowerCase();
+  if (!pageType.includes("text/html")) throw new Error("Public preview имеет неверный Content-Type");
+  const html = await pageResponse.text();
+  if (!html.includes('property="og:image"') || !html.includes(page.imageUrl)) {
+    throw new Error("Public preview не содержит ожидаемый og:image");
+  }
+
+  const imageResponse = await fetch(page.imageUrl, {
+    redirect: "manual",
+    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreflight/1.0)" },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (imageResponse.status !== 200) throw new Error("og:image HTTP " + imageResponse.status);
+  const imageType = String(imageResponse.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (imageType !== "image/jpeg") throw new Error("og:image должен быть image/jpeg");
+  const bytes = Buffer.from(await imageResponse.arrayBuffer());
+  if (!bytes.length || bytes.length > 1048576) throw new Error("og:image должен быть непустым и не больше 1 МБ");
+  const meta = await sharp(bytes).metadata();
+  if (Number(meta.width) !== VK_PREVIEW_WIDTH || Number(meta.height) !== VK_PREVIEW_HEIGHT) {
+    throw new Error("og:image должен быть " + VK_PREVIEW_WIDTH + "x" + VK_PREVIEW_HEIGHT);
+  }
+
+  return { ok: true, pageStatus: 200, imageStatus: 200, imageBytes: bytes.length, width: meta.width, height: meta.height };
+}
+
+async function markPublicPostPublished(slug) {
+  if (!db || !dbReady || !slug) return;
+  await db.query("UPDATE public_post_pages SET published_at=NOW() WHERE slug=$1", [slug]);
 }
 
 async function generateNewsCover(payload) {
@@ -2928,6 +3215,21 @@ const server = http.createServer(async function(req, res) {
       });
     }
 
+    if (req.method === "GET" && p.startsWith("/p/")) {
+      const slug = decodeURIComponent(p.slice("/p/".length));
+      if (!slug || !/^[a-z0-9_-]{8,120}$/i.test(slug)) return sendJson(res, 404, { ok: false, error: "page not found" });
+      const page = await getPublicPostPage(slug);
+      if (!page) return sendJson(res, 404, { ok: false, error: "page not found" });
+      const body = renderPublicPostPage(page);
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-length": Buffer.byteLength(body),
+        "cache-control": "public, max-age=300, s-maxage=300",
+        "x-robots-tag": "index, follow"
+      });
+      return res.end(body);
+    }
+
     if (req.method === "GET" && p.startsWith("/media/")) {
       const fileName = decodeURIComponent(p.slice("/media/".length));
       if (!fileName || fileName !== path.basename(fileName)) return sendJson(res, 400, { ok: false, error: "invalid media path" });
@@ -2936,7 +3238,7 @@ const server = http.createServer(async function(req, res) {
         const body = fs.readFileSync(filePath);
         const ext = path.extname(fileName).toLowerCase();
         const type = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "application/octet-stream";
-        res.writeHead(200, { "content-type": type, "cache-control": "public, max-age=31536000, immutable" });
+        res.writeHead(200, { "content-type": type, "content-length": body.length, "cache-control": "public, max-age=31536000, immutable" });
         return res.end(body);
       } catch {
         return sendJson(res, 404, { ok: false, error: "media not found" });
