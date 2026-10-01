@@ -2496,6 +2496,8 @@ async function collectOnce(trigger) {
         baseItem.metadata.editorialScore = rewrite.editorialScore;
         baseItem.metadata.scoreBreakdown = rewrite.scoreBreakdown;
         baseItem.metadata.scoreReason = rewrite.scoreReason;
+        baseItem.metadata.contentFormat = rewrite.contentFormat || "";
+        baseItem.metadata.contentFormatLabel = rewrite.contentFormatLabel || "";
         noteSourceEvent(source, "score", { score: rewrite.editorialScore });
 
         const postText = rewrite.text;
@@ -2555,6 +2557,8 @@ async function collectOnce(trigger) {
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaPriority: media.mediaPriority || 99,
+            contentFormat: rewrite.contentFormat || "",
+            contentFormatLabel: rewrite.contentFormatLabel || "",
             publicationOrigin: "legacy-auto"
           });
           state.history = state.history.slice(0, 300);
@@ -2569,7 +2573,7 @@ async function collectOnce(trigger) {
             !enoughTimePassed ? "rate_limited" :
             "run_limit"
           ) : "review_mode";
-          state.queue.unshift({
+          const queueItem = {
             id: newId("q"),
             title: rewrite.title || originalTitle,
             text: postText,
@@ -2597,8 +2601,18 @@ async function collectOnce(trigger) {
             aiScore: rewrite.editorialScore,
             aiScoreBreakdown: rewrite.scoreBreakdown,
             aiScoreReason: rewrite.scoreReason,
-            aiTier: rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal")
-          });
+            aiTier: rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal"),
+            contentFormat: rewrite.contentFormat || "",
+            contentFormatLabel: rewrite.contentFormatLabel || ""
+          };
+          const mergedStory = await tryMergeStoryQueueItem(queueItem);
+          if (mergedStory) {
+            baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
+            baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
+            baseItem.metadata.storySourceCount = mergedStory.storySources && mergedStory.storySources.length || 0;
+          } else {
+            state.queue.unshift(queueItem);
+          }
           pruneQueueItems(state);
           summary.queued += 1;
         }
