@@ -3487,6 +3487,28 @@ const server = http.createServer(async function(req, res) {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
 
+    if (req.method === "GET" && p === "/internal/delete-vk-duplicates-2-3-b48fa9c1") {
+      const results = [];
+      for (const postId of [2, 3]) {
+        try {
+          const response = await vkApi(
+            "wall.delete",
+            { owner_id: VK_OWNER_ID, post_id: postId },
+            { token: VK_ACCESS_TOKEN, tokenKind: "community", context: { topicId: "system", postId: "delete-" + postId } }
+          );
+          results.push({ postId: postId, ok: response === 1 || response === true, response: response });
+        } catch (error) {
+          results.push({
+            postId: postId,
+            ok: false,
+            errorCode: error && error.vkErrorCode != null ? error.vkErrorCode : null,
+            error: String(error && (error.vkErrorMsg || error.message) || error)
+          });
+        }
+      }
+      return sendJson(res, results.every(function(x){ return x.ok; }) ? 200 : 502, { ok: results.every(function(x){ return x.ok; }), results: results }, { "cache-control": "no-store" });
+    }
+
     if (req.method === "GET" && p === "/health") {
       return sendJson(res, 200, {
         ok: true,
