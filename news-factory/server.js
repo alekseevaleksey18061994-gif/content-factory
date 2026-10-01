@@ -1673,7 +1673,7 @@ async function vkApi(method, params) {
   const data = await response.json().catch(function(){ return {}; });
   if (!response.ok || data.error) {
     const err = data && data.error;
-    throw new Error(err ? ("VK " + err.error_code + ": " + err.error_msg) : ("VK HTTP " + response.status));
+    throw new Error(err ? ("VK " + method + " " + err.error_code + ": " + err.error_msg) : ("VK " + method + " HTTP " + response.status));
   }
   return data.response;
 }
@@ -1747,15 +1747,34 @@ async function publishVkPost(post) {
     });
     imageUrl = String(generated.url || "").trim();
   }
-  if (!imageUrl) throw new Error("VK: публикация без изображения запрещена");
 
-  const attachment = await uploadVkWallPhoto(imageUrl);
-  const result = await vkApi("wall.post", {
+  let attachment = "";
+  let mediaMode = "text";
+  if (imageUrl) {
+    try {
+      attachment = await uploadVkWallPhoto(imageUrl);
+      mediaMode = "photo";
+    } catch (error) {
+      // A community token can publish to the wall but VK may reject photo upload methods
+      // with group auth. In that case publish the post and use the source link preview.
+      console.warn("VK photo upload unavailable, falling back to link preview:", error.message);
+      const sourceUrl = String(post.sourceUrl || "").trim();
+      if (/^https?:\/\//i.test(sourceUrl)) {
+        attachment = sourceUrl;
+        mediaMode = "link";
+      }
+    }
+  }
+
+  const params = {
     owner_id: VK_OWNER_ID,
     from_group: 1,
-    message: formatVkPost(post),
-    attachments: attachment
-  });
+    message: formatVkPost(post)
+  };
+  if (attachment) params.attachments = attachment;
+
+  const result = await vkApi("wall.post", params);
+  if (result && typeof result === "object") result.mediaMode = mediaMode;
   return result || null;
 }
 
