@@ -4053,6 +4053,37 @@ function extractOpenAIText(data) {
   return chunks.join("\n").trim();
 }
 
+function parseLooseRewriteOutput(output) {
+  const cleaned = String(output || "")
+    .replace(/^\s*```json\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  if (!cleaned) return null;
+  try { return JSON.parse(cleaned); } catch {}
+
+  const first = cleaned.indexOf("{");
+  const last = cleaned.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    try { return JSON.parse(cleaned.slice(first, last + 1)); } catch {}
+  }
+
+  const extractJsonString = function(key) {
+    const re = new RegExp('"' + key + '"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"', "i");
+    const m = cleaned.match(re);
+    if (!m) return "";
+    try { return JSON.parse('"' + m[1] + '"'); } catch { return m[1].replace(/\\n/g, "\n").replace(/\\\"/g, '"'); }
+  };
+  const text = extractJsonString("text");
+  if (!text) return null;
+  return {
+    title: extractJsonString("title"),
+    text: text,
+    confidence: extractJsonString("confidence") || "medium",
+    notes: extractJsonString("notes"),
+    score_reason: extractJsonString("score_reason")
+  };
+}
+
 async function callOpenAIRewrite(payload) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY не настроен");
   const sourceText = String(payload.text || "").trim();
@@ -4108,7 +4139,7 @@ async function callOpenAIRewrite(payload) {
     "ОЦЕНКА РЕДАКЦИОННОЙ СИЛЫ НОВОСТИ:",
     "- оцени саму новость, а не качество своего текста;",
     "- importance 0–25: масштаб события и влияние;",
-    "- audience_interest 0–20: насколько это интересно широкой аудитории канала про ИИ;",
+    "- audience_interest 0–20: насколько это интересно широкой аудитории текущего канала;",
     "- novelty 0–20: новизна и необычность;",
     "- virality 0–15: вероятность обсуждений, пересылок и реакций;",
     "- usefulness 0–10: практическая ценность для читателя;",
@@ -4153,11 +4184,9 @@ async function callOpenAIRewrite(payload) {
         lastError = "OpenAI вернул пустой ответ";
         continue;
       }
-      let parsed;
-      try {
-        parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
-      } catch {
-        parsed = { title: title || "Что там у ИИ?", text: output, confidence: "medium", notes: "Ответ модели не был JSON" };
+      let parsed = parseLooseRewriteOutput(output);
+      if (!parsed) {
+        parsed = { title: title || channelName, text: output, confidence: "medium", notes: "Ответ модели не был JSON" };
       }
       const rawBreakdown = parsed.score_breakdown && typeof parsed.score_breakdown === "object" ? parsed.score_breakdown : {};
       const clampScore = function(value, max) {
