@@ -1564,6 +1564,51 @@ function hasPublishableMedia(item) {
 }
 
 
+function extractTelegramSourcePosts(html, sourceUrl) {
+  const source = String(html || "");
+  let channel = "";
+  try {
+    const u = new URL(sourceUrl);
+    const parts = u.pathname.split("/").filter(Boolean);
+    channel = parts[0] === "s" ? String(parts[1] || "") : String(parts[0] || "");
+  } catch {}
+  if (!channel) return [];
+
+  const posts = [];
+  const chunks = source.split(/<div[^>]+class=["'][^"']*tgme_widget_message_wrap[^"']*["'][^>]*>/i).slice(1);
+  for (const chunk of chunks) {
+    const dataPost = chunk.match(/data-post=["']([^"']+)\/([0-9]+)["']/i);
+    const messageId = dataPost ? Number(dataPost[2]) : 0;
+    if (!messageId) continue;
+
+    const textMatch = chunk.match(/<div[^>]+class=["'][^"']*tgme_widget_message_text[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+    let text = textMatch ? stripHtml(textMatch[1]).replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim() : "";
+    if (!text || text.length < 20) continue;
+
+    const dateMatch = chunk.match(/<time[^>]+datetime=["']([^"']+)["']/i);
+    const hasVideo = /tgme_widget_message_video|tgme_widget_message_video_player|video_player|media is not supported|media is too big/i.test(chunk);
+    const hasPhoto = /tgme_widget_message_photo_wrap|background-image\s*:\s*url/i.test(chunk);
+    const firstLine = text.split("\n").map(function(x){ return x.trim(); }).find(Boolean) || text;
+    const title = firstLine.length > 150 ? firstLine.slice(0, 147) + "…" : firstLine;
+
+    posts.push({
+      url: "https://t.me/" + channel + "/" + messageId,
+      title: title,
+      text: text,
+      publishedAt: dateMatch ? normalizeDate(dateMatch[1]) : "",
+      hasVideo: hasVideo,
+      hasPhoto: hasPhoto,
+      score: 20 + (hasVideo ? 8 : 0) + (hasPhoto ? 3 : 0) + Math.min(5, Math.floor(text.length / 180))
+    });
+  }
+  return posts.sort(function(a,b){
+    const ta = new Date(a.publishedAt || 0).getTime();
+    const tb = new Date(b.publishedAt || 0).getTime();
+    if (tb !== ta) return tb - ta;
+    return b.score - a.score;
+  }).slice(0, 18);
+}
+
 function extractArticleLinks(html, sourceUrl) {
   const base = new URL(sourceUrl);
   const out = new Map();
@@ -1790,7 +1835,10 @@ async function collectOnce(trigger) {
       noteSourceEvent(source, "check");
       try {
         const html = await fetchText(source.url, 15000);
-        const links = extractArticleLinks(html, source.url).slice(0, 12);
+        const links = (source.group === "blogger"
+          ? extractTelegramSourcePosts(html, source.url)
+          : extractArticleLinks(html, source.url)
+        ).slice(0, source.group === "blogger" ? 18 : 12);
         for (const link of links) {
           if (selectedUrls.has(link.url)) continue;
           if (await seenOriginalUrl(link.url)) {
@@ -1825,8 +1873,11 @@ async function collectOnce(trigger) {
 
       try {
         const articleHtml = await fetchText(url, 15000);
-        const originalTitle = extractTitle(articleHtml) || candidate.link.title;
-        const articlePublishedAt = extractPublishedAt(articleHtml);
+        const isBlogger = source.group === "blogger";
+        const originalTitle = isBlogger
+          ? (candidate.link.title || extractTitle(articleHtml) || source.name)
+          : (extractTitle(articleHtml) || candidate.link.title);
+        const articlePublishedAt = candidate.link.publishedAt || extractPublishedAt(articleHtml);
         if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > ARTICLE_MAX_AGE_HOURS * 60 * 60 * 1000) {
           summary.skipped += 1;
           continue;
@@ -1834,8 +1885,8 @@ async function collectOnce(trigger) {
         const imageUrl = extractMetaImage(articleHtml, url);
         const videoUrl = extractMetaVideo(articleHtml, url);
         const raw = stripHtml(articleHtml);
-        const originalText = raw.slice(0, 14000);
-        if (originalText.length < 250) {
+        const originalText = (isBlogger && candidate.link.text ? String(candidate.link.text) : raw).slice(0, 14000);
+        if (originalText.length < (isBlogger ? 40 : 250)) {
           summary.skipped += 1;
           continue;
         }
@@ -1865,6 +1916,7 @@ async function collectOnce(trigger) {
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             videoUrl: media.videoUrl || "",
+            hasEmbeddedVideo: Boolean(candidate.link && candidate.link.hasVideo),
             generatedImageUrl: media.generatedImageUrl || "",
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
@@ -1954,6 +2006,7 @@ async function collectOnce(trigger) {
             originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
             videoUrl: media.videoUrl || "",
+            hasEmbeddedVideo: Boolean(candidate.link && candidate.link.hasVideo),
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaPriority: media.mediaPriority || 99,
@@ -1978,6 +2031,7 @@ async function collectOnce(trigger) {
             createdAt: new Date().toISOString(),
             articlePublishedAt: articlePublishedAt || "",
             sourceId: source.id,
+            sourceGroup: source.group || "",
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || "",
@@ -2089,19 +2143,26 @@ function dynamicItemAgeMs(item) {
   return Math.max(0, Date.now() - ms);
 }
 
+function videoPriorityBonus(item, baseScore) {
+  const hasRealVideo = Boolean(item && item.videoUrl);
+  const hasEmbeddedVideo = Boolean(item && (item.hasEmbeddedVideo || (item.metadata && item.metadata.hasEmbeddedVideo)));
+  if (!hasRealVideo && !hasEmbeddedVideo) return 0;
+  const strongEnough = Number(baseScore || 0) >= 55;
+  if (hasRealVideo) return strongEnough ? 10 : 4;
+  return strongEnough ? 5 : 2;
+}
+
 function dynamicItemScore(item) {
   const aiScore = Number(item && item.aiScore);
 
   if (Number.isFinite(aiScore)) {
-    // AI editorial score is the primary ranking signal.
-    // Freshness/source/media must never lower a 77-point story below a 75-point story.
-    return Math.max(0, Math.min(100, aiScore));
+    const base = Math.max(0, Math.min(100, aiScore));
+    return Math.max(0, Math.min(100, base + videoPriorityBonus(item, base)));
   }
 
-  // Backward compatibility for old queue items created before AI editorial scoring.
-  // Keep them eligible, but cap them below newly scored strong news.
   const ageMinutes = dynamicItemAgeMs(item) / 60000;
-  return Math.min(74, Math.max(0, 68 - ageMinutes * 0.2));
+  const fallback = Math.min(74, Math.max(0, 68 - ageMinutes * 0.2));
+  return Math.min(79, fallback + videoPriorityBonus(item, fallback));
 }
 
 function dynamicUsedQueueIds() {
