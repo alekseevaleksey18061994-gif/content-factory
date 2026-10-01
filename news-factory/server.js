@@ -20,7 +20,8 @@ const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase(
 const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
 const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_ENHANCE_SOURCE_IMAGES = String(process.env.AUTO_ENHANCE_SOURCE_IMAGES || "true").toLowerCase() !== "false";
-const COPYRIGHT_SAFE_MODE = String(process.env.COPYRIGHT_SAFE_MODE || "true").toLowerCase() !== "false";
+const COPYRIGHT_MEDIA_MODE = String(process.env.COPYRIGHT_MEDIA_MODE || "balanced").trim().toLowerCase();
+const COPYRIGHT_SAFE_MODE = COPYRIGHT_MEDIA_MODE === "strict";
 const COPYRIGHT_MAX_VERBATIM_WORDS = Math.max(8, Number(process.env.COPYRIGHT_MAX_VERBATIM_WORDS || 12));
 const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst";
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "medium";
@@ -733,6 +734,61 @@ function ensureConfiguredWorkspaces() {
     changed = true;
   }
 
+  const balancedMediaMigration = "v0.31.2-balanced-source-media";
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+    if (ws.state.migrations.includes(balancedMediaMigration)) continue;
+
+    ws.state.copyrightPolicy = Object.assign({}, ws.state.copyrightPolicy || {}, {
+      safeMode: COPYRIGHT_SAFE_MODE,
+      mediaMode: COPYRIGHT_MEDIA_MODE,
+      factsOnly: true,
+      requireSourceLink: true,
+      autoUseThirdPartyMedia: COPYRIGHT_MEDIA_MODE === "balanced",
+      maxVerbatimWords: COPYRIGHT_MAX_VERBATIM_WORDS,
+      version: "v2"
+    });
+
+    const sourceMap = new Map((ws.state.sources || []).map(function(source){ return [String(source && source.id || ""), source]; }));
+    for (const item of (ws.state.queue || [])) {
+      if (!item) continue;
+      const source = sourceMap.get(String(item.sourceId || "")) || null;
+      const license = normalizeMediaLicense(item.mediaLicense || (source && source.mediaLicense) || "unknown");
+      item.mediaLicense = license;
+      item.copyrightSafe = COPYRIGHT_SAFE_MODE;
+      item.copyrightMediaMode = COPYRIGHT_MEDIA_MODE;
+      item.copyrightPolicyVersion = "v2";
+
+      if (mediaLicenseAllowsReuse(license)) {
+        const sourceVideo = String(item.originalVideoUrl || item.videoUrl || "").trim();
+        const sourceImage = String(item.originalImageUrl || item.imageUrl || "").trim();
+
+        if (sourceVideo) {
+          item.videoUrl = sourceVideo;
+          if (sourceImage) item.imageUrl = sourceImage;
+          item.mediaType = "video";
+          item.mediaStatus = "video_found";
+          item.mediaPriority = 1;
+          item.mediaOrigin = "source_media";
+          item.copyrightMediaDecision = "balanced_source_reuse";
+        } else if (sourceImage) {
+          item.imageUrl = sourceImage;
+          item.videoUrl = "";
+          item.mediaType = "photo";
+          item.mediaStatus = "photo_found";
+          item.mediaPriority = 2;
+          item.mediaOrigin = "source_media";
+          item.copyrightMediaDecision = "balanced_source_reuse";
+        }
+      }
+    }
+
+    ws.state.migrations.push(balancedMediaMigration);
+    ws.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+
   if (changed) {
     cars.updatedAt = new Date().toISOString();
     persistWorkspaceStore();
@@ -764,6 +820,8 @@ function normalizeMediaLicense(value) {
 }
 function mediaLicenseAllowsReuse(value) {
   const v = normalizeMediaLicense(value);
+  if (v === "forbidden") return false;
+  if (!COPYRIGHT_SAFE_MODE) return true;
   return v === "allowed" || v === "user_provided";
 }
 function sourceMediaLicense(sourceOrItem) {
@@ -800,8 +858,12 @@ async function enforceCopyrightSafeMedia(post) {
   const license = sourceMediaLicense(out);
   out.mediaLicense = license;
   out.copyrightSafe = COPYRIGHT_SAFE_MODE;
-  out.copyrightPolicyVersion = "v1";
-  if (!COPYRIGHT_SAFE_MODE || mediaLicenseAllowsReuse(license)) return out;
+  out.copyrightMediaMode = COPYRIGHT_MEDIA_MODE;
+  out.copyrightPolicyVersion = "v2";
+  if (mediaLicenseAllowsReuse(license)) {
+    if (!out.mediaOrigin && (out.videoUrl || out.imageUrl)) out.mediaOrigin = "source_media";
+    return out;
+  }
 
   const generatedIndependent =
     out.mediaStatus === "generated" ||
@@ -816,7 +878,7 @@ async function enforceCopyrightSafeMedia(post) {
   if (!generatedIndependent) out.generatedImageUrl = "";
   if (!out.generatedImageUrl) {
     if (!GENERATE_COVER_IF_MISSING) {
-      if (MEDIA_REQUIRED) throw new Error("Copyright Safe Mode: стороннее медиа заблокировано, а генерация собственной обложки отключена");
+      if (MEDIA_REQUIRED) throw new Error("Медиа этого источника запрещено настройками, а генерация резервной обложки отключена");
       return out;
     }
     const generated = await generateNewsCover({
@@ -831,7 +893,7 @@ async function enforceCopyrightSafeMedia(post) {
   out.mediaType = "generated";
   out.mediaStatus = "generated";
   out.mediaOrigin = "ai_generated";
-  out.copyrightMediaDecision = "third_party_media_blocked";
+  out.copyrightMediaDecision = "source_media_blocked";
   return out;
 }
 
@@ -1986,9 +2048,9 @@ async function ensureMediaForNews(payload) {
   const imageUrl = String(payload.imageUrl || "").trim();
   const videoUrl = String(payload.videoUrl || "").trim();
   const mediaLicense = normalizeMediaLicense(payload.mediaLicense || "unknown");
-  const sourceReuseAllowed = !COPYRIGHT_SAFE_MODE || mediaLicenseAllowsReuse(mediaLicense);
+  const sourceReuseAllowed = mediaLicenseAllowsReuse(mediaLicense);
 
-  // Copyright Safe Mode: source media is provenance only unless the source is explicitly licensed.
+  // Balanced mode: source media is used by default with attribution. Only forbidden media is blocked.
   if (!sourceReuseAllowed && (imageUrl || videoUrl)) {
     if (GENERATE_COVER_IF_MISSING) {
       try {
@@ -2004,8 +2066,9 @@ async function ensureMediaForNews(payload) {
           mediaPriority: 2,
           mediaLicense: mediaLicense,
           mediaOrigin: "ai_generated",
-          copyrightSafe: true,
-          copyrightMediaDecision: "third_party_media_blocked",
+          copyrightSafe: COPYRIGHT_SAFE_MODE,
+          copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+          copyrightMediaDecision: "source_media_blocked",
           generatedBy: generated.model
         };
       } catch (error) {
@@ -2020,8 +2083,9 @@ async function ensureMediaForNews(payload) {
           mediaPriority: 99,
           mediaLicense: mediaLicense,
           mediaOrigin: "source_media_blocked",
-          copyrightSafe: true,
-          copyrightMediaDecision: "third_party_media_blocked",
+          copyrightSafe: COPYRIGHT_SAFE_MODE,
+          copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+          copyrightMediaDecision: "source_media_blocked",
           mediaError: error.message
         };
       }
@@ -2037,8 +2101,9 @@ async function ensureMediaForNews(payload) {
       mediaPriority: 99,
       mediaLicense: mediaLicense,
       mediaOrigin: "source_media_blocked",
-      copyrightSafe: true,
-      copyrightMediaDecision: "third_party_media_blocked"
+      copyrightSafe: COPYRIGHT_SAFE_MODE,
+          copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      copyrightMediaDecision: "source_media_blocked"
     };
   }
 
@@ -2054,14 +2119,15 @@ async function ensureMediaForNews(payload) {
       mediaStatus: "video_found",
       mediaPriority: 1,
       mediaLicense: mediaLicense,
-      mediaOrigin: "licensed_source",
-      copyrightSafe: COPYRIGHT_SAFE_MODE
+      mediaOrigin: "source_media",
+      copyrightSafe: COPYRIGHT_SAFE_MODE,
+      copyrightMediaMode: COPYRIGHT_MEDIA_MODE
     };
   }
 
   // Explicitly licensed/user-provided photo may be enhanced.
   if (imageUrl) {
-    if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES) {
+    if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES && (mediaLicense === "allowed" || mediaLicense === "user_provided")) {
       try {
         const enhanced = await enhanceNewsImage({
           id: payload.id || newId("enhance"),
@@ -2081,6 +2147,7 @@ async function ensureMediaForNews(payload) {
           mediaLicense: mediaLicense,
           mediaOrigin: "licensed_derivative",
           copyrightSafe: COPYRIGHT_SAFE_MODE,
+          copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
           enhancedBy: enhanced.model,
           enhancedAt: new Date().toISOString()
         };
@@ -2099,8 +2166,9 @@ async function ensureMediaForNews(payload) {
       mediaPriority: 2,
       canEnhance: IMAGE_ENHANCEMENT_ENABLED,
       mediaLicense: mediaLicense,
-      mediaOrigin: "licensed_source",
-      copyrightSafe: COPYRIGHT_SAFE_MODE
+      mediaOrigin: "source_media",
+      copyrightSafe: COPYRIGHT_SAFE_MODE,
+      copyrightMediaMode: COPYRIGHT_MEDIA_MODE
     };
   }
 
@@ -2120,6 +2188,7 @@ async function ensureMediaForNews(payload) {
         mediaLicense: mediaLicense,
         mediaOrigin: "ai_generated",
         copyrightSafe: COPYRIGHT_SAFE_MODE,
+        copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
         generatedBy: generated.model
       };
     } catch (error) {
@@ -2135,6 +2204,7 @@ async function ensureMediaForNews(payload) {
         mediaLicense: mediaLicense,
         mediaOrigin: "none",
         copyrightSafe: COPYRIGHT_SAFE_MODE,
+        copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
         mediaError: error.message
       };
     }
@@ -2151,7 +2221,8 @@ async function ensureMediaForNews(payload) {
     mediaPriority: 99,
     mediaLicense: mediaLicense,
     mediaOrigin: "none",
-    copyrightSafe: COPYRIGHT_SAFE_MODE
+    copyrightSafe: COPYRIGHT_SAFE_MODE,
+    copyrightMediaMode: COPYRIGHT_MEDIA_MODE
   };
 }
 
