@@ -2454,7 +2454,7 @@ function statusRu(v){
     running:'Работает',success:'Успешно',failed:'Ошибка',completed_with_errors:'Завершено с ошибками',
     disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',slot_scheduler:'Ждёт ближайший слот',review_mode:'На проверку',quality_hold:'QC: на доработку',duplicate_story:'Дубль сюжета',
     high:'Высокая',medium:'Средняя',low:'Низкая',
-    found:'Медиа найдено',video_found:'Видео найдено',photo_found:'Фото найдено',enhanced:'Фото улучшено AI',generated:'AI-обложка (fallback)',copyright_pending:'Медиа заблокировано',missing:'Нет медиа',generation_error:'Ошибка AI-обложки',missing_media:'Нет медиа',
+    found:'Медиа найдено',video_found:'Видео найдено',video_poster_enhanced:'Видео · обложка улучшена AI',photo_found:'Фото найдено',enhanced:'Фото улучшено AI',generated:'AI-обложка (fallback)',copyright_pending:'Медиа заблокировано',missing:'Нет медиа',generation_error:'Ошибка AI-обложки',missing_media:'Нет медиа',
     photo:'Фото',video:'Видео',generated_media:'Сгенерировано',
     AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'
   };
@@ -2799,15 +2799,17 @@ function render(){
   var vkAllowed=!!(currentWorkspaceMeta&&currentWorkspaceMeta.vkPublishingAllowed);
   el('queue').innerHTML=sortedQueue.length?sortedQueue.map(function(q){
     var parts=postParts(q);
-    var sourceImage=q.imageUrl||q.originalImageUrl||'';
+    var sourceImage=q.enhancedImageUrl||q.imageUrl||q.originalImageUrl||'';
     var effectiveImage=sourceImage||q.generatedImageUrl||'';
     var media=q.videoUrl
       ? (effectiveImage?'<div class="queue-media-visual"><img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="queue-placeholder">▶ Видео</div>')
       : effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt="">':'<div class="queue-placeholder">Нет медиа</div>';
     var freshnessDate=q.articlePublishedAt||q.createdAt||'';
     var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
-    var ms=q.videoUrl?'video_found':sourceImage?'photo_found':(q.generatedImageUrl?'generated':(q.mediaStatus||'missing'));
-    var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
+    var ms=(q.mediaStatus==='enhanced'||q.mediaStatus==='video_poster_enhanced')
+      ? q.mediaStatus
+      : (q.videoUrl?'video_found':sourceImage?'photo_found':(q.generatedImageUrl?'generated':(q.mediaStatus||'missing')));
+    var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced'||ms==='video_poster_enhanced')?'generated':'bad');
     var aiScore=Number(q.aiScore);
     var aiTier=String(q.aiTier||'');
     var hasVideo=!!q.videoUrl;
@@ -2827,7 +2829,9 @@ function render(){
           '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status '+esc(q.status||'queued')+'">'+esc(statusRu(q.status||'queued'))+'</span></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
-          ((q.videoUrl||sourceImage)?'<span class="media-badge source-media-badge">'+(q.videoUrl?'Видео':'Фото')+' источника · ссылка сохранена</span>':(q.generatedImageUrl?'<span class="media-badge ai-fallback-badge">AI fallback · исходного медиа нет</span>':(q.mediaStatus==='copyright_pending'?'<span class="media-badge copyright-media-badge">Медиа источника заблокировано</span>':'')))+
+          ((q.mediaStatus==='enhanced'||q.mediaStatus==='video_poster_enhanced')
+            ? '<span class="media-badge source-media-badge">✨ '+(q.videoUrl?'Обложка видео':'Фото')+' улучшено AI · оригинал сохранён</span>'
+            : ((q.videoUrl||sourceImage)?'<span class="media-badge source-media-badge">'+(q.videoUrl?'Видео':'Фото')+' источника · ссылка сохранена</span>':(q.generatedImageUrl?'<span class="media-badge ai-fallback-badge">AI fallback · исходного медиа нет</span>':(q.mediaStatus==='copyright_pending'?'<span class="media-badge copyright-media-badge">Медиа источника заблокировано</span>':''))))+
           (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
           (qualityLabel?'<span class="media-badge quality-badge '+(q.qcStatus==='hold'?'hold':'')+'">'+esc(qualityLabel)+(q.qcStatus==='hold'?' · HOLD':'')+'</span>':'')+
           (Number.isFinite(priorityScore)?'<span class="media-badge priority-badge">Приоритет '+Math.round(priorityScore)+'/100</span>':'')+
@@ -3381,7 +3385,7 @@ function renderPreview(item,platform){
   var variants=item.platformVariants||{};
   var variant=variants[platform]||null;
   var viewItem=variant?Object.assign({},item,{title:variant.title||item.title,text:variant.text||item.text}):item;
-  var pp=postParts(viewItem),img=item.imageUrl||item.originalImageUrl||item.generatedImageUrl||'',video=item.videoUrl||'';
+  var pp=postParts(viewItem),img=item.enhancedImageUrl||item.imageUrl||item.originalImageUrl||item.generatedImageUrl||'',video=item.videoUrl||'';
   var pack=Array.isArray(item.mediaPackUrls)?item.mediaPackUrls.filter(Boolean).slice(0,4):[];
   var media='';
   if(video){
@@ -3419,6 +3423,7 @@ function openNewsPreview(id){
     sourceName:n.sourceName||'Источник',
     sourceUrl:n.originalUrl||'',
     imageUrl:md.imageUrl||'',
+    enhancedImageUrl:md.enhancedImageUrl||'',
     originalImageUrl:md.originalImageUrl||md.imageUrl||'',
     generatedImageUrl:md.generatedImageUrl||'',
     videoUrl:md.videoUrl||'',
@@ -3442,13 +3447,15 @@ async function loadNews(){
       var body=stripEditorialMarks(pp.text||'').slice(0,320);
       var status=n.runtimeStatus||n.status||'discovered';
       var md=n.metadata||{};
-      var sourceImage=md.imageUrl||md.originalImageUrl||'';
+      var sourceImage=md.enhancedImageUrl||md.imageUrl||md.originalImageUrl||'';
       var image=sourceImage||md.generatedImageUrl||'';
       var media=md.videoUrl
         ? (image?'<div class="queue-media-visual"><img class="news-thumb" src="'+esc(image)+'" alt=""><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="news-placeholder">▶ Видео</div>')
         : image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">Нет медиа</div>';
-      var ms=md.videoUrl?'video_found':sourceImage?'photo_found':(md.generatedImageUrl?'generated':(md.mediaStatus||'missing'));
-      var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
+      var ms=(md.mediaStatus==='enhanced'||md.mediaStatus==='video_poster_enhanced')
+        ? md.mediaStatus
+        : (md.videoUrl?'video_found':sourceImage?'photo_found':(md.generatedImageUrl?'generated':(md.mediaStatus||'missing')));
+      var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced'||ms==='video_poster_enhanced')?'generated':'bad');
       var editorialScore=(n.aiScore===null||n.aiScore===undefined||n.aiScore==='')?NaN:Number(n.aiScore);
       if(!Number.isFinite(editorialScore))editorialScore=(md.editorialScore===null||md.editorialScore===undefined||md.editorialScore==='')?NaN:Number(md.editorialScore);
       var tier=String(n.aiTier||'');
