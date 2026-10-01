@@ -1510,15 +1510,16 @@ async function refreshNewsFeed(btn){
   var original=btn&&btn.textContent||'↻ Обновить';
   if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
   try{
-    await api('/api/news/backfill-scores',{method:'POST',body:'{}'});
     await loadNews();
-    toast('Лента, статусы и рейтинги обновлены');
+    toast('Лента и статусы обновлены');
   }catch(e){
     toast('Обновление: '+e.message);
-    await loadNews();
   }finally{
     if(btn){btn.disabled=false;btn.textContent=original}
   }
+  api('/api/news/backfill-scores',{method:'POST',body:'{}'}).then(function(r){
+    if(r&&r.scored){loadNews();toast('Добавлены AI-рейтинги: '+r.scored)}
+  }).catch(function(){});
 }
 
 async function runCollector(){
