@@ -31,6 +31,13 @@ const STORY_CLUSTER_MIN_SIMILARITY = Math.max(0.18, Math.min(0.8, Number(process
 const STORY_CLUSTER_MAX_SOURCES = Math.max(2, Math.min(6, Number(process.env.STORY_CLUSTER_MAX_SOURCES || 5)));
 const STORY_MEDIA_PACK_COUNT = Math.max(2, Math.min(4, Number(process.env.STORY_MEDIA_PACK_COUNT || 3)));
 const EDITORIAL_VARIETY_ENABLED = String(process.env.EDITORIAL_VARIETY_ENABLED || "true").toLowerCase() !== "false";
+const EDITORIAL_QC_ENABLED = String(process.env.EDITORIAL_QC_ENABLED || "true").toLowerCase() !== "false";
+const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
+const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
+const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MEDIA_DIRECTOR_MAX_IMAGES || 4)));
+const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
+const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
+const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
 const VK_ACCESS_TOKEN = String(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || "").trim();
 const VK_USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_USER_ACCESS_TOKEN || "").trim();
@@ -185,9 +192,25 @@ const defaultState = {
     safeMode: COPYRIGHT_SAFE_MODE,
     factsOnly: true,
     requireSourceLink: true,
-    autoUseThirdPartyMedia: false,
+    autoUseThirdPartyMedia: COPYRIGHT_MEDIA_MODE === "balanced",
     maxVerbatimWords: COPYRIGHT_MAX_VERBATIM_WORDS,
-    version: "v1"
+    version: "v2"
+  },
+  editorialPolicy: {
+    qcEnabled: EDITORIAL_QC_ENABLED,
+    autoQualityMin: AUTO_QUALITY_MIN,
+    diversityEnabled: true,
+    platformVariants: true,
+    storyUpdates: true,
+    mediaDirector: true,
+    repairLoop: true
+  },
+  editorialLearning: {
+    updatedAt: "",
+    sampleSize: 0,
+    byFormat: {},
+    bySource: {},
+    byTopic: {}
   },
   publicationSchedule: {
     timezone: "Europe/Moscow",
@@ -1091,6 +1114,150 @@ function findStoryClusterCandidate(newItem) {
     if (score > bestScore) { bestScore = score; best = item; }
   }
   return best && bestScore >= STORY_CLUSTER_MIN_SIMILARITY ? { item: best, similarity: bestScore } : null;
+}
+
+
+function sourceEditorialRole(sourceOrItem) {
+  const source = sourceOrItem && sourceOrItem.group ? sourceOrItem : findSourceForItem(sourceOrItem);
+  const group = String(source && source.group || sourceOrItem && sourceOrItem.sourceGroup || "").toLowerCase();
+  if (group === "official") return "official_primary";
+  if (group === "blogger" || group === "creator") return "author_opinion";
+  if (group === "media") return "media_context";
+  if (group === "story") return "multi_source";
+  return "context_source";
+}
+
+function sourceRoleLabel(role) {
+  const map = {
+    official_primary: "Официальный первичный источник",
+    author_opinion: "Авторское мнение/демонстрация",
+    media_context: "СМИ и дополнительный контекст",
+    multi_source: "Несколько независимых источников",
+    context_source: "Контекстный источник"
+  };
+  return map[String(role || "")] || "Контекстный источник";
+}
+
+function normalizeTopicEntities(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of (Array.isArray(values) ? values : [])) {
+    const text = String(value || "").trim().replace(/\s+/g, " ").slice(0, 80);
+    const key = text.toLowerCase();
+    if (!text || text.length < 2 || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out.slice(0, 5);
+}
+
+function recentHistoryItems(limit) {
+  return (state.history || []).filter(function(item){ return item && item.publishedAt; }).slice(0, Math.max(1, Number(limit || 8)));
+}
+
+function editorialDiversityPenalty(item) {
+  const recent = recentHistoryItems(8);
+  if (!recent.length || !item) return { penalty: 0, reasons: [] };
+  const reasons = [];
+  let penalty = 0;
+  const itemEntities = new Set(normalizeTopicEntities(item.topicEntities).map(function(x){ return x.toLowerCase(); }));
+  const itemFormat = String(item.contentFormat || "");
+  const itemSource = String(item.sourceName || "").toLowerCase();
+  const itemMedia = item.videoUrl ? "video" : ((Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length > 1) ? "album" : (item.imageUrl || item.generatedImageUrl ? "photo" : "none"));
+
+  recent.forEach(function(h, index) {
+    const weight = index < 2 ? 1 : (index < 5 ? 0.55 : 0.3);
+    const hEntities = normalizeTopicEntities(h.topicEntities).map(function(x){ return x.toLowerCase(); });
+    const shared = hEntities.filter(function(x){ return itemEntities.has(x); }).length;
+    if (shared) {
+      const add = Math.round((index < 2 ? 9 : 5) * weight);
+      penalty += add;
+      reasons.push("повтор темы/компании +" + add);
+    }
+    if (itemFormat && itemFormat === String(h.contentFormat || "")) {
+      const add = Math.round((index < 2 ? 5 : 2) * weight);
+      penalty += add;
+      reasons.push("повтор формата +" + add);
+    }
+    if (itemSource && itemSource === String(h.sourceName || "").toLowerCase()) {
+      const add = Math.round((index < 2 ? 4 : 2) * weight);
+      penalty += add;
+      reasons.push("тот же источник +" + add);
+    }
+    const hMedia = h.videoUrl ? "video" : ((Array.isArray(h.mediaPackUrls) && h.mediaPackUrls.length > 1) ? "album" : (h.imageUrl || h.generatedImageUrl ? "photo" : "none"));
+    if (index < 2 && itemMedia !== "none" && itemMedia === hMedia) {
+      penalty += 1;
+      reasons.push("одинаковый тип медиа +1");
+    }
+  });
+  return { penalty: Math.min(28, penalty), reasons: Array.from(new Set(reasons)).slice(0, 5) };
+}
+
+function learningBucketScore(bucket) {
+  if (!bucket || !Number(bucket.samples || 0)) return 0;
+  const perf = Number(bucket.performance || 0);
+  return Math.max(-8, Math.min(8, Number.isFinite(perf) ? perf : 0));
+}
+
+function editorialLearningBonus(item) {
+  if (!EDITORIAL_LEARNING_ENABLED || !state.editorialLearning || !item) return { bonus: 0, reasons: [] };
+  const learning = state.editorialLearning;
+  let bonus = 0;
+  const reasons = [];
+  const format = learning.byFormat && learning.byFormat[item.contentFormat];
+  const source = learning.bySource && learning.bySource[String(item.sourceName || "").toLowerCase()];
+  const entities = normalizeTopicEntities(item.topicEntities);
+  if (format) {
+    const v = learningBucketScore(format);
+    bonus += v;
+    if (Math.abs(v) >= 2) reasons.push("формат по статистике " + (v > 0 ? "+" : "") + v);
+  }
+  if (source) {
+    const v = learningBucketScore(source) * 0.6;
+    bonus += v;
+    if (Math.abs(v) >= 2) reasons.push("источник по статистике " + (v > 0 ? "+" : "") + Math.round(v));
+  }
+  for (const entity of entities.slice(0, 2)) {
+    const bucket = learning.byTopic && learning.byTopic[entity.toLowerCase()];
+    if (!bucket) continue;
+    const v = learningBucketScore(bucket) * 0.45;
+    bonus += v;
+    if (Math.abs(v) >= 2) reasons.push("тема по статистике " + (v > 0 ? "+" : "") + Math.round(v));
+  }
+  return { bonus: Math.max(-10, Math.min(10, Math.round(bonus))), reasons: reasons.slice(0, 4) };
+}
+
+function autoQualityEligible(item) {
+  const score = Number(item && item.qualityScore);
+  return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold";
+}
+
+function buildDecisionExplanation(item) {
+  if (!item) return { summary: "Нет данных", factors: [] };
+  const diversity = editorialDiversityPenalty(item);
+  const learning = editorialLearningBonus(item);
+  const base = Number(item.aiScore);
+  const quality = Number(item.qualityScore);
+  const factors = [];
+  if (Number.isFinite(base)) factors.push("Сила новости: " + Math.round(base) + "/100");
+  if (Number.isFinite(quality)) factors.push("Качество готового поста: " + Math.round(quality) + "/100");
+  if (item.contentFormatLabel) factors.push("Формат: " + item.contentFormatLabel);
+  if (item.sourceRole) factors.push("Роль источника: " + sourceRoleLabel(item.sourceRole));
+  if (item.storyCluster && Number(item.storyCluster.sourceCount) > 1) factors.push("Сюжет: " + item.storyCluster.sourceCount + " источника");
+  if (item.storyUpdateOf) factors.push("Обновление ранее опубликованного сюжета");
+  if (item.videoUrl) factors.push("Видео: приоритет +" + videoPriorityBonus(item, Number.isFinite(base) ? base : 60));
+  if (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length > 1) factors.push("Media Pack: " + item.mediaPackUrls.length + " изображения");
+  if (learning.bonus) factors.push("Обучение на статистике: " + (learning.bonus > 0 ? "+" : "") + learning.bonus);
+  if (diversity.penalty) factors.push("Штраф за повторяемость: -" + diversity.penalty);
+  if (item.qcIssues && item.qcIssues.length) factors.push("QC: " + item.qcIssues.slice(0, 2).join("; "));
+  return {
+    summary: item.decisionSummary || "Система учитывает силу новости, качество поста, разнообразие ленты, медиа и статистику аудитории.",
+    factors: factors.slice(0, 10),
+    diversityPenalty: diversity.penalty,
+    learningBonus: learning.bonus,
+    autoQualityMin: AUTO_QUALITY_MIN,
+    autoEligible: autoQualityEligible(item)
+  };
 }
 
 function sourceStatKey(sourceOrItem) {
