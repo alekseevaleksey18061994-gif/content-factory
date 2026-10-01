@@ -3376,6 +3376,75 @@ const server = http.createServer(async function(req, res) {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
 
+    if (req.method === "GET" && p === "/internal/retry-vk-failed-4d2b1e9a7c6f") {
+      const item = (state.queue || []).find(function(q) {
+        return q && q.telegramPublished === true && q.vkPublished !== true && q.vkStatus === "media_failed";
+      });
+      if (!item) return sendJson(res, 404, { ok: false, error: "no failed VK item" }, { "cache-control": "no-store" });
+
+      const result = await sendMultiPlatformPost(Object.assign({}, item, {
+        postId: item.id,
+        topicId: item.topicId || "default",
+        allow_text_fallback: allowTextFallbackForPost(item)
+      }), { telegram: false, vk: true });
+
+      const publishedAt = new Date().toISOString();
+      if (result.vkPublished) {
+        item.vkPublished = true;
+        item.vkPostId = result.vkPostId || null;
+        item.vkStatus = "published";
+        item.vkError = "";
+        item.vkErrorCode = null;
+        item.vkPublishedAt = publishedAt;
+        item.vkPreviewSlug = result.vkPreviewSlug || "";
+        item.vkPreviewUrl = result.vkPreviewUrl || "";
+        item.status = "published";
+
+        const historyItem = (state.history || []).find(function(h) {
+          return h && (h.id === item.historyId || h.queueId === item.id);
+        });
+        if (historyItem) {
+          historyItem.vkPostId = result.vkPostId || null;
+          historyItem.vkStatus = "published";
+          historyItem.vkError = "";
+          historyItem.vkPreviewSlug = result.vkPreviewSlug || "";
+          historyItem.vkPreviewUrl = result.vkPreviewUrl || "";
+        }
+
+        if (db && dbReady && item.newsId) {
+          await db.query(
+            "UPDATE news_items SET status='published', vk_post_id=$2, vk_status='published', vk_error_code=NULL, vk_error_msg=NULL, vk_media_attempts=$3, metadata=COALESCE(metadata,'{}'::jsonb) || $4::jsonb, updated_at=NOW() WHERE id=$1",
+            [
+              item.newsId,
+              result.vkPostId || null,
+              Number(result.vkMediaAttempts || 0),
+              JSON.stringify({
+                vkPreviewSlug: result.vkPreviewSlug || "",
+                vkPreviewUrl: result.vkPreviewUrl || "",
+                vkMediaMode: result.vkMediaMode || ""
+              })
+            ]
+          );
+        }
+
+        state.queue = (state.queue || []).filter(function(q){ return q.id !== item.id; });
+        saveState();
+      }
+
+      return sendJson(res, result.vkPublished ? 200 : 502, {
+        ok: result.vkPublished === true,
+        queueId: item.id,
+        title: item.title || "",
+        vkPostId: result.vkPostId || null,
+        vkStatus: result.vkStatus || "",
+        vkMediaMode: result.vkMediaMode || "",
+        vkPreviewSlug: result.vkPreviewSlug || "",
+        vkPreviewUrl: result.vkPreviewUrl || "",
+        vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
+        vkError: result.vkError || ""
+      }, { "cache-control": "no-store" });
+    }
+
     if (req.method === "GET" && p === "/internal/runtime-probe-8c4e31a7f39d4b51a2e6") {
       const day = moscowDateKey(new Date());
       const schedule = ensureScheduleShape(state);
