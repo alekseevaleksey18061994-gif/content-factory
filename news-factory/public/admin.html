@@ -690,6 +690,44 @@ button,.quick button,.quick a{
   .social-platform-controls .source-toggle{width:100%}
   .social-platform-controls .link{margin-left:0;text-align:center;padding:10px}
 }
+
+/* v0.27.4 — global floating page refresh */
+.page-refresh-fab{
+  position:fixed;
+  right:calc(18px + env(safe-area-inset-right));
+  bottom:calc(18px + env(safe-area-inset-bottom));
+  z-index:85;
+  width:54px;
+  height:54px;
+  min-height:54px;
+  padding:0;
+  border-radius:50%;
+  display:grid;
+  place-items:center;
+  color:#f7f9fc;
+  border:1px solid rgba(145,164,198,.34);
+  background:linear-gradient(180deg,rgba(27,35,49,.96),rgba(12,17,24,.98));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 12px 34px rgba(0,0,0,.42),0 0 0 1px rgba(72,103,176,.08);
+  backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
+}
+.page-refresh-fab svg{width:23px;height:23px;display:block}
+.page-refresh-fab:hover{
+  transform:translateY(-1px);
+  border-color:rgba(157,181,255,.58);
+  background:linear-gradient(180deg,rgba(36,48,68,.98),rgba(16,23,33,.99));
+}
+.page-refresh-fab:active{transform:scale(.96)}
+@media(max-width:560px){
+  .page-refresh-fab{
+    right:calc(14px + env(safe-area-inset-right));
+    bottom:calc(14px + env(safe-area-inset-bottom));
+    width:52px;
+    height:52px;
+    min-height:52px;
+  }
+}
+
 </style>
 </head>
 <body>
@@ -1029,6 +1067,13 @@ button,.quick button,.quick a{
     </div>
   </main>
 </div>
+<button class="page-refresh-fab" type="button" aria-label="Обновить страницу" title="Обновить страницу" onclick="window.location.reload()">
+  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 11a8 8 0 1 0-2.34 5.66"></path>
+    <path d="M20 4v7h-7"></path>
+  </svg>
+</button>
+
 <div id="previewModal" class="modal-backdrop" onclick="modalBackdropClose(event,'previewModal')">
   <div class="modal-card" onclick="event.stopPropagation()">
     <div class="modal-head"><div><b>Предпросмотр публикации</b><small id="previewMeta"></small></div><button onclick="closeModal('previewModal')">×</button></div>
