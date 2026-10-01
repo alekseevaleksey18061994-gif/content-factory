@@ -1536,7 +1536,8 @@ async function collectOnce(trigger) {
             videoUrl: media.videoUrl || "",
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
-            mediaPriority: media.mediaPriority || 99
+            mediaPriority: media.mediaPriority || 99,
+            publicationOrigin: "legacy-auto"
           });
           state.history = state.history.slice(0, 300);
           state.stats.published += 1;
@@ -1604,9 +1605,34 @@ async function collectOnce(trigger) {
   }
 }
 
+function dynamicScheduledHistorySlot(item) {
+  if (!item || !item.publishedAt) return "";
+
+  const explicitOrigin = String(item.publicationOrigin || "").trim();
+  const explicitSlot = String(item.scheduledSlot || "").trim();
+  if (explicitOrigin === "schedule" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(explicitSlot)) {
+    return explicitSlot;
+  }
+
+  // New manual/test history is explicitly excluded from schedule accounting.
+  if (explicitOrigin) return "";
+
+  // Backward compatibility for history created before scheduledSlot existed:
+  // genuine dynamic publications happen just after the hour and have queueId+newsId.
+  if (!item.queueId || !item.newsId) return "";
+  const published = new Date(item.publishedAt);
+  if (!Number.isFinite(published.getTime())) return "";
+  const minutes = moscowMinutes(published);
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 10) return "";
+  return moscowDateKey(published) + " " + String(hour).padStart(2, "0") + ":00";
+}
+
 function dynamicDailyPublishedCount(dayKey) {
   return (state.history || []).filter(function(item) {
-    return item && item.publishedAt && moscowDateKey(new Date(item.publishedAt)) === dayKey;
+    const slot = dynamicScheduledHistorySlot(item);
+    return slot && slot.startsWith(dayKey + " ");
   }).length;
 }
 
@@ -1830,7 +1856,9 @@ async function publishDynamicSlot() {
       generatedImageUrl: item.generatedImageUrl || "",
       videoUrl: item.videoUrl || "",
       mediaType: item.mediaType || "",
-      mediaStatus: item.mediaStatus || ""
+      mediaStatus: item.mediaStatus || "",
+      publicationOrigin: "schedule",
+      scheduledSlot: slotKey
     };
     state.history.unshift(historyItem);
     state.history = state.history.slice(0, 300);
@@ -1843,6 +1871,8 @@ async function publishDynamicSlot() {
     historyItem.vkError = result.vkError || item.vkError || "";
     historyItem.vkPreviewSlug = result.vkPreviewSlug || historyItem.vkPreviewSlug || "";
     historyItem.vkPreviewUrl = result.vkPreviewUrl || historyItem.vkPreviewUrl || "";
+    historyItem.publicationOrigin = "schedule";
+    historyItem.scheduledSlot = slotKey;
   }
 
   delete schedule.assignments[day][time];
@@ -3977,7 +4007,7 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "POST" && p === "/api/test") {
       const marker = crypto.randomBytes(3).toString("hex");
       const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «Что там у ИИ?» работает.\nТест: " + marker);
-      state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString() });
+      state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString(), publicationOrigin: "test" });
       state.history = state.history.slice(0, 100);
       state.stats.published += 1;
       saveState();
@@ -4038,7 +4068,8 @@ const server = http.createServer(async function(req, res) {
         vkError: result.vkError || "",
         vkMediaAttempts: result.vkMediaAttempts || 0,
         status: result.vkStatus === "media_failed" ? "media_failed" : "published",
-        publishedAt: new Date().toISOString()
+        publishedAt: new Date().toISOString(),
+        publicationOrigin: "manual"
       };
       state.history.unshift(historyItem);
       state.history = state.history.slice(0, 100);
@@ -4268,7 +4299,9 @@ const server = http.createServer(async function(req, res) {
           sourceUrl: item.sourceUrl || "",
           imageUrl: item.imageUrl || "",
           generatedImageUrl: item.generatedImageUrl || "",
-          videoUrl: item.videoUrl || ""
+          videoUrl: item.videoUrl || "",
+          publicationOrigin: "manual",
+          manualPublishedFromSchedule: item.preparedFor || ""
         };
         state.history.unshift(historyItem);
         state.history = state.history.slice(0, 100);
