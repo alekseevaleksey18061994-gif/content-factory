@@ -3717,7 +3717,7 @@ async function backfillRecentNewsEditorialScores(limit) {
       FROM news_items
       WHERE ${where}
       ORDER BY detected_at DESC
-      LIMIT ${params.length}`,
+      LIMIT $${params.length}`,
     params
   );
   if (!rows.rows.length) return { ok: true, scored: 0 };
