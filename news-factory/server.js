@@ -132,6 +132,21 @@ const CAR_SOURCES = [
   { id: "cars-autoevolution", name: "Autoevolution", type: "web", group: "media", priority: 2, url: "https://www.autoevolution.com/news/", enabled: true }
 ];
 
+const BLOGGER_SOURCES = [
+  { id: "blogger-ildar", name: "Ильдар Авто-подбор", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/ildar_auto_podbor", enabled: true },
+  { id: "blogger-dubrovskiy", name: "Жекич Дубровский", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/dubrovskiy_444", enabled: true },
+  { id: "blogger-academeg", name: "AcademeG", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/academeg_true_original", enabled: true },
+  { id: "blogger-strekal", name: "Илья Стрекаловский", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/Strekalovsky", enabled: true },
+  { id: "blogger-miheev-pavlov", name: "Михеев и Павлов", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/miheevpavlov_pro", enabled: true },
+  { id: "blogger-pasha-pel", name: "Паша ПЭЛ", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/pel_video", enabled: true },
+  { id: "blogger-klubniy-servis", name: "Клубный Сервис", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/klubniy_servis", enabled: true },
+  { id: "blogger-lisa-rulit", name: "Лиса Рулит", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/lisacars", enabled: true },
+  { id: "blogger-anton-avtoman", name: "Anton Avtoman", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/anton_avtoman", enabled: true },
+  { id: "blogger-bulkin", name: "Bulkin Drive", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/bulkin_live", enabled: true }
+];
+const BLOGGER_SLOTS = ["10:30", "12:30", "15:30", "18:30", "21:30"];
+const BLOGGER_DAILY_TARGET = 5;
+
 const defaultState = {
   mode: "REVIEW",
   sources: structuredClone(CURATED_SOURCES),
@@ -562,6 +577,28 @@ function ensureConfiguredWorkspaces() {
     cars.state.migrations.push(carSourcesMigration);
     changed = true;
   }
+
+  const bloggerMigration = "v0.28.6-car-bloggers-10";
+  if (!cars.state.migrations.includes(bloggerMigration)) {
+    const existingIds = new Set((cars.state.sources || []).map(function(source){ return source && source.id; }));
+    for (const source of BLOGGER_SOURCES) {
+      if (!existingIds.has(source.id)) cars.state.sources.push(structuredClone(source));
+    }
+    const schedule = ensureScheduleShape(cars.state);
+    const slotMap = new Map((schedule.slots || []).map(function(slot){ return [slot.time, slot]; }));
+    for (const time of BLOGGER_SLOTS) {
+      if (!slotMap.has(time)) schedule.slots.push({ time: time, kind: "blogger", label: "Автоблогеры" });
+    }
+    schedule.slots.sort(function(a,b){ return String(a.time).localeCompare(String(b.time)); });
+    cars.state.bloggerScheduler = Object.assign({
+      targetPerDay: BLOGGER_DAILY_TARGET,
+      lastPreparedAt: "",
+      lastPublishedAt: "",
+      lastPublishedSlot: ""
+    }, cars.state.bloggerScheduler || {});
+    cars.state.migrations.push(bloggerMigration);
+    changed = true;
+  }
   if (changed) {
     cars.updatedAt = new Date().toISOString();
     persistWorkspaceStore();
@@ -577,6 +614,21 @@ const state = new Proxy({}, {
   has: function(_target, prop){ return prop in currentWorkspace().state; },
   getOwnPropertyDescriptor: function(_target, prop){ const d = Object.getOwnPropertyDescriptor(currentWorkspace().state, prop); return d || { configurable: true, enumerable: true, writable: true, value: currentWorkspace().state[prop] }; }
 });
+function findSourceForItem(item) {
+  if (!item) return null;
+  const sourceId = String(item.sourceId || "").trim();
+  if (sourceId) {
+    const byId = (state.sources || []).find(function(source){ return source && String(source.id) === sourceId; });
+    if (byId) return byId;
+  }
+  const sourceName = String(item.sourceName || item.name || "").trim();
+  return (state.sources || []).find(function(source){ return source && String(source.name || "") === sourceName; }) || null;
+}
+function isBloggerSource(sourceOrItem) {
+  const source = sourceOrItem && sourceOrItem.group ? sourceOrItem : findSourceForItem(sourceOrItem);
+  return Boolean(source && source.group === "blogger");
+}
+
 function sourceStatKey(sourceOrItem) {
   if (!sourceOrItem) return "";
   if (sourceOrItem.sourceId) return String(sourceOrItem.sourceId);
