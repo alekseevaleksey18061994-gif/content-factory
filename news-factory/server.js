@@ -2649,9 +2649,51 @@ function isVkLinkPreviewError(error) {
   return code === "100" && (msg.includes("link_photo_sizing_rule") || msg.includes("no photo given"));
 }
 
+async function loadVkImageBytes(imageUrl, context) {
+  // Prepared preview images live on our own volume: read the file directly instead of
+  // making an HTTP round trip to our own public URL.
+  const localPath = localMediaPathFromUrl(imageUrl);
+  if (localPath) {
+    try {
+      const bytes = fs.readFileSync(localPath);
+      if (bytes.length) {
+        const lower = localPath.toLowerCase();
+        const ext = lower.endsWith(".png") ? "png" : lower.endsWith(".webp") ? "webp" : "jpg";
+        const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+        return { bytes: bytes, mime: mime, ext: ext };
+      }
+    } catch (error) {
+      console.warn("VK_LOCAL_IMAGE_READ_FAILED " + JSON.stringify({
+        post_id: String(context && context.postId || "unknown"),
+        error: String(error && error.message || error)
+      }));
+    }
+  }
+  return downloadVkImage(imageUrl, context);
+}
+
+async function uploadVkMessagesPhotoWithRetry(imageUrl, post, previewSlug) {
+  // VK sometimes answers with an empty "photo" field or a transient 901/network error,
+  // so retry a few times with backoff before giving up on this media mode.
+  const delays = [1500, 4000];
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const photo = await uploadVkMessagesPhoto(imageUrl, post, previewSlug);
+      photo.attempts = attempt;
+      return photo;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await sleepMs(delays[attempt - 1]);
+    }
+  }
+  lastError.mediaAttempts = 3;
+  throw lastError;
+}
+
 async function uploadVkMessagesPhoto(imageUrl, post, previewSlug) {
   const context = vkPostContext(post, { slug: previewSlug || "", tokenKind: "community" });
-  const image = await downloadVkImage(imageUrl, context);
+  const image = await loadVkImageBytes(imageUrl, context);
 
   const uploadServer = await vkApi(
     "photos.getMessagesUploadServer",
@@ -2803,6 +2845,60 @@ async function publishVkPost(post) {
   const context = Object.assign({}, baseContext, { slug: preview.slug });
   const baseMessage = formatVkPost(post, { includeSource: false });
 
+  // Primary mode: upload the prepared 1200x630 JPEG through the community-token messages
+  // upload server and attach it to the wall post as a real photo. VK's link snippet
+  // (link_preview below) is unreliable for community tokens ("link_photo_sizing_rule").
+  let photoAttempts = 0;
+  try {
+    const photo = await uploadVkMessagesPhotoWithRetry(preview.imageUrl, post, preview.slug);
+    photoAttempts = Number(photo.attempts || 1);
+    const photoResult = await vkApi(
+      "wall.post",
+      {
+        owner_id: -241910449,
+        from_group: 1,
+        message: baseMessage,
+        attachments: photo.attachment,
+        guid: vkPostGuid(post, "photo")
+      },
+      { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+    );
+
+    await markPublicPostPublished(preview.slug, photoResult && photoResult.post_id);
+    if (photoResult && typeof photoResult === "object") {
+      photoResult.mediaMode = "photo_upload";
+      photoResult.mediaAttempts = photoAttempts;
+      photoResult.previewSlug = preview.slug;
+      photoResult.previewUrl = preview.url;
+      photoResult.previewImageUrl = preview.imageUrl;
+      console.log("VK_POST_PUBLISHED " + JSON.stringify({
+        post_id: photoResult.post_id || null,
+        slug: preview.slug,
+        media_mode: photoResult.mediaMode,
+        attachment: photo.attachment
+      }));
+    }
+    return photoResult || null;
+  } catch (photoError) {
+    if (!photoAttempts) photoAttempts = Number(photoError && photoError.mediaAttempts || 1);
+    // A network error on wall.post itself is ambiguous (the post may already exist),
+    // so do not fall through to another mode and risk a duplicate.
+    if (photoError && photoError.vkMethod === "wall.post" && photoError.vkErrorCode === "network") {
+      photoError.mediaFailed = true;
+      photoError.mediaAttempts = photoAttempts || 1;
+      photoError.previewSlug = preview.slug;
+      await markPublicPostVkFailed(preview.slug, photoError);
+      await notifyVkMediaFailure(post, photoError, photoError.mediaAttempts);
+      throw photoError;
+    }
+    console.warn("VK_PHOTO_UPLOAD_MODE_FAILED " + JSON.stringify({
+      post_id: context.postId,
+      slug: preview.slug,
+      error_code: photoError && photoError.vkErrorCode != null ? photoError.vkErrorCode : null,
+      error_msg: String(photoError && (photoError.vkErrorMsg || photoError.message) || photoError)
+    }));
+  }
+
   try {
     const result = await vkApi(
       "wall.post",
@@ -2819,7 +2915,7 @@ async function publishVkPost(post) {
     await markPublicPostPublished(preview.slug, result && result.post_id);
     if (result && typeof result === "object") {
       result.mediaMode = "link_preview";
-      result.mediaAttempts = 1;
+      result.mediaAttempts = photoAttempts + 1;
       result.previewSlug = preview.slug;
       result.previewUrl = preview.url;
       result.previewImageUrl = preview.imageUrl;
@@ -2831,18 +2927,18 @@ async function publishVkPost(post) {
     }
     return result || null;
   } catch (error) {
-    error.mediaAttempts = 1;
+    error.mediaAttempts = photoAttempts + 1;
     error.previewSlug = preview.slug;
     error.vkContext = Object.assign({}, error.vkContext || context, { slug: preview.slug });
     await markPublicPostVkFailed(preview.slug, error);
 
     if (!allowTextFallbackForPost(post)) {
       error.mediaFailed = true;
-      await notifyVkMediaFailure(post, error, 1);
+      await notifyVkMediaFailure(post, error, error.mediaAttempts);
       throw error;
     }
 
-    await notifyVkMediaFailure(post, error, 1);
+    await notifyVkMediaFailure(post, error, error.mediaAttempts);
     const fallback = await vkApi(
       "wall.post",
       {
@@ -2856,7 +2952,7 @@ async function publishVkPost(post) {
 
     if (fallback && typeof fallback === "object") {
       fallback.mediaMode = "text_fallback";
-      fallback.mediaAttempts = 2;
+      fallback.mediaAttempts = photoAttempts + 2;
       fallback.previewSlug = preview.slug;
       fallback.previewUrl = preview.url;
       fallback.previewImageUrl = preview.imageUrl;
