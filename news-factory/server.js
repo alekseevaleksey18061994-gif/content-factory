@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -60,6 +61,8 @@ const AI_TOP_NEWS_SCORE = Math.max(AI_STRONG_NEWS_SCORE, Math.min(100, Number.is
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const STATE_FILE = path.join(DATA_DIR, "state.json");
+const WORKSPACES_FILE = path.join(DATA_DIR, "workspaces.json");
+const DEFAULT_WORKSPACE_ID = "ai-main";
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 const VK_PREVIEW_WIDTH = 1200;
@@ -288,7 +291,7 @@ function pruneQueueItems(targetState) {
 }
 
 
-function loadState() {
+function loadLegacyState() {
   ensureDataDir();
   try {
     const raw = fs.readFileSync(STATE_FILE, "utf8");
@@ -399,19 +402,83 @@ function loadState() {
   }
 }
 
-let state = loadState();
+function normalizeWorkspaceState(saved) {
+  const source = saved && typeof saved === "object" ? saved : {};
+  const loaded = Object.assign({}, structuredClone(defaultState), source);
+  loaded.sources = Array.isArray(source.sources) ? source.sources : structuredClone(defaultState.sources);
+  loaded.migrations = Array.isArray(source.migrations) ? source.migrations : [];
+  loaded.stats = Object.assign({ discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 }, source.stats || {});
+  loaded.queue = Array.isArray(source.queue) ? source.queue : [];
+  loaded.history = Array.isArray(source.history) ? source.history : [];
+  loaded.topicSettings = Object.assign(structuredClone(defaultState.topicSettings), source.topicSettings && typeof source.topicSettings === "object" ? source.topicSettings : {});
+  loaded.topicSettings.default = Object.assign({ allow_text_fallback: false, auto_publish_telegram: true, auto_publish_vk: true }, loaded.topicSettings.default || {});
+  loaded.publicationSchedule = Object.assign(structuredClone(defaultState.publicationSchedule), loaded.publicationSchedule || {});
+  loaded.dynamicScheduler = Object.assign(structuredClone(defaultState.dynamicScheduler), loaded.dynamicScheduler || {});
+  ensureScheduleShape(loaded);
+  pruneQueueItems(loaded);
+  return loaded;
+}
+function normalizeWorkspaceMeta(raw, fallbackId) {
+  const id = String(raw && raw.id || fallbackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || DEFAULT_WORKSPACE_ID;
+  const name = String(raw && raw.name || "Новый канал").trim().slice(0, 80) || "Новый канал";
+  const slug = String(raw && raw.slug || "").trim().replace(/^@/, "").slice(0, 80);
+  const initialsRaw = String(raw && raw.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3);
+  const initials = initialsRaw || name.split(/\s+/).filter(Boolean).slice(0, 2).map(function(x){ return x[0] || ""; }).join("").toUpperCase().slice(0, 3) || "NF";
+  const telegramChannel = String(raw && raw.telegramChannel || "").trim();
+  const telegramPublicUsername = String(raw && raw.telegramPublicUsername || telegramChannel || slug || "").replace(/^@/, "").trim();
+  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
+}
+function loadWorkspaceStore() {
+  ensureDataDir();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(WORKSPACES_FILE, "utf8"));
+    const rawWorkspaces = Array.isArray(parsed && parsed.workspaces) ? parsed.workspaces : [];
+    if (rawWorkspaces.length) {
+      const workspaces = rawWorkspaces.map(function(ws, index){ return normalizeWorkspaceMeta(ws, index === 0 ? DEFAULT_WORKSPACE_ID : "workspace-" + (index + 1)); });
+      const requestedDefault = String(parsed.defaultWorkspaceId || "");
+      const defaultWorkspaceId = workspaces.some(function(ws){ return ws.id === requestedDefault; }) ? requestedDefault : workspaces[0].id;
+      return { version: 1, defaultWorkspaceId, workspaces };
+    }
+  } catch {}
+  const legacyState = loadLegacyState();
+  const first = normalizeWorkspaceMeta({ id: DEFAULT_WORKSPACE_ID, name: "Что там у ИИ?", slug: TELEGRAM_PUBLIC_USERNAME || "chtotamai", initials: "AI", telegramChannel: CHANNEL, telegramPublicUsername: TELEGRAM_PUBLIC_USERNAME, state: legacyState }, DEFAULT_WORKSPACE_ID);
+  const created = { version: 1, defaultWorkspaceId: first.id, workspaces: [first] };
+  try { fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(created, null, 2), "utf8"); } catch {}
+  return created;
+}
+const workspaceContext = new AsyncLocalStorage();
+let workspaceStore = loadWorkspaceStore();
+function getWorkspaceById(id) { const normalized = String(id || "").trim(); return workspaceStore.workspaces.find(function(ws){ return ws.id === normalized; }) || null; }
+function currentWorkspaceId() { const context = workspaceContext.getStore(); const requested = context && context.workspaceId; if (requested && getWorkspaceById(requested)) return requested; return workspaceStore.defaultWorkspaceId; }
+function currentWorkspace() { return getWorkspaceById(currentWorkspaceId()) || workspaceStore.workspaces[0]; }
+function currentTelegramChannel() { const ws = currentWorkspace(); return String(ws && ws.telegramChannel || CHANNEL || "").trim(); }
+function currentTelegramPublicUsername() { const ws = currentWorkspace(); return String(ws && ws.telegramPublicUsername || TELEGRAM_PUBLIC_USERNAME || currentTelegramChannel() || "").replace(/^@/, "").trim(); }
+function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+function persistWorkspaceStore() {
+  ensureDataDir();
+  fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
+  const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
+  if (defaultWorkspace && defaultWorkspace.state) fs.writeFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2), "utf8");
+}
+const state = new Proxy({}, {
+  get: function(_target, prop){ return currentWorkspace().state[prop]; },
+  set: function(_target, prop, value){ currentWorkspace().state[prop] = value; return true; },
+  deleteProperty: function(_target, prop){ return delete currentWorkspace().state[prop]; },
+  ownKeys: function(){ return Reflect.ownKeys(currentWorkspace().state); },
+  has: function(_target, prop){ return prop in currentWorkspace().state; },
+  getOwnPropertyDescriptor: function(_target, prop){ const d = Object.getOwnPropertyDescriptor(currentWorkspace().state, prop); return d || { configurable: true, enumerable: true, writable: true, value: currentWorkspace().state[prop] }; }
+});
 const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000 }) : null;
 let dbReady = false;
 let collectorRunning = false;
 let collectorTimer = null;
-let lastCollectorRun = null;
+const lastCollectorRuns = new Map();
 let snapshotTimer = null;
-
 function saveState() {
   pruneQueueItems(state);
   state.updatedAt = new Date().toISOString();
-  ensureDataDir();
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+  currentWorkspace().updatedAt = state.updatedAt;
+  persistWorkspaceStore();
   scheduleStateSnapshot();
 }
 
@@ -463,10 +530,11 @@ async function initDb() {
     await db.query(`
       CREATE TABLE IF NOT EXISTS news_items (
         id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT 'ai-main',
         source_id TEXT,
         source_name TEXT,
         source_url TEXT,
-        original_url TEXT UNIQUE,
+        original_url TEXT,
         original_title TEXT,
         original_text TEXT,
         content_hash TEXT,
@@ -482,9 +550,12 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS news_items_detected_idx ON news_items(detected_at DESC);
       CREATE INDEX IF NOT EXISTS news_items_status_idx ON news_items(status);
       CREATE INDEX IF NOT EXISTS news_items_hash_idx ON news_items(content_hash);
+      CREATE INDEX IF NOT EXISTS news_items_workspace_idx ON news_items(workspace_id, detected_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS news_items_workspace_url_uidx ON news_items(workspace_id, original_url);
 
       CREATE TABLE IF NOT EXISTS collector_runs (
         id BIGSERIAL PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT 'ai-main',
         started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         finished_at TIMESTAMPTZ,
         status TEXT NOT NULL DEFAULT 'running',
@@ -497,6 +568,7 @@ async function initDb() {
 
       CREATE TABLE IF NOT EXISTS app_snapshots (
         id BIGSERIAL PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT 'ai-main',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         state JSONB NOT NULL
       );
@@ -517,8 +589,9 @@ async function initDb() {
 async function saveStateSnapshot() {
   if (!db || !dbReady) return;
   try {
-    await db.query("INSERT INTO app_snapshots(state) VALUES($1::jsonb)", [JSON.stringify(state)]);
-    await db.query("DELETE FROM app_snapshots WHERE id NOT IN (SELECT id FROM app_snapshots ORDER BY created_at DESC LIMIT 200)");
+    const workspaceId = currentWorkspaceId();
+    await db.query("INSERT INTO app_snapshots(workspace_id,state) VALUES($1,$2::jsonb)", [workspaceId, JSON.stringify(state)]);
+    await db.query("DELETE FROM app_snapshots WHERE workspace_id=$1 AND id NOT IN (SELECT id FROM app_snapshots WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 200)", [workspaceId]);
   } catch (error) {
     console.error("State snapshot failed:", error.message);
   }
@@ -841,9 +914,9 @@ async function createPublicPostPage(post) {
 
   await db.query(
     `INSERT INTO public_post_pages
-      (slug, post_id, topic_id, title, body_text, description, source_name, source_url, sources, image_filename, image_url, image_width, image_height, image_bytes)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)`,
-    [slug, postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, JSON.stringify(sources), image.fileName, image.url, image.width, image.height, image.bytes]
+      (slug, workspace_id, post_id, topic_id, title, body_text, description, source_name, source_url, sources, image_filename, image_url, image_width, image_height, image_bytes)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)`,
+    [slug, currentWorkspaceId(), postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, JSON.stringify(sources), image.fileName, image.url, image.width, image.height, image.bytes]
   );
 
   return {
@@ -1273,7 +1346,7 @@ async function fetchText(url, timeoutMs) {
 
 async function seenOriginalUrl(url) {
   if (db && dbReady) {
-    const r = await db.query("SELECT 1 FROM news_items WHERE original_url=$1 LIMIT 1", [url]);
+    const r = await db.query("SELECT 1 FROM news_items WHERE workspace_id=$1 AND original_url=$2 LIMIT 1", [currentWorkspaceId(), url]);
     return r.rowCount > 0;
   }
   state.seenUrls = Array.isArray(state.seenUrls) ? state.seenUrls : [];
@@ -1284,9 +1357,9 @@ async function saveNewsItem(item) {
   if (db && dbReady) {
     await db.query(
       `INSERT INTO news_items
-      (id, source_id, source_name, source_url, original_url, original_title, original_text, content_hash, rewritten_title, rewritten_text, confidence, status, telegram_message_id, published_at, metadata, topic_id, vk_post_id, vk_status, vk_error_code, vk_error_msg, vk_media_attempts, updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,$20,$21,NOW())
-      ON CONFLICT (original_url) DO UPDATE SET
+      (id, workspace_id, source_id, source_name, source_url, original_url, original_title, original_text, content_hash, rewritten_title, rewritten_text, confidence, status, telegram_message_id, published_at, metadata, topic_id, vk_post_id, vk_status, vk_error_code, vk_error_msg, vk_media_attempts, updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,NOW())
+      ON CONFLICT (workspace_id, original_url) DO UPDATE SET
         rewritten_title=COALESCE(EXCLUDED.rewritten_title, news_items.rewritten_title),
         rewritten_text=COALESCE(EXCLUDED.rewritten_text, news_items.rewritten_text),
         confidence=COALESCE(EXCLUDED.confidence, news_items.confidence),
@@ -1302,7 +1375,7 @@ async function saveNewsItem(item) {
         vk_media_attempts=GREATEST(COALESCE(EXCLUDED.vk_media_attempts,0),COALESCE(news_items.vk_media_attempts,0)),
         updated_at=NOW()`,
       [
-        item.id, item.sourceId, item.sourceName, item.sourceUrl, item.originalUrl, item.originalTitle,
+        item.id, currentWorkspaceId(), item.sourceId, item.sourceName, item.sourceUrl, item.originalUrl, item.originalTitle,
         item.originalText, item.contentHash, item.rewrittenTitle || null, item.rewrittenText || null,
         item.confidence || null, item.status, item.telegramMessageId || null, item.publishedAt || null,
         JSON.stringify(item.metadata || {}),
@@ -1391,16 +1464,16 @@ async function listNewsItems(limit) {
           original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
           rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
           telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
-          FROM news_items WHERE detected_at >= $1 ORDER BY detected_at DESC LIMIT $2`,
-          [cutoff, safeLimit]
+          FROM news_items WHERE workspace_id=$1 AND detected_at >= $2 ORDER BY detected_at DESC LIMIT $3`,
+          [currentWorkspaceId(), cutoff, safeLimit]
         )
       : await db.query(
           `SELECT id, source_id AS "sourceId", source_name AS "sourceName", source_url AS "sourceUrl",
           original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
           rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
           telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
-          FROM news_items ORDER BY detected_at DESC LIMIT $1`,
-          [safeLimit]
+          FROM news_items WHERE workspace_id=$1 ORDER BY detected_at DESC LIMIT $2`,
+          [currentWorkspaceId(), safeLimit]
         );
     return r.rows.map(enrichNewsFeedItem);
   }
@@ -1410,8 +1483,8 @@ async function listNewsItems(limit) {
 async function getCollectorRuns(limit) {
   if (!db || !dbReady) return [];
   const r = await db.query(
-    'SELECT id, started_at AS "startedAt", finished_at AS "finishedAt", status, found_count AS "foundCount", queued_count AS "queuedCount", published_count AS "publishedCount", skipped_count AS "skippedCount", error_text AS "errorText" FROM collector_runs ORDER BY id DESC LIMIT $1',
-    [Math.max(1, Math.min(50, Number(limit || 10)))]
+    'SELECT id, started_at AS "startedAt", finished_at AS "finishedAt", status, found_count AS "foundCount", queued_count AS "queuedCount", published_count AS "publishedCount", skipped_count AS "skippedCount", error_text AS "errorText" FROM collector_runs WHERE workspace_id=$1 ORDER BY id DESC LIMIT $2',
+    [currentWorkspaceId(), Math.max(1, Math.min(50, Number(limit || 10)))]
   );
   return r.rows;
 }
@@ -1431,7 +1504,7 @@ async function collectOnce(trigger) {
     }
 
     if (db && dbReady) {
-      const r = await db.query("INSERT INTO collector_runs(status) VALUES('running') RETURNING id");
+      const r = await db.query("INSERT INTO collector_runs(workspace_id,status) VALUES($1,'running') RETURNING id", [currentWorkspaceId()]);
       runId = r.rows[0].id;
     }
 
@@ -1660,7 +1733,7 @@ async function collectOnce(trigger) {
     }
 
     summary.finishedAt = new Date().toISOString();
-    lastCollectorRun = summary;
+    lastCollectorRuns.set(currentWorkspaceId(), summary);
     if (db && dbReady && runId) {
       await db.query(
         "UPDATE collector_runs SET finished_at=NOW(), status=$2, found_count=$3, queued_count=$4, published_count=$5, skipped_count=$6, error_text=$7 WHERE id=$1",
@@ -1673,7 +1746,7 @@ async function collectOnce(trigger) {
     summary.ok = false;
     summary.error = error.message;
     summary.finishedAt = new Date().toISOString();
-    lastCollectorRun = summary;
+    lastCollectorRuns.set(currentWorkspaceId(), summary);
     if (db && dbReady && runId) {
       try {
         await db.query("UPDATE collector_runs SET finished_at=NOW(), status='failed', error_text=$2 WHERE id=$1", [runId, error.message]);
@@ -1995,7 +2068,7 @@ async function publishDynamicSlot() {
     try {
       const dbStatus = mediaFailed ? "media_failed" : "published";
       await db.query(
-        "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb, vk_post_id=COALESCE($6,vk_post_id), vk_status=$7, vk_error_code=$8, vk_error_msg=$9, vk_media_attempts=$10, updated_at=NOW() WHERE id=$1",
+        "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb, vk_post_id=COALESCE($6,vk_post_id), vk_status=$7, vk_error_code=$8, vk_error_msg=$9, vk_media_attempts=$10, updated_at=NOW() WHERE id=$1 AND workspace_id=$11",
         [
           item.newsId,
           dbStatus,
@@ -2012,7 +2085,8 @@ async function publishDynamicSlot() {
           result.vkStatus || item.vkStatus || "",
           result.vkErrorCode == null ? (item.vkErrorCode == null ? null : String(item.vkErrorCode)) : String(result.vkErrorCode),
           result.vkError || item.vkError || "",
-          Number(result.vkMediaAttempts || item.vkMediaAttempts || 0)
+          Number(result.vkMediaAttempts || item.vkMediaAttempts || 0),
+          currentWorkspaceId()
         ]
       );
     } catch (error) {
@@ -2063,13 +2137,22 @@ async function dynamicSchedulerTick() {
   }
 }
 
+async function dynamicSchedulerTickAllWorkspaces() {
+  for (const ws of workspaceStore.workspaces) {
+    try {
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){ await dynamicSchedulerTick(); });
+    } catch (error) {
+      console.error("Dynamic scheduler workspace " + ws.id + " failed:", error.message);
+    }
+  }
+}
 function startCollectorScheduler() {
   if (!COLLECTOR_ENABLED || collectorTimer) return;
   collectorTimer = setInterval(function() {
-    dynamicSchedulerTick().catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
+    dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
   }, 30000);
-  dynamicSchedulerTick().catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
-  console.log("Dynamic scheduler: search at :45, publish on the hour, 08:00-23:00 Moscow");
+  dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
+  console.log("Dynamic scheduler: multi-workspace · search at :45, publish on the hour, 08:00-23:00 Moscow");
 }
 
 function sendJson(res, status, payload, headers) {
@@ -2265,7 +2348,7 @@ function normalizePublishTargets(value) {
 }
 
 async function telegramApi(method, payload) {
-  if (!BOT_TOKEN || !CHANNEL) throw new Error("Telegram configuration is incomplete");
+  if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
   const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
   const response = await fetch(endpoint, {
     method: "POST",
@@ -2278,6 +2361,8 @@ async function telegramApi(method, payload) {
 }
 
 async function sendTelegramPost(post) {
+  const telegramChannel = currentTelegramChannel();
+  if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
   const html = formatTelegramPost(post);
   let imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
   const videoUrl = String(post.videoUrl || "").trim();
@@ -2289,7 +2374,7 @@ async function sendTelegramPost(post) {
   if (videoUrl) {
     try {
       return await telegramApi("sendVideo", {
-        chat_id: CHANNEL,
+        chat_id: telegramChannel,
         video: videoUrl,
         caption: html.length <= 1000 ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
         parse_mode: "HTML",
@@ -2320,7 +2405,7 @@ async function sendTelegramPost(post) {
   if (imageUrl && html.length <= 950) {
     try {
       return await telegramApi("sendPhoto", {
-        chat_id: CHANNEL,
+        chat_id: telegramChannel,
         photo: imageUrl,
         caption: html,
         parse_mode: "HTML"
@@ -2333,14 +2418,14 @@ async function sendTelegramPost(post) {
 
   if (imageUrl) {
     const photo = await telegramApi("sendPhoto", {
-      chat_id: CHANNEL,
+      chat_id: telegramChannel,
       photo: imageUrl,
       caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
       parse_mode: "HTML"
     });
     if (html && html.length > 950) {
       await telegramApi("sendMessage", {
-        chat_id: CHANNEL,
+        chat_id: telegramChannel,
         text: html,
         parse_mode: "HTML",
         disable_web_page_preview: true
@@ -2353,8 +2438,10 @@ async function sendTelegramPost(post) {
 }
 
 async function sendTelegram(text) {
+  const telegramChannel = currentTelegramChannel();
+  if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
   return telegramApi("sendMessage", {
-    chat_id: CHANNEL,
+    chat_id: telegramChannel,
     text: String(text || ""),
     disable_web_page_preview: true
   });
@@ -3309,8 +3396,8 @@ async function fetchVkAnalytics() {
 }
 
 
-let statusCache = { at: 0, value: null };
-let analyticsCache = { at: 0, value: null };
+const statusCache = new Map();
+const analyticsCache = new Map();
 
 function parseCompactNumber(value) {
   const raw = stripHtml(String(value || "")).replace(/\s+/g, "").replace(",", ".").toUpperCase();
@@ -3373,7 +3460,8 @@ function parseTelegramPreview(html) {
 }
 
 async function fetchTelegramAnalytics(force) {
-  if (!TELEGRAM_PUBLIC_USERNAME) {
+  const telegramPublicUsername = currentTelegramPublicUsername();
+  if (!telegramPublicUsername) {
     return {
       connected: false,
       available: false,
@@ -3392,12 +3480,12 @@ async function fetchTelegramAnalytics(force) {
   let lastError = "";
 
   for (let page = 0; page < 5; page += 1) {
-    let url = "https://t.me/s/" + encodeURIComponent(TELEGRAM_PUBLIC_USERNAME);
+    let url = "https://t.me/s/" + encodeURIComponent(telegramPublicUsername);
     if (before) url += "?before=" + encodeURIComponent(before);
     try {
       const response = await fetch(url, {
         headers: {
-          "user-agent": "Mozilla/5.0 (compatible; NewsFactoryAnalytics/1.0; +https://t.me/" + TELEGRAM_PUBLIC_USERNAME + ")",
+          "user-agent": "Mozilla/5.0 (compatible; NewsFactoryAnalytics/1.0; +https://t.me/" + telegramPublicUsername + ")",
           "accept-language": "ru,en;q=0.8"
         },
         signal: AbortSignal.timeout(12000)
@@ -3422,7 +3510,7 @@ async function fetchTelegramAnalytics(force) {
       const h = historyById.get(Number(p.messageId));
       return Object.assign({}, p, {
         title: h && h.title ? h.title : "Публикация #" + p.messageId,
-        url: "https://t.me/" + TELEGRAM_PUBLIC_USERNAME + "/" + p.messageId
+        url: "https://t.me/" + telegramPublicUsername + "/" + p.messageId
       });
     })
     .sort(function(a,b){ return Number(b.messageId) - Number(a.messageId); });
@@ -3437,8 +3525,8 @@ async function fetchTelegramAnalytics(force) {
     connected: true,
     available: posts.length > 0 || !lastError,
     platform: "telegram",
-    channel: "@" + TELEGRAM_PUBLIC_USERNAME,
-    channelUrl: "https://t.me/" + TELEGRAM_PUBLIC_USERNAME,
+    channel: "@" + telegramPublicUsername,
+    channelUrl: "https://t.me/" + telegramPublicUsername,
     source: "public_web_preview",
     checkedAt: new Date().toISOString(),
     error: posts.length ? "" : lastError,
@@ -3459,7 +3547,9 @@ async function fetchTelegramAnalytics(force) {
 
 async function buildPlatformAnalytics(force) {
   const now = Date.now();
-  if (!force && analyticsCache.value && now - analyticsCache.at < 5 * 60 * 1000) return analyticsCache.value;
+  const cacheKey = currentWorkspaceId();
+  const cached = analyticsCache.get(cacheKey);
+  if (!force && cached && cached.value && now - cached.at < 5 * 60 * 1000) return cached.value;
   const telegram = await fetchTelegramAnalytics(force);
   const vk = await fetchVkAnalytics();
   const value = {
@@ -3468,7 +3558,7 @@ async function buildPlatformAnalytics(force) {
     telegram: telegram,
     vk: vk
   };
-  analyticsCache = { at: now, value: value };
+  analyticsCache.set(cacheKey, { at: now, value: value });
   return value;
 }
 
@@ -3736,8 +3826,8 @@ async function backfillRecentNewsEditorialScores(limit) {
   if (!db || !dbReady || !OPENAI_API_KEY) return { ok: false, scored: 0, skipped: "unavailable" };
   const safeLimit = Math.max(1, Math.min(40, Number(limit || 30)));
   const cutoff = normalizeDate(state.newsVisibleAfter || "");
-  const params = [];
-  let where = "(metadata->>'editorialScore' IS NULL OR metadata->>'editorialScore'='') AND COALESCE(rewritten_text, original_text, '') <> ''";
+  const params = [currentWorkspaceId()];
+  let where = "workspace_id=$1 AND (metadata->>'editorialScore' IS NULL OR metadata->>'editorialScore'='') AND COALESCE(rewritten_text, original_text, '') <> ''";
   if (cutoff) {
     params.push(cutoff);
     where += " AND detected_at >= $" + params.length;
@@ -3762,13 +3852,13 @@ async function backfillRecentNewsEditorialScores(limit) {
     for (const score of scores) {
       if (!allowedIds.has(score.id)) continue;
       const updated = await db.query(
-        "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1",
+        "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
         [score.id, JSON.stringify({
           editorialScore: score.editorialScore,
           scoreBreakdown: score.scoreBreakdown,
           scoreReason: score.scoreReason,
           scoreBackfilledAt: new Date().toISOString()
-        })]
+        }), currentWorkspaceId()]
       );
       if (!updated.rowCount) continue;
       const queueItem = (state.queue || []).find(function(q){ return q && q.newsId === score.id; });
@@ -3843,7 +3933,10 @@ async function githubAutomationProbe() {
 
 async function buildSystemStatus(force) {
   const now = Date.now();
-  if (!force && statusCache.value && now - statusCache.at < 30000) return statusCache.value;
+  const cacheKey = currentWorkspaceId();
+  const cached = statusCache.get(cacheKey);
+  if (!force && cached && cached.value && now - cached.at < 30000) return cached.value;
+  const telegramChannel = currentTelegramChannel();
 
   let storageOk = false;
   let storageDetail = "";
@@ -3858,7 +3951,7 @@ async function buildSystemStatus(force) {
 
   const probes = await Promise.all([
     BOT_TOKEN ? telegramProbe("getMe") : Promise.resolve({ ok: false, error: "TELEGRAM_BOT_TOKEN не задан" }),
-    BOT_TOKEN && CHANNEL ? telegramProbe("getChat", { chat_id: CHANNEL }) : Promise.resolve({ ok: false, error: "Канал или токен не заданы" }),
+    BOT_TOKEN && telegramChannel ? telegramProbe("getChat", { chat_id: telegramChannel }) : Promise.resolve({ ok: false, error: "Канал или токен не заданы" }),
     OPENAI_API_KEY ? openAIModelProbe() : Promise.resolve({ ok: false, error: "OPENAI_API_KEY не задан" }),
     VK_ACCESS_TOKEN && VK_GROUP_ID ? vkProbe() : Promise.resolve({ ok: false, error: "VK не настроен" }),
     githubAutomationProbe()
@@ -3931,9 +4024,9 @@ async function buildSystemStatus(force) {
       next: botProbe.ok ? "" : "Проверить TELEGRAM_BOT_TOKEN"
     },
     telegramChannel: {
-      state: chatProbe.ok ? "connected" : (CHANNEL ? "partial" : "missing"),
+      state: chatProbe.ok ? "connected" : (telegramChannel ? "partial" : "missing"),
       description: chatProbe.ok ? "Канал доступен боту" : "Доступ к каналу не подтверждён",
-      detail: chatProbe.ok && chatProbe.result ? ((chatProbe.result.title || CHANNEL) + " · " + CHANNEL) : String(chatProbe.error || CHANNEL || ""),
+      detail: chatProbe.ok && chatProbe.result ? ((chatProbe.result.title || telegramChannel) + " · " + telegramChannel) : String(chatProbe.error || telegramChannel || ""),
       next: chatProbe.ok ? "" : "Проверить права бота и TELEGRAM_CHANNEL"
     },
     storage: {
@@ -4018,7 +4111,7 @@ async function buildSystemStatus(force) {
     summary: summary,
     details: details
   };
-  statusCache = { at: now, value: result };
+  statusCache.set(cacheKey, { at: now, value: result });
   return result;
 }
 
@@ -4031,7 +4124,8 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, {
         ok: true,
         service: "news-factory",
-        telegramConfigured: Boolean(BOT_TOKEN && CHANNEL),
+        telegramConfigured: Boolean(BOT_TOKEN && workspaceStore.workspaces.some(function(ws){ return Boolean(ws.telegramChannel || CHANNEL); })),
+        workspaceCount: workspaceStore.workspaces.length,
         uiConfigured: Boolean(ADMIN_UI_PASSWORD),
         openaiConfigured: Boolean(OPENAI_API_KEY),
         openaiModel: OPENAI_MODEL,
@@ -4209,10 +4303,61 @@ const server = http.createServer(async function(req, res) {
 
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
 
+    const requestedWorkspaceId = String(req.headers["x-workspace-id"] || url.searchParams.get("workspace") || "").trim();
+    const selectedWorkspace = getWorkspaceById(requestedWorkspaceId) || getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+    workspaceContext.enterWith({ workspaceId: selectedWorkspace.id });
+
+    if (req.method === "GET" && p === "/api/workspaces") {
+      return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, workspaces: workspaceStore.workspaces.map(publicWorkspaceMeta) });
+    }
+    if (req.method === "POST" && p === "/api/workspaces") {
+      const body = await readJson(req);
+      const name = String(body.name || "").trim().slice(0, 80);
+      if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название канала" });
+      const base = String(body.slug || body.telegramPublicUsername || name).toLowerCase().replace(/^@/, "").replace(/[^a-z0-9а-яё_-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "channel";
+      let id = base, suffix = 2;
+      while (getWorkspaceById(id)) id = base + "-" + suffix++;
+      const workspace = normalizeWorkspaceMeta({
+        id: id, name: name,
+        slug: String(body.slug || body.telegramPublicUsername || "").replace(/^@/, "").trim(),
+        initials: String(body.initials || "").trim(),
+        telegramChannel: String(body.telegramChannel || body.telegramPublicUsername || "").trim(),
+        telegramPublicUsername: String(body.telegramPublicUsername || body.telegramChannel || "").replace(/^@/, "").trim(),
+        state: structuredClone(defaultState)
+      }, id);
+      workspaceStore.workspaces.push(workspace);
+      persistWorkspaceStore();
+      return sendJson(res, 201, { ok: true, workspace: publicWorkspaceMeta(workspace) });
+    }
+    if (req.method === "POST" && p === "/api/workspaces/update") {
+      const body = await readJson(req);
+      const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
+      if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      if (body.name != null) workspace.name = String(body.name || "").trim().slice(0, 80) || workspace.name;
+      if (body.initials != null) workspace.initials = String(body.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3) || workspace.initials;
+      if (body.slug != null) workspace.slug = String(body.slug || "").replace(/^@/, "").trim().slice(0, 80);
+      if (body.telegramChannel != null) workspace.telegramChannel = String(body.telegramChannel || "").trim();
+      if (body.telegramPublicUsername != null) workspace.telegramPublicUsername = String(body.telegramPublicUsername || "").replace(/^@/, "").trim();
+      workspace.updatedAt = new Date().toISOString();
+      persistWorkspaceStore();
+      statusCache.delete(workspace.id);
+      analyticsCache.delete(workspace.id);
+      return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
+    }
+    if (req.method === "POST" && p === "/api/workspaces/remove") {
+      const body = await readJson(req), id = String(body.id || "");
+      if (!id || id === workspaceStore.defaultWorkspaceId) return sendJson(res, 400, { ok: false, error: "Основной кабинет удалить нельзя" });
+      if (!getWorkspaceById(id)) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      workspaceStore.workspaces = workspaceStore.workspaces.filter(function(ws){ return ws.id !== id; });
+      persistWorkspaceStore();
+      statusCache.delete(id); analyticsCache.delete(id);
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (req.method === "GET" && p === "/api/dashboard") {
       const cleanup = pruneQueueItems(state);
       if (cleanup.removed) saveState();
-      return sendJson(res, 200, { ok: true, state: state });
+      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()) });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
@@ -4324,7 +4469,7 @@ const server = http.createServer(async function(req, res) {
         generateCoverIfMissing: GENERATE_COVER_IF_MISSING,
         imageModel: OPENAI_IMAGE_MODEL,
         dbReady: dbReady,
-        lastRun: lastCollectorRun,
+        lastRun: lastCollectorRuns.get(currentWorkspaceId()) || null,
         runs: runs
       });
     }
@@ -4563,7 +4708,7 @@ const server = http.createServer(async function(req, res) {
         item.canEnhance = true;
 
         if (db && dbReady && item.newsId) {
-          const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 LIMIT 1", [item.newsId]);
+          const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 AND workspace_id=$2 LIMIT 1", [item.newsId, currentWorkspaceId()]);
           if (row.rowCount) {
             const metadata = Object.assign({}, row.rows[0].metadata || {}, {
               originalImageUrl: sourceImage,
@@ -4575,7 +4720,7 @@ const server = http.createServer(async function(req, res) {
               enhancedBy: enhanced.model,
               enhancedAt: item.enhancedAt
             });
-            await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1", [item.newsId, JSON.stringify(metadata)]);
+            await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, JSON.stringify(metadata), currentWorkspaceId()]);
           }
         }
 
@@ -4717,7 +4862,7 @@ const server = http.createServer(async function(req, res) {
         try {
           const status = mediaFailed ? "media_failed" : (doneTelegram && doneVk ? "published" : "queued");
           await db.query(
-            "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb, vk_post_id=COALESCE($6,vk_post_id), vk_status=$7, vk_error_code=$8, vk_error_msg=$9, vk_media_attempts=$10, updated_at=NOW() WHERE id=$1",
+            "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb, vk_post_id=COALESCE($6,vk_post_id), vk_status=$7, vk_error_code=$8, vk_error_msg=$9, vk_media_attempts=$10, updated_at=NOW() WHERE id=$1 AND workspace_id=$11",
             [
               item.newsId,
               status,
@@ -4734,7 +4879,8 @@ const server = http.createServer(async function(req, res) {
               result.vkStatus || item.vkStatus || "",
               result.vkErrorCode == null ? (item.vkErrorCode == null ? null : String(item.vkErrorCode)) : String(result.vkErrorCode),
               result.vkError || item.vkError || "",
-              Number(result.vkMediaAttempts || item.vkMediaAttempts || 0)
+              Number(result.vkMediaAttempts || item.vkMediaAttempts || 0),
+              currentWorkspaceId()
             ]
           );
         } catch (error) {
@@ -4814,14 +4960,25 @@ const server = http.createServer(async function(req, res) {
 });
 
 await initDb();
-const startupCleanup = pruneQueueItems(state);
-if (startupCleanup.removed) saveState();
+for (const ws of workspaceStore.workspaces) {
+  await workspaceContext.run({ workspaceId: ws.id }, async function(){
+    const startupCleanup = pruneQueueItems(state);
+    if (startupCleanup.removed) saveState();
+  });
+}
 setTimeout(function() {
-  backfillRecentNewsEditorialScores(30)
-    .then(function(result){ if (result && result.scored) console.log("News score backfill:", JSON.stringify(result)); })
-    .catch(function(error){ console.warn("News score backfill failed:", error.message); });
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try {
+          const result = await backfillRecentNewsEditorialScores(30);
+          if (result && result.scored) console.log("News score backfill " + ws.id + ":", JSON.stringify(result));
+        } catch (error) { console.warn("News score backfill " + ws.id + " failed:", error.message); }
+      });
+    }
+  })();
 }, 1500);
-await discoverTelegramAlertChat();
+await workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, async function(){ await discoverTelegramAlertChat(); });
 startCollectorScheduler();
 
 server.listen(PORT, "0.0.0.0", function() {
