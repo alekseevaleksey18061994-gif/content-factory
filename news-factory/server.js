@@ -3304,7 +3304,9 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/internal/vk-preview-test-page") {
-      if (req.headers["x-admin-key"] !== ADMIN_KEY) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      const smokeAuthorized = req.headers["x-admin-key"] === ADMIN_KEY ||
+        (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET));
+      if (!smokeAuthorized) return sendJson(res, 401, { ok: false, error: "unauthorized" });
       try {
         const marker = crypto.randomBytes(4).toString("hex");
         const preview = await createPublicPostPage({
