@@ -1053,6 +1053,11 @@ async function collectOnce(trigger) {
 
         if (canAutoPublish) {
           const tg = await sendMultiPlatformPost({
+            id: id,
+            postId: id,
+            newsId: id,
+            topicId: "default",
+            allow_text_fallback: allowTextFallbackForPost({ topicId: "default" }),
             title: rewrite.title,
             text: rewrite.text,
             sourceUrl: url,
@@ -1069,6 +1074,9 @@ async function collectOnce(trigger) {
             text: tg.publishedText || postText,
             messageId: tg.message_id,
             vkPostId: tg.vkPostId || null,
+            vkStatus: tg.vkStatus || "",
+            vkError: tg.vkError || "",
+            vkMediaAttempts: tg.vkMediaAttempts || 0,
             publishedAt: baseItem.publishedAt,
             sourceUrl: url,
             imageUrl: media.imageUrl || "",
