@@ -6163,7 +6163,11 @@ async function tryMergeStoryQueueItem(newItem) {
   if (!composed || composed.sameStory === false) return null;
 
   let mediaPack = [];
-  const existingPack = Array.isArray(target.mediaPackUrls) ? target.mediaPackUrls.filter(Boolean) : [];
+  const existingPack = Array.from(new Set(
+    (Array.isArray(target.mediaPackUrls) ? target.mediaPackUrls : [])
+      .concat(Array.isArray(newItem.mediaPackUrls) ? newItem.mediaPackUrls : [])
+      .concat([target.imageUrl, newItem.imageUrl].filter(Boolean))
+  )).filter(Boolean).slice(0, STORY_MEDIA_PACK_COUNT);
   if (existingPack.length < 2) {
     try {
       mediaPack = await generateStoryMediaPack({
@@ -6179,7 +6183,7 @@ async function tryMergeStoryQueueItem(newItem) {
 
   const fallbackUrls = existingPack.concat([target.generatedImageUrl, newItem.generatedImageUrl].filter(Boolean));
   const mediaPackUrls = Array.from(new Set(
-    mediaPack.map(function(x){ return x.url; }).concat(fallbackUrls)
+    fallbackUrls.concat(mediaPack.map(function(x){ return x.url; }))
   )).slice(0, STORY_MEDIA_PACK_COUNT);
 
   const storyId = String(target.storyCluster && target.storyCluster.id || ("story_" + crypto.randomBytes(6).toString("hex")));
@@ -6227,6 +6231,42 @@ async function tryMergeStoryQueueItem(newItem) {
     contentFormatLabel: composed.contentFormatLabel,
     storyComposerModel: composed.model
   });
+
+  const sourceTextForQc = sources.map(function(source){
+    return String(source.title || "") + "\n" + String(source.text || "");
+  }).join("\n\n---\n\n").slice(0, 12000);
+  const qc = await callOpenAIEditorialQC({
+    title: target.title,
+    text: target.text,
+    sourceTitle: sources.map(function(source){ return source.title; }).filter(Boolean).join(" | ").slice(0, 1000),
+    sourceText: sourceTextForQc,
+    sourceName: target.sourceName,
+    sourceGroup: "story",
+    sourceRole: "multi_source",
+    contentFormat: target.contentFormat,
+    contentFormatLabel: target.contentFormatLabel,
+    imageUrl: target.imageUrl || "",
+    generatedImageUrl: target.generatedImageUrl || "",
+    videoUrl: target.videoUrl || "",
+    mediaPackUrls: target.mediaPackUrls || [],
+    mediaOrigin: target.mediaOrigin || "",
+    mediaDirector: { strategy: existingPack.length >= 2 ? "multi_source_real_media" : "multi_source_mixed_media", selectedCount: target.mediaPackUrls.length }
+  });
+  target.title = qc.title || target.title;
+  target.text = qc.text || target.text;
+  target.qualityScore = qc.qualityScore;
+  target.qualityBreakdown = qc.qualityBreakdown;
+  target.qcStatus = qc.qcStatus;
+  target.qcIssues = qc.qcIssues;
+  target.qcRepaired = qc.qcRepaired;
+  target.topicEntities = qc.topicEntities;
+  target.platformVariants = qc.platformVariants;
+  target.sourceRole = "multi_source";
+  target.decisionSummary = qc.decisionSummary;
+  target.mediaOrigin = existingPack.length ? "source_media" : target.mediaOrigin;
+  target.mediaStatus = target.mediaPackUrls.length > 1 ? "photo_found" : target.mediaStatus;
+  target.copyrightSafe = COPYRIGHT_SAFE_MODE;
+  target.copyrightPolicyVersion = "v2";
 
   return target;
 }
