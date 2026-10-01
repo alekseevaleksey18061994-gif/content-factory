@@ -2443,6 +2443,7 @@ async function dynamicSchedulerTick() {
     action = "publish";
   }
   if (!action) return;
+  if (action.startsWith("blogger_") && !(state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) return;
 
   state.dynamicScheduler = state.dynamicScheduler || {};
   const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0") + "-" + action;
@@ -4826,7 +4827,8 @@ const server = http.createServer(async function(req, res) {
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       delete schedule.suppressed[day][time];
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
-      const item = dynamicAssignBest(day, time);
+      const slot = (schedule.slots || []).find(function(entry){ return entry && entry.time === time; });
+      const item = dynamicAssignBest(day, time, slot && slot.kind === "blogger" ? "blogger" : undefined);
       return sendJson(res, 200, { ok: true, assignment: item ? { date: day, time: time, queueId: item.id } : null });
     }
 
