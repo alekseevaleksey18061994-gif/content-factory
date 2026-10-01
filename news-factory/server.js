@@ -2855,7 +2855,7 @@ async function publishVkPost(post) {
     const photoResult = await vkApi(
       "wall.post",
       {
-        owner_id: -241910449,
+        owner_id: VK_OWNER_ID,
         from_group: 1,
         message: baseMessage,
         attachments: photo.attachment,
@@ -2903,7 +2903,7 @@ async function publishVkPost(post) {
     const result = await vkApi(
       "wall.post",
       {
-        owner_id: -241910449,
+        owner_id: VK_OWNER_ID,
         from_group: 1,
         message: baseMessage,
         attachments: preview.url,
@@ -2942,7 +2942,7 @@ async function publishVkPost(post) {
     const fallback = await vkApi(
       "wall.post",
       {
-        owner_id: -241910449,
+        owner_id: VK_OWNER_ID,
         from_group: 1,
         message: baseMessage,
         guid: vkPostGuid(post, "text")
