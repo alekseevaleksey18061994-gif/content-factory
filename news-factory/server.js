@@ -1737,30 +1737,18 @@ function dynamicItemAgeMs(item) {
 }
 
 function dynamicItemScore(item) {
-  const ageMinutes = dynamicItemAgeMs(item) / 60000;
   const aiScore = Number(item && item.aiScore);
-  let score;
 
   if (Number.isFinite(aiScore)) {
-    // Editorial quality is the main signal. Freshness/source/media are tie-breakers.
-    score = Math.max(0, Math.min(100, aiScore));
-    score -= Math.min(36, ageMinutes * 0.05);
-    const source = (state.sources || []).find(function(src){ return src && src.name === item.sourceName; });
-    if (source && Number(source.priority) === 1) score += 6;
-    if (item.videoUrl) score += 4;
-    else if (item.generatedImageUrl || item.imageUrl) score += 2;
-  } else {
-    // Backward compatibility for old queue items created before AI editorial scoring.
-    // Keep them eligible, but do not let a temporary no-score item outrank newly scored strong news.
-    score = Math.max(0, 68 - ageMinutes * 0.2);
-    const source = (state.sources || []).find(function(src){ return src && src.name === item.sourceName; });
-    if (source && Number(source.priority) === 1) score += 4;
-    if (item.videoUrl) score += 2;
-    else if (item.generatedImageUrl || item.imageUrl) score += 1;
-    score = Math.min(74, score);
+    // AI editorial score is the primary ranking signal.
+    // Freshness/source/media must never lower a 77-point story below a 75-point story.
+    return Math.max(0, Math.min(100, aiScore));
   }
 
-  return score;
+  // Backward compatibility for old queue items created before AI editorial scoring.
+  // Keep them eligible, but cap them below newly scored strong news.
+  const ageMinutes = dynamicItemAgeMs(item) / 60000;
+  return Math.min(74, Math.max(0, 68 - ageMinutes * 0.2));
 }
 
 function dynamicUsedQueueIds() {
@@ -1786,7 +1774,20 @@ function dynamicBestQueueItem() {
     .sort(function(a, b) {
       const scoreDiff = dynamicItemScore(b) - dynamicItemScore(a);
       if (scoreDiff) return scoreDiff;
-      return new Date(b.articlePublishedAt || 0).getTime() - new Date(a.articlePublishedAt || 0).getTime();
+
+      // Only when AI scores are equal do we use source, media and freshness as tie-breakers.
+      const aSource = (state.sources || []).find(function(src){ return src && src.name === a.sourceName; });
+      const bSource = (state.sources || []).find(function(src){ return src && src.name === b.sourceName; });
+      const aPriority = aSource && Number(aSource.priority) === 1 ? 1 : 0;
+      const bPriority = bSource && Number(bSource.priority) === 1 ? 1 : 0;
+      if (bPriority !== aPriority) return bPriority - aPriority;
+
+      const aMedia = a.videoUrl ? 2 : ((a.generatedImageUrl || a.imageUrl) ? 1 : 0);
+      const bMedia = b.videoUrl ? 2 : ((b.generatedImageUrl || b.imageUrl) ? 1 : 0);
+      if (bMedia !== aMedia) return bMedia - aMedia;
+
+      return new Date(b.articlePublishedAt || b.createdAt || 0).getTime() -
+        new Date(a.articlePublishedAt || a.createdAt || 0).getTime();
     })[0] || null;
 }
 
