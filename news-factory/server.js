@@ -3426,12 +3426,28 @@ function dynamicItemScore(item) {
 
   if (Number.isFinite(aiScore)) {
     const base = Math.max(0, Math.min(100, aiScore));
-    return Math.max(0, Math.min(100, base + videoPriorityBonus(item, base)));
+    const quality = Number(item && item.qualityScore);
+    const qualityBonus = Number.isFinite(quality) ? Math.max(-8, Math.min(8, (quality - AUTO_QUALITY_MIN) * 0.35)) : -4;
+    const diversity = editorialDiversityPenalty(item);
+    const learning = editorialLearningBonus(item);
+    const storyBonus = item && item.storyCluster && Number(item.storyCluster.sourceCount) > 1 ? 4 : 0;
+    const updateBonus = item && item.storyUpdateOf ? 2 : 0;
+    return Math.max(0, Math.min(100,
+      base +
+      videoPriorityBonus(item, base) +
+      qualityBonus +
+      learning.bonus +
+      storyBonus +
+      updateBonus -
+      diversity.penalty
+    ));
   }
 
   const ageMinutes = dynamicItemAgeMs(item) / 60000;
   const fallback = Math.min(74, Math.max(0, 68 - ageMinutes * 0.2));
-  return Math.min(79, fallback + videoPriorityBonus(item, fallback));
+  const diversity = editorialDiversityPenalty(item);
+  const learning = editorialLearningBonus(item);
+  return Math.max(0, Math.min(79, fallback + videoPriorityBonus(item, fallback) + learning.bonus - diversity.penalty));
 }
 
 function dynamicUsedQueueIds() {
@@ -3453,6 +3469,7 @@ function dynamicBestQueueItem(kind) {
   return (state.queue || [])
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
+      if (!autoQualityEligible(item)) return false;
       if (wantsBlogger) return isBloggerSource(item);
       if (wantsRussianAi) return isRussianAISource(item);
       return !isBloggerSource(item) && !isRussianAISource(item);
@@ -3523,6 +3540,7 @@ async function prepareDynamicSlot() {
   }
 
   const collector = await collectOnce("slot-prep");
+  await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
   const item = dynamicAssignBest(day, time);
   return {
     ok: true,
@@ -3544,6 +3562,7 @@ async function prepareBloggerSlot(time) {
   if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
 
   const collector = await collectOnce("blogger-slot-prep");
+  await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
   const item = dynamicAssignBest(day, slotTime, "blogger");
   state.bloggerScheduler = state.bloggerScheduler || {};
   state.bloggerScheduler.lastPreparedAt = new Date().toISOString();
@@ -3562,6 +3581,7 @@ async function prepareRussianAiSlot(time) {
   if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
 
   const collector = await collectOnce("russian-ai-slot-prep");
+  await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
   const item = dynamicAssignBest(day, slotTime, "russian-ai");
   state.russianAiScheduler = state.russianAiScheduler || {};
   state.russianAiScheduler.lastPreparedAt = new Date().toISOString();
@@ -5518,6 +5538,80 @@ async function buildPlatformAnalytics(force) {
   return value;
 }
 
+
+
+function addLearningSample(map, key, value) {
+  const k = String(key || "").trim().toLowerCase();
+  if (!k || !Number.isFinite(Number(value))) return;
+  if (!map[k]) map[k] = { samples: 0, performance: 0 };
+  const bucket = map[k];
+  const samples = Number(bucket.samples || 0);
+  const next = Math.max(-10, Math.min(10, Number(value)));
+  bucket.performance = Number(((Number(bucket.performance || 0) * samples + next) / (samples + 1)).toFixed(2));
+  bucket.samples = samples + 1;
+}
+
+async function refreshEditorialLearning(force) {
+  if (!EDITORIAL_LEARNING_ENABLED) return { ok: false, skipped: "disabled" };
+  state.editorialLearning = state.editorialLearning && typeof state.editorialLearning === "object"
+    ? state.editorialLearning
+    : { updatedAt: "", sampleSize: 0, byFormat: {}, bySource: {}, byTopic: {} };
+
+  const previous = new Date(state.editorialLearning.updatedAt || 0).getTime();
+  if (!force && previous && Date.now() - previous < EDITORIAL_LEARNING_REFRESH_MINUTES * 60 * 1000) {
+    return { ok: true, skipped: "fresh", sampleSize: state.editorialLearning.sampleSize || 0 };
+  }
+
+  let analytics;
+  try {
+    analytics = await buildPlatformAnalytics(Boolean(force));
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+
+  const tgPosts = new Map(((analytics.telegram && analytics.telegram.posts) || []).map(function(post){ return [Number(post.messageId), post]; }));
+  const vkPosts = new Map(((analytics.vk && analytics.vk.posts) || []).map(function(post){ return [Number(post.postId), post]; }));
+  const tgAvgViews = Math.max(1, Number(analytics.telegram && analytics.telegram.totals && analytics.telegram.totals.avgViews || 0));
+  const vkAvgViews = Math.max(1, Number(analytics.vk && analytics.vk.totals && analytics.vk.totals.avgViews || 0));
+  const byFormat = {};
+  const bySource = {};
+  const byTopic = {};
+  let samples = 0;
+
+  for (const h of (state.history || []).slice(0, 120)) {
+    if (!h) continue;
+    const values = [];
+    const tg = tgPosts.get(Number(h.messageId));
+    if (tg && Number(tg.views || 0) > 0) {
+      const viewRatio = Number(tg.views || 0) / tgAvgViews;
+      const interactionRate = Number(tg.views || 0) > 0 ? (Number(tg.reactions || 0) + Number(tg.comments || 0)) / Number(tg.views || 1) : 0;
+      values.push(Math.max(-10, Math.min(10, (viewRatio - 1) * 5 + interactionRate * 120)));
+    }
+    const vk = vkPosts.get(Number(h.vkPostId));
+    if (vk && Number(vk.views || 0) > 0) {
+      const viewRatio = Number(vk.views || 0) / vkAvgViews;
+      const interactionRate = (Number(vk.likes || 0) + Number(vk.comments || 0) + Number(vk.reposts || 0)) / Number(vk.views || 1);
+      values.push(Math.max(-10, Math.min(10, (viewRatio - 1) * 5 + interactionRate * 100)));
+    }
+    if (!values.length) continue;
+    const performance = values.reduce(function(sum,v){ return sum + v; }, 0) / values.length;
+    h.performanceScore = Number(performance.toFixed(2));
+    addLearningSample(byFormat, h.contentFormat || h.contentFormatLabel, performance);
+    addLearningSample(bySource, h.sourceName, performance);
+    normalizeTopicEntities(h.topicEntities).forEach(function(entity){ addLearningSample(byTopic, entity, performance); });
+    samples += 1;
+  }
+
+  state.editorialLearning = {
+    updatedAt: new Date().toISOString(),
+    sampleSize: samples,
+    byFormat: byFormat,
+    bySource: bySource,
+    byTopic: byTopic
+  };
+  saveState();
+  return { ok: true, sampleSize: samples };
+}
 
 async function telegramProbe(method, params) {
   if (!BOT_TOKEN) return { ok: false, error: "Токен не задан" };
