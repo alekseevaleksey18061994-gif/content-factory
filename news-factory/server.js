@@ -3785,14 +3785,19 @@ async function githubAutomationProbe() {
     });
     result.repoOk = repoResponse.ok;
 
-    const workflowResponse = await fetch("https://api.github.com/repos/" + repoName + "/actions/workflows/claude.yml/runs?per_page=1", {
+    const workflowResponse = await fetch("https://api.github.com/repos/" + repoName + "/actions/workflows/claude.yml/runs?per_page=5", {
       headers: headers,
       signal: AbortSignal.timeout(7000)
     });
     const workflowData = await workflowResponse.json().catch(function(){ return {}; });
     if (workflowResponse.ok) {
       result.workflowOk = true;
-      const run = Array.isArray(workflowData.workflow_runs) ? workflowData.workflow_runs[0] : null;
+      const runs = Array.isArray(workflowData.workflow_runs) ? workflowData.workflow_runs : [];
+      const run = runs.find(function(item){
+        const conclusion = String(item && item.conclusion || "");
+        const status = String(item && item.status || "");
+        return status === "in_progress" || status === "queued" || (conclusion && conclusion !== "skipped" && conclusion !== "cancelled");
+      }) || runs[0] || null;
       if (run) {
         result.latestStatus = String(run.status || "");
         result.latestConclusion = String(run.conclusion || "");
