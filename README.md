@@ -1,8 +1,13 @@
-# Content Factory
+# News Factory
 
-Русскоязычный AI-контент-завод для создания коротких товарных видео.
+AI Pulse / News Factory — система автоматического сбора, рерайта и публикации новостей в Telegram и VK.
 
-Разворачивается в Railway и подключается к n8n через серверный webhook.
+Основное приложение находится в `/news-factory`.
 
+Production:
+- Railway service: `news-factory-api`
+- PostgreSQL
+- persistent volume: `/data`
+- Railway root directory: `/news-factory`
 
-Автодеплой Railway: включён для всех файлов проекта.
+Старый видео-проект Content Factory удалён из этого репозитория.
