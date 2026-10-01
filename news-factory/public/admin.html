@@ -573,6 +573,7 @@ button,.quick button,.quick a{
 @media(max-width:900px){
   .side{transform:translateX(-105%);width:min(86vw,320px);box-shadow:24px 0 70px rgba(0,0,0,.5)}.side.mobile-open{transform:translateX(0)}.drawer-backdrop.open{display:block}.mobile-close{display:grid;place-items:center}.main{margin-left:0}.menu-toggle{display:grid;place-items:center}.shell{padding:14px}.span8,.span7,.span6,.span5,.span4{grid-column:span 12}.stats,.system-grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.top{align-items:flex-start}.health{margin-top:8px}.stack{align-items:stretch;flex-direction:column}.toast{left:50%}body.drawer-open{overflow:hidden}.conn{align-items:flex-start}.status{margin-top:1px}.hero-main{align-items:flex-start;flex-direction:column}.conn-group-head{align-items:flex-start}.conn-group-count{margin-top:2px}
 }
+.social-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.social-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px;border:1px solid var(--line);border-radius:18px;background:var(--panel2)}.social-card-main{display:flex;align-items:center;gap:14px;min-width:0}.social-icon{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;font-weight:800;font-size:15px;background:var(--soft);border:1px solid var(--line)}.social-card h3{margin:0 0 4px}.social-card p{margin:0;color:var(--muted);font-size:13px}.social-card .actions{flex:0 0 auto}@media(max-width:760px){.social-grid{grid-template-columns:1fr}.social-card{align-items:flex-start;flex-direction:column}.social-card .actions{width:100%}.social-card .actions a{width:100%;text-align:center}}
 @media(max-width:700px){.calendar-summary{grid-template-columns:repeat(2,1fr)}.calendar-slots{grid-template-columns:1fr}.calendar-slot{grid-template-columns:62px minmax(0,1fr) auto}.calendar-time{font-size:19px}.calendar-day-title{min-width:0}.calendar-toolbar{align-items:flex-start}.calendar-day-nav{width:100%;justify-content:space-between}}
 @media(max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.quick{grid-template-columns:1fr 1fr}.page-head{align-items:flex-start;flex-direction:column}.health{display:none}.hero h2{font-size:22px}.hero-icon{width:48px;height:48px}.news-card-body,.queue-card-main{grid-template-columns:1fr}.news-thumb,.queue-thumb,.news-placeholder,.queue-placeholder{width:100%;height:170px}.queue-head{align-items:flex-start}.queue-actions{display:grid;grid-template-columns:minmax(0,1fr) auto}.queue-actions .publish{width:100%}.queue-actions .remove{min-width:88px}.news-card-head{gap:8px}.news-status{font-size:10px}}
 </style>
@@ -602,13 +603,17 @@ button,.quick button,.quick a{
     </div>
 
     <div class="side-group">
+      <div class="side-title">Соцсети</div>
+      <button class="nav" data-page="socialPage"><span class="ico">◎</span><b>Telegram + VK</b></button>
+    </div>
+
+    <div class="side-group">
       <div class="side-title">Система</div>
       <button class="nav" data-page="connectionsPage"><span class="ico">⚙</span><b>Система и подключения</b></button>
     </div>
 
     <div class="side-spacer"></div>
     <div class="side-group">
-      <a class="nav" href="https://t.me/chtotamai" target="_blank"><span class="ico">✈</span><b>Открыть Telegram</b></a>
       <button class="nav" onclick="logout()"><span class="ico">↪</span><b>Выйти</b></button>
     </div>
     <div class="side-status"><span class="online" id="sideStatusDot"></span><div><b>Система запущена</b><small id="sideStatusText">@chtotamai</small></div></div>
@@ -629,7 +634,7 @@ button,.quick button,.quick a{
         <div class="hero">
           <div class="hero-main">
             <div class="hero-channel"><div class="hero-icon">AI</div><div><h2>Что там у ИИ?</h2><p>@chtotamai · новости нейросетей и технологий</p></div></div>
-            <div class="actions"><button class="primary" onclick="goPage('publishPage')">Новый пост</button><a class="link" href="https://t.me/chtotamai" target="_blank">Открыть Telegram</a></div>
+            <div class="actions"><button class="primary" onclick="goPage('publishPage')">Новый пост</button></div>
           </div>
           <div class="hero-meta"><span class="chip" id="dashMode">Режим —</span><span class="chip" id="dashSystem">Система —</span><span class="chip" id="dashLastPost">Последний пост —</span></div>
         </div>
@@ -665,7 +670,7 @@ button,.quick button,.quick a{
             <button onclick="goPage('aiPage')">AI-редактор</button>
             <button onclick="goPage('queuePage')">Открыть очередь</button>
             <button onclick="goPage('sourcesPage')">Источники</button>
-            <a href="https://t.me/chtotamai" target="_blank">Открыть канал</a>
+            <button onclick="goPage('socialPage')">Соцсети</button>
           </div>
         </section>
 
@@ -823,6 +828,29 @@ button,.quick button,.quick a{
         <section class="card"><div id="modes" class="modes"></div><div class="notice" style="margin-top:12px">AUTO: за 15 минут до каждого часа система ищет свежую новость и публикует её одновременно в Telegram и VK с 08:00 до 23:00.</div><button style="margin-top:12px" onclick="testPost()">Тест в Telegram</button></section>
       </section>
 
+      <section class="page" id="socialPage">
+        <div class="page-head"><div><h2>Соцсети</h2><p>Каналы «Что там у ИИ?» и публикация News Factory.</p></div><span class="chip">Telegram + VK</span></div>
+        <div class="social-grid">
+          <section class="social-card">
+            <div class="social-card-main">
+              <div class="social-icon">TG</div>
+              <div><h3>Telegram</h3><p>@chtotamai · основной канал</p></div>
+            </div>
+            <div class="actions"><a class="link" href="https://t.me/chtotamai" target="_blank">Открыть Telegram</a></div>
+          </section>
+          <section class="social-card">
+            <div class="social-card-main">
+              <div class="social-icon">VK</div>
+              <div><h3>ВКонтакте</h3><p>Что там у ИИ? | Новости нейросетей</p></div>
+            </div>
+            <div class="actions"><a class="link" href="https://vk.ru/chtotamai" target="_blank">Открыть VK</a></div>
+          </section>
+        </div>
+        <section class="card" style="margin-top:14px">
+          <div class="row"><div><div class="label">Автопубликация</div><div class="name">Один пост → Telegram + VK</div></div><span class="chip">Подключено</span></div>
+        </section>
+      </section>
+
       <section class="page" id="connectionsPage">
         <div class="page-head"><div><h2>Система и подключения</h2><p>Состояние News Factory, интеграции и хранение данных.</p></div><button onclick="refreshConnections()">Обновить статусы</button></div>
         <section class="card">
@@ -902,6 +930,7 @@ var pageRoutes={
   calendarPage:'calendar',
   historyPage:'history',
   modePage:'mode',
+  socialPage:'social',
   connectionsPage:'connections'
 };
 var routePages=Object.fromEntries(Object.keys(pageRoutes).map(function(id){return [pageRoutes[id],id]}));
@@ -912,7 +941,7 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',connectionsPage:'Система и подключения'};
+  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
