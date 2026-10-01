@@ -2954,16 +2954,56 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto failed:", error.message);
-      if (MEDIA_REQUIRED) throw error;
+      if (GENERATE_COVER_IF_MISSING) {
+        try {
+          const generatedFallback = await generateNewsCover({
+            id: post.id || newId("telegram_photo_fallback"),
+            title: post.title || currentWorkspace().name || "News Factory",
+            text: post.text || "",
+            sourceName: post.sourceName || "Telegram fallback"
+          });
+          post.generatedImageUrl = generatedFallback.url;
+          imageUrl = generatedFallback.url;
+          return await telegramMediaApi("sendPhoto", {
+            chat_id: telegramChannel,
+            caption: html,
+            parse_mode: "HTML"
+          }, "photo", imageUrl, "image");
+        } catch (fallbackError) {
+          console.warn("Telegram generated photo fallback failed:", fallbackError.message);
+          if (MEDIA_REQUIRED) throw fallbackError;
+        }
+      } else if (MEDIA_REQUIRED) {
+        throw error;
+      }
     }
   }
 
   if (imageUrl) {
-    const photo = await telegramMediaApi("sendPhoto", {
-      chat_id: telegramChannel,
-      caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
-      parse_mode: "HTML"
-    }, "photo", imageUrl, "image");
+    let photo;
+    try {
+      photo = await telegramMediaApi("sendPhoto", {
+        chat_id: telegramChannel,
+        caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
+        parse_mode: "HTML"
+      }, "photo", imageUrl, "image");
+    } catch (error) {
+      console.warn("sendPhoto long-caption media failed:", error.message);
+      if (!GENERATE_COVER_IF_MISSING) throw error;
+      const generatedFallback = await generateNewsCover({
+        id: post.id || newId("telegram_photo_fallback"),
+        title: post.title || currentWorkspace().name || "News Factory",
+        text: post.text || "",
+        sourceName: post.sourceName || "Telegram fallback"
+      });
+      post.generatedImageUrl = generatedFallback.url;
+      imageUrl = generatedFallback.url;
+      photo = await telegramMediaApi("sendPhoto", {
+        chat_id: telegramChannel,
+        caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
+        parse_mode: "HTML"
+      }, "photo", imageUrl, "image");
+    }
     if (html && html.length > 950) {
       await telegramApi("sendMessage", {
         chat_id: telegramChannel,
@@ -5619,6 +5659,95 @@ setTimeout(function() {
           }
         } catch (error) {
           console.warn("Car startup catch-up publish failed:", error.message);
+        }
+
+        const repairMarker = "v0.29.1-car-telegram-media-repair-test";
+        state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+        if (!state.migrations.includes(repairMarker)) {
+          try {
+            let item = (state.queue || [])
+              .filter(function(q){ return q && q.id && q.telegramPublished !== true && !isBloggerSource(q); })
+              .sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); })[0] || null;
+            if (!item) {
+              await collectOnce("car-repair-test");
+              item = (state.queue || [])
+                .filter(function(q){ return q && q.id && q.telegramPublished !== true && !isBloggerSource(q); })
+                .sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); })[0] || null;
+            }
+            if (!item) throw new Error("Нет подходящей новости для контрольной публикации");
+
+            let media = {
+              imageUrl: item.imageUrl || "",
+              generatedImageUrl: item.generatedImageUrl || "",
+              videoUrl: item.videoUrl || ""
+            };
+            if (!(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
+              media = await ensureMediaForNews({
+                id: item.newsId || item.id,
+                title: item.title,
+                text: item.text,
+                sourceName: item.sourceName || "Контрольная публикация",
+                imageUrl: "",
+                videoUrl: ""
+              });
+              item.imageUrl = media.imageUrl || "";
+              item.generatedImageUrl = media.generatedImageUrl || "";
+              item.videoUrl = media.videoUrl || "";
+            }
+
+            const result = await sendMultiPlatformPost({
+              id: item.id,
+              postId: item.id,
+              newsId: item.newsId || "",
+              topicId: item.topicId || "default",
+              allow_text_fallback: false,
+              title: item.title,
+              text: item.text,
+              sourceName: item.sourceName || "",
+              sourceUrl: item.sourceUrl || "",
+              imageUrl: item.imageUrl || media.imageUrl || "",
+              generatedImageUrl: item.generatedImageUrl || media.generatedImageUrl || "",
+              videoUrl: item.videoUrl || media.videoUrl || ""
+            }, { telegram: true, vk: false });
+
+            if (!result.telegramPublished) throw new Error("Telegram не подтвердил публикацию");
+            const publishedAt = new Date().toISOString();
+            item.telegramPublished = true;
+            item.telegramMessageId = result.message_id;
+            item.telegramPublishedAt = publishedAt;
+            item.published = item.vkPublished === true;
+            item.publishedAt = publishedAt;
+            state.history.unshift({
+              id: newId("hist"),
+              queueId: item.id,
+              newsId: item.newsId || "",
+              title: result.publishedTitle || item.title || "",
+              text: result.publishedText || item.text || "",
+              telegramPublished: true,
+              telegramMessageId: result.message_id,
+              telegramPublishedAt: publishedAt,
+              vkPublished: false,
+              sourceId: item.sourceId || "",
+              sourceName: item.sourceName || "",
+              sourceUrl: item.sourceUrl || "",
+              imageUrl: item.imageUrl || "",
+              generatedImageUrl: item.generatedImageUrl || "",
+              videoUrl: item.videoUrl || "",
+              publishedAt: publishedAt,
+              publicationOrigin: "repair-test"
+            });
+            state.stats.published = Number(state.stats.published || 0) + 1;
+            noteSourceEvent(item, "published");
+            state.migrations.push(repairMarker);
+            saveState();
+            console.log("CAR_TELEGRAM_REPAIR_TEST_SUCCESS " + JSON.stringify({
+              queue_id: item.id,
+              message_id: result.message_id,
+              title: item.title || ""
+            }));
+          } catch (error) {
+            console.error("CAR_TELEGRAM_REPAIR_TEST_FAILED " + String(error && error.message || error));
+          }
         }
       });
     }
