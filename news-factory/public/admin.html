@@ -984,7 +984,7 @@ function render(){
   el('sources').innerHTML=(state.sources||[]).map(function(s){var group=s.group==='official'?'Официальный источник':s.group==='media'?'СМИ':'Источник';return '<div class="source"><div><div class="name">'+esc(s.name)+'</div><div class="meta">'+group+'</div><div class="url">'+esc(s.url)+'</div></div><div class="actions"><button class="source-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span><b>'+(s.enabled?'Включено':'Выключено')+'</b></button><button class="danger" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник">×</button></div></div>'}).join('');
   el('queueCount').textContent=(state.queue||[]).length;
   var qp=state.queuePolicy||{};
-  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Медиа: видео → фото → генерация фото. Найденное фото можно улучшить через AI. Автоочистка: новости старше '+(qp.queueMaxAgeHours||12)+' ч удаляются, максимум '+(qp.queueMaxAutoItems||20)+' свежих автоматических новостей.';
+  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='AI оценивает силу новости по 100-балльной шкале. Лучший материал идёт в ближайший слот, остальные сильные новости остаются в очереди и конкурируют за следующие часы. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
   el('queue').innerHTML=(state.queue||[]).length?(state.queue||[]).map(function(q){
     var parts=postParts(q);
     var effectiveImage=q.generatedImageUrl||q.imageUrl||'';
@@ -993,12 +993,17 @@ function render(){
     var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
     var ms=q.mediaStatus||(effectiveImage?(q.generatedImageUrl?'generated':'found'):(q.videoUrl?'found':'missing'));
     var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
+    var aiScore=Number(q.aiScore);
+    var aiTier=String(q.aiTier||'');
+    var aiLabel=Number.isFinite(aiScore)?('AI '+Math.round(aiScore)+'/100'+(aiTier==='top'?' · Топ':aiTier==='strong'?' · Сильная':'')):'';
     return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+
         '<div class="queue-copy">'+
           '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status '+esc(q.status||'queued')+'">'+esc(statusRu(q.status||'queued'))+'</span></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
+          (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
+          (q.aiScoreReason?'<div class="queue-meta">AI: '+esc(q.aiScoreReason)+'</div>':'')+
           (q.status==='media_failed'?'<div class="queue-meta" style="color:#ff8d94">VK media_failed · '+esc(q.vkMediaAttempts||0)+' попытки'+(q.vkError?' · '+esc(q.vkError):'')+'</div>':'')+
           '<div class="queue-text">'+esc(stripEditorialMarks(parts.text||''))+'</div>'+
           '<div class="card-click-note">Нажмите на карточку, чтобы посмотреть пост полностью</div>'+
@@ -1463,7 +1468,9 @@ async function loadNews(){
       var media=md.videoUrl?'<div class="news-placeholder">▶ Видео</div>':image?'<img class="news-thumb" src="'+esc(image)+'" alt="">':'<div class="news-placeholder">AI</div>';
       var ms=md.mediaStatus||(image?(md.generatedImageUrl?'generated':'found'):(md.videoUrl?'found':'missing'));
       var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
-      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span></div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
+      var editorialScore=Number(md.editorialScore);
+      var scoreBadge=Number.isFinite(editorialScore)?'<span class="media-badge">AI '+Math.round(editorialScore)+'/100</span>':'';
+      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
       return '<article class="news-card" onclick="openNewsPreview(\''+n.id+'\')"><div class="news-card-body">'+media+main+'</div></article>';
     }).join(''):'<div class="empty">Пока ничего не найдено. Нажмите «Собрать сейчас».</div>';
   }catch(e){el('newsList').innerHTML='<div class="empty">Ошибка: '+esc(e.message)+'</div>'}
