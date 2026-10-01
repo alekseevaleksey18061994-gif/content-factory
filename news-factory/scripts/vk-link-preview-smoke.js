@@ -20,7 +20,7 @@ async function createPreview() {
   return data;
 }
 
-async function vk(method, params) {
+async function vk(method, params, context) {
   const body = new URLSearchParams();
   Object.entries(params || {}).forEach(function(entry) {
     const key = entry[0], value = entry[1];
@@ -36,19 +36,24 @@ async function vk(method, params) {
     signal: AbortSignal.timeout(20000)
   });
   const data = await response.json().catch(function(){ return {}; });
+  const ctx = context || {};
   if (!response.ok || data.error) {
     const error = data.error || {};
     console.error(JSON.stringify({
       method: method,
       error_code: error.error_code == null ? response.status : error.error_code,
-      error_msg: error.error_msg || ("HTTP " + response.status)
+      error_msg: error.error_msg || ("HTTP " + response.status),
+      post_id: ctx.postId || null,
+      slug: ctx.slug || ""
     }));
     throw new Error("VK " + method + " failed");
   }
   console.log(JSON.stringify({
     method: method,
     error_code: null,
-    error_msg: ""
+    error_msg: "",
+    post_id: data.response && data.response.post_id || null,
+    slug: ctx.slug || ""
   }));
   return data.response;
 }
@@ -74,7 +79,11 @@ const posted = await vk("wall.post", {
   owner_id: -VK_TEST_GROUP_ID,
   from_group: 1,
   message: message,
-  attachments: preview.url
+  attachments: preview.url,
+  guid: "nf_smoke_" + preview.slug.slice(-24)
+}, {
+  postId: "smoke",
+  slug: preview.slug
 });
 
 console.log(JSON.stringify({
