@@ -1051,6 +1051,22 @@ function historyMoscowMinutes(h){
   if(!h||!h.publishedAt)return -1;
   return moscowMinutes(new Date(h.publishedAt));
 }
+function calendarHistorySlot(h){
+  if(!h||!h.publishedAt)return '';
+  var origin=String(h.publicationOrigin||'').trim();
+  var explicit=String(h.scheduledSlot||'').trim();
+  if(origin==='schedule'&&/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(explicit))return explicit;
+  if(origin)return '';
+
+  // Старые записи до v0.25.1: автопосты выходили сразу после полного часа.
+  // Ручные публикации не должны занимать следующий календарный слот.
+  if(!h.queueId||!h.newsId)return '';
+  var minute=historyMoscowMinutes(h);
+  if(minute<0)return '';
+  var hour=Math.floor(minute/60),withinHour=minute%60;
+  if(hour<8||hour>23||withinHour>10)return '';
+  return historyMoscowKey(h)+' '+String(hour).padStart(2,'0')+':00';
+}
 function renderCalendar(){
   if(!el('calendarSlots'))return;
   var schedule=state.publicationSchedule||{};
@@ -1067,7 +1083,8 @@ function renderCalendar(){
   el('calendarReserve').textContent='15 мин';
 
   var dayHistory=(state.history||[]).filter(function(h){return historyMoscowKey(h)===calendarDateKey});
-  el('calendarPublished').textContent=dayHistory.length;
+  var scheduledHistory=dayHistory.filter(function(h){return calendarHistorySlot(h).startsWith(calendarDateKey+' ')});
+  el('calendarPublished').textContent=scheduledHistory.length;
   var used=new Set();
   var nowMin=isToday?moscowMinutes(new Date()):0;
   var todayCmp=calendarDateKey.localeCompare(today);
@@ -1075,11 +1092,11 @@ function renderCalendar(){
 
   el('calendarSlots').innerHTML=slots.map(function(slot){
     var slotMin=Number(String(slot.time||'00:00').split(':')[0]||0)*60+Number(String(slot.time||'00:00').split(':')[1]||0);
-    var match=-1,best=9999;
-    dayHistory.forEach(function(h,hi){
-      if(used.has(hi))return;
-      var dist=Math.abs(historyMoscowMinutes(h)-slotMin);
-      if(dist<best&&dist<=55){best=dist;match=hi;}
+    var expectedSlot=calendarDateKey+' '+slot.time;
+    var match=-1;
+    scheduledHistory.forEach(function(h,hi){
+      if(match>=0||used.has(hi))return;
+      if(calendarHistorySlot(h)===expectedSlot)match=hi;
     });
 
     var queueId=dayAssignments[slot.time]||'';
@@ -1088,8 +1105,8 @@ function renderCalendar(){
 
     if(match>=0){
       used.add(match);
-      title=dayHistory[match].title||'Опубликованная новость';
-      meta='Опубликовано '+safeDate(dayHistory[match].publishedAt);
+      title=scheduledHistory[match].title||'Опубликованная новость';
+      meta='Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
       status='Опубликовано';cls='done';
     }else if(item){
       var pp=postParts(item);
@@ -1112,7 +1129,7 @@ function renderCalendar(){
   }).join('');
 
   var autoOn=systemStatus&&systemStatus.details&&systemStatus.details.scheduler&&String(systemStatus.details.scheduler.detail||'').includes('включена');
-  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'16 потенциальных окон с 08:00 до 23:00. За 15 минут до каждого часа система собирает свежие новости и выбирает лучшую. Пустое окно означает, что подходящей новости не было, а не ошибку публикации. Цель 10, максимум 12 постов в сутки.';
+  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'16 потенциальных окон с 08:00 до 23:00. За 15 минут до каждого часа система собирает свежие новости и выбирает лучшую. Ручная публикация не занимает и не отменяет следующий слот — по расписанию выйдет отдельный новый пост. Пустое окно означает, что подходящей новости не было. Цель 10, максимум 12 автоматических постов в сутки.';
   renderDashboardCalendar();
 }
 function moveCalendarDay(delta){if(!calendarDateKey)calendarDateKey=moscowDateKey(new Date());calendarDateKey=addCalendarDays(calendarDateKey,delta);renderCalendar()}
