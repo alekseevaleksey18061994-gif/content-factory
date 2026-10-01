@@ -5003,6 +5003,214 @@ async function callOpenAIRewrite(payload) {
   throw new Error(lastError || "Не удалось получить ответ OpenAI");
 }
 
+
+async function callOpenAIStoryComposer(storySources, existingItem, incomingItem) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY не настроен");
+  const sources = (storySources || []).slice(0, STORY_CLUSTER_MAX_SOURCES).map(function(source, index) {
+    return {
+      n: index + 1,
+      source: String(source.sourceName || "Источник"),
+      url: String(source.url || ""),
+      title: String(source.title || "").slice(0, 300),
+      text: String(source.text || "").slice(0, 4200)
+    };
+  });
+  if (sources.length < 2) throw new Error("Для сюжета нужно минимум два источника");
+
+  const channelName = String(currentWorkspace().name || "News Factory");
+  const combinedTitle = [existingItem && existingItem.title, incomingItem && incomingItem.title].filter(Boolean).join(" | ");
+  const combinedText = sources.map(function(x){ return x.title + " " + x.text.slice(0, 700); }).join(" ");
+  const editorialFormat = selectEditorialFormat({
+    title: combinedTitle,
+    text: combinedText,
+    sourceName: sources.map(function(x){ return x.source; }).join(", "),
+    sourceGroup: "story"
+  });
+
+  const prompt = [
+    "Ты выпускающий редактор Telegram-канала «" + channelName + "». Перед тобой несколько материалов об ОДНОМ событии.",
+    "Собери из них один сильный самостоятельный новостной пост. Это не дайджест разных тем.",
+    "",
+    "ПРАВИЛА СИНТЕЗА:",
+    "- используй только факты из переданных материалов; ничего не додумывай;",
+    "- убирай повторы и объединяй совпадающие факты;",
+    "- если важная деталь есть только у одного источника, при необходимости атрибутируй её этому источнику;",
+    "- если источники расходятся в цифрах, датах или трактовках — не выбирай молча одну версию, а кратко обозначь расхождение;",
+    "- официальные первичные источники используй для официальных характеристик/дат, авторские мнения оставляй мнениями авторов;",
+    "- COPYRIGHT SAFE: полностью новая структура и формулировки; никаких длинных дословных фрагментов;",
+    "- прямую цитату используй только если она действительно важна, максимум 8 слов подряд и с атрибуцией;",
+    "- ссылки на источники в текст не вставляй — система добавит их сама.",
+    "",
+    "ФОРМАТ ЭТОГО ПОСТА: " + editorialFormat.label + ".",
+    editorialFormat.instruction,
+    "- Первый экран должен цеплять реальной ценностью: сильный факт, понятное следствие, контраст или короткий вопрос — без кликбейта.",
+    "- Не используй одинаковый шаблон «что произошло / почему важно / что дальше» буквально в каждом посте.",
+    "- Допускаются 1–3 уместных emoji, максимум одно выделение строкой через > и 1–3 фразы **жирным**.",
+    "- Финальный вопрос — только если он естественный. Иначе закончи сильным фактом.",
+    "",
+    "ДЛИНА: примерно 700–1050 знаков, 4–7 коротких визуальных блоков.",
+    "",
+    "ОЦЕНКА:",
+    "importance 0–25, audience_interest 0–20, novelty 0–20, virality 0–15, usefulness 0–10, credibility 0–10.",
+    "editorial_score — сумма, строго 0–100. Несколько независимых источников могут повышать credibility, но не должны искусственно завышать importance.",
+    "",
+    "Верни строго JSON:",
+    "{\"title\":\"...\",\"text\":\"...\",\"confidence\":\"high|medium|low\",\"editorial_score\":0,\"score_breakdown\":{\"importance\":0,\"audience_interest\":0,\"novelty\":0,\"virality\":0,\"usefulness\":0,\"credibility\":0},\"score_reason\":\"...\"}",
+    "",
+    "МАТЕРИАЛЫ:",
+    JSON.stringify(sources)
+  ].join("\n");
+
+  const models = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+  for (const model of models) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 1800 }),
+        signal: AbortSignal.timeout(50000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) {
+        lastError = data && data.error && data.error.message || ("OpenAI HTTP " + response.status);
+        continue;
+      }
+      const output = extractOpenAIText(data);
+      if (!output) { lastError = "OpenAI вернул пустой сюжет"; continue; }
+      let parsed;
+      try {
+        parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      } catch {
+        parsed = parseLooseRewriteOutput(output);
+      }
+      if (!parsed || !String(parsed.text || "").trim()) { lastError = "Не удалось разобрать сюжет"; continue; }
+
+      const raw = parsed.score_breakdown && typeof parsed.score_breakdown === "object" ? parsed.score_breakdown : {};
+      const clamp = function(value, max) {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.max(0, Math.min(max, Math.round(n))) : 0;
+      };
+      const breakdown = {
+        importance: clamp(raw.importance, 25),
+        audience_interest: clamp(raw.audience_interest, 20),
+        novelty: clamp(raw.novelty, 20),
+        virality: clamp(raw.virality, 15),
+        usefulness: clamp(raw.usefulness, 10),
+        credibility: clamp(raw.credibility, 10)
+      };
+      const sum = Object.values(breakdown).reduce(function(total, value){ return total + value; }, 0);
+      const parsedScore = Number(parsed.editorial_score);
+      const editorialScore = sum > 0 ? sum : (Number.isFinite(parsedScore) ? Math.max(0, Math.min(100, Math.round(parsedScore))) : 60);
+      const result = {
+        title: String(parsed.title || combinedTitle || channelName).trim(),
+        text: String(parsed.text || "").trim(),
+        confidence: ["high","medium","low"].includes(String(parsed.confidence)) ? String(parsed.confidence) : "medium",
+        editorialScore: editorialScore,
+        scoreBreakdown: breakdown,
+        scoreReason: String(parsed.score_reason || "").trim(),
+        contentFormat: editorialFormat.id,
+        contentFormatLabel: editorialFormat.label,
+        model: model
+      };
+
+      if (COPYRIGHT_SAFE_MODE) {
+        const combinedOutput = result.title + " " + result.text;
+        const overlap = sources.find(function(source){
+          return findVerbatimOverlap(source.title + " " + source.text, combinedOutput, COPYRIGHT_MAX_VERBATIM_WORDS);
+        });
+        if (overlap) { lastError = "Copyright Safe Mode: сюжет слишком близок к одному из источников"; continue; }
+      }
+      return result;
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+  throw new Error(lastError || "Не удалось собрать сюжет");
+}
+
+async function tryMergeStoryQueueItem(newItem) {
+  const match = findStoryClusterCandidate(newItem);
+  if (!match) return null;
+
+  const target = match.item;
+  const sources = mergeStorySources(target, newItem);
+  const distinctNames = new Set(sources.map(function(source){ return String(source.sourceName || "").toLowerCase(); }).filter(Boolean));
+  if (sources.length < 2 || distinctNames.size < 2) return null;
+
+  let composed;
+  try {
+    composed = await callOpenAIStoryComposer(sources, target, newItem);
+  } catch (error) {
+    console.warn("Story composer skipped:", error.message);
+    return null;
+  }
+
+  let mediaPack = [];
+  try {
+    mediaPack = await generateStoryMediaPack({
+      id: "story_" + stableHashNumber(sources.map(function(x){ return x.url || x.newsId; }).join("|")),
+      title: composed.title,
+      text: composed.text,
+      sourceName: sources.map(function(x){ return x.sourceName; }).join(", ")
+    }, STORY_MEDIA_PACK_COUNT);
+  } catch (error) {
+    console.warn("Story media pack failed:", error.message);
+  }
+
+  const fallbackUrls = [target.generatedImageUrl, newItem.generatedImageUrl].filter(Boolean);
+  const mediaPackUrls = Array.from(new Set(
+    mediaPack.map(function(x){ return x.url; }).concat(fallbackUrls)
+  )).slice(0, STORY_MEDIA_PACK_COUNT);
+
+  const storyId = String(target.storyCluster && target.storyCluster.id || ("story_" + crypto.randomBytes(6).toString("hex")));
+  const sourceRefs = sources.map(function(source){ return { name: source.sourceName || "Источник", url: source.url || "" }; }).filter(function(x){ return x.url; });
+  const newsIds = Array.from(new Set(sources.map(function(source){ return source.newsId; }).filter(Boolean)));
+
+  Object.assign(target, {
+    title: composed.title,
+    text: composed.text,
+    updatedAt: new Date().toISOString(),
+    sourceGroup: "story",
+    sourceName: sources.length + " источника",
+    sourceUrl: sourceRefs[0] && sourceRefs[0].url || target.sourceUrl || "",
+    sourceUrls: sourceRefs.map(function(x){ return x.url; }),
+    sources: sourceRefs,
+    storySources: sources,
+    storyNewsIds: newsIds,
+    storyCluster: {
+      id: storyId,
+      sourceCount: sources.length,
+      similarity: Math.round(match.similarity * 100) / 100,
+      updatedAt: new Date().toISOString()
+    },
+    imageUrl: "",
+    videoUrl: "",
+    originalImageUrl: "",
+    originalVideoUrl: "",
+    generatedImageUrl: mediaPackUrls[0] || target.generatedImageUrl || newItem.generatedImageUrl || "",
+    mediaPackUrls: mediaPackUrls,
+    mediaPack: mediaPack.map(function(x, index){ return { url: x.url, model: x.model || "", visualIndex: index }; }),
+    mediaType: mediaPackUrls.length > 1 ? "album" : "generated",
+    mediaStatus: "generated",
+    mediaOrigin: "ai_generated",
+    mediaLicense: "unknown",
+    copyrightSafe: true,
+    copyrightPolicyVersion: "v1",
+    copyrightMediaDecision: "multi_source_original_pack",
+    canEnhance: false,
+    aiScore: composed.editorialScore,
+    aiScoreBreakdown: composed.scoreBreakdown,
+    aiScoreReason: composed.scoreReason,
+    aiTier: composed.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (composed.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal"),
+    contentFormat: composed.contentFormat,
+    contentFormatLabel: composed.contentFormatLabel,
+    storyComposerModel: composed.model
+  });
+
+  return target;
+}
+
 async function callOpenAIEditorialScoreBatch(items) {
   if (!OPENAI_API_KEY || !Array.isArray(items) || !items.length) return [];
   const compact = items.slice(0, 10).map(function(item) {
