@@ -451,8 +451,16 @@ let workspaceStore = loadWorkspaceStore();
 function getWorkspaceById(id) { const normalized = String(id || "").trim(); return workspaceStore.workspaces.find(function(ws){ return ws.id === normalized; }) || null; }
 function currentWorkspaceId() { const context = workspaceContext.getStore(); const requested = context && context.workspaceId; if (requested && getWorkspaceById(requested)) return requested; return workspaceStore.defaultWorkspaceId; }
 function currentWorkspace() { return getWorkspaceById(currentWorkspaceId()) || workspaceStore.workspaces[0]; }
-function currentTelegramChannel() { const ws = currentWorkspace(); return String(ws && ws.telegramChannel || CHANNEL || "").trim(); }
-function currentTelegramPublicUsername() { const ws = currentWorkspace(); return String(ws && ws.telegramPublicUsername || TELEGRAM_PUBLIC_USERNAME || currentTelegramChannel() || "").replace(/^@/, "").trim(); }
+function currentTelegramChannel() {
+  const ws = currentWorkspace();
+  return ws ? String(ws.telegramChannel || "").trim() : String(CHANNEL || "").trim();
+}
+function currentTelegramPublicUsername() {
+  const ws = currentWorkspace();
+  return ws
+    ? String(ws.telegramPublicUsername || ws.slug || ws.telegramChannel || "").replace(/^@/, "").trim()
+    : String(TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
+}
 function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
 function persistWorkspaceStore() {
   ensureDataDir();
@@ -550,8 +558,6 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS news_items_detected_idx ON news_items(detected_at DESC);
       CREATE INDEX IF NOT EXISTS news_items_status_idx ON news_items(status);
       CREATE INDEX IF NOT EXISTS news_items_hash_idx ON news_items(content_hash);
-      CREATE INDEX IF NOT EXISTS news_items_workspace_idx ON news_items(workspace_id, detected_at DESC);
-      CREATE UNIQUE INDEX IF NOT EXISTS news_items_workspace_url_uidx ON news_items(workspace_id, original_url);
 
       CREATE TABLE IF NOT EXISTS collector_runs (
         id BIGSERIAL PRIMARY KEY,
@@ -4124,7 +4130,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, {
         ok: true,
         service: "news-factory",
-        telegramConfigured: Boolean(BOT_TOKEN && workspaceStore.workspaces.some(function(ws){ return Boolean(ws.telegramChannel || CHANNEL); })),
+        telegramConfigured: Boolean(BOT_TOKEN && workspaceStore.workspaces.some(function(ws){ return Boolean(ws.telegramChannel); })),
         workspaceCount: workspaceStore.workspaces.length,
         uiConfigured: Boolean(ADMIN_UI_PASSWORD),
         openaiConfigured: Boolean(OPENAI_API_KEY),
@@ -4325,6 +4331,7 @@ const server = http.createServer(async function(req, res) {
         telegramPublicUsername: String(body.telegramPublicUsername || body.telegramChannel || "").replace(/^@/, "").trim(),
         state: structuredClone(defaultState)
       }, id);
+      workspace.state.topicSettings.default.auto_publish_vk = false;
       workspaceStore.workspaces.push(workspace);
       persistWorkspaceStore();
       return sendJson(res, 201, { ok: true, workspace: publicWorkspaceMeta(workspace) });
