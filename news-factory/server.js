@@ -1755,14 +1755,12 @@ async function publishVkPost(post) {
       attachment = await uploadVkWallPhoto(imageUrl);
       mediaMode = "photo";
     } catch (error) {
-      // A community token can publish to the wall but VK may reject photo upload methods
-      // with group auth. In that case publish the post and use the source link preview.
-      console.warn("VK photo upload unavailable, falling back to link preview:", error.message);
-      const sourceUrl = String(post.sourceUrl || "").trim();
-      if (/^https?:\/\//i.test(sourceUrl)) {
-        attachment = sourceUrl;
-        mediaMode = "link";
-      }
+      // Community tokens can publish wall text but VK rejects wall-photo upload methods.
+      // Do not pass a raw external URL in attachments: VK may reject it with
+      // link_photo_sizing_rule. Publish safely without attachments instead.
+      console.warn("VK photo upload unavailable, falling back to text post:", error.message);
+      attachment = "";
+      mediaMode = "text_fallback";
     }
   }
 
