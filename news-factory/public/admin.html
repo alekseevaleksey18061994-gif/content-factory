@@ -1391,6 +1391,84 @@ body{
   .conn small{font-size:11px}
 }
 
+/* v0.28.8 — readability + symmetric queue controls */
+.telegram-body,.telegram-body p{
+  color:#243a5a!important;
+  opacity:1!important;
+}
+.telegram-copy h3{color:#081733!important}
+.telegram-quote{
+  color:#203858!important;
+  opacity:1!important;
+  font-style:normal!important;
+}
+.telegram-accent{color:#203858!important;opacity:1!important}
+.telegram-source{color:#0a73cf!important;font-weight:800!important;opacity:1!important}
+.telegram-foot{color:#526985!important;font-weight:700!important;opacity:1!important}
+.queue-text{color:#314967!important;opacity:1!important}
+.queue-meta,.meta,.url,.card-click-note{color:#536985!important;opacity:1!important}
+.source-toggle.on{color:#0b7b56!important;background:rgba(225,249,239,.96)!important}
+.source-toggle.on b{color:#0b7b56!important}
+.source-toggle.on .switch-knob{background:#19bf85!important}
+.source .name{color:#0b1735!important}
+.source .meta,.source .url{color:#536985!important}
+.queue-actions{
+  display:grid!important;
+  grid-template-columns:1fr!important;
+  gap:10px!important;
+  align-items:stretch!important;
+}
+.queue-action-row{
+  display:grid;
+  grid-template-columns:minmax(0,1.35fr) minmax(150px,.65fr);
+  gap:10px;
+  align-items:stretch;
+}
+.queue-action-row.secondary{grid-template-columns:1fr 1fr}
+.queue-actions .publish-targets{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:7px;
+  min-width:0;
+}
+.queue-actions .target-pill{
+  justify-content:center;
+  min-height:44px;
+  margin:0;
+}
+.queue-actions button{
+  width:100%;
+  min-height:44px;
+  margin:0!important;
+}
+.queue-actions .remove{width:100%;min-width:0!important}
+.queue-video-priority{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border:1px solid rgba(121,92,210,.18);
+  border-radius:12px;
+  background:rgba(244,240,255,.82);
+  color:#6549b4;
+  font-size:11px;
+  font-weight:800;
+  min-height:44px;
+}
+.video-score-badge{
+  color:#6549b4!important;
+  border-color:rgba(121,92,210,.20)!important;
+  background:rgba(244,240,255,.88)!important;
+}
+@media(max-width:620px){
+  .queue-action-row{grid-template-columns:1fr!important}
+  .queue-action-row.secondary{grid-template-columns:1fr 1fr!important}
+  .queue-actions .publish-targets{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:410px){
+  .queue-action-row.secondary{grid-template-columns:1fr!important}
+  .queue-actions .publish-targets{grid-template-columns:1fr!important}
+}
+
 /* v0.28.5 — source performance ranking */
 .source-head-row{margin-bottom:12px}
 .source-ranking-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0 12px}
@@ -2419,6 +2497,10 @@ function render(){
     var mcls=((ms==='found'||ms==='video_found'||ms==='photo_found')?'found':(ms==='generated'||ms==='enhanced')?'generated':'bad');
     var aiScore=Number(q.aiScore);
     var aiTier=String(q.aiTier||'');
+    var hasVideo=!!q.videoUrl;
+    var hasEmbeddedVideo=!!q.hasEmbeddedVideo;
+    var videoBonus=(hasVideo?(aiScore>=55?10:4):(hasEmbeddedVideo?(aiScore>=55?5:2):0));
+    var effectiveScore=Number.isFinite(aiScore)?Math.min(100,Math.round(aiScore)+videoBonus):null;
     var aiLabel=Number.isFinite(aiScore)?('AI '+Math.round(aiScore)+'/100'+(aiTier==='top'?' · Топ':aiTier==='strong'?' · Сильная':'')):'';
     return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+
@@ -2427,6 +2509,7 @@ function render(){
           '<div class="queue-meta">'+meta+'</div>'+
           '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
           (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
+          (videoBonus?'<span class="media-badge video-score-badge">🎬 +'+videoBonus+' · итог '+effectiveScore+'/100</span>':'')+
           (q.aiScoreReason?'<div class="queue-meta">AI: '+esc(q.aiScoreReason)+'</div>':'')+
           (q.status==='media_failed'?'<div class="queue-meta" style="color:#ff8d94">VK media_failed · '+esc(q.vkMediaAttempts||0)+' попытки'+(q.vkError?' · '+esc(q.vkError):'')+'</div>':'')+
           '<div class="queue-text">'+esc(stripEditorialMarks(parts.text||''))+'</div>'+
@@ -2435,14 +2518,18 @@ function render(){
         '</div>'+
       '</div>'+
       '<div class="queue-actions" onclick="event.stopPropagation()">'+
-        '<div class="publish-targets">'+
-          '<label class="target-pill all"><input id="all_'+q.id+'" type="checkbox" checked onchange="setQueueAll(\''+q.id+'\',this.checked)"> Все</label>'+
-          '<label class="target-pill"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> Telegram</label>'+
-          '<label class="target-pill"><input id="vk_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> VK</label>'+
+        '<div class="queue-action-row">'+
+          '<div class="publish-targets">'+
+            '<label class="target-pill all"><input id="all_'+q.id+'" type="checkbox" checked onchange="setQueueAll(\''+q.id+'\',this.checked)"> Все</label>'+
+            '<label class="target-pill"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> Telegram</label>'+
+            '<label class="target-pill"><input id="vk_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> VK</label>'+
+          '</div>'+
+          '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
         '</div>'+
-        '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
-        (q.videoUrl?'':((q.originalImageUrl||q.imageUrl)?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Перегенерировать медиа</button>':''))+
-        '<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
+        '<div class="queue-action-row secondary">'+
+          (q.videoUrl?'<div class="queue-video-priority">🎬 Видео уже в приоритете</div>':((q.originalImageUrl||q.imageUrl)?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Перегенерировать медиа</button>':'<div class="queue-video-priority">Медиа подготовлено AI</div>'))+
+          '<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
+        '</div>'+
         '<button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button>'+
       '</div>'+
     '</article>';
@@ -2866,18 +2953,33 @@ async function loadCollectorStatus(){
         : '24/7: подключено '+((state.sources||[]).filter(function(x){return x.enabled}).length)+' источников. До '+(s.maxItemsPerRun||5)+' новых материалов за цикл.')+(lastTime?' · Последний запуск '+new Date(lastTime).toLocaleString('ru-RU'):'');
   }catch(e){el('collectorInfo').textContent='Ошибка статуса: '+e.message}
 }
+function decodeLooseJsonString(value){
+  try{return JSON.parse('"'+String(value||'').replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'"')}catch(e){}
+  return String(value||'').replace(/\\n/g,'\n').replace(/\\r/g,'').replace(/\\t/g,' ').replace(/\\"/g,'"').replace(/\\\\/g,'\\');
+}
 function postParts(item){
   var title=String(item&&item.title||'').trim();
   var text=String(item&&item.text||'').trim();
-  if(text&&text[0]==='{'){
-    try{
-      var parsed=JSON.parse(text);
-      if(parsed&&typeof parsed==='object'){
-        if(parsed.title)title=String(parsed.title);
-        if(parsed.text)text=String(parsed.text);
+  var raw=text.replace(/^\s*```(?:json)?\s*/i,'').replace(/\s*```\s*$/,'').trim();
+  var parsed=null;
+  if(raw){
+    try{parsed=JSON.parse(raw)}catch(e){
+      var first=raw.indexOf('{'),last=raw.lastIndexOf('}');
+      if(first>=0&&last>first){
+        try{parsed=JSON.parse(raw.slice(first,last+1))}catch(e2){}
       }
-    }catch(e){}
+    }
   }
+  if(parsed&&typeof parsed==='object'){
+    if(parsed.title)title=String(parsed.title);
+    if(parsed.text)text=String(parsed.text);
+  }else if(/["']text["']\s*:/.test(raw)&&/["']title["']\s*:/.test(raw)){
+    var tm=raw.match(/["']title["']\s*:\s*"([\s\S]*?)"\s*,\s*["']text["']/i);
+    var xm=raw.match(/["']text["']\s*:\s*"([\s\S]*?)"\s*,\s*["'](?:confidence|notes|editorial_score|score_breakdown)["']/i);
+    if(tm&&tm[1])title=decodeLooseJsonString(tm[1]);
+    if(xm&&xm[1])text=decodeLooseJsonString(xm[1]);
+  }
+  text=String(text||'').replace(/\s*["']confidence["']\s*:[\s\S]*$/i,'').trim();
   return {title:title,text:text};
 }
 function stripEditorialMarks(text){
@@ -2930,9 +3032,9 @@ function renderPreview(item){
   var pp=postParts(item),img=item.generatedImageUrl||item.imageUrl||'',video=item.videoUrl||'';
   var media=video?'<video class="telegram-video" controls preload="metadata" src="'+esc(video)+'"></video>':img?'<img class="telegram-media" src="'+esc(img)+'" alt="">':'';
   var source=item.sourceUrl||item.originalUrl||'';
-  el('previewMeta').textContent=(item.sourceName||'Что там у ИИ?')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
+  el('previewMeta').textContent=(item.sourceName||(currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
   var body=editorialBodyHtml(pp.text||'Нет текста');
-  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">Что там у ИИ? · предпросмотр</div></div></div></div>';
+  el('previewBody').innerHTML='<div class="telegram-preview"><div class="telegram-bubble">'+media+'<div class="telegram-copy"><h3>'+esc(pp.title||'Без заголовка')+'</h3><div class="telegram-body">'+body+'</div>'+(source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'')+'<div class="telegram-foot">'+esc((currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory')+' · предпросмотр</div></div></div></div>';
   openModal('previewModal');
 }
 function openQueuePreview(id){
