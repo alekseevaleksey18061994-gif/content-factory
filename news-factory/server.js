@@ -1105,13 +1105,241 @@ async function collectOnce(trigger) {
   }
 }
 
+function dynamicDailyPublishedCount(dayKey) {
+  return (state.history || []).filter(function(item) {
+    return item && item.publishedAt && moscowDateKey(new Date(item.publishedAt)) === dayKey;
+  }).length;
+}
+
+function dynamicItemAgeMs(item) {
+  const stamp = item && item.articlePublishedAt;
+  if (!stamp) return Number.MAX_SAFE_INTEGER;
+  const ms = new Date(stamp).getTime();
+  if (!Number.isFinite(ms)) return Number.MAX_SAFE_INTEGER;
+  return Math.max(0, Date.now() - ms);
+}
+
+function dynamicItemScore(item) {
+  const ageMinutes = dynamicItemAgeMs(item) / 60000;
+  let score = Math.max(0, 100 - ageMinutes * 0.45);
+  const source = (state.sources || []).find(function(src){ return src && src.name === item.sourceName; });
+  if (source && Number(source.priority) === 1) score += 18;
+  if (item.videoUrl) score += 8;
+  else if (item.generatedImageUrl || item.imageUrl) score += 4;
+  return score;
+}
+
+function dynamicUsedQueueIds() {
+  const used = new Set();
+  const schedule = ensureScheduleShape(state);
+  Object.keys(schedule.assignments || {}).forEach(function(day) {
+    Object.values(schedule.assignments[day] || {}).forEach(function(id) {
+      if (id) used.add(id);
+    });
+  });
+  return used;
+}
+
+function dynamicBestQueueItem() {
+  const used = dynamicUsedQueueIds();
+  const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
+  return (state.queue || [])
+    .filter(function(item) {
+      return item && item.id && item.newsId && item.articlePublishedAt &&
+        !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge;
+    })
+    .sort(function(a, b) {
+      const scoreDiff = dynamicItemScore(b) - dynamicItemScore(a);
+      if (scoreDiff) return scoreDiff;
+      return new Date(b.articlePublishedAt || 0).getTime() - new Date(a.articlePublishedAt || 0).getTime();
+    })[0] || null;
+}
+
+function dynamicAssignBest(day, time) {
+  const item = dynamicBestQueueItem();
+  const schedule = ensureScheduleShape(state);
+  if (!schedule.assignments[day]) schedule.assignments[day] = {};
+  if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
+  if (!item) {
+    delete schedule.assignments[day][time];
+    saveState();
+    return null;
+  }
+  schedule.assignments[day][time] = item.id;
+  delete schedule.suppressed[day][time];
+  item.preparedFor = day + " " + time;
+  item.preparedAt = new Date().toISOString();
+  state.dynamicScheduler = state.dynamicScheduler || {};
+  state.dynamicScheduler.lastPreparedAt = item.preparedAt;
+  saveState();
+  return item;
+}
+
+async function prepareDynamicSlot() {
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  const nextHour = hour + 1;
+  if (nextHour < DYNAMIC_SLOT_START_HOUR || nextHour > DYNAMIC_SLOT_END_HOUR) {
+    return { ok: true, skipped: "outside_hours" };
+  }
+
+  const day = moscowDateKey(now);
+  if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
+    return { ok: true, skipped: "daily_max" };
+  }
+
+  const schedule = ensureScheduleShape(state);
+  const time = String(nextHour).padStart(2, "0") + ":00";
+  if (schedule.suppressed[day] && schedule.suppressed[day][time]) {
+    return { ok: true, skipped: "suppressed" };
+  }
+
+  const collector = await collectOnce("slot-prep");
+  const item = dynamicAssignBest(day, time);
+  return {
+    ok: true,
+    slot: time,
+    collector: collector,
+    prepared: item ? item.id : null,
+    title: item ? item.title : ""
+  };
+}
+
+async function publishDynamicSlot() {
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR) {
+    return { ok: true, skipped: "outside_hours" };
+  }
+
+  const day = moscowDateKey(now);
+  const time = String(hour).padStart(2, "0") + ":00";
+  const slotKey = day + " " + time;
+  state.dynamicScheduler = state.dynamicScheduler || {};
+
+  if (state.dynamicScheduler.lastPublishedSlot === slotKey) {
+    return { ok: true, skipped: "already_done" };
+  }
+  if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
+    return { ok: true, skipped: "daily_max" };
+  }
+
+  const schedule = ensureScheduleShape(state);
+  const queueId = schedule.assignments[day] && schedule.assignments[day][time];
+  if (!queueId) {
+    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    saveState();
+    return { ok: true, skipped: "empty_slot" };
+  }
+
+  const item = (state.queue || []).find(function(q){ return q && q.id === queueId; });
+  if (!item) {
+    delete schedule.assignments[day][time];
+    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    saveState();
+    return { ok: true, skipped: "missing_item" };
+  }
+
+  if (dynamicItemAgeMs(item) > DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000) {
+    delete schedule.assignments[day][time];
+    state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
+    state.dynamicScheduler.lastPublishedSlot = slotKey;
+    saveState();
+    return { ok: true, skipped: "stale" };
+  }
+
+  if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) {
+    return { ok: true, skipped: "auto_disabled", prepared: queueId };
+  }
+
+  const result = await sendMultiPlatformPost(item);
+  const publishedAt = new Date().toISOString();
+
+  state.history.unshift({
+    id: newId("hist"),
+    title: item.title || "Публикация",
+    text: item.text || "",
+    messageId: result.message_id,
+    vkPostId: result.vkPostId || null,
+    vkError: result.vkError || "",
+    publishedAt: publishedAt,
+    sourceUrl: item.sourceUrl || "",
+    imageUrl: item.imageUrl || "",
+    originalImageUrl: item.originalImageUrl || item.imageUrl || "",
+    generatedImageUrl: item.generatedImageUrl || "",
+    videoUrl: item.videoUrl || "",
+    mediaType: item.mediaType || "",
+    mediaStatus: item.mediaStatus || ""
+  });
+  state.history = state.history.slice(0, 300);
+  state.stats.published = Number(state.stats.published || 0) + 1;
+  state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
+  delete schedule.assignments[day][time];
+
+  state.dynamicScheduler.lastPublishedSlot = slotKey;
+  state.dynamicScheduler.lastPublishedAt = publishedAt;
+
+  if (db && dbReady && item.newsId) {
+    try {
+      await db.query(
+        "UPDATE news_items SET status='published', telegram_message_id=$2, published_at=$3, metadata=COALESCE(metadata,'{}'::jsonb) || $4::jsonb WHERE id=$1",
+        [item.newsId, result.message_id, publishedAt, JSON.stringify({ vkPostId: result.vkPostId || null, vkError: result.vkError || "" })]
+      );
+    } catch (error) {
+      console.warn("Dynamic publish DB update failed:", error.message);
+    }
+  }
+
+  saveState();
+  return {
+    ok: true,
+    published: true,
+    messageId: result.message_id,
+    vkPostId: result.vkPostId || null,
+    vkError: result.vkError || "",
+    slot: time
+  };
+}
+
+async function dynamicSchedulerTick() {
+  if (collectorRunning) return;
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  const minute = nowMinutes % 60;
+  const day = moscowDateKey(now);
+
+  let action = "";
+  if (minute === DYNAMIC_SLOT_PREP_MINUTE && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
+    action = "prepare";
+  } else if (minute === 0 && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
+    action = "publish";
+  }
+  if (!action) return;
+
+  state.dynamicScheduler = state.dynamicScheduler || {};
+  const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0") + "-" + action;
+  if (state.dynamicScheduler.lastTickKey === key) return;
+  state.dynamicScheduler.lastTickKey = key;
+  saveState();
+
+  try {
+    const result = action === "prepare" ? await prepareDynamicSlot() : await publishDynamicSlot();
+    console.log("Dynamic scheduler " + action + ":", JSON.stringify(result));
+  } catch (error) {
+    console.error("Dynamic scheduler " + action + " failed:", error.message);
+  }
+}
+
 function startCollectorScheduler() {
   if (!COLLECTOR_ENABLED || collectorTimer) return;
-  const everyMs = POLL_INTERVAL_MINUTES * 60 * 1000;
-  collectorTimer = setInterval(function(){
-    collectOnce("scheduler").catch(function(error){ console.error("Collector run failed:", error.message); });
-  }, everyMs);
-  console.log("Collector scheduler started every " + POLL_INTERVAL_MINUTES + " min");
+  collectorTimer = setInterval(function() {
+    dynamicSchedulerTick().catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
+  }, 30000);
+  dynamicSchedulerTick().catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
+  console.log("Dynamic scheduler: search at :45, publish on the hour, 08:00-23:00 Moscow");
 }
 
 function sendJson(res, status, payload, headers) {
