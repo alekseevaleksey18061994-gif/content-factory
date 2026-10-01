@@ -1908,7 +1908,6 @@ async function publishDynamicSlot() {
   if (!targets.telegram && !targets.vk) {
     delete schedule.assignments[day][time];
     state.dynamicScheduler.lastPublishedSlot = slotKey;
-    state.dynamicScheduler.lastPublishedAt = new Date().toISOString();
     saveState();
     return { ok: true, skipped: "auto_targets_disabled", slot: time };
   }
