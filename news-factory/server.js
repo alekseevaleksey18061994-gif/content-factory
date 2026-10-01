@@ -3623,20 +3623,20 @@ const server = http.createServer(async function(req, res) {
       }, { "cache-control": "no-store" });
     }
 
-    if (p.startsWith("/api/") && !requireAuth(req, res)) return;
-
-    if (req.method === "GET" && p === "/api/dashboard") {
-      const cleanup = pruneQueueItems(state);
-      if (cleanup.removed) saveState();
-      return sendJson(res, 200, { ok: true, state: state });
-    }
-
     if (req.method === "GET" && p === "/api/vk/oauth/start") {
       try {
         return redirect(res, buildVkOAuthUrl());
       } catch (error) {
         return sendJson(res, 500, { ok: false, error: String(error && error.message || error) });
       }
+    }
+
+    if (p.startsWith("/api/") && !requireAuth(req, res)) return;
+
+    if (req.method === "GET" && p === "/api/dashboard") {
+      const cleanup = pruneQueueItems(state);
+      if (cleanup.removed) saveState();
+      return sendJson(res, 200, { ok: true, state: state });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
