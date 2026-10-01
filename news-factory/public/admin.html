@@ -1313,7 +1313,7 @@ function dashboardFromStatus(s){
     ['AI-редактор',details.openai],
     ['Медиа-движок',details.mediaEngine],
     ['Публикация в Telegram',details.telegramChannel],
-    ['База данных',details.supabase],
+    ['База данных',details.postgresql],
     ['Автопланировщик',details.scheduler]
   ];
   if(el('dashPipeline'))el('dashPipeline').innerHTML=stages.map(function(pair){var x=pair[1]||{state:'missing',description:'Не настроено'};var label=x.state==='connected'?'Готово':x.state==='partial'?'Частично':'Не готово';return '<div class="pipeline-row"><div class="row"><b>'+esc(pair[0])+'</b><span class="chip">'+label+'</span></div><small>'+esc(x.description||'')+'</small></div>'}).join('');
@@ -1327,7 +1327,8 @@ async function renderConnections(force){
     publicEndpoint:'Публичный HTTPS endpoint',
     storage:'Railway Volume /data',
     adminUi:'Админ-панель',
-    supabase:'PostgreSQL',
+    postgresql:'PostgreSQL (Railway)',
+    anthropic:'Anthropic API',
     openai:'OpenAI API',
     openaiImage:'OpenAI Image',
     mediaEngine:'Медиа-движок News Factory',
@@ -1338,8 +1339,8 @@ async function renderConnections(force){
     scheduler:'Планировщик'
   };
   var groups=[
-    {title:'Инфраструктура',icon:'▦',keys:['railway','github','publicEndpoint','storage','adminUi','supabase']},
-    {title:'Разработка и AI',icon:'✦',keys:['claudeCode','openai','openaiImage','mediaEngine']},
+    {title:'Инфраструктура',icon:'▦',keys:['railway','github','publicEndpoint','storage','adminUi','postgresql']},
+    {title:'Разработка и AI',icon:'✦',keys:['claudeCode','anthropic','openai','openaiImage','mediaEngine']},
     {title:'Telegram',icon:'✈',keys:['telegramBot','telegramChannel']},
     {title:'VK',icon:'VK',keys:['vk']},
     {title:'Автоматизация',icon:'⚙',keys:['collector','scheduler']}
