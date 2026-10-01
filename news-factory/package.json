@@ -9,7 +9,8 @@
     "test:vk-photo": "node scripts/vk-photo-smoke-test.js"
   },
   "dependencies": {
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "sharp": "^0.34.4"
   },
   "engines": {
     "node": ">=20"
