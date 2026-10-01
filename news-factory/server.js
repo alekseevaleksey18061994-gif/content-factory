@@ -2813,6 +2813,97 @@ async function telegramApi(method, payload) {
   return data.result;
 }
 
+function telegramUploadMeta(rawUrl, fallbackKind) {
+  const value = String(rawUrl || "").trim();
+  let ext = fallbackKind === "video" ? "mp4" : "jpg";
+  try {
+    const u = new URL(value, PUBLIC_BASE_URL);
+    const guessed = path.extname(u.pathname).replace(/^\./, "").toLowerCase();
+    if (guessed) ext = guessed;
+  } catch {}
+  let mime = fallbackKind === "video" ? "video/mp4" : "image/jpeg";
+  if (ext === "png") mime = "image/png";
+  else if (ext === "webp") mime = "image/webp";
+  else if (ext === "gif") mime = "image/gif";
+  else if (ext === "webm") mime = "video/webm";
+  else if (ext === "mov") mime = "video/quicktime";
+  else if (ext === "m4v") mime = "video/x-m4v";
+  return { ext: ext || (fallbackKind === "video" ? "mp4" : "jpg"), mime: mime };
+}
+
+async function loadTelegramUpload(rawUrl, kind) {
+  const sourceUrl = String(rawUrl || "").trim();
+  if (!sourceUrl) throw new Error("Telegram media URL is empty");
+  const meta = telegramUploadMeta(sourceUrl, kind);
+  const localPath = localMediaPathFromUrl(sourceUrl);
+  let bytes;
+  let mime = meta.mime;
+  let ext = meta.ext;
+
+  if (localPath) {
+    bytes = fs.readFileSync(localPath);
+  } else {
+    const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
+    const response = await fetch(absolute, {
+      headers: {
+        "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegram/1.0)",
+        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok) throw new Error("Telegram media download HTTP " + response.status);
+    mime = String(response.headers.get("content-type") || mime).split(";")[0].trim() || mime;
+    bytes = Buffer.from(await response.arrayBuffer());
+  }
+
+  if (!bytes || !bytes.length) throw new Error("Telegram media is empty");
+  if (kind === "video") {
+    if (bytes.length > 49 * 1024 * 1024) throw new Error("Видео больше лимита Telegram Bot API");
+  } else {
+    if (bytes.length > 9 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/i.test(mime)) {
+      bytes = await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+        .rotate()
+        .resize(1800, 1800, { fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 88, mozjpeg: true })
+        .toBuffer();
+      mime = "image/jpeg";
+      ext = "jpg";
+    }
+  }
+  return { bytes: bytes, mime: mime, ext: ext };
+}
+
+async function telegramMultipartApi(method, payload, fieldName, mediaUrl, kind) {
+  if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
+  const media = await loadTelegramUpload(mediaUrl, kind);
+  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
+  const form = new FormData();
+  Object.entries(payload || {}).forEach(function(entry) {
+    const key = entry[0], value = entry[1];
+    if (value === undefined || value === null || value === "") return;
+    form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
+  });
+  form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(kind === "video" ? 60000 : 45000)
+  });
+  const data = await response.json().catch(function(){ return {}; });
+  if (!response.ok || !data.ok) throw new Error((data && data.description) || ("Telegram multipart HTTP " + response.status));
+  return data.result;
+}
+
+async function telegramMediaApi(method, payload, fieldName, mediaUrl, kind) {
+  try {
+    return await telegramApi(method, Object.assign({}, payload, { [fieldName]: mediaUrl }));
+  } catch (urlError) {
+    console.warn(method + " URL mode failed, retrying upload:", urlError.message);
+    return telegramMultipartApi(method, payload, fieldName, mediaUrl, kind);
+  }
+}
+
 async function sendTelegramPost(post) {
   const telegramChannel = currentTelegramChannel();
   if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
@@ -2826,13 +2917,12 @@ async function sendTelegramPost(post) {
 
   if (videoUrl) {
     try {
-      return await telegramApi("sendVideo", {
+      return await telegramMediaApi("sendVideo", {
         chat_id: telegramChannel,
-        video: videoUrl,
         caption: html.length <= 1000 ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
         parse_mode: "HTML",
         supports_streaming: true
-      });
+      }, "video", videoUrl, "video");
     } catch (error) {
       console.warn("sendVideo failed:", error.message);
       if (!imageUrl && GENERATE_COVER_IF_MISSING) {
@@ -2857,12 +2947,11 @@ async function sendTelegramPost(post) {
 
   if (imageUrl && html.length <= 950) {
     try {
-      return await telegramApi("sendPhoto", {
+      return await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
-        photo: imageUrl,
         caption: html,
         parse_mode: "HTML"
-      });
+      }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto failed:", error.message);
       if (MEDIA_REQUIRED) throw error;
@@ -2870,12 +2959,11 @@ async function sendTelegramPost(post) {
   }
 
   if (imageUrl) {
-    const photo = await telegramApi("sendPhoto", {
+    const photo = await telegramMediaApi("sendPhoto", {
       chat_id: telegramChannel,
-      photo: imageUrl,
       caption: post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined,
       parse_mode: "HTML"
-    });
+    }, "photo", imageUrl, "image");
     if (html && html.length > 950) {
       await telegramApi("sendMessage", {
         chat_id: telegramChannel,
