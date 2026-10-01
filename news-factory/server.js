@@ -2208,7 +2208,7 @@ async function buildSystemStatus(force) {
       state: collectorTimer ? "connected" : (COLLECTOR_ENABLED ? "partial" : "missing"),
       description: collectorTimer ? "24/7 scheduler запущен" : "Scheduler ещё не стартовал",
       detail: collectorTimer
-        ? ("Проверка каждые " + POLL_INTERVAL_MINUTES + " минут · автопубликация " + (AUTO_PUBLISH_ENABLED ? "включена" : "выключена"))
+        ? ("Окна 08:00–23:00 · поиск за 15 минут · Telegram + VK · автопубликация " + (AUTO_PUBLISH_ENABLED ? "включена" : "выключена"))
         : "Режим: " + state.mode,
       next: collectorTimer ? "" : "Перезапустить сервис после включения collector"
     }
@@ -2358,9 +2358,8 @@ const server = http.createServer(async function(req, res) {
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       delete schedule.suppressed[day][time];
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
-      ensureScheduleAssignments(state, day);
-      saveState();
-      return sendJson(res, 200, { ok: true });
+      const item = dynamicAssignBest(day, time);
+      return sendJson(res, 200, { ok: true, assignment: item ? { date: day, time: time, queueId: item.id } : null });
     }
 
     if (req.method === "GET" && p === "/api/analytics") {
@@ -2386,7 +2385,10 @@ const server = http.createServer(async function(req, res) {
         ok: true,
         enabled: COLLECTOR_ENABLED,
         running: collectorRunning,
-        intervalMinutes: POLL_INTERVAL_MINUTES,
+        intervalMinutes: 60,
+        strategy: "dynamic-hourly",
+        prepareMinutesBefore: 15,
+        activeHours: "08:00–23:00",
         maxItemsPerRun: MAX_ITEMS_PER_RUN,
         queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
         articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
