@@ -5102,8 +5102,9 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
   });
 
   const prompt = [
-    "Ты выпускающий редактор Telegram-канала «" + channelName + "». Перед тобой несколько материалов об ОДНОМ событии.",
-    "Собери из них один сильный самостоятельный новостной пост. Это не дайджест разных тем.",
+    "Ты выпускающий редактор Telegram-канала «" + channelName + "». Перед тобой несколько материалов, которые алгоритм считает похожими.",
+    "Сначала проверь: это действительно одно и то же конкретное событие/релиз/заявление, а не просто новости об одной компании или теме.",
+    "Если события разные — верни same_story=false и не объединяй их. Если это один сюжет — same_story=true и собери один сильный самостоятельный пост.",
     "",
     "ПРАВИЛА СИНТЕЗА:",
     "- используй только факты из переданных материалов; ничего не додумывай;",
@@ -5129,7 +5130,8 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
     "editorial_score — сумма, строго 0–100. Несколько независимых источников могут повышать credibility, но не должны искусственно завышать importance.",
     "",
     "Верни строго JSON:",
-    "{\"title\":\"...\",\"text\":\"...\",\"confidence\":\"high|medium|low\",\"editorial_score\":0,\"score_breakdown\":{\"importance\":0,\"audience_interest\":0,\"novelty\":0,\"virality\":0,\"usefulness\":0,\"credibility\":0},\"score_reason\":\"...\"}",
+    "{\"same_story\":true,\"story_key\":\"короткий ключ события\",\"title\":\"...\",\"text\":\"...\",\"confidence\":\"high|medium|low\",\"editorial_score\":0,\"score_breakdown\":{\"importance\":0,\"audience_interest\":0,\"novelty\":0,\"virality\":0,\"usefulness\":0,\"credibility\":0},\"score_reason\":\"...\"}",
+    "Если same_story=false: title и text оставь пустыми.",
     "",
     "МАТЕРИАЛЫ:",
     JSON.stringify(sources)
@@ -5158,7 +5160,11 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
       } catch {
         parsed = parseLooseRewriteOutput(output);
       }
-      if (!parsed || !String(parsed.text || "").trim()) { lastError = "Не удалось разобрать сюжет"; continue; }
+      if (!parsed) { lastError = "Не удалось разобрать сюжет"; continue; }
+      if (parsed.same_story === false || String(parsed.same_story).toLowerCase() === "false") {
+        return { sameStory: false, model: model };
+      }
+      if (!String(parsed.text || "").trim()) { lastError = "Не удалось разобрать сюжет"; continue; }
 
       const raw = parsed.score_breakdown && typeof parsed.score_breakdown === "object" ? parsed.score_breakdown : {};
       const clamp = function(value, max) {
@@ -5177,6 +5183,8 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
       const parsedScore = Number(parsed.editorial_score);
       const editorialScore = sum > 0 ? sum : (Number.isFinite(parsedScore) ? Math.max(0, Math.min(100, Math.round(parsedScore))) : 60);
       const result = {
+        sameStory: true,
+        storyKey: String(parsed.story_key || "").trim(),
         title: String(parsed.title || combinedTitle || channelName).trim(),
         text: String(parsed.text || "").trim(),
         confidence: ["high","medium","low"].includes(String(parsed.confidence)) ? String(parsed.confidence) : "medium",
@@ -5220,6 +5228,8 @@ async function tryMergeStoryQueueItem(newItem) {
     return null;
   }
 
+  if (!composed || composed.sameStory === false) return null;
+
   let mediaPack = [];
   try {
     mediaPack = await generateStoryMediaPack({
@@ -5254,6 +5264,7 @@ async function tryMergeStoryQueueItem(newItem) {
     storyNewsIds: newsIds,
     storyCluster: {
       id: storyId,
+      key: composed.storyKey || "",
       sourceCount: sources.length,
       similarity: Math.round(match.similarity * 100) / 100,
       updatedAt: new Date().toISOString()
