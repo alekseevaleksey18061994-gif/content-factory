@@ -6669,6 +6669,22 @@ async function runEditorialV2(sources, options) {
     checkedAt: new Date().toISOString()
   };
 
+  // One structured line per editorial decision so the pipeline can be monitored from
+  // Railway logs. No secrets, no post bodies.
+  console.log("EDITORIAL_V2 " + JSON.stringify({
+    workspace: currentWorkspaceId(),
+    channel: channelId,
+    status: outcome.status,
+    verdict: outcome.verdict,
+    importance: meta.importance,
+    rounds: meta.rounds,
+    checkers: checkerModels,
+    errors: (outcome.errors || []).length,
+    skipReason: meta.skipReason ? String(meta.skipReason).slice(0, 120) : undefined,
+    checkerErrors: (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + ": " + String(c.error || "").slice(0, 160); }),
+    title: String(post.title || post.titleRu || "").slice(0, 90)
+  }));
+
   if (outcome.status === "skip") return { skip: true, reason: post.skipReason || "skip", meta: meta };
 
   const issues = (outcome.errors || []).map(function(e){
