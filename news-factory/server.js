@@ -22,6 +22,7 @@ const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunb
 const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "low";
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
 const VK_ACCESS_TOKEN = String(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || "").trim();
+const VK_USER_ACCESS_TOKEN = String(process.env.VK_USER_ACCESS_TOKEN || "").trim();
 const VK_GROUP_ID = Math.abs(Number(process.env.VK_GROUP_ID || 0)) || 0;
 const VK_OWNER_ID = Number(process.env.VK_OWNER_ID || (VK_GROUP_ID ? -VK_GROUP_ID : 0)) || 0;
 const VK_SCREEN_NAME = String(process.env.VK_SCREEN_NAME || "chtotamai").trim();
@@ -1655,14 +1656,15 @@ async function sendTelegram(text) {
   });
 }
 
-async function vkApi(method, params) {
-  if (!VK_ACCESS_TOKEN || !VK_GROUP_ID) throw new Error("VK configuration is incomplete");
+async function vkApi(method, params, tokenOverride) {
+  const token = String(tokenOverride || VK_ACCESS_TOKEN || "").trim();
+  if (!token || !VK_GROUP_ID) throw new Error("VK configuration is incomplete");
   const body = new URLSearchParams();
   Object.entries(params || {}).forEach(function(entry) {
     const key = entry[0], value = entry[1];
     if (value !== undefined && value !== null && value !== "") body.set(key, String(value));
   });
-  body.set("access_token", VK_ACCESS_TOKEN);
+  body.set("access_token", token);
   body.set("v", VK_API_VERSION);
   const response = await fetch("https://api.vk.com/method/" + method, {
     method: "POST",
@@ -1696,7 +1698,8 @@ function formatVkPost(post) {
 
 async function uploadVkWallPhoto(imageUrl) {
   if (!imageUrl) throw new Error("VK: нет фото для публикации");
-  const uploadServer = await vkApi("photos.getWallUploadServer", { group_id: VK_GROUP_ID });
+  const mediaToken = VK_USER_ACCESS_TOKEN || VK_ACCESS_TOKEN;
+  const uploadServer = await vkApi("photos.getWallUploadServer", { group_id: VK_GROUP_ID }, mediaToken);
   if (!uploadServer || !uploadServer.upload_url) throw new Error("VK: не получен сервер загрузки фото");
 
   let sourceUrl = String(imageUrl || "").trim();
@@ -1727,7 +1730,7 @@ async function uploadVkWallPhoto(imageUrl) {
     server: uploaded.server,
     photo: uploaded.photo,
     hash: uploaded.hash
-  });
+  }, mediaToken);
   const photo = Array.isArray(saved) ? saved[0] : (saved && saved.items ? saved.items[0] : null);
   if (!photo || !photo.id) throw new Error("VK: фото не сохранено");
   return "photo" + photo.owner_id + "_" + photo.id;
@@ -1758,7 +1761,7 @@ async function publishVkPost(post) {
       // Community tokens can publish wall text but VK rejects wall-photo upload methods.
       // Do not pass a raw external URL in attachments: VK may reject it with
       // link_photo_sizing_rule. Publish safely without attachments instead.
-      console.warn("VK photo upload unavailable, falling back to text post:", error.message);
+      console.warn("VK photo upload unavailable, falling back to text post:", error.message, VK_USER_ACCESS_TOKEN ? "(user token configured)" : "(community token only)");
       attachment = "";
       mediaMode = "text_fallback";
     }
@@ -2378,7 +2381,7 @@ async function buildSystemStatus(force) {
       state: vkStatusProbe.ok ? "connected" : (VK_ACCESS_TOKEN ? "partial" : "missing"),
       description: vkStatusProbe.ok ? "VK подключён через API" : (VK_ACCESS_TOKEN ? "VK-токен найден, но API не подтверждён" : "VK ещё не подключён"),
       detail: vkStatusProbe.ok && vkStatusProbe.group
-        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)))
+        ? ((vkStatusProbe.group.name || "Что там у ИИ?") + " · " + (VK_PUBLIC_URL || ("ID " + VK_GROUP_ID)) + " · " + (VK_USER_ACCESS_TOKEN ? "текст + фото" : "текст; для фото нужен user token"))
         : String(vkStatusProbe.error || ""),
       next: vkStatusProbe.ok ? "" : "Проверить права ключа сообщества VK"
     },
