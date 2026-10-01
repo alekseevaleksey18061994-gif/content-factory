@@ -3002,8 +3002,9 @@ async function collectOnce(trigger) {
           summary.skipped += 1;
           continue;
         }
-        const imageUrl = extractMetaImage(articleHtml, url);
-        const videoUrl = extractMetaVideo(articleHtml, url);
+        const mediaCandidates = extractArticleMediaCandidates(articleHtml, url);
+        const imageUrl = (mediaCandidates.images[0] && mediaCandidates.images[0].url) || extractMetaImage(articleHtml, url);
+        const videoUrl = (mediaCandidates.videos[0] && mediaCandidates.videos[0].url) || extractMetaVideo(articleHtml, url);
         const raw = stripHtml(articleHtml);
         const originalText = (isBlogger && candidate.link.text ? String(candidate.link.text) : raw).slice(0, 14000);
         if (originalText.length < (isBlogger ? 40 : 250)) {
@@ -3012,13 +3013,14 @@ async function collectOnce(trigger) {
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
         const id = "news_" + contentHash.slice(0, 20);
-        const media = await ensureMediaForNews({
+        const media = await prepareMediaDirector({
           id: id,
           title: originalTitle,
           text: originalText,
           sourceName: source.name,
           imageUrl: imageUrl,
           videoUrl: videoUrl,
+          mediaCandidates: mediaCandidates,
           mediaLicense: sourceMediaLicense(source)
         });
         const baseItem = {
@@ -3040,6 +3042,9 @@ async function collectOnce(trigger) {
             videoUrl: media.videoUrl || "",
             hasEmbeddedVideo: Boolean(candidate.link && candidate.link.hasVideo),
             generatedImageUrl: media.generatedImageUrl || "",
+            mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
+            originalMediaUrls: Array.isArray(media.originalMediaUrls) ? media.originalMediaUrls : [],
+            mediaDirector: media.mediaDirector || null,
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaPriority: media.mediaPriority || 99,
@@ -3049,6 +3054,7 @@ async function collectOnce(trigger) {
             copyrightPolicyVersion: "v1",
             copyrightMediaDecision: media.copyrightMediaDecision || "",
             sourceAttributionRequired: true,
+            sourceRole: sourceEditorialRole(source),
             factsOnly: true,
             canEnhance: Boolean(media.canEnhance),
             mediaError: media.mediaError || "",
@@ -3091,6 +3097,39 @@ async function collectOnce(trigger) {
         baseItem.metadata.contentFormatLabel = rewrite.contentFormatLabel || "";
         noteSourceEvent(source, "score", { score: rewrite.editorialScore });
 
+        const sourceRole = sourceEditorialRole(source);
+        const qc = await callOpenAIEditorialQC({
+          title: rewrite.title,
+          text: rewrite.text,
+          sourceTitle: originalTitle,
+          sourceText: originalText,
+          sourceName: source.name,
+          sourceGroup: source.group || "",
+          sourceRole: sourceRole,
+          contentFormat: rewrite.contentFormat || "",
+          contentFormatLabel: rewrite.contentFormatLabel || "",
+          imageUrl: media.imageUrl || "",
+          generatedImageUrl: media.generatedImageUrl || "",
+          videoUrl: media.videoUrl || "",
+          mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
+          mediaOrigin: media.mediaOrigin || "",
+          mediaDirector: media.mediaDirector || null
+        });
+        rewrite.title = qc.title || rewrite.title;
+        rewrite.text = qc.text || rewrite.text;
+        baseItem.rewrittenTitle = rewrite.title;
+        baseItem.rewrittenText = rewrite.text;
+        baseItem.metadata.qualityScore = qc.qualityScore;
+        baseItem.metadata.qualityBreakdown = qc.qualityBreakdown;
+        baseItem.metadata.qcStatus = qc.qcStatus;
+        baseItem.metadata.qcIssues = qc.qcIssues;
+        baseItem.metadata.qcRepaired = qc.qcRepaired;
+        baseItem.metadata.topicEntities = qc.topicEntities;
+        baseItem.metadata.platformVariants = qc.platformVariants;
+        baseItem.metadata.decisionSummary = qc.decisionSummary;
+        baseItem.metadata.qcModel = qc.model || "";
+        baseItem.metadata.sourceRole = sourceRole;
+
         const postText = rewrite.text;
 
         const lastPublished = (state.history || []).find(function(x){ return x && x.publishedAt; });
@@ -3101,6 +3140,8 @@ async function collectOnce(trigger) {
           state.mode === "AUTO" &&
           AUTO_PUBLISH_ENABLED &&
           enoughTimePassed &&
+          qc.qualityScore >= AUTO_QUALITY_MIN &&
+          qc.qcStatus !== "hold" &&
           summary.published < 1;
 
         if (canAutoPublish) {
@@ -3122,7 +3163,15 @@ async function collectOnce(trigger) {
             videoUrl: media.videoUrl,
             mediaStatus: media.mediaStatus || "",
             mediaOrigin: media.mediaOrigin || "",
-            mediaLicense: media.mediaLicense || sourceMediaLicense(source)
+            mediaLicense: media.mediaLicense || sourceMediaLicense(source),
+            mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
+            platformVariants: qc.platformVariants,
+            qualityScore: qc.qualityScore,
+            qualityBreakdown: qc.qualityBreakdown,
+            qcStatus: qc.qcStatus,
+            topicEntities: qc.topicEntities,
+            sourceRole: sourceRole,
+            decisionSummary: qc.decisionSummary
           });
           baseItem.status = "published";
           baseItem.telegramMessageId = tg.message_id;
@@ -3150,6 +3199,15 @@ async function collectOnce(trigger) {
             mediaPriority: media.mediaPriority || 99,
             contentFormat: rewrite.contentFormat || "",
             contentFormatLabel: rewrite.contentFormatLabel || "",
+            qualityScore: qc.qualityScore,
+            qualityBreakdown: qc.qualityBreakdown,
+            qcStatus: qc.qcStatus,
+            qcIssues: qc.qcIssues,
+            topicEntities: qc.topicEntities,
+            platformVariants: qc.platformVariants,
+            sourceRole: sourceRole,
+            decisionSummary: qc.decisionSummary,
+            mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
             publicationOrigin: "legacy-auto"
           });
           state.history = state.history.slice(0, 300);
@@ -3162,6 +3220,7 @@ async function collectOnce(trigger) {
             !AUTO_PUBLISH_ENABLED ? "disabled" :
             trigger !== "legacy-auto" ? "slot_scheduler" :
             !enoughTimePassed ? "rate_limited" :
+            qc.qualityScore < AUTO_QUALITY_MIN || qc.qcStatus === "hold" ? "quality_hold" :
             "run_limit"
           ) : "review_mode";
           const queueItem = {
@@ -3180,6 +3239,9 @@ async function collectOnce(trigger) {
             originalVideoUrl: media.originalVideoUrl || videoUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
             videoUrl: media.videoUrl || "",
+            mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
+            originalMediaUrls: Array.isArray(media.originalMediaUrls) ? media.originalMediaUrls : [],
+            mediaDirector: media.mediaDirector || null,
             mediaType: media.mediaType,
             mediaStatus: media.mediaStatus,
             mediaPriority: media.mediaPriority || 99,
@@ -3196,8 +3258,43 @@ async function collectOnce(trigger) {
             aiScoreReason: rewrite.scoreReason,
             aiTier: rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal"),
             contentFormat: rewrite.contentFormat || "",
-            contentFormatLabel: rewrite.contentFormatLabel || ""
+            contentFormatLabel: rewrite.contentFormatLabel || "",
+            qualityScore: qc.qualityScore,
+            qualityBreakdown: qc.qualityBreakdown,
+            qcStatus: qc.qcStatus,
+            qcIssues: qc.qcIssues,
+            qcRepaired: qc.qcRepaired,
+            topicEntities: qc.topicEntities,
+            platformVariants: qc.platformVariants,
+            sourceRole: sourceRole,
+            decisionSummary: qc.decisionSummary
           };
+
+          const storyRelation = await classifyPublishedStoryRelationship(queueItem);
+          if (storyRelation.relation === "duplicate") {
+            baseItem.status = "duplicate_story";
+            baseItem.metadata.storyRelation = storyRelation;
+            baseItem.metadata.autoPublishBlocked = "duplicate_story";
+            summary.skipped += 1;
+            await saveNewsItem(baseItem);
+            saveState();
+            continue;
+          }
+          if (storyRelation.relation === "update" && storyRelation.candidate) {
+            queueItem.storyUpdateOf = storyRelation.candidate.id || storyRelation.candidate.queueId || "";
+            queueItem.storyUpdateTitle = storyRelation.candidate.title || "";
+            queueItem.storyUpdateNewFact = storyRelation.newFact || "";
+            queueItem.storyUpdateReason = storyRelation.reason || "";
+            queueItem.storyUpdateSimilarity = storyRelation.similarity || 0;
+            if (!/^обновление\s*:/i.test(queueItem.title)) queueItem.title = "Обновление: " + queueItem.title.replace(/^[^\p{L}\p{N}]+/u, "");
+            if (queueItem.platformVariants && queueItem.platformVariants.telegram && !/^обновление\s*:/i.test(queueItem.platformVariants.telegram.title || "")) {
+              queueItem.platformVariants.telegram.title = "Обновление: " + String(queueItem.platformVariants.telegram.title || queueItem.title).replace(/^[^\p{L}\p{N}]+/u, "");
+            }
+            if (queueItem.platformVariants && queueItem.platformVariants.vk && !/^обновление\s*:/i.test(queueItem.platformVariants.vk.title || "")) {
+              queueItem.platformVariants.vk.title = "Обновление: " + String(queueItem.platformVariants.vk.title || queueItem.title).replace(/^[^\p{L}\p{N}]+/u, "");
+            }
+          }
+
           const mergedStory = await tryMergeStoryQueueItem(queueItem);
           if (mergedStory) {
             baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
@@ -3206,6 +3303,12 @@ async function collectOnce(trigger) {
           } else {
             state.queue.unshift(queueItem);
           }
+          baseItem.metadata.storyRelation = {
+            relation: storyRelation.relation,
+            updateOf: queueItem.storyUpdateOf || "",
+            updateTitle: queueItem.storyUpdateTitle || "",
+            reason: storyRelation.reason || ""
+          };
           pruneQueueItems(state);
           summary.queued += 1;
         }
