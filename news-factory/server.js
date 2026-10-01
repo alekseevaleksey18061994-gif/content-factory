@@ -631,7 +631,7 @@ function buildSourceRankings() {
     const selectedPerCheck = checks ? selected / checks : 0;
     const reliability = checks ? Math.max(0, 1 - Math.min(1, errors / checks)) : 1;
     let rating = null;
-    if (checks >= 5 || scored >= 2) {
+    if (checks >= 10 || scored >= 3) {
       rating = Math.round(
         avgScore * 0.40 +
         Math.min(100, strongPerCheck * 300) * 0.20 +
@@ -4694,6 +4694,10 @@ const server = http.createServer(async function(req, res) {
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       schedule.assignments[day][time] = queueId;
       delete schedule.suppressed[day][time];
+      if (!item.sourceSelectedAt) {
+        noteSourceEvent(item, "selected");
+        item.sourceSelectedAt = new Date().toISOString();
+      }
       saveState();
       return sendJson(res, 200, { ok: true, assignment: { date: day, time: time, queueId: queueId } });
     }
