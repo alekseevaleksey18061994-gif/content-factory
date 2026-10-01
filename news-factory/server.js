@@ -51,7 +51,11 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
 const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
-const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MEDIA_DIRECTOR_MAX_IMAGES || 4)));
+// Default 2: one main photo plus at most one genuinely different large photo.
+const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MEDIA_DIRECTOR_MAX_IMAGES || 2)));
+// Extra (non-main) album photos must be at least this large: filters "read also" thumbnails.
+const MEDIA_EXTRA_MIN_WIDTH = 700;
+const MEDIA_EXTRA_MIN_HEIGHT = 400;
 const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
 const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
 const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
@@ -2578,11 +2582,14 @@ async function backfillQueueImageEnhancements(options) {
         for (let i = 0; i < originals.length; i += 1) {
           const original = originals[i];
           const prepared = await prepareReusableSourceImage(original, String(item.newsId || item.id) + "_bf" + i);
-          const result = await enhanceSourceCandidate(
-            prepared.imageUrl || original,
-            { id: item.newsId || item.id, title: item.title || item.sourceOriginalTitle || "" },
-            "bf" + i
-          );
+          // Only the main photo is AI-enhanced (OpenAI image rate limit, fewer altered photos).
+          const result = i === 0
+            ? await enhanceSourceCandidate(
+                prepared.imageUrl || original,
+                { id: item.newsId || item.id, title: item.title || item.sourceOriginalTitle || "" },
+                "bf" + i
+              )
+            : { url: prepared.imageUrl || original, enhanced: false, error: "" };
           if (result.url) enhancedUrls.push(result.url);
           logs.push({
             originalUrl: original,
@@ -2856,6 +2863,37 @@ async function ensureMediaForNews(payload) {
 
 
 
+// URL patterns of thumbnails, avatars and logos that should never become extra album photos.
+function isLikelyThumbnailUrl(url) {
+  const u = String(url || "").toLowerCase();
+  return /(fill|resize|crop|thumb|thumbnail)[-_=]?\d{2,3}x\d{2,3}|[-_]\d{2,3}x\d{2,3}\.(jpe?g|png|webp|gif)|\/(thumbs?|thumbnails?|avatars?|logos?|icons?|authors?)\/|[?&](w|width)=\d{2,3}(&|$)/.test(u);
+}
+
+// Size + 16x16 average hash of a cached local image; used to drop tiny images and
+// the same photo saved in another crop/resolution.
+async function localImageFingerprint(mediaUrl) {
+  const file = localMediaPathFromUrl(mediaUrl);
+  if (!file || !fs.existsSync(file)) return null;
+  try {
+    const meta = await sharp(file).metadata();
+    const raw = await sharp(file).resize(16, 16, { fit: "fill" }).grayscale().raw().toBuffer();
+    let sum = 0;
+    for (const v of raw) sum += v;
+    const avg = sum / raw.length;
+    const bits = Array.from(raw, function(v){ return v >= avg ? 1 : 0; });
+    return { width: Number(meta.width || 0), height: Number(meta.height || 0), bits: bits };
+  } catch {
+    return null;
+  }
+}
+
+function imageFingerprintsSimilar(a, b) {
+  if (!a || !b || a.bits.length !== b.bits.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.bits.length; i += 1) if (a.bits[i] !== b.bits[i]) diff += 1;
+  return diff <= Math.round(a.bits.length * 0.25);
+}
+
 async function enhanceSourceCandidate(preparedUrl, payload, suffix) {
   const sourceUrl = String(preparedUrl || "").trim();
   if (!sourceUrl) return { url: "", enhanced: false, error: "" };
@@ -2913,16 +2951,30 @@ async function prepareMediaDirector(payload) {
   const pool = images.map(function(x){ return x && x.url; }).filter(Boolean);
   if (fallbackImage) pool.unshift(fallbackImage);
 
+  const fingerprints = [];
   for (const sourceImage of pool) {
     if (imageUrls.length >= MEDIA_DIRECTOR_MAX_IMAGES) break;
     const key = String(sourceImage || "");
     if (!key || seen.has(key)) continue;
     seen.add(key);
+    const isExtra = imageUrls.length > 0;
+    if (isExtra && isLikelyThumbnailUrl(key)) continue;
     try {
       const prepared = await prepareReusableSourceImage(key, String(p.id || "media") + "_md" + imageUrls.length);
       const cached = String(prepared.imageUrl || "").trim();
       if (!cached) continue;
-      const enhanced = await enhanceSourceCandidate(cached, p, "md" + imageUrls.length);
+      const fp = await localImageFingerprint(cached);
+      if (isExtra) {
+        // Extra photos must be large and genuinely different from the ones already chosen.
+        if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT) continue;
+        if (fingerprints.some(function(prev){ return imageFingerprintsSimilar(prev, fp); })) continue;
+      }
+      if (fp) fingerprints.push(fp);
+      // Generative enhancement only for the main photo: it is rate-limited by OpenAI
+      // (5 input images/min) and must not rewrite every news photo in an album.
+      const enhanced = isExtra
+        ? { url: cached, enhanced: false, error: "" }
+        : await enhanceSourceCandidate(cached, p, "md" + imageUrls.length);
       const chosen = String(enhanced.url || cached).trim();
       if (!chosen) continue;
       imageUrls.push(chosen);
