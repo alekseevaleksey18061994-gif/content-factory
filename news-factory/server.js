@@ -782,6 +782,34 @@ async function prepareVkPreviewImage(post, slug) {
   };
 }
 
+function normalizePublicPostSources(post) {
+  const p = post || {};
+  const out = [];
+  const seen = new Set();
+
+  function add(name, url) {
+    const sourceUrl = String(url || "").trim();
+    if (!sourceUrl || !/^https:\/\//i.test(sourceUrl) || seen.has(sourceUrl)) return;
+    seen.add(sourceUrl);
+    out.push({
+      name: String(name || sourceUrl).trim().slice(0, 200) || sourceUrl,
+      url: sourceUrl
+    });
+  }
+
+  if (Array.isArray(p.sources)) {
+    p.sources.forEach(function(source) {
+      if (typeof source === "string") add("", source);
+      else if (source && typeof source === "object") add(source.name || source.title || "", source.url || source.href || "");
+    });
+  }
+  if (Array.isArray(p.sourceUrls)) {
+    p.sourceUrls.forEach(function(url){ add("", url); });
+  }
+  add(p.sourceName || "", p.sourceUrl || "");
+  return out.slice(0, 20);
+}
+
 async function createPublicPostPage(post) {
   if (!db || !dbReady) throw new Error("PostgreSQL недоступен — public preview нельзя создать");
   const slug = previewSlug(post);
@@ -789,16 +817,18 @@ async function createPublicPostPage(post) {
   const title = String(post && post.title || "Что там у ИИ?").trim() || "Что там у ИИ?";
   const bodyText = String(post && post.text || "").trim();
   const description = previewDescription(post);
-  const sourceName = String(post && post.sourceName || "").trim();
-  const sourceUrl = String(post && post.sourceUrl || "").trim();
+  const sources = normalizePublicPostSources(post);
+  const primarySource = sources[0] || {};
+  const sourceName = String(primarySource.name || post && post.sourceName || "").trim();
+  const sourceUrl = String(primarySource.url || post && post.sourceUrl || "").trim();
   const postId = String(post && (post.postId || post.id || post.newsId) || slug);
   const topicId = String(post && (post.topicId || post.topic_id) || "default");
 
   await db.query(
     `INSERT INTO public_post_pages
-      (slug, post_id, topic_id, title, body_text, description, source_name, source_url, image_filename, image_url, image_width, image_height, image_bytes)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-    [slug, postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, image.fileName, image.url, image.width, image.height, image.bytes]
+      (slug, post_id, topic_id, title, body_text, description, source_name, source_url, sources, image_filename, image_url, image_width, image_height, image_bytes)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)`,
+    [slug, postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, JSON.stringify(sources), image.fileName, image.url, image.width, image.height, image.bytes]
   );
 
   return {
@@ -806,6 +836,7 @@ async function createPublicPostPage(post) {
     url: previewPageUrl(slug),
     title: title,
     description: description,
+    sources: sources,
     imageUrl: image.url,
     imageWidth: image.width,
     imageHeight: image.height,
@@ -817,9 +848,11 @@ async function getPublicPostPage(slug) {
   if (!db || !dbReady) return null;
   const result = await db.query(
     `SELECT slug, post_id AS "postId", topic_id AS "topicId", title, body_text AS "bodyText",
-            description, source_name AS "sourceName", source_url AS "sourceUrl",
+            description, source_name AS "sourceName", source_url AS "sourceUrl", sources,
             image_filename AS "imageFilename", image_url AS "imageUrl",
             image_width AS "imageWidth", image_height AS "imageHeight", image_bytes AS "imageBytes",
+            preflight_status AS "preflightStatus", preflight_checked_at AS "preflightCheckedAt",
+            vk_post_id AS "vkPostId", vk_error_code AS "vkErrorCode", vk_error_msg AS "vkErrorMsg",
             created_at AS "createdAt", published_at AS "publishedAt"
        FROM public_post_pages WHERE slug=$1 LIMIT 1`,
     [slug]
@@ -832,8 +865,13 @@ function renderPublicPostPage(page) {
   const title = escapeHtml(page.title);
   const description = escapeHtml(page.description || "");
   const imageUrl = escapeHtml(page.imageUrl);
-  const sourceLink = page.sourceUrl
-    ? '<p class="source">Источник: <a href="' + escapeHtml(page.sourceUrl) + '" rel="nofollow noopener">' + escapeHtml(page.sourceName || page.sourceUrl) + "</a></p>"
+  const sources = Array.isArray(page.sources) && page.sources.length
+    ? page.sources
+    : (page.sourceUrl ? [{ name: page.sourceName || page.sourceUrl, url: page.sourceUrl }] : []);
+  const sourceLinks = sources.length
+    ? '<section class="sources"><h2>Источники</h2><ul>' + sources.map(function(source) {
+        return '<li><a href="' + escapeHtml(source.url) + '" rel="nofollow noopener">' + escapeHtml(source.name || source.url) + '</a></li>';
+      }).join("") + '</ul></section>'
     : "";
   return '<!doctype html><html lang="ru"><head>' +
     '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
@@ -851,8 +889,8 @@ function renderPublicPostPage(page) {
     '<meta name="twitter:title" content="' + title + '">' +
     '<meta name="twitter:description" content="' + description + '">' +
     '<meta name="twitter:image" content="' + imageUrl + '">' +
-    '<style>body{margin:0;background:#080b12;color:#f6f8fc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:860px;margin:0 auto;padding:24px}.card{background:#111722;border:1px solid #273246;border-radius:24px;overflow:hidden}.hero{display:block;width:100%;height:auto;aspect-ratio:1200/630;object-fit:cover}.content{padding:24px 26px 30px}h1{font-size:34px;line-height:1.12;margin:0 0 18px}.body{font-size:18px;line-height:1.55;white-space:pre-wrap;color:#dbe3ef}.source{margin-top:22px;color:#8fa0b8}.source a{color:#8eb0ff}@media(max-width:640px){.wrap{padding:0}.card{border-radius:0;border-left:0;border-right:0}.content{padding:20px}h1{font-size:28px}.body{font-size:17px}}</style>' +
-    '</head><body><main class="wrap"><article class="card"><img class="hero" src="' + imageUrl + '" width="' + Number(page.imageWidth || VK_PREVIEW_WIDTH) + '" height="' + Number(page.imageHeight || VK_PREVIEW_HEIGHT) + '" alt=""><div class="content"><h1>' + title + '</h1><div class="body">' + escapeHtml(page.bodyText) + '</div>' + sourceLink + '</div></article></main></body></html>';
+    '<style>body{margin:0;background:#080b12;color:#f6f8fc;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:860px;margin:0 auto;padding:24px}.card{background:#111722;border:1px solid #273246;border-radius:24px;overflow:hidden}.hero{display:block;width:100%;height:auto;aspect-ratio:1200/630;object-fit:cover}.content{padding:24px 26px 30px}h1{font-size:34px;line-height:1.12;margin:0 0 18px}.body{font-size:18px;line-height:1.55;white-space:pre-wrap;color:#dbe3ef}.sources{margin-top:26px;border-top:1px solid #273246;padding-top:18px}.sources h2{font-size:18px;margin:0 0 10px}.sources ul{margin:0;padding-left:20px}.sources li{margin:7px 0}.sources a{color:#8eb0ff}@media(max-width:640px){.wrap{padding:0}.card{border-radius:0;border-left:0;border-right:0}.content{padding:20px}h1{font-size:28px}.body{font-size:17px}}</style>' +
+    '</head><body><main class="wrap"><article class="card"><img class="hero" src="' + imageUrl + '" width="' + Number(page.imageWidth || VK_PREVIEW_WIDTH) + '" height="' + Number(page.imageHeight || VK_PREVIEW_HEIGHT) + '" alt=""><div class="content"><h1>' + title + '</h1><div class="body">' + escapeHtml(page.bodyText) + '</div>' + sourceLinks + '</div></article></main></body></html>';
 }
 
 async function preflightPublicPostPage(page) {
@@ -888,12 +926,37 @@ async function preflightPublicPostPage(page) {
     throw new Error("og:image должен быть " + VK_PREVIEW_WIDTH + "x" + VK_PREVIEW_HEIGHT);
   }
 
+  if (db && dbReady && page.slug) {
+    await db.query(
+      "UPDATE public_post_pages SET preflight_status='ok', preflight_checked_at=NOW(), vk_error_code=NULL, vk_error_msg=NULL WHERE slug=$1",
+      [page.slug]
+    );
+  }
   return { ok: true, pageStatus: 200, imageStatus: 200, imageBytes: bytes.length, width: meta.width, height: meta.height };
 }
 
-async function markPublicPostPublished(slug) {
+async function markPublicPostPreflightFailed(slug, error) {
   if (!db || !dbReady || !slug) return;
-  await db.query("UPDATE public_post_pages SET published_at=NOW() WHERE slug=$1", [slug]);
+  await db.query(
+    "UPDATE public_post_pages SET preflight_status='failed', preflight_checked_at=NOW(), vk_error_code=$2, vk_error_msg=$3 WHERE slug=$1",
+    [slug, "preview_failed", String(error && error.message || error).slice(0, 1000)]
+  );
+}
+
+async function markPublicPostPublished(slug, vkPostId) {
+  if (!db || !dbReady || !slug) return;
+  await db.query(
+    "UPDATE public_post_pages SET published_at=NOW(), vk_post_id=$2, vk_error_code=NULL, vk_error_msg=NULL WHERE slug=$1",
+    [slug, vkPostId == null ? null : Number(vkPostId)]
+  );
+}
+
+async function markPublicPostVkFailed(slug, error) {
+  if (!db || !dbReady || !slug) return;
+  await db.query(
+    "UPDATE public_post_pages SET vk_error_code=$2, vk_error_msg=$3 WHERE slug=$1",
+    [slug, error && error.vkErrorCode != null ? String(error.vkErrorCode) : "vk_error", String(error && (error.vkErrorMsg || error.message) || error).slice(0, 1000)]
+  );
 }
 
 async function generateNewsCover(payload) {
