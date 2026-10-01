@@ -1488,11 +1488,73 @@ async function encodePreviewJpeg(inputBytes) {
   return last;
 }
 
+
+async function buildMediaPackCollage(urls) {
+  const list = (Array.isArray(urls) ? urls : []).map(function(url){ return String(url || "").trim(); }).filter(Boolean).slice(0, 4);
+  if (list.length < 2) return null;
+
+  const loaded = [];
+  for (const url of list) {
+    try {
+      const bytes = await loadPreviewSourceBytes(url);
+      if (bytes) loaded.push(bytes);
+    } catch (error) {
+      console.warn("VK collage image skipped:", error.message);
+    }
+  }
+  if (loaded.length < 2) return null;
+
+  const gap = 8;
+  const cells = [];
+  if (loaded.length === 2) {
+    cells.push({ left: 0, top: 0, width: 596, height: 630 });
+    cells.push({ left: 604, top: 0, width: 596, height: 630 });
+  } else if (loaded.length === 3) {
+    cells.push({ left: 0, top: 0, width: 596, height: 630 });
+    cells.push({ left: 604, top: 0, width: 596, height: 311 });
+    cells.push({ left: 604, top: 319, width: 596, height: 311 });
+  } else {
+    cells.push({ left: 0, top: 0, width: 596, height: 311 });
+    cells.push({ left: 604, top: 0, width: 596, height: 311 });
+    cells.push({ left: 0, top: 319, width: 596, height: 311 });
+    cells.push({ left: 604, top: 319, width: 596, height: 311 });
+  }
+
+  const composites = [];
+  for (let i = 0; i < Math.min(loaded.length, cells.length); i += 1) {
+    const cell = cells[i];
+    const img = await sharp(loaded[i], { limitInputPixels: 80 * 1000 * 1000 })
+      .rotate()
+      .resize(cell.width, cell.height, { fit: "cover", position: "centre" })
+      .jpeg({ quality: 88 })
+      .toBuffer();
+    composites.push({ input: img, left: cell.left, top: cell.top });
+  }
+
+  return sharp({
+    create: { width: VK_PREVIEW_WIDTH, height: VK_PREVIEW_HEIGHT, channels: 3, background: { r: 245, g: 248, b: 252 } }
+  }).composite(composites).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
+}
+
 async function prepareVkPreviewImage(post, slug) {
   ensureDataDir();
   const sourceUrl = String(post && (post.generatedImageUrl || post.imageUrl) || "").trim();
+  const mediaPackUrls = Array.isArray(post && post.mediaPackUrls) ? post.mediaPackUrls.filter(Boolean).slice(0, 4) : [];
   let input = null;
-  if (sourceUrl) {
+
+  if (mediaPackUrls.length > 1) {
+    try {
+      input = await buildMediaPackCollage(mediaPackUrls);
+    } catch (error) {
+      console.warn("VK_PREVIEW_COLLAGE_FAILED " + JSON.stringify({
+        post_id: String(post && (post.postId || post.id) || "unknown"),
+        slug: slug,
+        error: String(error && error.message || error)
+      }));
+    }
+  }
+
+  if (!input && sourceUrl) {
     try {
       input = await loadPreviewSourceBytes(sourceUrl);
     } catch (error) {
