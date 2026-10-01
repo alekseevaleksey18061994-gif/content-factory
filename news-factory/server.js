@@ -38,6 +38,7 @@ const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MED
 const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
 const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
 const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
+const SOURCE_IMAGE_ENHANCE_CONCURRENCY = Math.max(1, Math.min(3, Number(process.env.SOURCE_IMAGE_ENHANCE_CONCURRENCY || 2)));
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
 const VK_ACCESS_TOKEN = String(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || "").trim();
 const VK_USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_USER_ACCESS_TOKEN || "").trim();
@@ -2302,13 +2303,16 @@ async function enhanceNewsImage(payload) {
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : contentType.includes("gif") ? "gif" : "jpg";
   const channelName = String(currentWorkspace().name || "News Factory");
   const prompt = [
-    "Transform this source photo into a premium, scroll-stopping editorial image for the news brand «" + channelName + "».",
-    "ABSOLUTE FACT LOCK: preserve every real person, face, body, product, logo, screen, document, object and factual scene identity. No substitutions and no invented details.",
-    "Do not add text, captions, numbers, fake UI, logos, watermarks, people or products that were not in the source.",
-    "Make the presentation noticeably stronger: professional editorial crop, cleaner composition, better sharpness, natural skin tones, controlled highlights, deeper contrast, richer but realistic color, subtle cinematic depth.",
-    "Add only restrained non-factual visual treatment such as clean light shaping, gentle background separation, vignette or atmospheric glow where it does not change the factual scene.",
-    "The result should feel like a high-end editorial magazine image appropriate to the subject, not a filter and not fantasy.",
-    "Keep it realistic, credible and mobile-readable. Landscape 3:2.",
+    "Restore and enhance this source image for the news brand «" + channelName + "». This is an editorial restoration/upscale task, NOT a re-creation.",
+    "ABSOLUTE FACT LOCK: preserve every real person, face, facial expression, body, vehicle, product, logo, screen, document, poster, object, background element and scene identity. No substitutions, no invented details and no changing who or what is shown.",
+    "Preserve all existing readable text exactly. Never rewrite, translate, redesign, add or remove lettering, captions, numbers, logos, signs or watermarks.",
+    "Improve only technical quality: deblur where possible, recover detail, reduce compression artifacts/noise, improve local sharpness, natural exposure, white balance and realistic contrast.",
+    "For faces and skin: preserve identity and natural texture. No beauty retouching, plastic skin, changed eyes/teeth/hair or reconstructed facial features.",
+    "For cars/products: preserve exact shape, trim, color, badges, wheels, proportions and details.",
+    "For screenshots, posters, memes and stage screens: keep composition and typography unchanged; use only gentle upscale/denoise/sharpening.",
+    "Do not add cinematic effects, neon, glow, fake bokeh, lens flare, dramatic relighting, new objects or advertising-style polish.",
+    "The output should look like the SAME real image captured/exported at higher quality, not like AI-generated art.",
+    "Keep the original composition and aspect ratio unless a tiny crop is required to remove empty corrupted borders.",
     "Topic context: " + String(payload.title || "").slice(0, 500)
   ].join("\n");
 
@@ -2540,7 +2544,7 @@ async function ensureMediaForNews(payload) {
   if (imageUrl) {
     const preparedImage = await prepareReusableSourceImage(imageUrl, payload.id || "photo");
     const publishImageUrl = preparedImage.imageUrl || imageUrl;
-    if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES && (mediaLicense === "allowed" || mediaLicense === "user_provided")) {
+    if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES && sourceReuseAllowed) {
       try {
         const enhanced = await enhanceNewsImage({
           id: payload.id || newId("enhance"),
@@ -2549,16 +2553,18 @@ async function ensureMediaForNews(payload) {
         });
         return {
           videoUrl: "",
-          imageUrl: publishImageUrl,
+          imageUrl: enhanced.url,
+          enhancedImageUrl: enhanced.url,
           originalImageUrl: preparedImage.originalImageUrl || imageUrl,
+          cachedSourceImageUrl: publishImageUrl,
           originalVideoUrl: "",
-          generatedImageUrl: enhanced.url,
+          generatedImageUrl: "",
           mediaType: "photo",
           mediaStatus: "enhanced",
           mediaPriority: 2,
           canEnhance: true,
           mediaLicense: mediaLicense,
-          mediaOrigin: "licensed_derivative",
+          mediaOrigin: "ai_enhanced_source",
           copyrightSafe: COPYRIGHT_SAFE_MODE,
           copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
           enhancedBy: enhanced.model,
