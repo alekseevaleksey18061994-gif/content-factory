@@ -49,8 +49,6 @@ const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MA
 const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
-const VK_USER_TOKEN_FILE = path.join(DATA_DIR, "vk-user-token.secret");
-const VK_USER_REFRESH_FILE = path.join(DATA_DIR, "vk-user-refresh.secret");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
@@ -1815,22 +1813,8 @@ async function discoverTelegramAlertChat() {
   return false;
 }
 
-function readSecretFile(filePath) {
-  try { return String(fs.readFileSync(filePath, "utf8") || "").trim(); } catch { return ""; }
-}
-
-function writeSecretFile(filePath, value) {
-  ensureDataDir();
-  fs.writeFileSync(filePath, String(value || ""), { encoding: "utf8", mode: 0o600 });
-  try { fs.chmodSync(filePath, 0o600); } catch {}
-}
-
 function getVkUserToken() {
-  return String(process.env.VK_USER_TOKEN || process.env.VK_USER_ACCESS_TOKEN || readSecretFile(VK_USER_TOKEN_FILE) || "").trim();
-}
-
-function getVkUserRefreshToken() {
-  return String(process.env.VK_USER_REFRESH_TOKEN || readSecretFile(VK_USER_REFRESH_FILE) || "").trim();
+  return String(process.env.VK_USER_TOKEN || "").trim();
 }
 
 function base64Url(buffer) {
@@ -1869,53 +1853,6 @@ function buildVkOAuthUrl() {
   return "https://id.vk.ru/authorize?" + params.toString();
 }
 
-async function exchangeVkOAuthCode(code, deviceId, returnedState) {
-  const pending = state.vkOAuth || {};
-  if (!pending.state || !pending.codeVerifier) throw new Error("VK OAuth-сессия не найдена");
-  if (!returnedState || returnedState !== pending.state) throw new Error("VK OAuth state mismatch");
-  if (!code) throw new Error("VK не вернул authorization code");
-  if (!deviceId) throw new Error("VK не вернул device_id");
-
-  const query = new URLSearchParams({
-    grant_type: "authorization_code",
-    redirect_uri: VK_OAUTH_REDIRECT_URI,
-    client_id: VK_APP_ID,
-    code_verifier: pending.codeVerifier,
-    state: pending.state,
-    device_id: String(deviceId)
-  });
-
-  const response = await fetch("https://id.vk.ru/oauth2/auth?" + query.toString(), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ code: String(code) }).toString(),
-    signal: AbortSignal.timeout(30000)
-  });
-  const data = await response.json().catch(function(){ return {}; });
-  if (!response.ok || data.error || !data.access_token) {
-    const msg = data.error_description || data.error || ("HTTP " + response.status);
-    throw new Error("VK OAuth exchange failed: " + String(msg));
-  }
-
-  writeSecretFile(VK_USER_TOKEN_FILE, data.access_token);
-  if (data.refresh_token) writeSecretFile(VK_USER_REFRESH_FILE, data.refresh_token);
-
-  state.vkOAuth = {
-    connectedAt: new Date().toISOString(),
-    deviceId: String(data.device_id || deviceId || ""),
-    userId: data.user_id == null ? "" : String(data.user_id),
-    scope: VK_OAUTH_SCOPE,
-    tokenStored: true,
-    envTokenConfigured: Boolean(process.env.VK_USER_TOKEN)
-  };
-  saveState();
-  return {
-    ok: true,
-    userId: state.vkOAuth.userId,
-    scope: VK_OAUTH_SCOPE,
-    envTokenConfigured: Boolean(process.env.VK_USER_TOKEN)
-  };
-}
 
 function vkPostContext(post, extra) {
   const p = post || {};
@@ -2924,26 +2861,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/callback") {
-      const oauthError = String(url.searchParams.get("error") || "");
-      const oauthErrorDescription = String(url.searchParams.get("error_description") || "");
-      if (oauthError) {
-        res.writeHead(400, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK OAuth</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>Авторизация VK не завершена</h2><p>" + escapeTelegramHtml(oauthErrorDescription || oauthError) + "</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться в News Factory</a></p></body>");
-      }
-
-      try {
-        const result = await exchangeVkOAuthCode(
-          String(url.searchParams.get("code") || ""),
-          String(url.searchParams.get("device_id") || ""),
-          String(url.searchParams.get("state") || "")
-        );
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK подключён</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>VK успешно авторизован ✅</h2><p>Права для загрузки фото сохранены. Токен не показывается и не пишется в логи.</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться в News Factory</a></p></body>");
-      } catch (error) {
-        console.error("VK_OAUTH_CALLBACK_ERROR", String(error && error.message || error));
-        res.writeHead(500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK OAuth error</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>Не удалось завершить авторизацию VK</h2><p>" + escapeTelegramHtml(String(error && error.message || error)) + "</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться</a></p></body>");
-      }
+      res.writeHead(409, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      return res.end("<!doctype html><meta charset=\"utf-8\"><title>VK OAuth</title><body style=\"font-family:system-ui;background:#0b0f17;color:#fff;padding:32px\"><h2>Токен VK не сохраняется приложением</h2><p>По политике News Factory секреты хранятся только в переменных окружения Railway. Добавьте пользовательский токен администратора группы как <b>VK_USER_TOKEN</b>, затем вернитесь в News Factory.</p><p><a style=\"color:#7aa2ff\" href=\"/admin#social\">Вернуться</a></p></body>");
     }
 
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
@@ -2970,8 +2889,7 @@ const server = http.createServer(async function(req, res) {
         scope: VK_OAUTH_SCOPE,
         userTokenConfigured: Boolean(getVkUserToken()),
         envTokenConfigured: Boolean(process.env.VK_USER_TOKEN),
-        connectedAt: state.vkOAuth && state.vkOAuth.connectedAt || "",
-        userId: state.vkOAuth && state.vkOAuth.userId || ""
+        storage: "environment_only"
       });
     }
 
