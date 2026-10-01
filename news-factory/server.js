@@ -273,6 +273,14 @@ function loadState() {
     loaded.migrations = Array.isArray(saved.migrations) ? saved.migrations : [];
     loaded.stats = Object.assign({ discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 }, saved.stats || {});
     loaded.queue = Array.isArray(saved.queue) ? saved.queue : [];
+    loaded.topicSettings = Object.assign(
+      structuredClone(defaultState.topicSettings),
+      saved.topicSettings && typeof saved.topicSettings === "object" ? saved.topicSettings : {}
+    );
+    loaded.topicSettings.default = Object.assign(
+      { allow_text_fallback: false },
+      loaded.topicSettings.default || {}
+    );
 
     const migrationId = "v0.3.2-restore-openai-source";
     if (!loaded.migrations.includes(migrationId)) {
