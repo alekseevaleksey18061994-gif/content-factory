@@ -600,6 +600,12 @@ button,.quick button,.quick a{
   #newsPage .news-feed-head>div{min-width:0}
   #newsPage .news-refresh-btn{min-width:116px;max-width:128px;padding-left:12px;padding-right:12px}
 }
+
+/* v0.27.0 — unified publishing navigation */
+.publish-section{margin-top:2px}
+.publish-section>.panel-title{padding:0 4px 10px}
+.publish-openai-test{white-space:nowrap;min-width:max-content}
+@media(max-width:560px){.publish-openai-test{width:100%}}
 </style>
 </head>
 <body>
@@ -611,17 +617,16 @@ button,.quick button,.quick a{
     <div class="side-group">
       <div class="side-title">Основное</div>
       <button class="nav active" data-page="homePage"><span class="ico">⌂</span><b>Главная</b></button>
-      <button class="nav" data-page="sourcesPage"><span class="ico">⌁</span><b>Источники</b></button>
       <button class="nav" data-page="newsPage"><span class="ico">◫</span><b>Лента новостей</b></button>
-      <button class="nav" data-page="aiPage"><span class="ico">✦</span><b>AI-редактор</b></button>
       <button class="nav" data-page="queuePage"><span class="ico">☷</span><b>Очередь</b></button>
+      <button class="nav" data-page="sourcesPage"><span class="ico">⌁</span><b>Источники</b></button>
       <button class="nav" data-page="publishPage"><span class="ico">➤</span><b>Публикация</b></button>
     </div>
 
     <div class="side-group">
       <div class="side-title">Контроль</div>
-      <button class="nav" data-page="statsPage"><span class="ico">↗</span><b>Статистика</b></button>
       <button class="nav" data-page="calendarPage"><span class="ico">▦</span><b>Календарь публикаций</b></button>
+      <button class="nav" data-page="statsPage"><span class="ico">↗</span><b>Статистика</b></button>
       <button class="nav" data-page="historyPage"><span class="ico">◫</span><b>История</b></button>
       <button class="nav" data-page="modePage"><span class="ico">⚙</span><b>Режим работы</b></button>
     </div>
@@ -691,7 +696,7 @@ button,.quick button,.quick a{
         <section class="card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Быстрые действия</h3><p>Основные операции без лишних переходов</p></div></div>
           <div class="quick">
-            <button onclick="goPage('aiPage')">AI-редактор</button>
+            <button onclick="goPage('publishPage')">Публикация + AI</button>
             <button onclick="goPage('queuePage')">Открыть очередь</button>
             <button onclick="goPage('sourcesPage')">Источники</button>
             <button onclick="goPage('socialPage')">Соцсети</button>
@@ -734,44 +739,46 @@ button,.quick button,.quick a{
         </section>
       </section>
 
-      <section class="page" id="aiPage">
-        <div class="page-head">
-          <div><h2>AI-редактор</h2><p>Переписывает исходную новость в живой стиль канала «Что там у ИИ?» без добавления выдуманных фактов.</p></div>
-          <button onclick="testOpenAI()">Проверить OpenAI</button>
-        </div>
-        <div class="ai-layout">
-          <section class="card ai-source">
-            <div class="label">Исходная новость</div>
-            <input id="aiTitle" placeholder="Исходный заголовок — необязательно">
-            <input id="aiSourceUrl" style="margin-top:8px" placeholder="Ссылка на источник — необязательно">
-            <textarea id="aiSourceText" style="margin-top:8px" placeholder="Вставь сюда исходный текст новости…"></textarea>
-            <button class="primary" id="aiRewriteBtn" style="margin-top:8px;width:100%" onclick="rewriteAI()">✦ Переписать в стиле канала</button>
-            <div class="notice" id="aiRewriteStatus" style="margin-top:10px">Модель использует только переданный текст и не должна добавлять факты от себя.</div>
-          </section>
-          <section class="card ai-result">
-            <div class="label">Готовый пост</div>
-            <div id="aiEmpty" class="ai-empty">После обработки здесь появится готовая версия поста.</div>
-            <div id="aiResult" style="display:none">
-              <input id="aiResultTitle" placeholder="Заголовок">
-              <textarea id="aiResultText" style="margin-top:8px" placeholder="Текст"></textarea>
-              <div class="ai-meta">
-                <span class="chip" id="aiModel">Модель —</span>
-                <span class="chip" id="aiConfidence">Уверенность —</span>
-              </div>
-              <div class="notice" id="aiNotes"></div>
-              <div class="ai-toolbar">
-                <button onclick="queueAI()">Добавить в очередь</button>
-                <button class="primary" onclick="publishAI()">Опубликовать везде</button>
-                <button onclick="clearAI()">Очистить</button>
-              </div>
-            </div>
-          </section>
-        </div>
-      </section>
-
       <section class="page" id="publishPage">
-        <div class="page-head"><div><h2>Публикация</h2><p>Ручной пост в канал «Что там у ИИ?».</p></div></div>
-        <section class="card">
+        <div class="page-head">
+          <div><h2>Публикация</h2><p>AI-редактор и ручная публикация в одном разделе.</p></div>
+          <button class="publish-openai-test" onclick="testOpenAI()">Проверить OpenAI</button>
+        </div>
+
+        <section class="publish-section">
+          <div class="panel-title"><div><h3>AI-редактор</h3><p>Подготовить новость в стиле канала и сразу отправить в очередь или опубликовать.</p></div><span class="chip">AI</span></div>
+          <div class="ai-layout">
+            <section class="card ai-source">
+              <div class="label">Исходная новость</div>
+              <input id="aiTitle" placeholder="Исходный заголовок — необязательно">
+              <input id="aiSourceUrl" style="margin-top:8px" placeholder="Ссылка на источник — необязательно">
+              <textarea id="aiSourceText" style="margin-top:8px" placeholder="Вставь сюда исходный текст новости…"></textarea>
+              <button class="primary" id="aiRewriteBtn" style="margin-top:8px;width:100%" onclick="rewriteAI()">✦ Переписать в стиле канала</button>
+              <div class="notice" id="aiRewriteStatus" style="margin-top:10px">Модель использует только переданный текст и не должна добавлять факты от себя.</div>
+            </section>
+            <section class="card ai-result">
+              <div class="label">Готовый пост</div>
+              <div id="aiEmpty" class="ai-empty">После обработки здесь появится готовая версия поста.</div>
+              <div id="aiResult" style="display:none">
+                <input id="aiResultTitle" placeholder="Заголовок">
+                <textarea id="aiResultText" style="margin-top:8px" placeholder="Текст"></textarea>
+                <div class="ai-meta">
+                  <span class="chip" id="aiModel">Модель —</span>
+                  <span class="chip" id="aiConfidence">Уверенность —</span>
+                </div>
+                <div class="notice" id="aiNotes"></div>
+                <div class="ai-toolbar">
+                  <button onclick="queueAI()">Добавить в очередь</button>
+                  <button class="primary" onclick="publishAI()">Опубликовать везде</button>
+                  <button onclick="clearAI()">Очистить</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="card publish-manual-card" style="margin-top:14px">
+          <div class="panel-title"><div><h3>Ручная публикация</h3><p>Написать готовый пост вручную и выбрать площадки.</p></div><span class="chip">Telegram + VK</span></div>
           <textarea id="publishText" placeholder="Напиши текст поста…"></textarea>
           <div class="publish-targets manual">
             <label class="target-pill all"><input id="publishAll" type="checkbox" checked onchange="setPublishAll(this.checked)"> Все</label>
@@ -901,9 +908,9 @@ button,.quick button,.quick a{
         <section class="card" style="margin-top:14px"><div id="connections" class="connections"><div class="empty">Проверяю подключения…</div></div></section>
         <section class="card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Хранение данных</h3><p>Где сохраняются новости, очередь и код.</p></div></div>
-          <div class="pipeline-row"><div class="row"><b>PostgreSQL</b><span class="chip">Основная база</span></div><small>Новости, история запусков и снимки состояния.</small></div>
-          <div class="pipeline-row"><div class="row"><b>Railway Volume /data</b><span class="chip">Постоянные данные</span></div><small>Очередь, настройки и сгенерированные медиа сохраняются между деплоями.</small></div>
-          <div class="pipeline-row"><div class="row"><b>GitHub</b><span class="chip">Код и версии</span></div><small>Backend и интерфейс News Factory.</small></div>
+          <div class="pipeline-row"><div class="row"><b>PostgreSQL</b><span class="chip">Основная база</span></div><small>Новости, рейтинги, история запусков и состояние публикаций.</small></div>
+          <div class="pipeline-row"><div class="row"><b>Railway Volume /data</b><span class="chip">Постоянные файлы</span></div><small>Очередь, настройки и локальные медиа сохраняются между деплоями.</small></div>
+          <div class="pipeline-row"><div class="row"><b>GitHub + Claude Code</b><span class="chip">Код и разработка</span></div><small>Репозиторий, версии, GitHub Actions и AI-помощник для разработки.</small></div>
         </section>
       </section>
     </div>
@@ -959,7 +966,6 @@ var pageRoutes={
   homePage:'home',
   sourcesPage:'sources',
   newsPage:'news',
-  aiPage:'ai',
   queuePage:'queue',
   publishPage:'publish',
   statsPage:'stats',
@@ -977,7 +983,7 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',aiPage:'AI-редактор',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',connectionsPage:'Система и подключения'};
+  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
@@ -988,6 +994,7 @@ function goPage(id,options){
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
   if(route==='system')route='connections';
+  if(route==='ai')route='publish';
   goPage(routePages[route]||'homePage',{fromHash:true,instant:true});
 }
 window.goPage=goPage;
@@ -1313,12 +1320,28 @@ function dashboardFromStatus(s){
 }
 async function renderConnections(force){
   var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;
-  var names={railway:'Railway',github:'GitHub',telegramBot:'Telegram-бот',telegramChannel:'Telegram-канал',storage:'Постоянное хранилище',adminUi:'Админ-панель',openai:'OpenAI API',mediaEngine:'Медиа-движок',supabase:'PostgreSQL',vk:'VK API',collector:'Сборщик новостей',scheduler:'Планировщик'};
+  var names={
+    railway:'Railway',
+    github:'GitHub',
+    claudeCode:'Claude Code / GitHub Actions',
+    publicEndpoint:'Публичный HTTPS endpoint',
+    storage:'Railway Volume /data',
+    adminUi:'Админ-панель',
+    supabase:'PostgreSQL',
+    openai:'OpenAI API',
+    openaiImage:'OpenAI Image',
+    mediaEngine:'Медиа-движок News Factory',
+    telegramBot:'Telegram-бот',
+    telegramChannel:'Telegram-канал',
+    vk:'VK API / сообщество',
+    collector:'Сборщик новостей',
+    scheduler:'Планировщик'
+  };
   var groups=[
-    {title:'Инфраструктура',icon:'▦',keys:['railway','github','storage','adminUi']},
+    {title:'Инфраструктура',icon:'▦',keys:['railway','github','publicEndpoint','storage','adminUi','supabase']},
+    {title:'Разработка и AI',icon:'✦',keys:['claudeCode','openai','openaiImage','mediaEngine']},
     {title:'Telegram',icon:'✈',keys:['telegramBot','telegramChannel']},
-    {title:'AI и данные',icon:'✦',keys:['openai','mediaEngine','supabase']},
-    {title:'Публикация',icon:'➤',keys:['vk']},
+    {title:'VK',icon:'VK',keys:['vk']},
     {title:'Автоматизация',icon:'⚙',keys:['collector','scheduler']}
   ];
   function meta(state){if(state==='connected')return {cls:'done',label:'Подключено',dot:'on'};if(state==='partial')return {cls:'work',label:'Частично',dot:'partial'};return {cls:'wait',label:'Не подключено',dot:''}}
