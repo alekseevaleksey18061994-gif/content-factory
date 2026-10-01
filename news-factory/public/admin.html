@@ -33,6 +33,8 @@ button{border:1px solid #303849;background:var(--panel2);color:var(--text);borde
 input,textarea{width:100%;border:1px solid #303849;background:#0b0e14;color:white;border-radius:12px;padding:12px;outline:none}textarea{min-height:138px;resize:vertical}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.source,.queueItem,.hist{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px 0;border-top:1px solid #232a36}.source-toggle{min-width:122px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;padding:8px 11px;font-weight:800}.source-toggle .switch-knob{width:18px;height:18px;border-radius:50%;background:#7d8797;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.source-toggle.on{color:#dffff0;border-color:rgba(75,208,139,.38);background:rgba(75,208,139,.12)}.source-toggle.on .switch-knob{background:var(--green);box-shadow:0 0 12px rgba(75,208,139,.45)}.source-toggle.off{color:#a9b2c1;background:#111722}.source-toggle b{font-size:11px}.source:first-child,.queueItem:first-child,.hist:first-child{border-top:0}.name{font-weight:700}.url,.meta{font-size:12px;color:var(--muted);word-break:break-all;margin-top:3px;line-height:1.4}.chip{display:inline-block;border:1px solid #303849;border-radius:99px;padding:4px 8px;font-size:11px;color:var(--muted)}.empty{color:var(--muted);padding:14px 0}.notice{font-size:13px;color:#98a2b3;line-height:1.45}.toast{position:fixed;left:calc(50% + var(--side)/2);bottom:26px;transform:translateX(-50%) translateY(110px);background:#fff;color:#0a0c10;padding:12px 16px;border-radius:12px;font-weight:750;transition:.25s;z-index:80;box-shadow:0 14px 40px #0008}.toast.show{transform:translateX(-50%) translateY(0)}
 .calendar-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}.calendar-day-nav{display:flex;align-items:center;gap:8px}.calendar-day-title{font-size:15px;font-weight:850;min-width:170px;text-align:center}.calendar-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.calendar-summary-box{background:#0d1016;border:1px solid #222937;border-radius:14px;padding:13px}.calendar-summary-box b{display:block;font-size:22px}.calendar-summary-box span{display:block;color:var(--muted);font-size:11px;margin-top:4px}.calendar-slots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.calendar-slot.blogger-slot{border-color:rgba(161,86,255,.20);background:linear-gradient(145deg,rgba(250,247,255,.94),rgba(244,250,255,.88))}
 .calendar-slot.blogger-slot .calendar-time{color:#6b4ec6}
+.calendar-slot.russian-ai-slot{border-color:rgba(16,166,130,.20);background:linear-gradient(145deg,rgba(244,255,251,.96),rgba(244,250,255,.90))}
+.calendar-slot.russian-ai-slot .calendar-time{color:#14856f}
 .calendar-slot{border:1px solid #252d3a;background:#0d1317;border-radius:15px;padding:13px;display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:12px;align-items:center}.calendar-time{font-size:22px;font-weight:900;letter-spacing:-.02em}.calendar-slot-title{font-size:13px;font-weight:800}.calendar-slot-meta{font-size:10px;color:var(--muted);margin-top:4px}.slot-chip{border:1px solid #303849;border-radius:999px;padding:5px 8px;font-size:9px;font-weight:850;white-space:nowrap}.slot-chip.done{color:var(--green);border-color:rgba(75,208,139,.3);background:rgba(75,208,139,.08)}.slot-chip.wait{color:#9db5ff;border-color:rgba(157,181,255,.28)}.slot-chip.reserve{color:var(--amber);border-color:rgba(255,190,85,.28);background:rgba(255,190,85,.06)}.slot-chip.missed{color:#ff8d94;border-color:rgba(255,107,115,.28)}.calendar-note{margin-top:12px;padding:12px;border:1px solid #263043;background:#111722;border-radius:13px;color:#aeb7c7;font-size:12px;line-height:1.5}
 
 .news-card,.queue-card{cursor:pointer;transition:border-color .18s ease,transform .18s ease}.news-card:hover,.queue-card:hover{border-color:#3d4b63;transform:translateY(-1px)}
@@ -2628,10 +2630,14 @@ function renderCalendar(){
   el('calendarDayTitle').textContent=(isToday?'Сегодня · ':'')+prettyCalendarDate(calendarDateKey);
   el('calendarTarget').textContent=schedule.targetPerDay||10;
   var bloggerSlots=slots.filter(function(slot){return slot&&slot.kind==='blogger'}).length;
-  var regular=slots.length-bloggerSlots;
+  var russianAiSlots=slots.filter(function(slot){return slot&&slot.kind==='russian-ai'}).length;
+  var regular=slots.length-bloggerSlots-russianAiSlots;
   var reserve=0;
   el('calendarRegular').textContent=regular;
-  el('calendarReserve').textContent=bloggerSlots?('+'+bloggerSlots+' блогерских'):'15 мин';
+  var extraLabels=[];
+  if(bloggerSlots)extraLabels.push('+'+bloggerSlots+' блогерских');
+  if(russianAiSlots)extraLabels.push('+'+russianAiSlots+' РФ ИИ');
+  el('calendarReserve').textContent=extraLabels.length?extraLabels.join(' · '):'15 мин';
 
   var dayHistory=(state.history||[]).filter(function(h){return historyMoscowKey(h)===calendarDateKey});
   var scheduledHistory=dayHistory.filter(function(h){return calendarHistorySlot(h).startsWith(calendarDateKey+' ')});
@@ -2657,12 +2663,12 @@ function renderCalendar(){
     if(match>=0){
       used.add(match);
       title=scheduledHistory[match].title||'Опубликованная новость';
-      meta=(slot.kind==='blogger'?'Автоблогер · ':'')+'Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
+      meta=(slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'')+'Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
       status='Опубликовано';cls='done';
     }else if(item){
       var pp=postParts(item);
       title=pp.title||'Без заголовка';
-      meta=(slot.kind==='blogger'?'Автоблогер · ':'')+(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
+      meta=(slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'')+(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
       status='Подготовлено';cls='wait';
       actions='<div class="calendar-slot-actions"><button onclick="openQueuePreview(\''+item.id+'\')">Посмотреть</button><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Заменить</button><button class="danger" onclick="calendarRemove(\''+calendarDateKey+'\',\''+slot.time+'\')">Убрать</button></div>';
     }else if(todayCmp<0 || (isToday&&slotMin<nowMin-55)){
@@ -2670,18 +2676,24 @@ function renderCalendar(){
       meta='К этому окну система не нашла подходящий материал';
       status='Без публикации';cls='wait';
     }else{
-      title=slot.kind==='blogger'?'Ждём новость от автоблогеров':'Ждём свежую новость';
-      meta=slot.kind==='blogger'?'Отдельный поиск по автоблогерам начнётся за 15 минут':'Автопоиск начнётся за 15 минут до этого времени';
+      title=slot.kind==='blogger'
+        ?'Ждём новость от автоблогеров'
+        :(slot.kind==='russian-ai'?'Ждём российскую AI-новость':'Ждём свежую новость');
+      meta=slot.kind==='blogger'
+        ?'Отдельный поиск по автоблогерам начнётся за 15 минут'
+        :(slot.kind==='russian-ai'?'Отдельный поиск по российским AI-источникам начнётся за 15 минут':'Автопоиск начнётся за 15 минут до этого времени');
       status='Ожидание';cls='wait';
       actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Выбрать</button><button onclick="calendarAuto(\''+calendarDateKey+'\',\''+slot.time+'\')">Автоподбор</button></div>';
     }
 
-    return '<div class="calendar-slot '+(slot.kind==='blogger'?'blogger-slot':'')+'"><div class="calendar-time">'+esc(slot.time)+'</div><div class="calendar-slot-main"><div class="calendar-slot-top"><div><div class="calendar-news-title">'+esc(title)+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div><span class="slot-chip '+cls+'">'+status+'</span></div>'+actions+'</div></div>';
+    var slotClass=slot.kind==='blogger'?'blogger-slot':(slot.kind==='russian-ai'?'russian-ai-slot':'');
+    return '<div class="calendar-slot '+slotClass+'"><div class="calendar-time">'+esc(slot.time)+'</div><div class="calendar-slot-main"><div class="calendar-slot-top"><div><div class="calendar-news-title">'+esc(title)+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div><span class="slot-chip '+cls+'">'+status+'</span></div>'+actions+'</div></div>';
   }).join('');
 
   var autoOn=systemStatus&&systemStatus.details&&systemStatus.details.scheduler&&String(systemStatus.details.scheduler.detail||'').includes('включена');
   var bloggerText=bloggerSlots?' Плюс 5 отдельных окон для автоблогеров: 10:30, 12:30, 15:30, 18:30 и 21:30. В эти окна обычные СМИ не подмешиваются.':'';
-  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'Основные новости идут по часовым окнам с 08:00 до 23:00. За 15 минут система собирает свежие материалы и выбирает лучший.'+bloggerText+' Ручная публикация не отменяет следующий слот.';
+  var russianText=russianAiSlots?' Плюс 6 отдельных окон для российских AI-источников: 09:30, 11:30, 13:30, 16:30, 19:30 и 22:30.':'';
+  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'Основные новости идут по часовым окнам с 08:00 до 23:00. За 15 минут система собирает свежие материалы и выбирает лучший.'+bloggerText+russianText+' Ручная публикация не отменяет следующий слот.';
   renderDashboardCalendar();
 }
 function moveCalendarDay(delta){if(!calendarDateKey)calendarDateKey=moscowDateKey(new Date());calendarDateKey=addCalendarDays(calendarDateKey,delta);renderCalendar()}
@@ -2697,8 +2709,9 @@ function renderDashboardCalendar(){
   el('dashCalendar').innerHTML=upcoming.map(function(slot){
     var q=(state.queue||[]).find(function(x){return x.id===assignments[slot.time]});
     var pp=q?postParts(q):null;
-    var title=pp?pp.title:'Ждём свежую новость';
-    var meta=q?((q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):'Автопоиск за 15 минут до слота';
+    var title=pp?pp.title:(slot.kind==='blogger'?'Ждём автоблогера':slot.kind==='russian-ai'?'Ждём российскую AI-новость':'Ждём свежую новость');
+    var prefix=slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'';
+    var meta=q?(prefix+(q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):(slot.kind==='russian-ai'?'Поиск российских AI-источников за 15 минут':'Автопоиск за 15 минут до слота');
     return '<div class="dash-slot" onclick="'+(q?('openQueuePreview(\''+q.id+'\')'):"goPage('calendarPage')")+'"><div class="dash-slot-time">'+esc(slot.time)+'</div><div class="dash-slot-title">'+esc(title)+'</div><div class="dash-slot-meta">'+esc(meta)+'</div></div>';
   }).join('');
 }
