@@ -1511,11 +1511,23 @@ function dynamicDailyPublishedCount(dayKey) {
   }).length;
 }
 
+function dynamicItemTimestamp(item) {
+  const candidates = [
+    item && item.articlePublishedAt,
+    item && item.detectedAt,
+    item && item.createdAt,
+    item && item.queuedAt
+  ].filter(Boolean);
+  for (const stamp of candidates) {
+    const ms = new Date(stamp).getTime();
+    if (Number.isFinite(ms)) return ms;
+  }
+  return 0;
+}
+
 function dynamicItemAgeMs(item) {
-  const stamp = item && item.articlePublishedAt;
-  if (!stamp) return Number.MAX_SAFE_INTEGER;
-  const ms = new Date(stamp).getTime();
-  if (!Number.isFinite(ms)) return Number.MAX_SAFE_INTEGER;
+  const ms = dynamicItemTimestamp(item);
+  if (!ms) return Number.MAX_SAFE_INTEGER;
   return Math.max(0, Date.now() - ms);
 }
 
@@ -1545,7 +1557,7 @@ function dynamicBestQueueItem() {
   const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
   return (state.queue || [])
     .filter(function(item) {
-      return item && item.id && item.newsId && item.articlePublishedAt &&
+      return item && item.id && item.newsId &&
         item.status !== "media_failed" &&
         !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge;
     })
@@ -1628,7 +1640,17 @@ async function publishDynamicSlot() {
   }
 
   const schedule = ensureScheduleShape(state);
-  const queueId = schedule.assignments[day] && schedule.assignments[day][time];
+  let queueId = schedule.assignments[day] && schedule.assignments[day][time];
+
+  if (!queueId) {
+    let lastChanceItem = dynamicAssignBest(day, time);
+    if (!lastChanceItem && !collectorRunning) {
+      await collectOnce("slot-last-chance");
+      lastChanceItem = dynamicAssignBest(day, time);
+    }
+    queueId = lastChanceItem && lastChanceItem.id || "";
+  }
+
   if (!queueId) {
     state.dynamicScheduler.lastPublishedSlot = slotKey;
     saveState();
