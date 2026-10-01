@@ -2260,7 +2260,8 @@ function vkPostContext(post, extra) {
   const p = post || {};
   return Object.assign({
     topicId: String(p.topicId || p.topic_id || "default"),
-    postId: String(p.postId || p.id || p.newsId || "unknown")
+    postId: String(p.postId || p.id || p.newsId || "unknown"),
+    slug: String(p.slug || p.previewSlug || p.vkPreviewSlug || "")
   }, extra || {});
 }
 
@@ -2272,6 +2273,7 @@ function vkErrorPayload(method, errorCode, errorMsg, context) {
     error_msg: String(errorMsg || ""),
     topic_id: String(ctx.topicId || "default"),
     post_id: String(ctx.postId || "unknown"),
+    slug: String(ctx.slug || ""),
     attempt: Number(ctx.attempt || 0) || undefined,
     token_kind: String(ctx.tokenKind || "")
   };
@@ -2332,10 +2334,12 @@ async function vkApi(method, params, options) {
     throw createVkError(method, code, msg, context);
   }
 
+  console.log("VK_API_RESULT " + JSON.stringify(vkErrorPayload(method, null, "", context)));
   return data.response;
 }
 
-function formatVkPost(post) {
+function formatVkPost(post, options) {
+  const opts = options || {};
   const title = String(post.title || "").trim();
   let text = String(post.text || "").trim();
   text = text
@@ -2347,7 +2351,7 @@ function formatVkPost(post) {
   if (title) out += title;
   if (text) out += (out ? "\n\n" : "") + text;
   const sourceUrl = String(post.sourceUrl || "").trim();
-  if (sourceUrl) out += (out ? "\n\n" : "") + "Источник: " + sourceUrl;
+  if (opts.includeSource !== false && sourceUrl) out += (out ? "\n\n" : "") + "Источник: " + sourceUrl;
   return out.trim();
 }
 
@@ -2365,20 +2369,23 @@ function allowTextFallbackForPost(post) {
 }
 
 async function notifyVkMediaFailure(post, error, attempts) {
-  const context = vkPostContext(post);
+  const errorContext = error && error.vkContext || {};
+  const context = vkPostContext(post, errorContext);
   const text = [
     "⚠️ News Factory: VK media_failed",
     "Тема: " + context.topicId,
     "Пост: " + context.postId,
-    "Попыток: " + String(attempts || 3),
+    context.slug ? ("Slug: " + context.slug) : "",
+    "Попыток: " + String(attempts == null ? 1 : attempts),
     "Ошибка: " + String(error && (error.vkErrorMsg || error.message) || "неизвестная ошибка")
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   const alertChatId = TELEGRAM_ALERT_CHAT_ID || String(state.telegramAlertChatId || "").trim();
   if (!alertChatId) {
     console.warn("VK_MEDIA_ALERT_SKIPPED " + JSON.stringify({
       topic_id: context.topicId,
       post_id: context.postId,
+      slug: context.slug || "",
       reason: "No private Telegram alert chat discovered/configured"
     }));
     return false;
@@ -2520,65 +2527,82 @@ async function uploadVkWallPhoto(imageUrl, post) {
 
 async function publishVkPost(post) {
   if (!VK_PUBLISH_ENABLED) return null;
-  const context = vkPostContext(post);
+  const baseContext = vkPostContext(post);
   if (!VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
-    const error = createVkError("wall.post", "config_missing", "VK community publishing configuration is incomplete", context);
-    logVkError("wall.post", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, context, { tokenKind: "community" }));
+    const error = createVkError("wall.post", "config_missing", "VK community publishing configuration is incomplete", baseContext);
+    logVkError("wall.post", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, baseContext, { tokenKind: "community" }));
     throw error;
   }
 
-  let imageUrl = String(post.generatedImageUrl || post.imageUrl || "").trim();
-  if (!imageUrl && GENERATE_COVER_IF_MISSING) {
-    const generated = await generateNewsCover({
-      id: post.id || newId("vk_cover"),
-      title: post.title || "Что там у ИИ?",
-      text: post.text || "",
-      sourceName: post.sourceName || "VK"
-    });
-    imageUrl = String(generated.url || "").trim();
+  let preview = null;
+  try {
+    preview = await createPublicPostPage(post);
+    await preflightPublicPostPage(preview);
+  } catch (cause) {
+    const context = Object.assign({}, baseContext, { slug: preview && preview.slug || "" });
+    const error = createVkError("preview.preflight", "preview_failed", String(cause && cause.message || cause), context);
+    error.mediaFailed = true;
+    error.mediaAttempts = 1;
+    error.previewSlug = context.slug;
+    logVkError("preview.preflight", error.vkErrorCode, error.vkErrorMsg, context);
+    await notifyVkMediaFailure(post, error, 1);
+    throw error;
   }
 
-  let attachment = "";
-  let mediaMode = "text";
-  let mediaAttempts = 0;
-
-  if (imageUrl) {
-    try {
-      const uploaded = await uploadVkWallPhoto(imageUrl, post);
-      attachment = uploaded.attachment;
-      mediaAttempts = uploaded.attempts;
-      mediaMode = "photo";
-    } catch (error) {
-      const attempts = Number(error && error.mediaAttempts || 3);
-      await notifyVkMediaFailure(post, error, attempts);
-      if (!allowTextFallbackForPost(post)) {
-        error.mediaFailed = true;
-        error.mediaAttempts = attempts;
-        throw error;
-      }
-      mediaMode = "text_fallback";
-      mediaAttempts = attempts;
-    }
-  }
-
+  const context = Object.assign({}, baseContext, { slug: preview.slug });
   const params = {
     owner_id: VK_OWNER_ID,
     from_group: 1,
-    message: formatVkPost(post)
+    message: formatVkPost(post, { includeSource: false }),
+    attachments: preview.url
   };
-  if (attachment) params.attachments = attachment;
 
-  const result = await vkApi(
-    "wall.post",
-    params,
-    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-  );
+  try {
+    const result = await vkApi(
+      "wall.post",
+      params,
+      { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+    );
+    await markPublicPostPublished(preview.slug);
 
-  if (result && typeof result === "object") {
-    result.mediaMode = mediaMode;
-    result.mediaAttempts = mediaAttempts;
+    if (result && typeof result === "object") {
+      result.mediaMode = "link_preview";
+      result.mediaAttempts = 1;
+      result.previewSlug = preview.slug;
+      result.previewUrl = preview.url;
+      result.previewImageUrl = preview.imageUrl;
+    }
+    return result || null;
+  } catch (error) {
+    error.mediaAttempts = 1;
+    error.previewSlug = preview.slug;
+    error.vkContext = Object.assign({}, error.vkContext || context, { slug: preview.slug });
+
+    if (!allowTextFallbackForPost(post)) {
+      error.mediaFailed = true;
+      await notifyVkMediaFailure(post, error, 1);
+      throw error;
+    }
+
+    await notifyVkMediaFailure(post, error, 1);
+    const fallback = await vkApi(
+      "wall.post",
+      {
+        owner_id: VK_OWNER_ID,
+        from_group: 1,
+        message: formatVkPost(post, { includeSource: false })
+      },
+      { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+    );
+    if (fallback && typeof fallback === "object") {
+      fallback.mediaMode = "text_fallback";
+      fallback.mediaAttempts = 1;
+      fallback.previewSlug = preview.slug;
+      fallback.previewUrl = preview.url;
+      fallback.previewImageUrl = preview.imageUrl;
+    }
+    return fallback || null;
   }
-  return result || null;
 }
 
 async function sendMultiPlatformPost(post, targets) {
@@ -2616,12 +2640,17 @@ async function sendMultiPlatformPost(post, targets) {
           result.vkStatus = "published";
           result.vkMediaMode = vk.mediaMode || "";
           result.vkMediaAttempts = Number(vk.mediaAttempts || 0);
+          result.vkPreviewSlug = vk.previewSlug || "";
+          result.vkPreviewUrl = vk.previewUrl || "";
+          result.vkPreviewImageUrl = vk.previewImageUrl || "";
         }
       } catch (error) {
         result.vkStatus = error && error.mediaFailed ? "media_failed" : "failed";
         result.vkMediaAttempts = Number(error && error.mediaAttempts || 0);
         result.vkErrorCode = error && error.vkErrorCode != null ? error.vkErrorCode : null;
         result.vkError = String(error && (error.vkErrorMsg || error.message) || error);
+        result.vkPreviewSlug = String(error && error.previewSlug || "");
+        result.vkPreviewUrl = result.vkPreviewSlug ? previewPageUrl(result.vkPreviewSlug) : "";
       }
     }
   }
