@@ -3551,9 +3551,9 @@ async function callOpenAIRewrite(payload) {
       };
       const breakdownTotal = Object.values(breakdown).reduce(function(sum, value){ return sum + value; }, 0);
       const parsedScore = Number(parsed.editorial_score);
-      const editorialScore = Number.isFinite(parsedScore)
-        ? Math.max(0, Math.min(100, Math.round(parsedScore)))
-        : breakdownTotal;
+      const editorialScore = breakdownTotal > 0
+        ? Math.max(0, Math.min(100, breakdownTotal))
+        : (Number.isFinite(parsedScore) ? Math.max(0, Math.min(100, Math.round(parsedScore))) : 50);
       const result = {
         title: String(parsed.title || title || "Что там у ИИ?").trim(),
         text: String(parsed.text || "").trim(),
