@@ -1,9 +1,0 @@
-{
-  "name": "content-factory-n8n-bootstrap",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "node index.js"
-  }
-}
