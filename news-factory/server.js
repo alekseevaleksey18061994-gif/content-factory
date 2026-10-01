@@ -2646,6 +2646,32 @@ async function ensureMediaForNews(payload) {
 }
 
 
+
+async function enhanceSourceCandidate(preparedUrl, payload, suffix) {
+  const sourceUrl = String(preparedUrl || "").trim();
+  if (!sourceUrl) return { url: "", enhanced: false, error: "" };
+  if (!IMAGE_ENHANCEMENT_ENABLED || !AUTO_ENHANCE_SOURCE_IMAGES) {
+    return { url: sourceUrl, enhanced: false, error: "" };
+  }
+  try {
+    const enhanced = await enhanceNewsImage({
+      id: String(payload && payload.id || newId("enhance")) + "_" + String(suffix || "source"),
+      title: String(payload && payload.title || ""),
+      imageUrl: sourceUrl
+    });
+    return {
+      url: enhanced.url,
+      enhanced: true,
+      model: enhanced.model,
+      sourceUrl: sourceUrl,
+      enhancedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    console.warn("Source image enhancement failed, using cached original:", error.message);
+    return { url: sourceUrl, enhanced: false, error: String(error && error.message || error), sourceUrl: sourceUrl };
+  }
+}
+
 async function prepareMediaDirector(payload) {
   const p = payload || {};
   const license = normalizeMediaLicense(p.mediaLicense || "unknown");
@@ -2672,6 +2698,8 @@ async function prepareMediaDirector(payload) {
 
   const imageUrls = [];
   const originalImageUrls = [];
+  const enhancedImageUrls = [];
+  const enhancementLog = [];
   const seen = new Set();
   const pool = images.map(function(x){ return x && x.url; }).filter(Boolean);
   if (fallbackImage) pool.unshift(fallbackImage);
@@ -2683,10 +2711,22 @@ async function prepareMediaDirector(payload) {
     seen.add(key);
     try {
       const prepared = await prepareReusableSourceImage(key, String(p.id || "media") + "_md" + imageUrls.length);
-      const chosen = String(prepared.imageUrl || "").trim();
+      const cached = String(prepared.imageUrl || "").trim();
+      if (!cached) continue;
+      const enhanced = await enhanceSourceCandidate(cached, p, "md" + imageUrls.length);
+      const chosen = String(enhanced.url || cached).trim();
       if (!chosen) continue;
       imageUrls.push(chosen);
+      enhancedImageUrls.push(enhanced.enhanced ? chosen : "");
       originalImageUrls.push(String(prepared.originalImageUrl || key));
+      enhancementLog.push({
+        originalUrl: String(prepared.originalImageUrl || key),
+        cachedUrl: cached,
+        enhancedUrl: enhanced.enhanced ? chosen : "",
+        enhanced: Boolean(enhanced.enhanced),
+        model: enhanced.model || "",
+        error: enhanced.error || ""
+      });
     } catch (error) {
       console.warn("Media Director image skipped:", error.message);
     }
@@ -2700,10 +2740,12 @@ async function prepareMediaDirector(payload) {
       originalImageUrl: originalImageUrls[0] || fallbackImage || "",
       originalVideoUrl: selectedVideo,
       generatedImageUrl: "",
+      enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
       mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
       originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
+      mediaEnhancementLog: enhancementLog,
       mediaType: "video",
-      mediaStatus: "video_found",
+      mediaStatus: enhancedImageUrls.some(Boolean) ? "video_poster_enhanced" : "video_found",
       mediaPriority: 1,
       mediaLicense: license,
       mediaOrigin: "source_media",
@@ -2713,6 +2755,7 @@ async function prepareMediaDirector(payload) {
         strategy: "video_first",
         sourceCandidateCount: images.length + videos.length,
         selectedCount: 1 + imageUrls.length,
+        enhancedCount: enhancedImageUrls.filter(Boolean).length,
         videoReason: videos[0] && videos[0].reason || (fallbackVideo ? "meta_video" : "")
       }
     };
@@ -2725,19 +2768,22 @@ async function prepareMediaDirector(payload) {
       originalImageUrl: originalImageUrls[0] || fallbackImage || "",
       originalVideoUrl: "",
       generatedImageUrl: "",
+      enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
       mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
       originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
+      mediaEnhancementLog: enhancementLog,
       mediaType: imageUrls.length > 1 ? "album" : "photo",
-      mediaStatus: "photo_found",
+      mediaStatus: enhancedImageUrls.some(Boolean) ? "enhanced" : "photo_found",
       mediaPriority: 2,
       mediaLicense: license,
       mediaOrigin: "source_media",
       copyrightSafe: COPYRIGHT_SAFE_MODE,
       copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
       mediaDirector: {
-        strategy: imageUrls.length > 1 ? "source_album" : "source_photo",
+        strategy: imageUrls.length > 1 ? "enhanced_source_album" : "enhanced_source_photo",
         sourceCandidateCount: images.length + videos.length,
-        selectedCount: imageUrls.length
+        selectedCount: imageUrls.length,
+        enhancedCount: enhancedImageUrls.filter(Boolean).length
       }
     };
   }
