@@ -842,6 +842,191 @@ function isRussianAISource(sourceOrItem) {
   return Boolean(source && String(source.id || "").startsWith("ru-"));
 }
 
+
+const EDITORIAL_FORMATS = [
+  {
+    id: "news-flash",
+    label: "короткий новостной удар",
+    instruction: "Сразу дай самый сильный подтверждённый факт в первой строке. Затем 2–3 коротких абзаца: что произошло → важная деталь → что это меняет. Без рубрик и канцелярита."
+  },
+  {
+    id: "why-it-matters",
+    label: "почему это важно",
+    instruction: "Начни с неожиданного, но точного следствия новости. Затем объясни событие простыми словами и отдельным коротким абзацем покажи, почему оно важно читателю."
+  },
+  {
+    id: "three-facts",
+    label: "три факта",
+    instruction: "После короткого хука дай 3 содержательных пункта через •. Каждый пункт должен добавлять новый факт, а не повторять предыдущий. Заверши одной короткой мыслью."
+  },
+  {
+    id: "question-answer",
+    label: "вопрос → ответ",
+    instruction: "Открой пост коротким естественным вопросом, который прямо следует из новости, и сразу дай ответ. Затем раскрой 2–3 ключевые детали. Не превращай вопрос в кликбейт."
+  },
+  {
+    id: "explainer",
+    label: "мини-разбор",
+    instruction: "Построй текст как понятный мини-разбор: сильный хук → что именно изменилось → как это работает/что означает → что стоит отслеживать дальше. Не используй одинаковые служебные подзаголовки."
+  },
+  {
+    id: "number-led",
+    label: "цифра в центре",
+    instruction: "Если в исходнике есть действительно важная цифра, начни с неё и объясни её смысл. Если значимой цифры нет — используй обычный сильный факт. Не выдумывай числа."
+  },
+  {
+    id: "human-angle",
+    label: "человеческий ракурс",
+    instruction: "Начни с конкретного фактического момента, действия или наблюдения из исходника. Затем быстро расширь контекст. Текст должен ощущаться как рассказ человека, а не пресс-релиз, но без выдуманных сцен."
+  }
+];
+
+const STORY_STOP_WORDS = new Set([
+  "который","которая","которые","этого","этой","этот","это","также","будет","стала","стало","стали",
+  "новый","новая","новые","нового","сейчас","сегодня","после","перед","через","своей","своих","свой",
+  "компания","компании","сообщил","сообщила","рассказал","рассказала","показал","показала","представил","представила",
+  "россии","россия","может","могут","теперь","первый","первая","вышел","вышла","запустил","запустила",
+  "with","from","that","this","will","have","has","new","the","and","for"
+]);
+
+function stableHashNumber(value) {
+  const s = String(value || "");
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h >>> 0);
+}
+
+function recentEditorialFormats(limit) {
+  const seen = [];
+  const items = [].concat(state.queue || [], state.history || []);
+  for (const item of items) {
+    const id = String(item && (item.contentFormat || item.editorialFormat) || "");
+    if (id && !seen.includes(id)) seen.push(id);
+    if (seen.length >= Number(limit || 3)) break;
+  }
+  return seen;
+}
+
+function selectEditorialFormat(payload) {
+  if (!EDITORIAL_VARIETY_ENABLED) return EDITORIAL_FORMATS[0];
+  const p = payload || {};
+  const hay = (String(p.title || "") + " " + String(p.text || "")).toLowerCase();
+  const recent = new Set(recentEditorialFormats(3));
+  let candidates = EDITORIAL_FORMATS.filter(function(format){ return !recent.has(format.id); });
+  if (!candidates.length) candidates = EDITORIAL_FORMATS.slice();
+
+  if (/\b\d+[\s.,%₽$€]/u.test(hay)) {
+    const numberLed = candidates.find(function(x){ return x.id === "number-led"; });
+    if (numberLed && stableHashNumber(hay) % 3 === 0) return numberLed;
+  }
+  if (p.sourceGroup === "blogger" || p.sourceGroup === "creator") {
+    const human = candidates.find(function(x){ return x.id === "human-angle"; });
+    if (human) return human;
+  }
+  return candidates[stableHashNumber(String(p.title || "") + "|" + String(p.sourceName || "")) % candidates.length];
+}
+
+function storyTokens(value) {
+  return String(value || "").toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^0-9a-zа-я_-]+/gi, " ")
+    .split(/\s+/)
+    .map(function(word){ return word.replace(/^[-_]+|[-_]+$/g, ""); })
+    .filter(function(word){ return word.length >= 4 && !STORY_STOP_WORDS.has(word); });
+}
+
+function tokenJaccard(a, b) {
+  const aa = new Set(storyTokens(a));
+  const bb = new Set(storyTokens(b));
+  if (!aa.size || !bb.size) return 0;
+  let inter = 0;
+  aa.forEach(function(word){ if (bb.has(word)) inter += 1; });
+  return inter / (aa.size + bb.size - inter);
+}
+
+function storySimilarity(a, b) {
+  if (!a || !b) return 0;
+  const aSource = String(a.sourceId || a.sourceName || "");
+  const bSource = String(b.sourceId || b.sourceName || "");
+  if (aSource && bSource && aSource === bSource && !(a.storySources && a.storySources.length > 1)) return 0;
+
+  const titleScore = tokenJaccard(a.title || "", b.title || "");
+  const bodyScore = tokenJaccard(
+    String(a.title || "") + " " + String(a.text || "").slice(0, 900),
+    String(b.title || "") + " " + String(b.text || "").slice(0, 900)
+  );
+  const aTitleTokens = new Set(storyTokens(a.title || ""));
+  const bTitleTokens = new Set(storyTokens(b.title || ""));
+  let sharedTitle = 0;
+  aTitleTokens.forEach(function(word){ if (bTitleTokens.has(word)) sharedTitle += 1; });
+  const anchorBonus = sharedTitle >= 2 ? 0.08 : 0;
+  return Math.min(1, titleScore * 0.68 + bodyScore * 0.32 + anchorBonus);
+}
+
+function queueItemTimeMs(item) {
+  const ts = new Date(item && (item.articlePublishedAt || item.createdAt || item.updatedAt) || 0).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function storySourceSnapshot(item) {
+  const sources = Array.isArray(item && item.storySources) && item.storySources.length
+    ? item.storySources
+    : [{
+        sourceId: item && item.sourceId || "",
+        sourceName: item && item.sourceName || "Источник",
+        url: item && item.sourceUrl || "",
+        newsId: item && item.newsId || "",
+        title: item && item.title || "",
+        text: item && item.text || "",
+        publishedAt: item && (item.articlePublishedAt || item.createdAt) || "",
+        originalImageUrl: item && item.originalImageUrl || "",
+        originalVideoUrl: item && item.originalVideoUrl || ""
+      }];
+  return sources;
+}
+
+function mergeStorySources(a, b) {
+  const out = [];
+  const seen = new Set();
+  [].concat(storySourceSnapshot(a), storySourceSnapshot(b)).forEach(function(source){
+    if (!source) return;
+    const key = String(source.url || source.newsId || source.sourceId || source.sourceName || "").trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      sourceId: String(source.sourceId || ""),
+      sourceName: String(source.sourceName || source.name || "Источник"),
+      url: String(source.url || source.sourceUrl || ""),
+      newsId: String(source.newsId || ""),
+      title: String(source.title || "").slice(0, 300),
+      text: String(source.text || "").slice(0, 4500),
+      publishedAt: String(source.publishedAt || ""),
+      originalImageUrl: String(source.originalImageUrl || ""),
+      originalVideoUrl: String(source.originalVideoUrl || "")
+    });
+  });
+  return out.slice(0, STORY_CLUSTER_MAX_SOURCES);
+}
+
+function findStoryClusterCandidate(newItem) {
+  if (!STORY_CLUSTER_ENABLED || !newItem) return null;
+  const now = queueItemTimeMs(newItem) || Date.now();
+  let best = null;
+  let bestScore = 0;
+  for (const item of (state.queue || [])) {
+    if (!item || item.telegramPublished || item.vkPublished) continue;
+    if (storySourceSnapshot(item).length >= STORY_CLUSTER_MAX_SOURCES) continue;
+    const age = Math.abs(now - (queueItemTimeMs(item) || now));
+    if (age > STORY_CLUSTER_WINDOW_HOURS * 60 * 60 * 1000) continue;
+    const score = storySimilarity(item, newItem);
+    if (score > bestScore) { bestScore = score; best = item; }
+  }
+  return best && bestScore >= STORY_CLUSTER_MIN_SIMILARITY ? { item: best, similarity: bestScore } : null;
+}
+
 function sourceStatKey(sourceOrItem) {
   if (!sourceOrItem) return "";
   if (sourceOrItem.sourceId) return String(sourceOrItem.sourceId);
