@@ -4847,6 +4847,7 @@ async function callOpenAIRewrite(payload) {
   const sourceName = String(payload.sourceName || "").trim();
   const sourceGroup = String(payload.sourceGroup || "").trim();
   const channelName = String(currentWorkspace().name || "News Factory");
+  const editorialFormat = selectEditorialFormat({ title: title, text: sourceText, sourceName: sourceName, sourceGroup: sourceGroup });
   const prompt = [
     "Ты редактор Telegram-канала «" + channelName + "».",
     "Твоя задача — не просто пересказать новость, а сделать живой фирменный Telegram-пост: человечный, быстрый, умный и узнаваемый.",
@@ -4880,11 +4881,11 @@ async function callOpenAIRewrite(payload) {
     "- можно использовать 2–4 уместных emoji на весь пост, а не украшать каждую строку;",
     "- иногда можно закончить коротким вопросом аудитории или реакцией в духе «Как вам такой расклад?»;",
     "",
-    "СТРУКТУРА — ЧЕРЕДУЙ ФОРМАТЫ, ЧТОБЫ ЛЕНТА НЕ БЫЛА ОДИНАКОВОЙ:",
-    "Формат A — быстрый релиз: сильный заголовок → короткий хук → 2 абзаца сути → один вывод/вопрос.",
-    "Формат B — разбор: заголовок → что произошло → > отдельной строкой выдели один важный факт → что это меняет.",
-    "Формат C — живой: заголовок → человеческий хук → 2–3 коротких абзаца → одна emoji-строка с главным выводом → вопрос.",
-    "Выбери только один формат под конкретную новость.",
+    "ФОРМАТ ЭТОГО КОНКРЕТНОГО ПОСТА: " + editorialFormat.label + ".",
+    editorialFormat.instruction,
+    "- Не повторяй привычный шаблон соседних постов. Варьируй длину абзацев, тип хука, расположение акцента и наличие вопроса в финале.",
+    "- Хук должен обещать ровно ту ценность, которую даёт пост: никаких ложных интриг, сенсационности и кликбейта.",
+    "- Если финальный вопрос не добавляет смысла, закончи сильным фактом или коротким выводом — вопрос не обязателен.",
     "",
     "ФОРМАТИРОВАНИЕ TELEGRAM:",
     "- заголовок короткий, живой, 1 emoji максимум в начале;",
@@ -4980,6 +4981,8 @@ async function callOpenAIRewrite(payload) {
         editorialScore: editorialScore,
         scoreBreakdown: breakdown,
         scoreReason: String(parsed.score_reason || "").trim(),
+        contentFormat: editorialFormat.id,
+        contentFormatLabel: editorialFormat.label,
         model: model
       };
       if (!result.text) throw new Error("OpenAI не вернул текст новости");
