@@ -1737,6 +1737,21 @@ async function markPublicPostVkFailed(slug, error) {
   );
 }
 
+
+const NEWS_VISUAL_RECIPES = [
+  "DOCUMENTARY PHOTO: candid real-world moment, eye-level or slightly off-axis framing, natural available light, believable background clutter, subtle imperfections, restrained color, no posing.",
+  "DETAIL PHOTO: close editorial detail of the most important real object or technology, tactile materials, realistic reflections and wear, shallow but believable depth of field, no floating UI.",
+  "CONTEXT PHOTO: wider environmental view that explains where or how the event happens, ordinary real-world scale, natural daylight or practical interior lighting, no theatrical staging.",
+  "EDITORIAL STILL LIFE: grounded arrangement of relevant real objects on a believable desk/workbench/environment, asymmetrical composition, practical light, real textures, no glossy 3D-render look.",
+  "HUMAN-SCALE TECH PHOTO: technology shown in believable everyday use without fake interfaces, natural hands/body posture where appropriate, documentary framing, no advertising pose."
+];
+
+function visualRecipeFor(payload, index) {
+  if (payload && payload.visualRecipe) return String(payload.visualRecipe);
+  const offset = Number(index || 0);
+  return NEWS_VISUAL_RECIPES[(stableHashNumber(String(payload && payload.title || "") + "|" + offset) + offset) % NEWS_VISUAL_RECIPES.length];
+}
+
 async function generateNewsCover(payload) {
   if (!OPENAI_API_KEY || !GENERATE_COVER_IF_MISSING) {
     throw new Error("Генерация обложек отключена");
@@ -1747,9 +1762,12 @@ async function generateNewsCover(payload) {
     "Create a premium editorial news image for the Telegram channel «" + channelName + "».",
     "Topic: " + String(payload.title || "AI technology news"),
     "Context: " + String(payload.text || "").slice(0, 1800),
-    "Visual direction: premium modern editorial, cinematic but realistic, strong central subject, clean composition, deep contrast, restrained accents appropriate to the subject, subtle depth and atmosphere, visually striking enough to stop a scroll without looking artificial.",
+    "Visual recipe: " + visualRecipeFor(payload, payload.visualIndex || 0),
+    "Make it look like a real photograph someone could plausibly capture, not a movie poster and not generic AI art.",
+    "Use natural or practical lighting, realistic color balance, imperfect real-world textures, believable materials, subtle sensor/film texture where appropriate, and slightly imperfect asymmetry.",
+    "Avoid plastic skin, over-smoothed surfaces, excessive teal-orange grading, neon glows, holograms, floating interface elements, dramatic lens flares, perfect symmetry, fake bokeh, glossy 3D-render aesthetics and impossible reflections.",
     "Create an independent original visual from the factual description only. Do not reproduce, trace, closely imitate, or restage any source photograph, video frame, artwork, poster, thumbnail, or distinctive composition.",
-    "Do not imitate a living artist or a recognizable copyrighted visual style. Use generic high-end editorial visual language.",
+    "Do not imitate a living artist or a recognizable copyrighted visual style. Use generic documentary/editorial photography language.",
     "No text, no captions, no watermarks, no fake UI, no invented logos, no random letters.",
     "If a real company/product is mentioned, do not invent a different product design or fabricated branding.",
     "Landscape 3:2 composition suitable for Telegram and VK. Keep important faces/products inside a safe central area for mobile crops."
@@ -1795,6 +1813,25 @@ async function generateNewsCover(payload) {
     }
   }
   throw new Error(lastError || "Не удалось сгенерировать обложку");
+}
+
+
+async function generateStoryMediaPack(payload, count) {
+  const desired = Math.max(2, Math.min(4, Number(count || STORY_MEDIA_PACK_COUNT)));
+  const baseId = String(payload && payload.id || newId("story")).replace(/[^a-zA-Z0-9_-]/g, "_");
+  const tasks = Array.from({ length: desired }, function(_, index) {
+    return generateNewsCover(Object.assign({}, payload, {
+      id: baseId + "_m" + (index + 1) + "_" + Date.now(),
+      visualIndex: index,
+      visualRecipe: NEWS_VISUAL_RECIPES[index % NEWS_VISUAL_RECIPES.length]
+    }));
+  });
+  const settled = await Promise.allSettled(tasks);
+  const items = settled
+    .filter(function(x){ return x.status === "fulfilled" && x.value && x.value.url; })
+    .map(function(x){ return x.value; });
+  if (!items.length) throw new Error("Не удалось создать изображения для сюжета");
+  return items;
 }
 
 async function enhanceNewsImage(payload) {
