@@ -3226,6 +3226,51 @@ const server = http.createServer(async function(req, res) {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
 
+    if (req.method === "GET" && p === "/internal/runtime-probe-8c4e31a7f39d4b51a2e6") {
+      const day = moscowDateKey(new Date());
+      const schedule = ensureScheduleShape(state);
+      const latestHistory = (state.history || []).slice(0, 8).map(function(item) {
+        return {
+          id: item && item.id || "",
+          queueId: item && item.queueId || "",
+          title: item && item.title || "",
+          publishedAt: item && item.publishedAt || "",
+          messageId: item && item.messageId || null,
+          vkPostId: item && item.vkPostId || null,
+          vkStatus: item && item.vkStatus || "",
+          vkError: item && item.vkError || "",
+          vkPreviewSlug: item && item.vkPreviewSlug || "",
+          vkPreviewUrl: item && item.vkPreviewUrl || ""
+        };
+      });
+      const queue = (state.queue || []).slice(0, 12).map(function(item) {
+        return {
+          id: item && item.id || "",
+          newsId: item && item.newsId || "",
+          title: item && item.title || "",
+          createdAt: item && item.createdAt || "",
+          articlePublishedAt: item && item.articlePublishedAt || "",
+          preparedFor: item && item.preparedFor || "",
+          telegramPublished: item && item.telegramPublished === true,
+          vkPublished: item && item.vkPublished === true,
+          vkStatus: item && item.vkStatus || "",
+          vkError: item && item.vkError || "",
+          status: item && item.status || ""
+        };
+      });
+      return sendJson(res, 200, {
+        ok: true,
+        mode: state.mode,
+        autoPublishEnabled: AUTO_PUBLISH_ENABLED,
+        vkPublishEnabled: VK_PUBLISH_ENABLED,
+        day: day,
+        dynamicScheduler: state.dynamicScheduler || {},
+        assignments: schedule.assignments && schedule.assignments[day] || {},
+        history: latestHistory,
+        queue: queue
+      }, { "cache-control": "no-store" });
+    }
+
     if (req.method === "GET" && p === "/health") {
       return sendJson(res, 200, {
         ok: true,
