@@ -1,14 +1,16 @@
-# Claude instructions for content-factory
+# Claude instructions for News Factory
 
-## Primary production project: News Factory
+## Production project
 
-The production news application lives in `/news-factory`.
+The production application lives in `/news-factory`.
 It is deployed from the `main` branch to Railway as service `news-factory-api` with PostgreSQL and a persistent `/data` volume.
+
+This repository is now dedicated to News Factory. The old video Content Factory application has been removed and must not be recreated.
 
 ## Working rules
 
 - Inspect the existing code and database migrations before changing behavior.
-- Do not delete production data.
+- Do not delete production data unless the user explicitly requests that exact deletion.
 - Database schema changes require an additive migration in `news-factory/migrations/`.
 - Keep changes backward compatible unless the task explicitly requires otherwise.
 - Never force-push.
@@ -16,12 +18,10 @@ It is deployed from the `main` branch to Railway as service `news-factory-api` w
 - Secrets belong only in environment variables / GitHub Secrets / Railway variables.
 - Do not log secret values.
 - Prefer small, reviewable commits.
-- Do not silently fall back to a degraded production behavior unless the existing product setting explicitly allows it.
-- Preserve existing Telegram publishing unless the task explicitly changes it.
+- Do not silently fall back to degraded production behavior unless an existing product setting explicitly allows it.
+- Preserve Telegram publishing unless the task explicitly changes it.
 - For VK, log method, error_code, error_msg, post id and slug when relevant, but never tokens.
-- Preserve the persistent `/data` volume and PostgreSQL data.
-- Before changing deployment configuration, confirm the existing Railway service/root directory expectations in the repository.
-- Do not create duplicate services or databases.
+- Preserve PostgreSQL and the persistent `/data` volume.
 
 ## Verification
 
