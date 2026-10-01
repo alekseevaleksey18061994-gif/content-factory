@@ -3209,6 +3209,7 @@ async function renderConnections(force){
     postgresql:'PostgreSQL (Railway)',
     anthropic:'Anthropic API',
     openai:'OpenAI API',
+    editorialV2:'Редакция v2 (GPT + Claude)',
     openaiImage:'OpenAI Image',
     mediaEngine:'Медиа-движок News Factory',
     telegramBot:'Telegram-бот',
@@ -3219,7 +3220,7 @@ async function renderConnections(force){
   };
   var groups=[
     {title:'Инфраструктура',icon:'▦',keys:['railway','github','publicEndpoint','storage','adminUi','postgresql']},
-    {title:'Разработка и AI',icon:'✦',keys:['claudeCode','anthropic','openai','openaiImage','mediaEngine']},
+    {title:'Разработка и AI',icon:'✦',keys:['claudeCode','anthropic','openai','editorialV2','openaiImage','mediaEngine']},
     {title:'Telegram',icon:'✈',keys:['telegramBot','telegramChannel']},
     {title:'VK',icon:'VK',keys:['vk']},
     {title:'Автоматизация',icon:'⚙',keys:['collector','scheduler']}

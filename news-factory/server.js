@@ -5,6 +5,15 @@ import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { fileURLToPath } from "node:url";
+import {
+  createEditorialPipeline,
+  resolveChannelId,
+  timeSlotFor,
+  legacyScores,
+  loadPrompt as loadEditorialPrompt,
+  CHANNEL_IDS as EDITORIAL_CHANNEL_IDS
+} from "./lib/editorial-v2.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -32,6 +41,14 @@ const STORY_CLUSTER_MAX_SOURCES = Math.max(2, Math.min(6, Number(process.env.STO
 const STORY_MEDIA_PACK_COUNT = Math.max(2, Math.min(4, Number(process.env.STORY_MEDIA_PACK_COUNT || 3)));
 const EDITORIAL_VARIETY_ENABLED = String(process.env.EDITORIAL_VARIETY_ENABLED || "true").toLowerCase() !== "false";
 const EDITORIAL_QC_ENABLED = String(process.env.EDITORIAL_QC_ENABLED || "true").toLowerCase() !== "false";
+// Editorial pipeline v2: one prompt for the whole channel network + double fact-check (GPT + Claude).
+// Rollback switch: EDITORIAL_V2_ENABLED=false returns to the previous rewrite + QC flow.
+const EDITORIAL_V2_ENABLED = String(process.env.EDITORIAL_V2_ENABLED || "true").toLowerCase() !== "false";
+const EDITORIAL_V2_PROMPT_FILE = fileURLToPath(new URL("./prompts/chto-tam.md", import.meta.url));
+const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.EDITORIAL_V2_MAX_FIX_ROUNDS || 2)));
+const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
+const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
+const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
 const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
 const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MEDIA_DIRECTOR_MAX_IMAGES || 4)));
@@ -65,6 +82,7 @@ const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUT
 const DYNAMIC_SLOT_START_HOUR = 8;
 const DYNAMIC_SLOT_END_HOUR = 23;
 const DYNAMIC_SLOT_PREP_MINUTE = 45;
+const SCHEDULER_SLOT_WINDOW_MINUTES = Math.max(1, Math.min(14, Number(process.env.SCHEDULER_SLOT_WINDOW_MINUTES || 10)));
 const DYNAMIC_SLOT_MAX_AGE_HOURS = Math.max(4, Math.min(48, Number(process.env.DYNAMIC_SLOT_MAX_AGE_HOURS || 24)));
 const DYNAMIC_DAILY_TARGET = 10;
 const DYNAMIC_DAILY_MAX = 12;
@@ -559,7 +577,9 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const telegramPublicUsername = String(raw && raw.telegramPublicUsername || telegramChannel || slug || "").replace(/^@/, "").trim();
   const avatarUrl = String(raw && raw.avatarUrl || "").trim();
   const avatarFile = String(raw && raw.avatarFile || "").trim();
-  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
+  const channelIdRaw = String(raw && raw.channelId || "").trim().toLowerCase();
+  const channelId = EDITORIAL_CHANNEL_IDS.includes(channelIdRaw) ? channelIdRaw : "";
+  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
 }
 function loadWorkspaceStore() {
   ensureDataDir();
@@ -598,7 +618,7 @@ function workspaceVkPublishingAllowed(ws) {
   const target = ws || currentWorkspace();
   return Boolean(target && target.id === workspaceStore.defaultWorkspaceId);
 }
-function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", vkPublishingAllowed: workspaceVkPublishingAllowed(ws), createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", vkPublishingAllowed: workspaceVkPublishingAllowed(ws), channelId: ws.channelId || "", editorialChannelId: resolveChannelId(ws), createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
 function persistWorkspaceStore() {
   ensureDataDir();
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
@@ -1431,7 +1451,11 @@ function buildSourceRankings() {
 
 const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000 }) : null;
 let dbReady = false;
-let collectorRunning = false;
+// Collector lock is per workspace: one channel's slow collection must not block
+// slot preparation of the other channels in the network.
+const collectorRunningWorkspaces = new Set();
+function isCollectorRunning(workspaceId) { return collectorRunningWorkspaces.has(workspaceId || currentWorkspaceId()); }
+const schedulerTickRunning = new Set();
 let collectorTimer = null;
 const lastCollectorRuns = new Map();
 let snapshotTimer = null;
@@ -3217,8 +3241,9 @@ async function getCollectorRuns(limit) {
 
 async function collectOnce(trigger) {
   if (!COLLECTOR_ENABLED) return { ok: false, error: "Collector disabled" };
-  if (collectorRunning) return { ok: false, error: "Collector already running" };
-  collectorRunning = true;
+  const collectorWorkspaceId = currentWorkspaceId();
+  if (collectorRunningWorkspaces.has(collectorWorkspaceId)) return { ok: false, error: "Collector already running" };
+  collectorRunningWorkspaces.add(collectorWorkspaceId);
   const startedAt = new Date().toISOString();
   const summary = { ok: true, trigger: trigger || "scheduler", startedAt: startedAt, found: 0, queued: 0, published: 0, skipped: 0, errors: [] };
   let runId = null;
@@ -3383,15 +3408,53 @@ async function collectOnce(trigger) {
         }
 
         let rewrite;
-        try {
-          rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "" });
-          state.stats.rewritten += 1;
-        } catch (error) {
-          baseItem.status = "rewrite_error";
-          baseItem.metadata.rewriteError = error.message;
-          await saveNewsItem(baseItem);
-          summary.errors.push(originalTitle + ": " + error.message);
-          continue;
+        let qc;
+        let editorialV2Meta = null;
+        const sourceRole = sourceEditorialRole(source);
+        if (editorialV2Active()) {
+          let v2;
+          try {
+            v2 = await runEditorialV2([{
+              name: source.name,
+              url: url,
+              date: articlePublishedAt || "",
+              role: sourceRoleLabel(sourceRole),
+              title: originalTitle,
+              text: originalText,
+              photos: [media.imageUrl, media.originalImageUrl].concat(Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : []).filter(Boolean)
+            }], { hasPhoto: Boolean(media.imageUrl || media.generatedImageUrl || media.videoUrl || (Array.isArray(media.mediaPackUrls) && media.mediaPackUrls.length)) });
+            state.stats.rewritten += 1;
+          } catch (error) {
+            baseItem.status = "rewrite_error";
+            baseItem.metadata.rewriteError = error.message;
+            await saveNewsItem(baseItem);
+            summary.errors.push(originalTitle + ": " + error.message);
+            continue;
+          }
+          baseItem.metadata.editorialV2 = v2.meta;
+          if (v2.skip) {
+            baseItem.status = "editorial_skip";
+            baseItem.metadata.editorialSkipReason = v2.reason;
+            noteSourceEvent(source, "score", { score: v2.meta.importance == null ? 0 : v2.meta.importance * 10 });
+            await saveNewsItem(baseItem);
+            summary.skipped += 1;
+            summary.editorialSkipped = (summary.editorialSkipped || 0) + 1;
+            continue;
+          }
+          rewrite = v2.rewrite;
+          qc = v2.qc;
+          editorialV2Meta = v2.meta;
+        } else {
+          try {
+            rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "" });
+            state.stats.rewritten += 1;
+          } catch (error) {
+            baseItem.status = "rewrite_error";
+            baseItem.metadata.rewriteError = error.message;
+            await saveNewsItem(baseItem);
+            summary.errors.push(originalTitle + ": " + error.message);
+            continue;
+          }
         }
 
         baseItem.rewrittenTitle = rewrite.title;
@@ -3406,8 +3469,7 @@ async function collectOnce(trigger) {
         baseItem.metadata.contentFormatLabel = rewrite.contentFormatLabel || "";
         noteSourceEvent(source, "score", { score: rewrite.editorialScore });
 
-        const sourceRole = sourceEditorialRole(source);
-        const qc = await callOpenAIEditorialQC({
+        if (!qc) qc = await callOpenAIEditorialQC({
           title: rewrite.title,
           text: rewrite.text,
           sourceTitle: originalTitle,
@@ -3517,6 +3579,7 @@ async function collectOnce(trigger) {
             sourceRole: sourceRole,
             decisionSummary: qc.decisionSummary,
             mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
+            editorialV2: editorialV2Meta,
             publicationOrigin: "legacy-auto"
           });
           state.history = state.history.slice(0, 300);
@@ -3578,7 +3641,8 @@ async function collectOnce(trigger) {
             topicEntities: qc.topicEntities,
             platformVariants: qc.platformVariants,
             sourceRole: sourceRole,
-            decisionSummary: qc.decisionSummary
+            decisionSummary: qc.decisionSummary,
+            editorialV2: editorialV2Meta
           };
 
           const storyRelation = await classifyPublishedStoryRelationship(queueItem);
@@ -3654,7 +3718,7 @@ async function collectOnce(trigger) {
     }
     return summary;
   } finally {
-    collectorRunning = false;
+    collectorRunningWorkspaces.delete(collectorWorkspaceId);
   }
 }
 
@@ -3938,7 +4002,7 @@ async function publishDynamicSlot(kind) {
   if (!queueId) {
     const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
     let lastChanceItem = dynamicAssignBest(day, time, laneKind);
-    if (!lastChanceItem && !collectorRunning) {
+    if (!lastChanceItem && !isCollectorRunning()) {
       const lastChanceTrigger = publishKind === "blogger"
         ? "blogger-slot-last-chance"
         : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
@@ -4061,6 +4125,7 @@ async function publishDynamicSlot(kind) {
       mediaDirector: item.mediaDirector || null,
       storyUpdateOf: item.storyUpdateOf || "",
       storyUpdateTitle: item.storyUpdateTitle || "",
+      editorialV2: item.editorialV2 || null,
       publicationOrigin: publishKind === "blogger"
         ? "blogger-schedule"
         : (publishKind === "russian-ai" ? "russian-ai-schedule" : "schedule"),
@@ -4148,7 +4213,7 @@ async function publishDynamicSlot(kind) {
 }
 
 async function dynamicSchedulerTick() {
-  if (collectorRunning) return;
+  if (isCollectorRunning()) return;
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
   const hour = Math.floor(nowMinutes / 60);
@@ -4158,7 +4223,13 @@ async function dynamicSchedulerTick() {
   let action = "";
   let bloggerTime = "";
   let russianAiTime = "";
-  if (minute === 15) {
+  // Each action has a window of SCHEDULER_SLOT_WINDOW_MINUTES instead of one exact minute:
+  // a tick delayed by another channel's work no longer silently loses the slot.
+  // lastTickKey (built from the window start, not the actual minute) keeps it idempotent.
+  const inWindow = function(start) { return minute >= start && minute < start + SCHEDULER_SLOT_WINDOW_MINUTES; };
+  let windowStart = minute;
+  if (inWindow(15)) {
+    windowStart = 15;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
     if (BLOGGER_SLOTS.includes(bloggerTime) && (state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) {
@@ -4167,7 +4238,8 @@ async function dynamicSchedulerTick() {
       action = "russian_ai_prepare";
     }
   }
-  if (!action && minute === 30) {
+  if (!action && inWindow(30)) {
+    windowStart = 30;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
     if (BLOGGER_SLOTS.includes(bloggerTime) && (state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) {
@@ -4176,17 +4248,19 @@ async function dynamicSchedulerTick() {
       action = "russian_ai_publish";
     }
   }
-  if (!action && minute === DYNAMIC_SLOT_PREP_MINUTE && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
+  if (!action && inWindow(DYNAMIC_SLOT_PREP_MINUTE) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
     action = "prepare";
-  } else if (!action && minute === 0 && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
+    windowStart = DYNAMIC_SLOT_PREP_MINUTE;
+  } else if (!action && inWindow(0) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
     action = "publish";
+    windowStart = 0;
   }
   if (!action) return;
   if (action.startsWith("blogger_") && !(state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) return;
   if (action.startsWith("russian_ai_") && !(state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) return;
 
   state.dynamicScheduler = state.dynamicScheduler || {};
-  const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0") + "-" + action;
+  const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action;
   if (state.dynamicScheduler.lastTickKey === key) return;
   state.dynamicScheduler.lastTickKey = key;
   saveState();
@@ -4210,13 +4284,19 @@ async function dynamicSchedulerTick() {
 }
 
 async function dynamicSchedulerTickAllWorkspaces() {
-  for (const ws of workspaceStore.workspaces) {
+  // Channels tick in parallel, each in its own workspace context; a channel whose
+  // previous tick is still running (long collection) is skipped until it finishes.
+  await Promise.all(workspaceStore.workspaces.map(async function(ws) {
+    if (!ws || schedulerTickRunning.has(ws.id)) return;
+    schedulerTickRunning.add(ws.id);
     try {
       await workspaceContext.run({ workspaceId: ws.id }, async function(){ await dynamicSchedulerTick(); });
     } catch (error) {
       console.error("Dynamic scheduler workspace " + ws.id + " failed:", error.message);
+    } finally {
+      schedulerTickRunning.delete(ws.id);
     }
-  }
+  }));
 }
 function startCollectorScheduler() {
   if (!COLLECTOR_ENABLED || collectorTimer) return;
@@ -6333,6 +6413,298 @@ async function callOpenAIRewrite(payload) {
 
 
 
+// ---------------------------------------------------------------------------
+// Editorial pipeline v2 glue (prompts/chto-tam.md + GPT/Claude double check).
+// ---------------------------------------------------------------------------
+const EDITORIAL_REGISTRY_FILE = path.join(DATA_DIR, "editorial-registry.json");
+const DEFAULT_EDITORIAL_REGISTRY = {
+  // Organisations designated as extremist and banned in RF; journalists must mark them.
+  banned_orgs: ["Meta Platforms", "Instagram", "Facebook"],
+  // Fill from the official Ministry of Justice register via the admin API.
+  foreign_agents: [],
+  updatedAt: ""
+};
+
+function normalizeEditorialRegistry(raw) {
+  const list = function(value) {
+    return Array.from(new Set((Array.isArray(value) ? value : String(value || "").split(/\n|;/))
+      .map(function(x){ return String(x || "").trim(); })
+      .filter(Boolean)
+      .map(function(x){ return x.slice(0, 160); }))).slice(0, 5000);
+  };
+  const r = raw && typeof raw === "object" ? raw : {};
+  return {
+    banned_orgs: list(r.banned_orgs != null ? r.banned_orgs : DEFAULT_EDITORIAL_REGISTRY.banned_orgs),
+    foreign_agents: list(r.foreign_agents),
+    updatedAt: String(r.updatedAt || "")
+  };
+}
+
+function loadEditorialRegistry() {
+  try {
+    return normalizeEditorialRegistry(JSON.parse(fs.readFileSync(EDITORIAL_REGISTRY_FILE, "utf8")));
+  } catch {
+    return normalizeEditorialRegistry(DEFAULT_EDITORIAL_REGISTRY);
+  }
+}
+
+function saveEditorialRegistry(raw) {
+  ensureDataDir();
+  const registry = normalizeEditorialRegistry(raw);
+  registry.updatedAt = new Date().toISOString();
+  fs.writeFileSync(EDITORIAL_REGISTRY_FILE, JSON.stringify(registry, null, 2), "utf8");
+  return registry;
+}
+
+// Only names that actually occur in the sources are sent to the model: the full
+// register can be thousands of lines and must not bloat every request.
+function editorialRegistryForSources(sourceText) {
+  const registry = loadEditorialRegistry();
+  const hay = String(sourceText || "").toLowerCase();
+  const hit = function(name) {
+    const n = String(name || "").toLowerCase();
+    return n.length >= 3 && hay.includes(n);
+  };
+  return {
+    banned_orgs: registry.banned_orgs.filter(hit),
+    foreign_agents: registry.foreign_agents.filter(hit)
+  };
+}
+
+let editorialPipelineInstance = null;
+function editorialPipeline() {
+  if (!editorialPipelineInstance) {
+    editorialPipelineInstance = createEditorialPipeline({
+      promptFile: EDITORIAL_V2_PROMPT_FILE,
+      maxFixRounds: EDITORIAL_V2_MAX_FIX_ROUNDS,
+      requireAllCheckers: EDITORIAL_V2_REQUIRE_ALL_CHECKERS,
+      config: {
+        openaiApiKey: OPENAI_API_KEY,
+        openaiModel: OPENAI_MODEL,
+        openaiFallbackModel: OPENAI_FALLBACK_MODEL,
+        anthropicApiKey: ANTHROPIC_API_KEY,
+        anthropicModel: ANTHROPIC_MODEL
+      }
+    });
+  }
+  return editorialPipelineInstance;
+}
+
+let editorialPromptError = "";
+function editorialV2Active() {
+  if (!EDITORIAL_V2_ENABLED || !OPENAI_API_KEY) return false;
+  try {
+    loadEditorialPrompt(EDITORIAL_V2_PROMPT_FILE);
+    editorialPromptError = "";
+    return true;
+  } catch (error) {
+    editorialPromptError = String(error && error.message || error);
+    console.error("Editorial v2 prompt unavailable, using legacy flow:", editorialPromptError);
+    return false;
+  }
+}
+
+function editorialChannelId() {
+  return resolveChannelId(currentWorkspace());
+}
+
+function editorialSignature(ws) {
+  const target = ws || currentWorkspace();
+  const username = String(target && (target.telegramPublicUsername || target.slug) || "").replace(/^@/, "").trim();
+  return username ? "@" + username : "";
+}
+
+function editorialRecentPosts(limit) {
+  return (state.history || [])
+    .filter(function(item){ return item && item.publishedAt; })
+    .slice(0, Math.max(1, Number(limit || 12)))
+    .map(function(item) {
+      const v2 = item.editorialV2 || {};
+      return {
+        date: item.publishedAt,
+        title: String(item.title || "").slice(0, 160),
+        format: v2.format || item.contentFormatLabel || item.contentFormat || "",
+        hook_type: v2.hookType || "",
+        ending_type: v2.endingType || "",
+        title_emoji: v2.titleEmoji || "",
+        crosspromo_target: v2.crosspromoTarget || null,
+        entities: normalizeTopicEntities(item.topicEntities).slice(0, 4)
+      };
+    });
+}
+
+function editorialNetworkRecent() {
+  const me = currentWorkspaceId();
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const out = [];
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || ws.id === me || !ws.state) continue;
+    const channelId = resolveChannelId(ws);
+    for (const item of (ws.state.history || [])) {
+      if (!item || !item.publishedAt) continue;
+      const t = new Date(item.publishedAt).getTime();
+      if (!Number.isFinite(t) || t < since) break;
+      out.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.publishedAt });
+      if (out.length >= 60) return out;
+    }
+  }
+  return out;
+}
+
+function editorialNetworkChannels() {
+  const me = currentWorkspaceId();
+  return workspaceStore.workspaces
+    .filter(function(ws){ return ws && ws.id !== me && resolveChannelId(ws) && editorialSignature(ws); })
+    .map(function(ws){ return { channel_id: resolveChannelId(ws), name: ws.name, signature: editorialSignature(ws) }; });
+}
+
+function editorialFormatStats() {
+  const byFormat = state.editorialLearning && state.editorialLearning.byFormat;
+  if (!byFormat || typeof byFormat !== "object") return null;
+  const out = {};
+  for (const [format, bucket] of Object.entries(byFormat)) {
+    if (!bucket || Number(bucket.samples || 0) < 3) continue;
+    const perf = Number(bucket.performance || 0);
+    if (!Number.isFinite(perf)) continue;
+    out[format] = Math.round(Math.max(0.5, Math.min(1.5, 1 + perf / 16)) * 100) / 100;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function editorialPostsToday() {
+  const day = moscowDateKey(new Date());
+  return (state.history || []).filter(function(item){
+    return item && item.publishedAt && moscowDateKey(new Date(item.publishedAt)) === day;
+  }).length;
+}
+
+function editorialDailyLimit() {
+  const sources = state.sources || [];
+  let limit = DYNAMIC_DAILY_MAX;
+  if (sources.some(function(s){ return s && s.enabled && s.group === "blogger"; })) limit += BLOGGER_DAILY_TARGET;
+  if (sources.some(function(s){ return s && s.enabled && isRussianAISource(s); })) limit += RUSSIAN_AI_DAILY_TARGET;
+  return limit;
+}
+
+// sources: [{ name, url, date, text, photos }]
+async function runEditorialV2(sources, options) {
+  const opts = options || {};
+  const channelId = editorialChannelId();
+  const publishAt = new Date(Date.now() + 60 * 60 * 1000);
+  const sourceText = sources.map(function(s){ return String(s.title || "") + "\n" + String(s.text || ""); }).join("\n\n");
+  const request = {
+    now: new Date().toISOString(),
+    mode: "post",
+    time_slot: timeSlotFor(publishAt),
+    signature: editorialSignature(),
+    posts_today: editorialPostsToday(),
+    daily_limit: editorialDailyLimit(),
+    sources: sources.map(function(s) {
+      return {
+        name: String(s.name || ""),
+        url: String(s.url || ""),
+        date: String(s.date || ""),
+        role: String(s.role || ""),
+        title: String(s.title || "").slice(0, 400),
+        text: String(s.text || "").slice(0, Math.max(2500, Math.floor(12000 / Math.max(1, sources.length)))),
+        photos: (Array.isArray(s.photos) ? s.photos : []).filter(Boolean).slice(0, 5)
+      };
+    }),
+    recent_posts: editorialRecentPosts(12),
+    network_recent: editorialNetworkRecent(),
+    network_channels: editorialNetworkChannels(),
+    registry: editorialRegistryForSources(sourceText),
+    has_photo: Boolean(opts.hasPhoto)
+  };
+  const formatStats = editorialFormatStats();
+  if (formatStats) request.format_stats = formatStats;
+  if (opts.mergeCheck) request.merge_check = true;
+
+  const outcome = await editorialPipeline().run(channelId, request);
+  const post = outcome.post || {};
+
+  if (outcome.status !== "skip" && COPYRIGHT_SAFE_MODE) {
+    const overlap = findVerbatimOverlap(sourceText, [post.title, post.tgText, post.vkText].join(" "), COPYRIGHT_MAX_VERBATIM_WORDS);
+    if (overlap) {
+      outcome.status = "hold";
+      outcome.verdict = "copyright_overlap";
+      outcome.errors = (outcome.errors || []).concat([{ severity: "critical", type: "tech", field: "tg_text", quote: overlap.slice(0, 160), problem: "дословный фрагмент источника", fix: "переписать своими словами", checker: "copyright" }]);
+    }
+  }
+
+  const scores = legacyScores(outcome, AUTO_QUALITY_MIN);
+  const checkerModels = (outcome.checkers || []).map(function(c){ return c.failed ? c.provider + ":error" : c.provider + ":" + c.model + ":" + c.verdict; });
+  const meta = {
+    version: 2,
+    channelId: channelId,
+    status: outcome.status,
+    verdict: outcome.verdict,
+    importance: post.importance == null ? null : post.importance,
+    skipReason: post.skipReason || "",
+    angle: post.angle || null,
+    format: post.format || "",
+    hookType: post.hookType || "",
+    endingType: post.endingType || "",
+    titleEmoji: post.titleEmoji || "",
+    crosspromoTarget: post.crosspromoTarget || null,
+    legalFlags: post.legalFlags || [],
+    conflicts: post.conflicts || null,
+    cover: post.cover || null,
+    rounds: outcome.rounds || 0,
+    writerModel: outcome.writerModel || "",
+    checkers: checkerModels,
+    errors: (outcome.errors || []).slice(0, 12),
+    log: outcome.log || [],
+    checkedAt: new Date().toISOString()
+  };
+
+  if (outcome.status === "skip") return { skip: true, reason: post.skipReason || "skip", meta: meta };
+
+  const issues = (outcome.errors || []).map(function(e){
+    return "[" + (e.checker || "check") + "] " + (e.problem || e.quote) + (e.fix ? " → " + e.fix : "");
+  }).slice(0, 10);
+  if (outcome.verdict === "unavailable") {
+    issues.unshift("Проверка недоступна: " + (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + " — " + String(c.error || "").slice(0, 120); }).join("; "));
+  }
+  const approved = outcome.status === "approved";
+  const decision = approved
+    ? "Пост прошёл проверку: " + checkerModels.join(", ") + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
+    : "Пост отложен на ручную проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "одна из нейросетей-проверщиков недоступна", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
+
+  return {
+    skip: false,
+    meta: meta,
+    rewrite: {
+      title: post.title,
+      text: post.tgText,
+      confidence: approved ? "high" : "low",
+      notes: post.conflicts ? "Расхождения в источниках: " + post.conflicts : "",
+      editorialScore: scores.editorialScore,
+      scoreBreakdown: { importance: post.importance || 0 },
+      scoreReason: post.angle || ("Важность " + (post.importance || "?") + "/10"),
+      contentFormat: post.format || "",
+      contentFormatLabel: post.format || "",
+      model: outcome.writerModel || ""
+    },
+    qc: {
+      title: post.title,
+      text: post.tgText,
+      qualityScore: scores.qualityScore,
+      qualityBreakdown: { factuality: approved ? 25 : 0 },
+      qcStatus: scores.qcStatus,
+      qcIssues: issues,
+      qcRepaired: (outcome.rounds || 0) > 0,
+      topicEntities: normalizeTopicEntities(post.entities || []),
+      platformVariants: {
+        telegram: { title: post.title, text: post.tgText },
+        vk: { title: post.title, text: post.vkText || post.tgText }
+      },
+      decisionSummary: decision,
+      model: checkerModels.join(", ")
+    }
+  };
+}
+
 function fallbackEditorialQC(payload) {
   const p = payload || {};
   const hasMedia = Boolean(p.videoUrl || p.imageUrl || p.generatedImageUrl || (Array.isArray(p.mediaPackUrls) && p.mediaPackUrls.length));
@@ -6721,11 +7093,57 @@ async function tryMergeStoryQueueItem(newItem) {
   if (sources.length < 2 || distinctNames.size < 2) return null;
 
   let composed;
-  try {
-    composed = await callOpenAIStoryComposer(sources, target, newItem);
-  } catch (error) {
-    console.warn("Story composer skipped:", error.message);
-    return null;
+  let storyV2 = null;
+  if (editorialV2Active()) {
+    try {
+      storyV2 = await runEditorialV2(sources.map(function(source) {
+        return {
+          name: source.sourceName || "Источник",
+          url: source.url || "",
+          date: source.publishedAt || "",
+          role: sourceRoleLabel(source.sourceRole || sourceEditorialRole(source)),
+          title: source.title || "",
+          text: source.text || "",
+          photos: [source.originalImageUrl].filter(Boolean)
+        };
+      }), { mergeCheck: true, hasPhoto: true });
+    } catch (error) {
+      console.warn("Story editorial v2 skipped:", error.message);
+      return null;
+    }
+    if (storyV2.skip) {
+      if (storyV2.reason === "different_story") return null;
+      // Same event, but the writer saw nothing worth rewriting: absorb the new source
+      // into the existing story (no duplicate post), keep the already checked text.
+      const refs = sources.map(function(source){ return { name: source.sourceName || "Источник", url: source.url || "" }; }).filter(function(x){ return x.url; });
+      Object.assign(target, {
+        sources: refs,
+        sourceUrls: refs.map(function(x){ return x.url; }),
+        storySources: sources,
+        storyNewsIds: Array.from(new Set(sources.map(function(source){ return source.newsId; }).filter(Boolean))),
+        updatedAt: new Date().toISOString()
+      });
+      return target;
+    }
+    composed = {
+      sameStory: true,
+      title: storyV2.rewrite.title,
+      text: storyV2.rewrite.text,
+      storyKey: "",
+      editorialScore: storyV2.rewrite.editorialScore,
+      scoreBreakdown: storyV2.rewrite.scoreBreakdown,
+      scoreReason: storyV2.rewrite.scoreReason,
+      contentFormat: storyV2.rewrite.contentFormat,
+      contentFormatLabel: storyV2.rewrite.contentFormatLabel,
+      model: storyV2.rewrite.model
+    };
+  } else {
+    try {
+      composed = await callOpenAIStoryComposer(sources, target, newItem);
+    } catch (error) {
+      console.warn("Story composer skipped:", error.message);
+      return null;
+    }
   }
 
   if (!composed || composed.sameStory === false) return null;
@@ -6803,7 +7221,8 @@ async function tryMergeStoryQueueItem(newItem) {
   const sourceTextForQc = sources.map(function(source){
     return String(source.title || "") + "\n" + String(source.text || "");
   }).join("\n\n---\n\n").slice(0, 12000);
-  const qc = await callOpenAIEditorialQC({
+  if (storyV2) target.editorialV2 = storyV2.meta;
+  const qc = storyV2 ? storyV2.qc : await callOpenAIEditorialQC({
     title: target.title,
     text: target.text,
     sourceTitle: sources.map(function(source){ return source.title; }).filter(Boolean).join(" | ").slice(0, 1000),
@@ -7134,6 +7553,14 @@ async function buildSystemStatus(force) {
       detail: openaiProbe.ok ? "Текстовая модель: " + openaiProbe.model : String(openaiProbe.error || "OPENAI_API_KEY отсутствует"),
       next: openaiProbe.ok ? "" : (OPENAI_API_KEY ? "Проверить ключ, доступ к модели и биллинг OpenAI" : "Подключить OpenAI API")
     },
+    editorialV2: {
+      state: editorialV2Active() ? (ANTHROPIC_API_KEY ? "connected" : "partial") : (EDITORIAL_V2_ENABLED ? "missing" : "partial"),
+      description: editorialV2Active()
+        ? (ANTHROPIC_API_KEY ? "Редакция v2: автор GPT + двойная проверка GPT и Claude" : "Редакция v2 работает, но проверка только GPT")
+        : (EDITORIAL_V2_ENABLED ? "Редакция v2 не запустилась — работает старая схема" : "Редакция v2 выключена (EDITORIAL_V2_ENABLED=false)"),
+      detail: "Канал: " + (resolveChannelId(currentWorkspace()) || "профиль не определён") + " · Claude: " + (ANTHROPIC_API_KEY ? ANTHROPIC_MODEL : "нет ключа") + " · исправлений до " + EDITORIAL_V2_MAX_FIX_ROUNDS + (editorialPromptError ? " · ошибка промпта: " + editorialPromptError : ""),
+      next: !EDITORIAL_V2_ENABLED ? "" : (!editorialV2Active() ? "Проверить OPENAI_API_KEY и файл prompts/chto-tam.md" : (ANTHROPIC_API_KEY ? "" : "Добавить ANTHROPIC_API_KEY для второй проверки"))
+    },
     openaiImage: {
       state: openaiProbe.ok && IMAGE_ENHANCEMENT_ENABLED && OPENAI_IMAGE_MODEL ? "connected" : (OPENAI_API_KEY ? "partial" : "missing"),
       description: openaiProbe.ok && IMAGE_ENHANCEMENT_ENABLED ? "AI-обработка изображений включена" : "AI-обработка изображений настроена не полностью",
@@ -7394,6 +7821,32 @@ const server = http.createServer(async function(req, res) {
     const selectedWorkspace = getWorkspaceById(requestedWorkspaceId) || getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
     workspaceContext.enterWith({ workspaceId: selectedWorkspace.id });
 
+    if (req.method === "GET" && p === "/api/editorial/registry") {
+      return sendJson(res, 200, { ok: true, registry: loadEditorialRegistry() });
+    }
+    if ((req.method === "POST" || req.method === "PUT") && p === "/api/editorial/registry") {
+      const body = await readJson(req, 4 * 1024 * 1024);
+      const current = loadEditorialRegistry();
+      const registry = saveEditorialRegistry({
+        banned_orgs: body.banned_orgs != null ? body.banned_orgs : current.banned_orgs,
+        foreign_agents: body.foreign_agents != null ? body.foreign_agents : current.foreign_agents
+      });
+      return sendJson(res, 200, { ok: true, registry: registry });
+    }
+    if (req.method === "GET" && p === "/api/editorial/status") {
+      const recent = (state.queue || []).concat(state.history || []).filter(function(item){ return item && item.editorialV2; }).slice(0, 20);
+      return sendJson(res, 200, {
+        ok: true,
+        enabled: EDITORIAL_V2_ENABLED,
+        active: editorialV2Active(),
+        promptError: editorialPromptError || null,
+        channelId: resolveChannelId(currentWorkspace()),
+        checkers: ["openai:" + OPENAI_MODEL].concat(ANTHROPIC_API_KEY ? ["anthropic:" + ANTHROPIC_MODEL] : []),
+        requireAllCheckers: EDITORIAL_V2_REQUIRE_ALL_CHECKERS,
+        maxFixRounds: EDITORIAL_V2_MAX_FIX_ROUNDS,
+        recent: recent.map(function(item){ return { title: item.title, verdict: item.editorialV2.verdict, importance: item.editorialV2.importance, checkers: item.editorialV2.checkers, rounds: item.editorialV2.rounds, errors: item.editorialV2.errors }; })
+      });
+    }
     if (req.method === "GET" && p === "/api/workspaces") {
       return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, workspaces: workspaceStore.workspaces.map(publicWorkspaceMeta) });
     }
@@ -7410,6 +7863,7 @@ const server = http.createServer(async function(req, res) {
         initials: String(body.initials || "").trim(),
         telegramChannel: String(body.telegramChannel || body.telegramPublicUsername || "").trim(),
         telegramPublicUsername: String(body.telegramPublicUsername || body.telegramChannel || "").replace(/^@/, "").trim(),
+        channelId: String(body.channelId || "").trim().toLowerCase(),
         state: freshWorkspaceState()
       }, id);
       workspaceStore.workspaces.push(workspace);
@@ -7425,6 +7879,11 @@ const server = http.createServer(async function(req, res) {
       if (body.slug != null) workspace.slug = String(body.slug || "").replace(/^@/, "").trim().slice(0, 80);
       if (body.telegramChannel != null) workspace.telegramChannel = String(body.telegramChannel || "").trim();
       if (body.telegramPublicUsername != null) workspace.telegramPublicUsername = String(body.telegramPublicUsername || "").replace(/^@/, "").trim();
+      if (body.channelId != null) {
+        const requestedChannelId = String(body.channelId || "").trim().toLowerCase();
+        if (requestedChannelId && !EDITORIAL_CHANNEL_IDS.includes(requestedChannelId)) return sendJson(res, 400, { ok: false, error: "Неизвестный профиль канала: " + requestedChannelId + ". Допустимо: " + EDITORIAL_CHANNEL_IDS.join(", ") });
+        workspace.channelId = requestedChannelId;
+      }
       workspace.updatedAt = new Date().toISOString();
       persistWorkspaceStore();
       statusCache.delete(workspace.id);
@@ -7579,7 +8038,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, {
         ok: true,
         enabled: COLLECTOR_ENABLED,
-        running: collectorRunning,
+        running: isCollectorRunning(),
         intervalMinutes: 60,
         strategy: "dynamic-hourly",
         prepareMinutesBefore: 15,
@@ -8064,6 +8523,7 @@ const server = http.createServer(async function(req, res) {
           mediaDirector: item.mediaDirector || null,
           storyUpdateOf: item.storyUpdateOf || "",
           storyUpdateTitle: item.storyUpdateTitle || "",
+          editorialV2: item.editorialV2 || null,
           publicationOrigin: "manual",
           manualPublishedFromSchedule: item.preparedFor || ""
         };
