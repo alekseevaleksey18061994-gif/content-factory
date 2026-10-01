@@ -957,7 +957,7 @@ function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setT
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function statusRu(v){
   var map={
-    queued:'В очереди',scheduled:'Запланировано',published:'Опубликовано',discovered:'Найдено',rewrite_error:'Ошибка AI',expired:'Устарело',media_failed:'Ошибка медиа VK',
+    queued:'В очереди',scheduled:'Запланировано',published:'Опубликовано',discovered:'Найдено',not_queued:'Вне очереди',rewrite_error:'Ошибка AI',expired:'Устарело',media_failed:'Ошибка медиа VK',
     connected:'Подключено',partial:'Частично',missing:'Не подключено',
     running:'Работает',success:'Успешно',failed:'Ошибка',completed_with_errors:'Завершено с ошибками',
     disabled:'Выключено',rate_limited:'Ожидает интервал',run_limit:'Лимит цикла',slot_scheduler:'Ждёт ближайший слот',review_mode:'На проверку',
