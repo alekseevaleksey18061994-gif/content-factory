@@ -3492,6 +3492,31 @@ const server = http.createServer(async function(req, res) {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
 
+    if (req.method === "GET" && p === "/internal/preview-probe-72f6e8b4a90c") {
+      try {
+        const marker = crypto.randomBytes(4).toString("hex");
+        const preview = await createPublicPostPage({
+          id: "preview_probe_" + marker,
+          postId: "preview_probe_" + marker,
+          topicId: "smoke",
+          title: "News Factory Open Graph preview probe",
+          text: "Проверка SSR-страницы, локального JPEG 1200×630 и Open Graph meta.",
+          sources: [
+            { name: "News Factory health", url: PUBLIC_BASE_URL + "/health" },
+            { name: "News Factory", url: PUBLIC_BASE_URL + "/" }
+          ]
+        });
+        const preflight = await preflightPublicPostPage(preview);
+        return sendJson(res, 200, {
+          ok: true,
+          preview: preview,
+          preflight: preflight
+        }, { "cache-control": "no-store" });
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) }, { "cache-control": "no-store" });
+      }
+    }
+
     if (req.method === "GET" && p === "/health") {
       return sendJson(res, 200, {
         ok: true,
