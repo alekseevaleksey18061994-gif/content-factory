@@ -218,8 +218,43 @@ await test("HTTP clients: correct endpoints/headers, Claude temperature retry", 
   assert.equal(seen[1].headers["anthropic-version"], "2023-06-01");
   assert.equal(seen[1].headers["x-api-key"], "k2");
   assert.equal(seen[1].body.temperature, 0);
+  assert.equal(seen[1].body.output_config.format.type, "json_schema");
+  assert.equal(seen[1].body.output_config.format.schema.properties.verdict.type, "string");
   assert.equal(seen[2].body.temperature, undefined);
+  assert.equal(seen[2].body.output_config.format.type, "json_schema");
   assert.equal(seen[2].body.system[0].cache_control.type, "ephemeral");
+});
+
+await test("Claude falls back when structured outputs are unavailable", async function() {
+  const seen = [];
+  let calls = 0;
+  const fakeFetch = async function(url, init) {
+    const body = JSON.parse(init.body);
+    seen.push(body);
+    calls += 1;
+    if (calls === 1) {
+      return {
+        ok: false,
+        status: 400,
+        json: async function(){ return { error: { message: "output_config.format is not supported for this model" } }; }
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async function(){ return { content: [{ type: "text", text: JSON.stringify(PASS) }] }; }
+    };
+  };
+  const clients = createModelClients({
+    fetch: fakeFetch,
+    anthropicApiKey: "k2",
+    anthropicModel: "claude-test"
+  });
+  const result = await clients.callAnthropic("SYS", "{}", {});
+  assert.equal(result.parsed.verdict, "pass");
+  assert.equal(result.structured, false);
+  assert.equal(seen[0].output_config.format.type, "json_schema");
+  assert.equal(seen[1].output_config, undefined);
 });
 
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));
