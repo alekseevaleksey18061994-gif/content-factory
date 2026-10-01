@@ -2044,6 +2044,106 @@ async function enhanceNewsImage(payload) {
   throw new Error(lastError || "Не удалось улучшить изображение");
 }
 
+
+function isLocalMediaUrl(value) {
+  const url = String(value || "").trim();
+  return Boolean(url && PUBLIC_BASE_URL && url.startsWith(PUBLIC_BASE_URL + "/media/"));
+}
+
+async function cacheSourceImage(imageUrl, id) {
+  const sourceUrl = String(imageUrl || "").trim();
+  if (!sourceUrl) return "";
+  if (isLocalMediaUrl(sourceUrl)) return sourceUrl;
+
+  const response = await fetch(sourceUrl, {
+    redirect: "follow",
+    headers: {
+      "user-agent": "Mozilla/5.0 (compatible; NewsFactory/1.0; +https://news-factory-api-production.up.railway.app)",
+      "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+    },
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!response.ok) throw new Error("Фото источника HTTP " + response.status);
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.startsWith("image/")) throw new Error("Источник вернул не изображение");
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length) throw new Error("Фото источника пустое");
+  if (bytes.length > 20 * 1024 * 1024) throw new Error("Фото источника больше 20 МБ");
+
+  ensureDataDir();
+  const safeId = String(id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 70);
+  const fileName = "source_" + safeId + "_" + Date.now() + ".webp";
+  const filePath = path.join(MEDIA_DIR, fileName);
+
+  await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+    .rotate()
+    .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 90 })
+    .toFile(filePath);
+
+  return mediaPublicUrl(fileName);
+}
+
+async function prepareReusableSourceImage(imageUrl, id) {
+  const sourceUrl = String(imageUrl || "").trim();
+  if (!sourceUrl) return { imageUrl: "", originalImageUrl: "" };
+  try {
+    const cached = await cacheSourceImage(sourceUrl, id);
+    return { imageUrl: cached || sourceUrl, originalImageUrl: sourceUrl, cached: Boolean(cached) };
+  } catch (error) {
+    console.warn("Source image cache failed:", sourceUrl, error.message);
+    return { imageUrl: sourceUrl, originalImageUrl: sourceUrl, cached: false, cacheError: error.message };
+  }
+}
+
+async function repairBalancedQueueMedia() {
+  if (COPYRIGHT_MEDIA_MODE !== "balanced") return { repaired: 0, failed: 0 };
+  let repaired = 0;
+  let failed = 0;
+
+  for (const item of (state.queue || [])) {
+    if (!item) continue;
+    const license = sourceMediaLicense(item);
+    if (!mediaLicenseAllowsReuse(license)) continue;
+
+    const sourceVideo = String(item.originalVideoUrl || item.videoUrl || "").trim();
+    const sourceImage = String(item.originalImageUrl || item.imageUrl || "").trim();
+
+    if (sourceVideo && !item.videoUrl) {
+      item.videoUrl = sourceVideo;
+      item.mediaType = "video";
+      item.mediaStatus = "video_found";
+      item.mediaPriority = 1;
+      item.mediaOrigin = "source_media";
+      item.copyrightMediaDecision = "balanced_source_reuse";
+      repaired += 1;
+    }
+
+    if (sourceImage && (!item.imageUrl || !isLocalMediaUrl(item.imageUrl))) {
+      try {
+        const prepared = await prepareReusableSourceImage(sourceImage, item.newsId || item.id);
+        item.originalImageUrl = prepared.originalImageUrl || sourceImage;
+        item.imageUrl = prepared.imageUrl || sourceImage;
+        if (!item.videoUrl) {
+          item.mediaType = "photo";
+          item.mediaStatus = "photo_found";
+          item.mediaPriority = 2;
+        }
+        item.mediaOrigin = "source_media";
+        item.copyrightMediaDecision = "balanced_source_reuse";
+        repaired += 1;
+      } catch (error) {
+        failed += 1;
+        console.warn("Queue media repair failed:", item.id, error.message);
+      }
+    }
+  }
+
+  if (repaired) saveState();
+  return { repaired: repaired, failed: failed };
+}
+
 async function ensureMediaForNews(payload) {
   const imageUrl = String(payload.imageUrl || "").trim();
   const videoUrl = String(payload.videoUrl || "").trim();
@@ -2107,12 +2207,13 @@ async function ensureMediaForNews(payload) {
     };
   }
 
-  // Explicitly licensed/user-provided video can be reused.
+  // Reuse source video in balanced mode; cache its poster image locally when present.
   if (videoUrl) {
+    const preparedImage = imageUrl ? await prepareReusableSourceImage(imageUrl, payload.id || "video") : { imageUrl: "", originalImageUrl: "" };
     return {
       videoUrl: videoUrl,
-      imageUrl: imageUrl,
-      originalImageUrl: imageUrl,
+      imageUrl: preparedImage.imageUrl || "",
+      originalImageUrl: preparedImage.originalImageUrl || imageUrl,
       originalVideoUrl: videoUrl,
       generatedImageUrl: "",
       mediaType: "video",
@@ -2125,19 +2226,21 @@ async function ensureMediaForNews(payload) {
     };
   }
 
-  // Explicitly licensed/user-provided photo may be enhanced.
+  // Source photo: cache it on our media domain so the admin, Telegram and VK do not depend on hotlinking.
   if (imageUrl) {
+    const preparedImage = await prepareReusableSourceImage(imageUrl, payload.id || "photo");
+    const publishImageUrl = preparedImage.imageUrl || imageUrl;
     if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES && (mediaLicense === "allowed" || mediaLicense === "user_provided")) {
       try {
         const enhanced = await enhanceNewsImage({
           id: payload.id || newId("enhance"),
           title: payload.title || "",
-          imageUrl: imageUrl
+          imageUrl: publishImageUrl
         });
         return {
           videoUrl: "",
-          imageUrl: imageUrl,
-          originalImageUrl: imageUrl,
+          imageUrl: publishImageUrl,
+          originalImageUrl: preparedImage.originalImageUrl || imageUrl,
           originalVideoUrl: "",
           generatedImageUrl: enhanced.url,
           mediaType: "photo",
@@ -2157,8 +2260,8 @@ async function ensureMediaForNews(payload) {
     }
     return {
       videoUrl: "",
-      imageUrl: imageUrl,
-      originalImageUrl: imageUrl,
+      imageUrl: publishImageUrl,
+      originalImageUrl: preparedImage.originalImageUrl || imageUrl,
       originalVideoUrl: "",
       generatedImageUrl: "",
       mediaType: "photo",
@@ -6762,6 +6865,12 @@ for (const ws of workspaceStore.workspaces) {
   await workspaceContext.run({ workspaceId: ws.id }, async function(){
     const startupCleanup = pruneQueueItems(state);
     if (startupCleanup.removed) saveState();
+    try {
+      const repaired = await repairBalancedQueueMedia();
+      if (repaired.repaired || repaired.failed) console.log("Balanced media repair " + ws.id + ":", JSON.stringify(repaired));
+    } catch (error) {
+      console.warn("Balanced media repair " + ws.id + " failed:", error.message);
+    }
   });
 }
 setTimeout(function() {
