@@ -3,13 +3,62 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#07090e">
+<meta name="theme-color" content="#f4fbff">
 <title>News Factory — вход</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#07090e;color:#f6f7fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}body{min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 30% 0%,rgba(62,89,255,.18),transparent 38%),radial-gradient(circle at 90% 30%,rgba(164,68,255,.13),transparent 36%),#07090e}
-.wrap{width:min(440px,100%)}.brand{display:flex;align-items:center;gap:14px;margin-bottom:18px}.mark{width:58px;height:58px;border-radius:18px;display:grid;place-items:center;font-weight:900;font-size:24px;background:linear-gradient(135deg,#22c7ff,#655cff 55%,#b24cff);box-shadow:0 16px 40px rgba(67,92,255,.28)}.brand h1{margin:0;font-size:28px}.brand p{margin:3px 0 0;color:#8e98aa;font-size:14px}
-.card{background:rgba(17,21,29,.92);border:1px solid #242b39;border-radius:24px;padding:22px;box-shadow:0 30px 100px rgba(0,0,0,.45);backdrop-filter:blur(14px)}.title{font-size:20px;font-weight:750;margin-bottom:6px}.muted{color:#8f99aa;font-size:14px;margin-bottom:18px;line-height:1.5}
-input{width:100%;border:1px solid #303849;background:#0a0d13;color:white;border-radius:14px;padding:15px 16px;font-size:17px;outline:none}input:focus{border-color:#648dff;box-shadow:0 0 0 3px rgba(100,141,255,.1)}button{width:100%;margin-top:11px;border:0;border-radius:14px;padding:15px;background:#f6f7fb;color:#0a0c10;font-size:16px;font-weight:800;cursor:pointer}.err{color:#ff7e7e;font-size:13px;min-height:19px;margin-top:10px}.foot{color:#6f7888;font-size:12px;text-align:center;margin-top:14px}
+:root{--text:#0b1735;--muted:#667797;--line:rgba(74,130,186,.18);--blue:#168cff;--cyan:#20d4dc;--violet:#665cff}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:#f4fbff;color:var(--text);font-family:"Onest",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{
+  min-height:100vh;display:grid;place-items:center;padding:24px;
+  background:
+    radial-gradient(circle at 18% 8%,rgba(32,212,220,.18),transparent 29%),
+    radial-gradient(circle at 88% 20%,rgba(22,140,255,.14),transparent 31%),
+    radial-gradient(circle at 77% 90%,rgba(102,92,255,.045),transparent 24%),
+    linear-gradient(145deg,#fbfeff,#eef9ff 48%,#f7fbff);
+}
+.wrap{width:min(440px,100%)}
+.brand{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.mark{
+  width:60px;height:60px;border-radius:19px;display:grid;place-items:center;
+  color:#fff;font-weight:800;font-size:24px;
+  background:linear-gradient(135deg,#27ddd9 0%,#159bff 62%,#655cff 100%);
+  box-shadow:0 14px 34px rgba(22,140,255,.22),0 4px 12px rgba(32,212,220,.15)
+}
+.brand h1{margin:0;font-size:29px;font-weight:800;letter-spacing:-.035em}
+.brand p{margin:4px 0 0;color:var(--muted);font-size:14px}
+.card{
+  position:relative;overflow:hidden;
+  background:
+    radial-gradient(circle at 100% 0%,rgba(32,212,220,.15),transparent 34%),
+    radial-gradient(circle at 100% 100%,rgba(22,140,255,.10),transparent 34%),
+    linear-gradient(145deg,rgba(255,255,255,.94),rgba(245,251,255,.84));
+  border:1px solid rgba(74,130,186,.16);border-radius:26px;padding:24px;
+  box-shadow:0 28px 80px rgba(41,91,134,.13),inset 0 1px 0 rgba(255,255,255,.96);
+  backdrop-filter:blur(22px) saturate(1.12);-webkit-backdrop-filter:blur(22px) saturate(1.12)
+}
+.title{font-size:21px;font-weight:750;letter-spacing:-.025em;margin-bottom:6px}
+.muted{color:var(--muted);font-size:14px;margin-bottom:18px;line-height:1.5}
+input{
+  width:100%;border:1px solid rgba(74,130,186,.20);background:rgba(255,255,255,.86);color:var(--text);
+  border-radius:15px;padding:15px 16px;font-size:16px;outline:none;font-family:inherit;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9)
+}
+input:focus{border-color:rgba(22,140,255,.48);box-shadow:0 0 0 4px rgba(22,140,255,.09)}
+input::placeholder{color:#8a99b2}
+button{
+  width:100%;margin-top:11px;border:1px solid rgba(20,160,222,.18);border-radius:15px;padding:15px;
+  color:#fff;font-size:16px;font-weight:700;font-family:inherit;cursor:pointer;
+  background:linear-gradient(100deg,#20d4dc 0%,#168cff 76%,#5f63ee 112%);
+  box-shadow:0 10px 26px rgba(22,140,255,.20),inset 0 1px 0 rgba(255,255,255,.28)
+}
+button:active{transform:scale(.99)}
+.err{color:#d84956;font-size:13px;min-height:19px;margin-top:10px}
+.foot{color:#72829d;font-size:12px;text-align:center;margin-top:14px}
+@media(max-width:520px){body{padding:18px}.brand h1{font-size:26px}.card{padding:20px;border-radius:22px}}
 </style>
 </head>
 <body>
