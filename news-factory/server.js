@@ -5653,8 +5653,11 @@ async function dynamicSchedulerTick() {
   state.dynamicScheduler = state.dynamicScheduler || {};
   const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action;
   if (state.dynamicScheduler.lastTickKey === key) return;
-  state.dynamicScheduler.lastTickKey = key;
-  saveState();
+
+  // Do not persist the tick as completed before the work succeeds.
+  // A deploy/restart in the middle of the slot must be able to retry it.
+  state.dynamicScheduler.lastAttemptedTickKey = key;
+  state.dynamicScheduler.lastAttemptedTickAt = new Date().toISOString();
 
   try {
     const result = action === "prepare"
@@ -5668,10 +5671,51 @@ async function dynamicSchedulerTick() {
             : action === "russian_ai_prepare"
               ? await prepareRussianAiSlot(russianAiTime)
               : await publishDynamicSlot("russian-ai");
-    console.log("Dynamic scheduler " + action + ":", JSON.stringify(result));
+    state.dynamicScheduler.lastTickKey = key;
+    state.dynamicScheduler.lastTickCompletedAt = new Date().toISOString();
+    saveState();
+    console.log("Dynamic scheduler " + action + " " + currentWorkspaceId() + ":", JSON.stringify(result));
   } catch (error) {
-    console.error("Dynamic scheduler " + action + " failed:", error.message);
+    // Leave lastTickKey untouched: the next 30-second tick can retry inside the window.
+    console.error("Dynamic scheduler " + action + " " + currentWorkspaceId() + " failed:", error.message);
   }
+}
+
+async function catchUpCurrentRegularSlotAllWorkspaces() {
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  const minute = nowMinutes % 60;
+  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 29) return;
+
+  const day = moscowDateKey(now);
+  const time = String(hour).padStart(2, "0") + ":00";
+  const slotKey = day + " " + time;
+
+  await Promise.all(workspaceStore.workspaces.map(async function(ws) {
+    if (!ws || schedulerTickRunning.has(ws.id)) return;
+    schedulerTickRunning.add(ws.id);
+    try {
+      await workspaceContext.run({ workspaceId: ws.id }, async function() {
+        state.dynamicScheduler = state.dynamicScheduler || {};
+        if (state.dynamicScheduler.lastPublishedSlot === slotKey) return;
+        if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) return;
+
+        const schedule = ensureScheduleShape(state);
+        const assignment = schedule.assignments[day] && schedule.assignments[day][time];
+        if (!assignment) return;
+        if (schedule.suppressed[day] && schedule.suppressed[day][time]) return;
+
+        console.warn("SCHEDULER_CATCHUP_START " + JSON.stringify({ workspace: ws.id, slot: time, queueId: assignment, minute: minute }));
+        const result = await publishDynamicSlot();
+        console.log("SCHEDULER_CATCHUP_RESULT " + JSON.stringify({ workspace: ws.id, slot: time, result: result }));
+      });
+    } catch (error) {
+      console.error("SCHEDULER_CATCHUP_FAILED " + JSON.stringify({ workspace: ws.id, slot: time, error: error.message }));
+    } finally {
+      schedulerTickRunning.delete(ws.id);
+    }
+  }));
 }
 
 async function dynamicSchedulerTickAllWorkspaces() {
@@ -5692,10 +5736,14 @@ async function dynamicSchedulerTickAllWorkspaces() {
 function startCollectorScheduler() {
   if (!COLLECTOR_ENABLED || collectorTimer) return;
   collectorTimer = setInterval(function() {
-    dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
+    dynamicSchedulerTickAllWorkspaces()
+      .then(function(){ return catchUpCurrentRegularSlotAllWorkspaces(); })
+      .catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
   }, 30000);
-  dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
-  console.log("Dynamic scheduler: regular hourly + autoblogger slots + Russian AI slots 09:30/11:30/13:30/16:30/19:30/22:30 Moscow");
+  dynamicSchedulerTickAllWorkspaces()
+    .then(function(){ return catchUpCurrentRegularSlotAllWorkspaces(); })
+    .catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
+  console.log("Dynamic scheduler: regular hourly + restart catch-up + autoblogger slots + Russian AI slots 09:30/11:30/13:30/16:30/19:30/22:30 Moscow");
 }
 
 function sendJson(res, status, payload, headers) {
