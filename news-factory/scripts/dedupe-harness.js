@@ -100,7 +100,8 @@ const EXPORT_NAMES = [
   "tryMergeStoryQueueItem", "storySimilarity", "findStoryClusterCandidate", "runEditorialV2", "editorialNetworkRecent", "pruneQueueItems",
   "dynamicBestQueueItem", "dynamicBestQueueItemRaw", "dynamicAssignBest", "publishDynamicSlot", "autoResolveQueue", "autoRejectReason", "dedupeQueueOnce",
   "saveState", "normalizeDate", "extractPublishedAt", "saveNewsItem", "seenOriginalUrl", "dynamicItemAgeMs", "dynamicSchedulerTick",
-  "ensureScheduleShape", "moscowDateKey", "normalizeArticleUrl", "itemArticleKeys", "crossChannelIndex", "editorialRecentPosts", "crossChannelConflict", "channelFreshnessHours", "isApprovedQueueItem", "queueMaxAgeHoursFor", "dbReadyFlag"
+  "ensureScheduleShape", "moscowDateKey", "dynamicItemMaxAgeMs", "articleMaxAgeMs", "bumpSkipAttempt",
+  "normalizeArticleUrl", "itemArticleKeys", "crossChannelIndex", "editorialRecentPosts", "crossChannelConflict", "channelFreshnessHours", "isApprovedQueueItem", "queueMaxAgeHoursFor", "dbReadyFlag"
 ];
 
 function bin(name) {

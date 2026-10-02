@@ -342,12 +342,36 @@ function ensureDataDir() {
   try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
 }
 
-function normalizeDate(value) {
+// options.assumeMoscow: a timestamp without a zone ("2026-10-01T11:30:00") comes from a Russian site and means
+// Moscow time (+03:00); read as UTC it would look 3 hours newer than it is.
+function normalizeDate(value, options) {
   if (!value) return "";
-  const d = new Date(String(value).trim());
+  const raw = String(value).trim();
+  let d;
+  const naive = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/.exec(raw);
+  if (naive && options && options.assumeMoscow) d = new Date(naive[1] + "T" + naive[2] + "+03:00");
+  else d = new Date(raw);
   if (!Number.isFinite(d.getTime())) return "";
   if (d.getTime() > Date.now() + 24 * 60 * 60 * 1000) return "";
   return d.toISOString();
+}
+
+// Per-channel freshness (prompts/chto-tam.md section 2): the base limits (ARTICLE_MAX_AGE_HOURS, DYNAMIC_SLOT_MAX_AGE_HOURS,
+// QUEUE_MAX_AGE_HOURS) are for 24-hour channels and are scaled up for the 72-hour ones (science, world, home, food).
+function channelFreshnessFactor(ws) {
+  try {
+    const target = ws || currentWorkspace();
+    return channelFreshnessHours(resolveChannelId(target), 24) / 24;
+  } catch { return 1; }
+}
+function articleMaxAgeMs(ws) { return ARTICLE_MAX_AGE_HOURS * 3600000 * channelFreshnessFactor(ws); }
+function dynamicSlotMaxAgeMs(ws) { return DYNAMIC_SLOT_MAX_AGE_HOURS * 3600000 * channelFreshnessFactor(ws); }
+function queueMaxAgeHoursFor(ws) { return Math.min(96, QUEUE_MAX_AGE_HOURS * channelFreshnessFactor(ws)); }
+// A queue item whose article carried no date lives shorter: its age is only known from the fetch time.
+function dynamicItemMaxAgeMs(item) {
+  const base = dynamicSlotMaxAgeMs();
+  const undated = item && item.newsId && !item.articlePublishedAt;
+  return undated ? Math.min(base, UNDATED_ARTICLE_MAX_AGE_HOURS * 3600000) : base;
 }
 
 function moscowDateKey(date) {
@@ -427,9 +451,16 @@ function removeQueueIdFromSchedule(targetState, queueId) {
 }
 
 
-function pruneQueueItems(targetState) {
+function pruneQueueItems(targetState, options) {
   if (!targetState || !Array.isArray(targetState.queue)) return { removed: 0, expired: 0, overflow: 0 };
-  const cutoff = Date.now() - QUEUE_MAX_AGE_HOURS * 60 * 60 * 1000;
+  let factor = options && Number(options.factor) > 0 ? Number(options.factor) : 1;
+  if (!(options && options.factor)) {
+    try {
+      const owner = targetState === state ? currentWorkspace() : workspaceStore.workspaces.find(function(w){ return w && w.state === targetState; });
+      if (owner) factor = channelFreshnessFactor(owner);
+    } catch {}
+  }
+  const cutoff = Date.now() - QUEUE_MAX_AGE_HOURS * factor * 60 * 60 * 1000;
   let expired = 0;
   let overflow = 0;
   const manual = [];
@@ -474,8 +505,8 @@ function pruneQueueItems(targetState) {
     targetState.stats.expired = Number(targetState.stats.expired || 0) + removed;
   }
   targetState.queuePolicy = {
-    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
-    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
+    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS * factor,
+    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS * factor,
     queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
   };
   cleanupScheduleAssignments(targetState);
@@ -598,7 +629,7 @@ function loadLegacyState() {
   }
 }
 
-function normalizeWorkspaceState(saved) {
+function normalizeWorkspaceState(saved, freshnessFactor) {
   const source = saved && typeof saved === "object" ? saved : {};
   const loaded = Object.assign({}, structuredClone(defaultState), source);
   loaded.sources = Array.isArray(source.sources) ? source.sources : structuredClone(defaultState.sources);
@@ -617,7 +648,7 @@ function normalizeWorkspaceState(saved) {
   loaded.publicationSchedule = Object.assign(structuredClone(defaultState.publicationSchedule), loaded.publicationSchedule || {});
   loaded.dynamicScheduler = Object.assign(structuredClone(defaultState.dynamicScheduler), loaded.dynamicScheduler || {});
   ensureScheduleShape(loaded);
-  pruneQueueItems(loaded);
+  pruneQueueItems(loaded, { factor: freshnessFactor });
   return loaded;
 }
 function freshWorkspaceState() {
@@ -655,7 +686,7 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const avatarFile = String(raw && raw.avatarFile || "").trim();
   const channelIdRaw = String(raw && raw.channelId || "").trim().toLowerCase();
   const channelId = EDITORIAL_CHANNEL_IDS.includes(channelIdRaw) ? channelIdRaw : "";
-  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
+  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state, channelFreshnessFactor({ id, name, slug, telegramPublicUsername, channelId })) };
 }
 function loadWorkspaceStore() {
   ensureDataDir();
@@ -2808,8 +2839,10 @@ function extractTitle(html) {
   return m ? stripHtml(m[1]).slice(0, 300) : "";
 }
 
-function extractPublishedAt(html) {
+function extractPublishedAt(html, hint) {
   const source = String(html || "");
+  let assumeMoscow = false;
+  try { assumeMoscow = /(\.ru|\.su|\.рф|\.xn--p1ai)$/i.test(new URL(String(hint && hint.url || "")).hostname); } catch {}
   const patterns = [
     /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
     /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
@@ -2821,7 +2854,7 @@ function extractPublishedAt(html) {
   for (const re of patterns) {
     const m = source.match(re);
     if (!m || !m[1]) continue;
-    const normalized = normalizeDate(htmlDecode(m[1]));
+    const normalized = normalizeDate(htmlDecode(m[1]), { assumeMoscow: assumeMoscow });
     if (normalized) return normalized;
   }
   return "";
@@ -4701,14 +4734,41 @@ async function collectOnce(trigger) {
       let baseSaved = false;
       let claimed = [];
       try {
-        const articleHtml = await fetchText(url, 15000);
+        let articleHtml;
+        try {
+          articleHtml = await fetchText(url, 15000);
+        } catch (fetchError) {
+          // A removed / forbidden page is final; a timeout or 5xx is retried a few times and then recorded as
+          // seen. Before this the same dead link stayed the first unseen link of its source forever.
+          noteSourceEvent(source, "error");
+          summary.errors.push(url + ": " + fetchError.message);
+          const permanent = /HTTP (401|403|404|410|451)\b|Unsupported content type/.test(String(fetchError.message || ""));
+          if (permanent || bumpSkipAttempt(url, "fetch_failed") >= SKIP_RETRY_MAX) {
+            await recordSeenSkip(source, candidate.link, "fetch_failed", "Страница недоступна: " + String(fetchError.message || "").slice(0, 120));
+          }
+          await advanceSource(candidate);
+          continue;
+        }
         const isBlogger = source.group === "blogger" || source.group === "creator";
         const originalTitle = isBlogger
           ? (candidate.link.title || extractTitle(articleHtml) || source.name)
           : (extractTitle(articleHtml) || candidate.link.title);
-        const articlePublishedAt = candidate.link.publishedAt || extractPublishedAt(articleHtml);
-        if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > ARTICLE_MAX_AGE_HOURS * 60 * 60 * 1000) {
+        const articlePublishedAt = candidate.link.publishedAt || extractPublishedAt(articleHtml, { url: url });
+        const windowMs = articleMaxAgeMs();
+        if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > windowMs) {
           summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle, publishedAt: articlePublishedAt }), "stale_article", "Старше " + Math.round(windowMs / 3600000) + " ч: " + articlePublishedAt);
+          await advanceSource(candidate);
+          continue;
+        }
+        // No date on the page: freshness is unknown. A past year in the title (an old press release) is dropped;
+        // anything else goes on with extra care (the writer is told the date is unknown, and the queue item gets a
+        // shorter life, see dynamicItemMaxAgeMs).
+        const dateUnknown = !articlePublishedAt;
+        if (dateUnknown && !isBlogger && staleYearInTitle(originalTitle, false, new Date())) {
+          summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle }), "stale_year_in_title", "Без даты, в заголовке прошлый год");
+          await advanceSource(candidate);
           continue;
         }
         const mediaCandidates = extractArticleMediaCandidates(articleHtml, url);
@@ -4718,6 +4778,8 @@ async function collectOnce(trigger) {
         const originalText = (isBlogger && candidate.link.text ? String(candidate.link.text) : raw).slice(0, 14000);
         if (originalText.length < (isBlogger ? 40 : 250)) {
           summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle, publishedAt: articlePublishedAt || "" }), "too_short", "Слишком короткая страница (" + originalText.length + " зн.)");
+          await advanceSource(candidate);
           continue;
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
@@ -4807,6 +4869,7 @@ async function collectOnce(trigger) {
           metadata: {
             trigger: trigger || "scheduler",
             articlePublishedAt: articlePublishedAt || "",
+            articleDateUnknown: dateUnknown || undefined,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || imageUrl || "",
             originalVideoUrl: media.originalVideoUrl || videoUrl || "",
@@ -4869,10 +4932,13 @@ async function collectOnce(trigger) {
             });
             state.stats.rewritten += 1;
           } catch (error) {
+            summary.errors.push(originalTitle + ": " + error.message);
+            // A transient model error (429, timeout) must not lose the article: retried on the next ticks,
+            // recorded as rewrite_error (and so seen) only after SKIP_RETRY_MAX attempts.
+            if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
             baseItem.status = "rewrite_error";
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
-            summary.errors.push(originalTitle + ": " + error.message);
             continue;
           }
           baseItem.metadata.editorialV2 = v2.meta;
@@ -4906,10 +4972,11 @@ async function collectOnce(trigger) {
             rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "", newsId: id });
             state.stats.rewritten += 1;
           } catch (error) {
+            summary.errors.push(originalTitle + ": " + error.message);
+            if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
             baseItem.status = "rewrite_error";
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
-            summary.errors.push(originalTitle + ": " + error.message);
             continue;
           }
         }
@@ -5064,6 +5131,7 @@ async function collectOnce(trigger) {
             sourceOriginalText: originalText.slice(0, 7000),
             createdAt: new Date().toISOString(),
             articlePublishedAt: articlePublishedAt || "",
+            articleDateUnknown: dateUnknown || undefined,
             sourceId: source.id,
             sourceGroup: source.group || "",
             sourceUrl: url,
@@ -5341,14 +5409,13 @@ function dynamicBestQueueItem(kind) {
 
 function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const used = dynamicUsedQueueIds();
-  const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
   // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
   const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
   return (state.queue || [])
     .filter(function(item) {
-      if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
+      if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
       if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
@@ -5533,7 +5600,7 @@ async function publishDynamicSlot(kind) {
     return { ok: true, skipped: "missing_item" };
   }
 
-  if (dynamicItemAgeMs(item) > DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000) {
+  if (dynamicItemAgeMs(item) > dynamicItemMaxAgeMs(item)) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
     schedulerState.lastPublishedSlot = slotKey;
