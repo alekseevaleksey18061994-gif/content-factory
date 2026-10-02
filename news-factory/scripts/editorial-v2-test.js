@@ -389,4 +389,26 @@ await test("collector checks duplicates before media preparation and LLM calls",
   assert.ok(pre < media && pre < writer, "precheck must run before media and writer");
 });
 
+await test("post rating is out of 100 and its parts add up", async function() {
+  const fs = await import("node:fs");
+  const html = fs.readFileSync(fileURLToPath(new URL("../public/admin.html", import.meta.url)), "utf8");
+  const start = html.indexOf("function postRating(");
+  const end = html.indexOf("function statusRu(");
+  assert.ok(start > 0 && end > start);
+  const esc = function(v){ return String(v || ""); };
+  const lib = new Function("esc", html.slice(start, end) + "; return { postRating: postRating, ratingBoxHtml: ratingBoxHtml };")(esc);
+  const best = lib.postRating({ editorialV2: { status: "approved", verdict: "pass", importance: 10, rounds: 0 }, articlePublishedAt: "2026-10-01T10:00:00Z", foundAt: "2026-10-01T11:00:00Z", mediaKind: "video", sourceRole: "official_primary" });
+  assert.equal(best.total, 100);
+  const parts = best.parts.reduce(function(a, p){ return a + p.max; }, 0);
+  assert.equal(parts, 100);
+  const typical = lib.postRating({ editorialV2: { status: "approved", verdict: "pass", importance: 7, rounds: 1 }, articlePublishedAt: "2026-10-01T10:00:00Z", foundAt: "2026-10-01T14:00:00Z", mediaKind: "photo", sourceRole: "media_context" });
+  assert.equal(typical.total, 28 + 21 + 12 + 8 + 7);
+  const skipped = lib.postRating({ editorialV2: { status: "skip", importance: 1, skipReason: "реклама" }, status: "editorial_skip", mediaKind: "photo", sourceRole: "author_opinion" });
+  assert.equal(skipped.parts[1].got, 0);
+  assert.ok(skipped.total < 50 && skipped.grade.label === "Слабо");
+  const legacy = lib.postRating({ aiScore: 80, qcStatus: "pass", mediaKind: "generated" });
+  assert.equal(legacy.parts[0].got, 32);
+  assert.ok(/из 100/.test(lib.ratingBoxHtml(typical)));
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));
