@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
-import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430 } from "./lib/channel-dna.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451 } from "./lib/channel-dna.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
@@ -1493,6 +1493,37 @@ async function apiBalanceSnapshot(knownRate) {
   return out;
 }
 
+// Provider out of money: tell the owner in Telegram (once per 3 hours per provider)
+// instead of silently failing every call.
+const billingAlertSentAt = {};
+function maybeBillingAlert(text) {
+  const msg = String(text || "");
+  let provider = "";
+  if (/no credits remaining|insufficient_quota|exceeded your current quota/i.test(msg)) provider = "OpenAI";
+  else if (/credit balance is too low/i.test(msg)) provider = "Anthropic (Claude)";
+  if (!provider || !BOT_TOKEN) return;
+  const last = billingAlertSentAt[provider] || 0;
+  if (Date.now() - last < 3 * 3600000) return;
+  const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+  const chatId = TELEGRAM_ALERT_CHAT_ID || String(ws && ws.state && ws.state.telegramAlertChatId || "").trim();
+  // Throttle the log line too, but retry the message soon if no chat is known yet.
+  billingAlertSentAt[provider] = chatId ? Date.now() : Date.now() - 3 * 3600000 + 10 * 60000;
+  console.warn("BILLING_EXHAUSTED " + JSON.stringify({ provider: provider, alerted: Boolean(chatId) }));
+  if (!chatId) return;
+  const link = provider === "OpenAI" ? "https://platform.openai.com/settings/organization/billing/" : "https://console.anthropic.com/settings/billing";
+  telegramApi("sendMessage", {
+    chat_id: chatId,
+    text: "🚨 News Factory: на балансе " + provider + " закончились деньги.\n" +
+      (provider === "OpenAI" ? "Новые посты не пишутся — каналы выпустят то, что уже в очереди, и остановятся." : "Вторая проверка фактов не работает — посты проверяет только одна нейросеть.") +
+      "\nПополните баланс: " + link,
+    disable_web_page_preview: true
+  }).catch(function(error){
+    // Failed send: allow another try in 10 minutes instead of 3 hours.
+    billingAlertSentAt[provider] = Date.now() - 3 * 3600000 + 10 * 60000;
+    console.warn("Billing alert failed:", error.message);
+  });
+}
+
 async function sendCostBudgetAlert(snapshot, threshold) {
   if (!BOT_TOKEN) return false;
   const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
@@ -2606,6 +2637,7 @@ async function prefilterCandidates(candidates, summary) {
     } catch (error) {
       // Fail open: without the pre-filter the old order is used, nothing is lost.
       console.warn("HEADLINE_PREFILTER_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: error.message }));
+      maybeBillingAlert(error.message);
     }
   }
   for (const r of rejected) {
@@ -4720,7 +4752,13 @@ async function collectOnce(trigger) {
           continue;
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
-        const id = "news_" + contentHash.slice(0, 20);
+        // Scoped by workspace: the same article in two channels (e.g. Афиша Daily in
+        // food and internet) collided on news_items_pkey and failed every collection.
+        // The default workspace keeps the old ids.
+        const wsIdForHash = currentWorkspaceId();
+        const id = "news_" + (wsIdForHash && wsIdForHash !== workspaceStore.defaultWorkspaceId
+          ? crypto.createHash("sha256").update(wsIdForHash + "\n" + url + "\n" + contentHash).digest("hex").slice(0, 20)
+          : contentHash.slice(0, 20));
         // Cheap duplicate check on the source text BEFORE media preparation and the
         // writer/checker calls: an obvious repeat of a recently published post costs
         // one short classifier call instead of media + 3-6 LLM calls.
@@ -4846,6 +4884,7 @@ async function collectOnce(trigger) {
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
             summary.errors.push(originalTitle + ": " + error.message);
+            maybeBillingAlert(error.message);
             continue;
           }
           baseItem.metadata.editorialV2 = v2.meta;
@@ -4883,6 +4922,7 @@ async function collectOnce(trigger) {
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
             summary.errors.push(originalTitle + ": " + error.message);
+            maybeBillingAlert(error.message);
             continue;
           }
         }
@@ -8808,6 +8848,7 @@ async function runEditorialV2(sources, options) {
     checkedAt: new Date().toISOString()
   };
 
+  (outcome.checkers || []).forEach(function(c){ if (c && c.failed) maybeBillingAlert(c.error); });
   // One structured line per editorial decision so the pipeline can be monitored from
   // Railway logs. No secrets, no post bodies.
   console.log("EDITORIAL_V2 " + JSON.stringify({
@@ -12062,9 +12103,10 @@ function setupNewChannels() {
 // v0.43.0: source rework after the owner's review — off-topic sources are paused
 // (kept, not deleted) and new ones added after server validation. «Что там в
 // мире?» becomes «Что там в сети?» (viral and internet trends).
-async function reworkChannelSources(ws) {
+async function reworkChannelSources(ws, customPlan, tag) {
   const channelId = resolveChannelId(ws);
-  const plan = SOURCE_REWORK_V0430[channelId];
+  const plan = customPlan || SOURCE_REWORK_V0430[channelId];
+  const reworkTag = tag || "v0.43.0";
   if (!plan) return null;
   // Exact URL match (not sourceKey): a key covers the whole section, and pausing
   // iz.ru/rubric/obshchestvo must not pause iz.ru/rubric/zhizn.
@@ -12075,7 +12117,7 @@ async function reworkChannelSources(ws) {
   for (const src of (state.sources || [])) {
     if (!src || !src.enabled || !disableUrls.has(normUrl(src.url))) continue;
     src.enabled = false;
-    src.autoPaused = { reason: "не по теме канала (пересборка источников v0.43.0)", at: now };
+    src.autoPaused = { reason: "не по теме канала (пересборка источников " + reworkTag + ")", at: now };
     paused.push(src.name);
   }
   const added = [];
@@ -12087,7 +12129,7 @@ async function reworkChannelSources(ws) {
       id: "dna-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
       name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
-      autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: "v0.43.0" }
+      autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: reworkTag }
     });
     added.push(c.name);
   }
@@ -12155,6 +12197,29 @@ setTimeout(function runInternetSourcePackV0441() {
     }
   })().catch(function(error){ console.warn("Internet source pack failed:", error.message); });
 }, 95000);
+
+// v0.45.1: «Что там в интернете?» got almost nothing from meme-only channels
+// (pictures without a story are skipped as «нет контекста»), Reddit is not
+// reachable from the server and social-media industry sites are off-topic.
+// Pause those, add sources that publish viral stories with context.
+setTimeout(function runInternetSourceFixV0451() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "world") continue;
+      const migration = "v0.45.1-internet-sources";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws, INTERNET_SOURCE_FIX_V0451, "v0.45.1");
+        state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+        state.seedAttempts[migration] = Number(state.seedAttempts[migration] || 0) + 1;
+        if ((result && result.added.length > 0) || state.seedAttempts[migration] >= 3) state.migrations.push(migration);
+        saveState();
+        console.log("INTERNET_SOURCE_FIX " + JSON.stringify(Object.assign({ workspace: ws.id }, result || {})));
+      });
+    }
+  })().catch(function(error){ console.warn("Internet source fix failed:", error.message); });
+}, 100000);
 
 setTimeout(setupNewChannels, 30000);
 setInterval(setupNewChannels, 15 * 60 * 1000);

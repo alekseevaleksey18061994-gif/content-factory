@@ -72,7 +72,7 @@ export const CHANNEL_DNA = {
   world: {
     type: "trends",
     topic: "вирусное в интернете: ролики и истории, которые все пересылают, мемы, тренды TikTok, Reels и YouTube, челленджи, интернет-феномены, вирусные приложения; без политики",
-    focus: "Это канал «Что там в сети?». Оставляй вирусные истории, мемы с историей, тренды соцсетей, челленджи. Политику, войны, криминал с пострадавшими и обычные мировые новости отсеивай.",
+    focus: "Это канал «Что там в интернете?». Оставляй вирусные истории, мемы с историей (что за мем, откуда взялся), тренды соцсетей, челленджи. Политику, войны, криминал с пострадавшими и обычные мировые новости отсеивай.",
     mix: { viral_story: 0.45, meme_trend: 0.25, video: 0.20, app_phenomenon: 0.10 },
     preferredSources: ["SOCIAL", "COMMUNITY", "CREATOR", "MEDIA", "OFFICIAL"],
     scoreWeights: { virality: 0.34, discussion: 0.24, visual: 0.20, wow: 0.16, utility: 0.06 }
@@ -298,4 +298,35 @@ export const SOURCE_REWORK_V0430 = {
       "https://t.me/s/domclick"
     ]
   }
+};
+
+// v0.45.1 — «Что там в интернете?»: sources that tell viral stories with context
+// instead of bare memes. Disable: meme-only channels (no story → skipped by the
+// editor, each skip still costs a model call), social-media industry news (off-topic).
+export const INTERNET_SOURCE_FIX_V0451 = {
+  add: [
+    { name: "Лента.ру — Интернет и СМИ", url: "https://lenta.ru/rubrics/media/", group: "media" },
+    { name: "Афиша Daily — новости", url: "https://daily.afisha.ru/news/", group: "media" },
+    { name: "Газета.Ru — Социальные сети", url: "https://www.gazeta.ru/social/", group: "media" },
+    { name: "Пикабу — лучшее за сутки", url: "https://pikabu.ru/best", group: "media" },
+    { name: "UNILAD", url: "https://www.unilad.com/news", group: "media" },
+    { name: "LADbible", url: "https://www.ladbible.com/news", group: "media" },
+    { name: "indy100", url: "https://www.indy100.com/", group: "media" },
+    { name: "Dexerto — TikTok", url: "https://www.dexerto.com/tiktok/", group: "media" },
+    { name: "Mashable — Culture", url: "https://mashable.com/culture", group: "media" },
+    { name: "Metro — Weird", url: "https://metro.co.uk/news/weird/", group: "media" },
+    { name: "Oddity Central", url: "https://www.odditycentral.com/", group: "media" },
+    { name: "UPI — Odd News", url: "https://www.upi.com/Odd_News/", group: "media" }
+  ],
+  disable: [
+    "https://t.me/s/reels_memes",
+    "https://t.me/s/kruglyashiki",
+    "https://t.me/s/memachh",
+    "https://t.me/s/community_memy",
+    "https://t.me/s/twitt_ota",
+    "https://www.tubefilter.com/",
+    "https://www.socialmediatoday.com/",
+    "https://www.theverge.com/social-media",
+    "https://www.boredpanda.com/"
+  ]
 };

@@ -598,7 +598,7 @@ await test("channel DNA: all channels, prompt profiles, prefilter focus, rework 
     const section = prompt.split("### `" + id + "`")[1] || "";
     assert.ok(/\*\*Тип:\*\*/.test(section.split("\n### ")[0]), "prompt profile has a type: " + id);
   }
-  assert.match(prompt, /### `world` — 🌐 Что там в сети\?/);
+  assert.match(prompt, /### `world` — 🌐 Что там в интернете\?/);
   assert.notEqual(sq.sourceKey("https://www.reddit.com/r/aivideo/top/?t=day"), sq.sourceKey("https://www.reddit.com/r/ChatGPT/top/?t=day"), "each subreddit is its own source");
   const p1 = sq.buildPrefilterPrompt({ channelName: "X", topic: "t", focus: "вирусное", items: [{ title: "a" }] });
   assert.match(p1, /Фокус канала: вирусное/);
@@ -616,6 +616,17 @@ await test("channel DNA: all channels, prompt profiles, prefilter focus, rework 
     assert.equal(keys.size, plan.add.length, "no duplicate candidates in " + id);
     for (const u of plan.disable) assert.ok(!keys.has(sq.sourceKey(u)), "not both added and paused: " + u);
   }
+});
+
+await test("internet channel fix v0.45.1: sources plan is sane", async function() {
+  const dna = await import("../lib/channel-dna.js");
+  const sq = await import("../lib/source-quality.js");
+  const plan = dna.INTERNET_SOURCE_FIX_V0451;
+  const keys = new Set(plan.add.map(function(c){ return sq.sourceKey(c.url); }));
+  assert.equal(keys.size, plan.add.length, "no duplicate candidates");
+  for (const c of plan.add) { assert.match(c.url, /^https:\/\//); assert.ok(!/t\.me\/s\//.test(c.url) || c.group === "creator"); }
+  for (const u of plan.disable) assert.ok(!plan.add.some(function(c){ return c.url === u; }), "not both added and paused: " + u);
+  assert.match(dna.channelFocus("world"), /Что там в интернете/);
 });
 
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));
