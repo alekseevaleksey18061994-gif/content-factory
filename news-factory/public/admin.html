@@ -2056,6 +2056,27 @@ button{line-height:1.2!important}
 @media(max-width:900px){.cost-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.cost-service-grid{grid-template-columns:1fr}}
 @media(max-width:560px){.cost-kpis{grid-template-columns:1fr 1fr}.cost-kpi b{font-size:18px}.cost-bar-row{grid-template-columns:100px 1fr auto;gap:7px}}
 
+
+/* v0.34.12 — tidy queue card actions */
+.queue-actions.qa{display:flex!important;flex-direction:column!important;gap:10px!important;margin-top:12px;padding-top:12px;border-top:1px solid rgba(128,140,160,.22)!important}
+.qa-targets{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+.qa-label{font-size:11px;font-weight:800;color:#7a869b;text-transform:uppercase;letter-spacing:.06em;margin-right:2px}
+.qa .qa-target{position:relative;flex:1 1 0;min-width:0;display:flex!important;align-items:center;justify-content:center;gap:7px;height:38px;padding:0 10px!important;margin:0!important;border:1px solid rgba(98,91,255,.35);border-radius:12px;background:rgba(98,91,255,.07);color:#2c3550;font-size:13px!important;font-weight:800;cursor:pointer;user-select:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qa .qa-target input{position:absolute!important;opacity:0!important;width:1px!important;height:1px!important;min-width:0!important;margin:0!important;pointer-events:none}
+.qa .qa-check{flex:0 0 18px;width:18px;height:18px;border-radius:6px;border:2px solid #9aa6bd;background:#fff;display:grid;place-items:center;box-sizing:border-box}
+.qa .qa-target input:checked + .qa-check{background:#625bff;border-color:#625bff}
+.qa .qa-target input:checked + .qa-check::after{content:'';width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
+.qa .qa-target:has(input:not(:checked)){background:transparent;border-color:rgba(128,140,160,.35);color:#6b7486}
+.qa .qa-target.off{background:rgba(128,140,160,.08)!important;border-style:dashed!important;border-color:rgba(128,140,160,.35)!important;color:#98a1b2!important;cursor:not-allowed}
+.qa .qa-target.off .qa-check{border-color:#c5ccd8;background:transparent}
+.qa .qa-target small{font-size:11px;font-weight:600;margin-left:3px}
+.qa-main{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+.qa .qa-main button{min-height:46px!important;margin:0!important;border-radius:13px!important;font-size:14px!important}
+.qa .qa-remove{width:auto!important;min-width:104px!important;padding:0 16px!important}
+.qa-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.qa .qa-tool{display:flex;align-items:center;justify-content:center;min-height:36px!important;height:auto;margin:0!important;padding:6px 6px!important;border-radius:10px!important;font-size:12px!important;font-weight:700!important;line-height:1.2;text-align:center;white-space:normal;box-shadow:none!important}
+.qa .qa-note{border:1px dashed rgba(128,140,160,.35);color:#7a869b;background:transparent}
+@media(max-width:380px){.qa .qa-tool{font-size:10.5px!important}.qa .qa-target{font-size:12px!important}.qa-label{display:none}}
 </style>
 </head>
 <body>
@@ -3055,20 +3076,19 @@ function render(){
           (q.sourceUrl?'<div class="queue-meta"><a class="link" href="'+esc(q.sourceUrl)+'" target="_blank" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+
         '</div>'+
       '</div>'+
-      '<div class="queue-actions" onclick="event.stopPropagation()">'+
-        '<div class="publish-targets">'+
-          '<label class="target-pill all"><input id="all_'+q.id+'" type="checkbox" checked onchange="setQueueAll(\''+q.id+'\',this.checked)"> Все</label>'+
-          '<label class="target-pill"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"> Telegram</label>'+
-          '<label class="target-pill"><input id="vk_'+q.id+'" type="checkbox" '+(vkAllowed?'checked':'disabled')+' onchange="syncQueueAll(\''+q.id+'\')"> '+(vkAllowed?'VK':'VK · не подключён')+'</label>'+
+      '<div class="queue-actions qa" onclick="event.stopPropagation()">'+
+        '<div class="qa-targets"><span class="qa-label">Куда</span>'+
+          '<label class="qa-target"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"><span class="qa-check"></span>Telegram</label>'+
+          '<label class="qa-target'+(vkAllowed?'':' off')+'"><input id="vk_'+q.id+'" type="checkbox" '+(vkAllowed?'checked':'disabled')+' onchange="syncQueueAll(\''+q.id+'\')"><span class="qa-check"></span>'+(vkAllowed?'VK':'VK <small>не подключён</small>')+'</label>'+
         '</div>'+
-        '<div class="queue-action-row secondary">'+
-          '<button onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
-          '<button onclick="toggleWhy(\''+q.id+'\')">Почему этот пост?</button>'+
-          (q.videoUrl?'<div class="queue-video-priority">🎬 Видео в приоритете</div>':((q.originalImageUrl||q.imageUrl||q.mediaStatus==='copyright_pending')?'<button onclick="enhanceQueuePhoto(\''+q.id+'\')">✨ Новая AI-обложка</button>':'<div class="queue-video-priority">Медиа готово</div>'))+
+        '<div class="qa-main">'+
+          '<button class="primary publish qa-publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
+          '<button class="danger remove qa-remove" onclick="removeQueue(\''+q.id+'\')" title="Удалить из очереди">Удалить</button>'+
         '</div>'+
-        '<div class="queue-action-row secondary">'+
-          '<button class="primary publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
-          '<button class="danger remove" onclick="removeQueue(\''+q.id+'\')">Удалить</button>'+
+        '<div class="qa-tools">'+
+          '<button class="qa-tool" onclick="openQueuePreview(\''+q.id+'\')">Посмотреть</button>'+
+          '<button class="qa-tool" onclick="toggleWhy(\''+q.id+'\')">Почему этот пост</button>'+
+          (q.videoUrl?'<span class="qa-tool qa-note">🎬 Видео в приоритете</span>':((q.originalImageUrl||q.imageUrl||q.mediaStatus==='copyright_pending')?'<button class="qa-tool" onclick="enhanceQueuePhoto(\''+q.id+'\')">Новая обложка</button>':'<span class="qa-tool qa-note">Медиа готово</span>'))+
         '</div>'+
         whyPostHtml(q)+
       '</div>'+
