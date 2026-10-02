@@ -4649,6 +4649,7 @@ async function enhanceSourceCandidate(preparedUrl, payload, suffix) {
 
 async function prepareMediaDirector(payload) {
   const p = payload || {};
+  const deferExpensive = p.deferExpensive === true;
   const license = normalizeMediaLicense(p.mediaLicense || "unknown");
   const sourceAllowed = mediaLicenseAllowsReuse(license);
   const candidates = p.mediaCandidates && typeof p.mediaCandidates === "object" ? p.mediaCandidates : { images: [], videos: [] };
@@ -4659,6 +4660,15 @@ async function prepareMediaDirector(payload) {
   const selectedVideo = String((videos[0] && videos[0].url) || fallbackVideo || "").trim();
 
   if (!sourceAllowed) {
+    if (deferExpensive) {
+      return {
+        videoUrl: "", imageUrl: "", originalImageUrl: fallbackImage || (images[0] && images[0].url) || "",
+        originalVideoUrl: selectedVideo, generatedImageUrl: "", mediaPackUrls: [], originalMediaUrls: [],
+        mediaType: "pending", mediaStatus: "deferred_generation", mediaPriority: 90, mediaLicense: license,
+        mediaOrigin: "deferred", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+        mediaDirector: { strategy: "blocked_source_deferred", sourceCandidateCount: images.length + videos.length, selectedCount: 0 }
+      };
+    }
     const safe = await ensureMediaForNews(Object.assign({}, p, {
       imageUrl: fallbackImage || (images[0] && images[0].url) || "",
       videoUrl: selectedVideo
@@ -4675,14 +4685,16 @@ async function prepareMediaDirector(payload) {
   const originalImageUrls = [];
   const enhancedImageUrls = [];
   const enhancementLog = [];
+  const qualityLog = [];
   const seen = new Set();
-  const pool = images.map(function(x){ return x && x.url; }).filter(Boolean);
-  if (fallbackImage) pool.unshift(fallbackImage);
+  const pool = images.map(function(x){ return x && typeof x === "object" ? x : { url: String(x || ""), score: 55, reason: "candidate" }; }).filter(function(x){ return x && x.url; });
+  if (fallbackImage && !pool.some(function(x){ return x.url === fallbackImage; })) pool.unshift({ url: fallbackImage, score: 90, reason: "fallback_meta" });
 
   const fingerprints = [];
-  for (const sourceImage of pool) {
+  let bestRejectedScore = 0;
+  for (const sourceCandidate of pool) {
     if (imageUrls.length >= MEDIA_DIRECTOR_MAX_IMAGES) break;
-    const key = String(sourceImage || "");
+    const key = String(sourceCandidate.url || "");
     if (!key || seen.has(key)) continue;
     seen.add(key);
     const isExtra = imageUrls.length > 0;
@@ -4692,26 +4704,28 @@ async function prepareMediaDirector(payload) {
       const cached = String(prepared.imageUrl || "").trim();
       if (!cached) continue;
       const fp = await localImageFingerprint(cached);
-      if (!isExtra && (!fp || fp.width < 320 || fp.height < 180)) {
-        // Tracking pixels, icons and broken files are not a news photo.
-        console.log("MEDIA_MAIN_TOO_SMALL " + JSON.stringify({ source: p.sourceName || "", news: p.id || "", width: fp && fp.width || 0, height: fp && fp.height || 0 }));
-        continue;
+      const placeholder = isSourcePlaceholderImage(p.sourceName, p.articleUrl || p.id, fp);
+      const quality = assessMediaQuality(fp, sourceCandidate);
+      if (placeholder) {
+        quality.pass = false;
+        quality.score = Math.max(0, quality.score - 50);
+        quality.reasons = quality.reasons.concat(["source_placeholder"]);
       }
-      if (!isExtra && fp && (looksLikeGraphic(fp) || isSourcePlaceholderImage(p.sourceName, p.articleUrl || p.id, fp))) {
-        // Main photo is a logo / brand card / the source's default share image
-        // (e.g. the VK logo on every VK press release): not a news photo.
-        console.log("MEDIA_PLACEHOLDER_SKIPPED " + JSON.stringify({ source: p.sourceName || "", news: p.id || "", entropy: Number(fp.entropy || 0).toFixed(2), url: key.slice(0, 160) }));
+      bestRejectedScore = Math.max(bestRejectedScore, quality.score);
+      qualityLog.push({ url: key.slice(0, 220), score: quality.score, pass: quality.pass, reasons: quality.reasons });
+      if (!quality.pass) {
+        console.log("MEDIA_QUALITY_REJECTED " + JSON.stringify({
+          source: p.sourceName || "", news: p.id || "", score: quality.score,
+          reasons: quality.reasons, width: fp && fp.width || 0, height: fp && fp.height || 0
+        }));
         continue;
       }
       if (isExtra) {
-        // Extra photos must be large and genuinely different from the ones already chosen.
-        if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT || looksLikeGraphic(fp)) continue;
+        if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT) continue;
         if (fingerprints.some(function(prev){ return imageFingerprintsSimilar(prev, fp); })) continue;
       }
       if (fp) fingerprints.push(fp);
-      // Generative enhancement only for the main photo: it is rate-limited by OpenAI
-      // (5 input images/min) and must not rewrite every news photo in an album.
-      const enhanced = isExtra
+      const enhanced = (isExtra || deferExpensive)
         ? { url: cached, enhanced: false, error: "" }
         : await enhanceSourceCandidate(cached, p, "md" + imageUrls.length);
       const chosen = String(enhanced.url || cached).trim();
@@ -4720,81 +4734,120 @@ async function prepareMediaDirector(payload) {
       enhancedImageUrls.push(enhanced.enhanced ? chosen : "");
       originalImageUrls.push(String(prepared.originalImageUrl || key));
       enhancementLog.push({
-        originalUrl: String(prepared.originalImageUrl || key),
-        cachedUrl: cached,
-        enhancedUrl: enhanced.enhanced ? chosen : "",
-        enhanced: Boolean(enhanced.enhanced),
-        model: enhanced.model || "",
-        error: enhanced.error || ""
+        originalUrl: String(prepared.originalImageUrl || key), cachedUrl: cached,
+        enhancedUrl: enhanced.enhanced ? chosen : "", enhanced: Boolean(enhanced.enhanced),
+        model: enhanced.model || "", error: enhanced.error || ""
       });
     } catch (error) {
       console.warn("Media Director image skipped:", error.message);
     }
   }
 
+  const mainQuality = qualityLog.find(function(x){ return x.pass; });
   if (selectedVideo) {
     const poster = imageUrls[0] || "";
     return {
-      videoUrl: selectedVideo,
-      imageUrl: poster,
-      originalImageUrl: originalImageUrls[0] || fallbackImage || "",
-      originalVideoUrl: selectedVideo,
-      generatedImageUrl: "",
-      enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
-      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      mediaEnhancementLog: enhancementLog,
-      mediaType: "video",
-      mediaStatus: enhancedImageUrls.some(Boolean) ? "video_poster_enhanced" : "video_found",
-      mediaPriority: 1,
-      mediaLicense: license,
-      mediaOrigin: "source_media",
-      copyrightSafe: COPYRIGHT_SAFE_MODE,
-      copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
-      mediaDirector: {
-        strategy: "video_first",
-        sourceCandidateCount: images.length + videos.length,
-        selectedCount: 1 + imageUrls.length,
-        enhancedCount: enhancedImageUrls.filter(Boolean).length,
-        videoReason: videos[0] && videos[0].reason || (fallbackVideo ? "meta_video" : "")
-      }
+      videoUrl: selectedVideo, imageUrl: poster, originalImageUrl: originalImageUrls[0] || fallbackImage || "",
+      originalVideoUrl: selectedVideo, generatedImageUrl: "", enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
+      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES), originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
+      mediaEnhancementLog: enhancementLog, mediaQualityLog: qualityLog, mediaQualityScore: mainQuality ? mainQuality.score : bestRejectedScore,
+      mediaType: "video", mediaStatus: deferExpensive ? "video_approved_pending_enhancement" : (enhancedImageUrls.some(Boolean) ? "video_poster_enhanced" : "video_found"),
+      mediaPriority: 1, mediaLicense: license, mediaOrigin: "source_media", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      mediaDirector: { strategy: "video_first", sourceCandidateCount: images.length + videos.length, selectedCount: 1 + imageUrls.length, enhancedCount: enhancedImageUrls.filter(Boolean).length }
     };
   }
 
   if (imageUrls.length) {
     return {
-      videoUrl: "",
-      imageUrl: imageUrls[0],
-      originalImageUrl: originalImageUrls[0] || fallbackImage || "",
-      originalVideoUrl: "",
-      generatedImageUrl: "",
-      enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
-      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      mediaEnhancementLog: enhancementLog,
+      videoUrl: "", imageUrl: imageUrls[0], originalImageUrl: originalImageUrls[0] || fallbackImage || "",
+      originalVideoUrl: "", generatedImageUrl: "", enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
+      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES), originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
+      mediaEnhancementLog: enhancementLog, mediaQualityLog: qualityLog, mediaQualityScore: mainQuality ? mainQuality.score : bestRejectedScore,
       mediaType: imageUrls.length > 1 ? "album" : "photo",
-      mediaStatus: enhancedImageUrls.some(Boolean) ? "enhanced" : "photo_found",
-      mediaPriority: 2,
-      mediaLicense: license,
-      mediaOrigin: "source_media",
-      copyrightSafe: COPYRIGHT_SAFE_MODE,
-      copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
-      mediaDirector: {
-        strategy: imageUrls.length > 1 ? "enhanced_source_album" : "enhanced_source_photo",
-        sourceCandidateCount: images.length + videos.length,
-        selectedCount: imageUrls.length,
-        enhancedCount: enhancedImageUrls.filter(Boolean).length
-      }
+      mediaStatus: deferExpensive ? "photo_approved_pending_enhancement" : (enhancedImageUrls.some(Boolean) ? "enhanced" : "photo_found"),
+      mediaPriority: 2, mediaLicense: license, mediaOrigin: "source_media", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      mediaDirector: { strategy: deferExpensive ? "quality_source_deferred" : (imageUrls.length > 1 ? "enhanced_source_album" : "enhanced_source_photo"), sourceCandidateCount: images.length + videos.length, selectedCount: imageUrls.length, enhancedCount: enhancedImageUrls.filter(Boolean).length }
+    };
+  }
+
+  if (deferExpensive) {
+    return {
+      videoUrl: "", imageUrl: "", originalImageUrl: fallbackImage || "", originalVideoUrl: fallbackVideo || "",
+      generatedImageUrl: "", enhancedImageUrl: "", mediaPackUrls: [], originalMediaUrls: [],
+      mediaEnhancementLog: [], mediaQualityLog: qualityLog, mediaQualityScore: bestRejectedScore,
+      mediaType: "pending", mediaStatus: "deferred_missing", mediaPriority: 90, mediaLicense: license,
+      mediaOrigin: "deferred", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      mediaDirector: { strategy: "bad_or_missing_media_deferred", sourceCandidateCount: images.length + videos.length, selectedCount: 0, rejectedBestScore: bestRejectedScore }
     };
   }
 
   const fallback = await ensureMediaForNews(Object.assign({}, p, { imageUrl: "", videoUrl: "" }));
   fallback.mediaDirector = {
-    strategy: "ai_fallback",
-    sourceCandidateCount: images.length + videos.length,
-    selectedCount: fallback.generatedImageUrl ? 1 : 0
+    strategy: "ai_fallback", sourceCandidateCount: images.length + videos.length,
+    selectedCount: fallback.generatedImageUrl ? 1 : 0, rejectedBestScore: bestRejectedScore
   };
   return fallback;
+}
+
+function editorialCostTier(rewrite, editorialMeta, media) {
+  const importance = Number(editorialMeta && editorialMeta.importance || 0);
+  const score = Number(rewrite && rewrite.editorialScore || 0);
+  if ((media && media.videoUrl) || importance >= MEDIA_AI_COVER_MIN_IMPORTANCE || score >= 85) return 1;
+  if (importance >= 6 || score >= 65) return 2;
+  return 3;
+}
+
+async function finalizeApprovedMedia(media, payload, tier) {
+  const current = Object.assign({}, media || {});
+  const p = payload || {};
+  current.costTier = tier;
+
+  if (current.videoUrl) {
+    if (current.imageUrl && IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES) {
+      const enhanced = await enhanceSourceCandidate(current.imageUrl, p, "final_video_poster");
+      if (enhanced.url) {
+        current.imageUrl = enhanced.url;
+        current.enhancedImageUrl = enhanced.enhanced ? enhanced.url : current.enhancedImageUrl || "";
+        current.mediaStatus = enhanced.enhanced ? "video_poster_enhanced" : "video_found";
+      }
+    }
+    return current;
+  }
+
+  if (current.imageUrl) {
+    if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES) {
+      const enhanced = await enhanceSourceCandidate(current.imageUrl, p, "final_main");
+      if (enhanced.url) {
+        current.imageUrl = enhanced.url;
+        current.enhancedImageUrl = enhanced.enhanced ? enhanced.url : current.enhancedImageUrl || "";
+        current.mediaPackUrls = [current.imageUrl].concat((current.mediaPackUrls || []).slice(1)).slice(0, MEDIA_DIRECTOR_MAX_IMAGES);
+        current.mediaStatus = enhanced.enhanced ? "enhanced" : "photo_found";
+      }
+    }
+    return current;
+  }
+
+  if (tier === 1 && GENERATE_COVER_IF_MISSING) {
+    try {
+      const generated = await generateNewsCover(Object.assign({}, p, { costPurpose: "image_generation_final" }));
+      current.generatedImageUrl = generated.url;
+      current.mediaType = "generated";
+      current.mediaStatus = generated.economy ? "local_card" : "generated";
+      current.mediaOrigin = generated.economy ? "local_branded_card" : "ai_generated";
+      current.generatedBy = generated.model;
+      return current;
+    } catch (error) {
+      console.warn("Final AI cover failed, using local branded card:", error.message);
+    }
+  }
+
+  const local = await renderEconomyTextCard(Object.assign({}, p, { cardNote: tier === 1 ? "Резервная редакционная карточка" : "Редакционная карточка" }));
+  current.generatedImageUrl = local.url;
+  current.mediaType = "generated";
+  current.mediaStatus = "local_card";
+  current.mediaOrigin = "local_branded_card";
+  current.generatedBy = local.model;
+  return current;
 }
 
 function hasPublishableMedia(item) {
@@ -5373,6 +5426,7 @@ function collectOnce(trigger) {
         }
         const media = await prepareMediaDirector({
           id: id,
+          deferExpensive: MEDIA_DEFER_EXPENSIVE,
           articleUrl: url,
           title: originalTitle,
           text: originalText,
@@ -5428,8 +5482,11 @@ function collectOnce(trigger) {
         summary.found += 1;
         state.stats.discovered += 1;
         noteSourceEvent(source, "discovered");
+        if (Number.isFinite(Number(media.mediaQualityScore))) {
+          noteSourceEvent(source, Number(media.mediaQualityScore) >= MEDIA_QUALITY_MIN_SCORE ? "media_good" : "media_bad", { score: Number(media.mediaQualityScore) });
+        }
 
-        if (MEDIA_REQUIRED && !hasPublishableMedia(baseItem)) {
+        if (MEDIA_REQUIRED && !hasPublishableMedia(baseItem) && !["deferred_missing","deferred_generation"].includes(String(baseItem.metadata.mediaStatus || ""))) {
           baseItem.status = "missing_media";
           await saveNewsItem(baseItem);
           summary.skipped += 1;
@@ -5553,6 +5610,41 @@ function collectOnce(trigger) {
         baseItem.metadata.decisionSummary = qc.decisionSummary;
         baseItem.metadata.qcModel = qc.model || "";
         baseItem.metadata.sourceRole = sourceRole;
+
+        const costTier = editorialCostTier(rewrite, editorialV2Meta, media);
+        const finalMedia = await finalizeApprovedMedia(media, {
+          id: id,
+          newsId: id,
+          title: rewrite.title || originalTitle,
+          text: rewrite.text,
+          topicId: editorialChannelId(),
+          sourceName: source.name,
+          sourceUrl: url,
+          mediaLicense: media.mediaLicense || sourceMediaLicense(source)
+        }, costTier);
+        Object.assign(media, finalMedia);
+        Object.assign(baseItem.metadata, {
+          imageUrl: media.imageUrl || "",
+          originalImageUrl: media.originalImageUrl || "",
+          originalVideoUrl: media.originalVideoUrl || "",
+          videoUrl: media.videoUrl || "",
+          generatedImageUrl: media.generatedImageUrl || "",
+          enhancedImageUrl: media.enhancedImageUrl || "",
+          mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
+          mediaType: media.mediaType || "",
+          mediaStatus: media.mediaStatus || "",
+          mediaOrigin: media.mediaOrigin || "",
+          mediaQualityScore: media.mediaQualityScore == null ? null : Number(media.mediaQualityScore),
+          mediaCostTier: costTier,
+          generatedBy: media.generatedBy || ""
+        });
+        if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
+          baseItem.status = "missing_media_final";
+          baseItem.metadata.autoPublishBlocked = "missing_media_final";
+          await saveNewsItem(baseItem);
+          summary.skipped += 1;
+          continue;
+        }
 
         const postText = rewrite.text;
 
