@@ -31,6 +31,7 @@ export function sourceClassFor(source) {
   if (group === "community") return "COMMUNITY";
   if (group === "social") return "SOCIAL";
   if (/reddit\.com|pikabu\.ru|4pda\.to\/forum|forum\./.test(url) || /reddit|пикабу|форум|community|комьюнити/.test(name)) return "COMMUNITY";
+  if ((/t\.me|telegram\.me/.test(url) && /мем|юмор|твиттота|reels|кругляш|прикол|сообщество/.test(name))) return "COMMUNITY";
   if (/tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|instagram\.com|vk\.com\/clip|vkvideo\.ru/.test(url)) return "SOCIAL";
   if (group === "blogger" || group === "creator") return "CREATOR";
   if (group === "media") return "MEDIA";
