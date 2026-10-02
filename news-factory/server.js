@@ -11698,6 +11698,26 @@ function runSourceRework() {
 }
 setTimeout(runSourceRework, 90000);
 
+// v0.44.1: the recreated «Что там в интернете?» channel keeps the same world
+// editorial profile but gets an expanded viral/social source pack. This migration
+// reruns only that workspace; freshCandidates prevents duplicate sources.
+setTimeout(function runInternetSourcePackV0441() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "world") continue;
+      const migration = "v0.44.1-internet-source-pack";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws);
+        state.migrations.push(migration);
+        saveState();
+        console.log("INTERNET_SOURCE_PACK " + JSON.stringify(Object.assign({ workspace: ws.id }, result || {})));
+      });
+    }
+  })().catch(function(error){ console.warn("Internet source pack failed:", error.message); });
+}, 95000);
+
 setTimeout(setupNewChannels, 30000);
 setInterval(setupNewChannels, 15 * 60 * 1000);
 

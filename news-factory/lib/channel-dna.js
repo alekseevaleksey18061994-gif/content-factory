@@ -191,7 +191,15 @@ export const SOURCE_REWORK_V0430 = {
       { name: "Убойный юмор (Telegram)", url: "https://t.me/s/community_memy", group: "creator" },
       { name: "Афиша Daily (Telegram)", url: "https://t.me/s/afishadaily", group: "creator" },
       { name: "Reddit — r/interestingasfuck", url: "https://www.reddit.com/r/interestingasfuck/top/?t=day", group: "media" },
-      { name: "Reddit — r/BeAmazed", url: "https://www.reddit.com/r/BeAmazed/top/?t=day", group: "media" }
+      { name: "Reddit — r/BeAmazed", url: "https://www.reddit.com/r/BeAmazed/top/?t=day", group: "media" },
+      { name: "Reddit — r/popular", url: "https://www.reddit.com/r/popular/top/?t=day", group: "media" },
+      { name: "Reddit — r/nextfuckinglevel", url: "https://www.reddit.com/r/nextfuckinglevel/top/?t=day", group: "media" },
+      { name: "Reddit — r/Damnthatsinteresting", url: "https://www.reddit.com/r/Damnthatsinteresting/top/?t=day", group: "media" },
+      { name: "Reddit — r/Unexpected", url: "https://www.reddit.com/r/Unexpected/top/?t=day", group: "media" },
+      { name: "Tubefilter", url: "https://www.tubefilter.com/", group: "media" },
+      { name: "Social Media Today", url: "https://www.socialmediatoday.com/", group: "media" },
+      { name: "The Verge — Social Media", url: "https://www.theverge.com/social-media", group: "media" },
+      { name: "Bored Panda", url: "https://www.boredpanda.com/", group: "media" }
     ],
     disable: [
       "https://www.smithsonianmag.com/smart-news/",
