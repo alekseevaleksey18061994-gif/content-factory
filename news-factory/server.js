@@ -31,6 +31,18 @@ import {
   normalizeBalanceInput,
   computeApiBalance
 } from "./lib/costs.js";
+import {
+  atomicWriteFileSync,
+  loadJsonStoreWithRecovery,
+  createAtomicStoreWriter,
+  createKeyedDebouncer,
+  retryWithBackoff,
+  withAdvisoryLock,
+  parseCbrUsdRate,
+  resolveUsdRubFallback,
+  dispatchBudgetAlerts,
+  DEFAULT_USD_RUB_RATE
+} from "./lib/data-safety.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -647,22 +659,36 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const channelId = EDITORIAL_CHANNEL_IDS.includes(channelIdRaw) ? channelIdRaw : "";
   return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
 }
+function isUsableWorkspaceStoreFile(parsed) {
+  return Boolean(parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0);
+}
+const WORKSPACES_BAK_FILE = WORKSPACES_FILE + ".bak";
+const workspaceStoreWriter = createAtomicStoreWriter({
+  file: WORKSPACES_FILE,
+  bakFile: WORKSPACES_BAK_FILE,
+  validate: isUsableWorkspaceStoreFile,
+  backupIntervalMs: Math.max(0, Number(process.env.WORKSPACES_BACKUP_INTERVAL_MS || 60000))
+});
 function loadWorkspaceStore() {
   ensureDataDir();
-  try {
-    const parsed = JSON.parse(fs.readFileSync(WORKSPACES_FILE, "utf8"));
-    const rawWorkspaces = Array.isArray(parsed && parsed.workspaces) ? parsed.workspaces : [];
-    if (rawWorkspaces.length) {
-      const workspaces = rawWorkspaces.map(function(ws, index){ return normalizeWorkspaceMeta(ws, index === 0 ? DEFAULT_WORKSPACE_ID : "workspace-" + (index + 1)); });
-      const requestedDefault = String(parsed.defaultWorkspaceId || "");
-      const defaultWorkspaceId = workspaces.some(function(ws){ return ws.id === requestedDefault; }) ? requestedDefault : workspaces[0].id;
-      return { version: 1, defaultWorkspaceId, workspaces };
-    }
-  } catch {}
+  // A damaged workspaces.json is NEVER replaced by a fresh one-channel store: it is moved
+  // to workspaces.json.corrupt-<ts>, the last good .bak is used, and if that is unusable too
+  // loadJsonStoreWithRecovery throws so the process refuses to start (and overwrite data).
+  const loaded = loadJsonStoreWithRecovery({ file: WORKSPACES_FILE, bakFile: WORKSPACES_BAK_FILE, validate: isUsableWorkspaceStoreFile });
+  if (loaded.status !== "missing") {
+    if (loaded.status === "ok") workspaceStoreWriter.backupNow(); // a known-good copy exists from the very first boot after this change
+    const parsed = loaded.data;
+    const workspaces = parsed.workspaces.map(function(ws, index){ return normalizeWorkspaceMeta(ws, index === 0 ? DEFAULT_WORKSPACE_ID : "workspace-" + (index + 1)); });
+    const requestedDefault = String(parsed.defaultWorkspaceId || "");
+    const defaultWorkspaceId = workspaces.some(function(ws){ return ws.id === requestedDefault; }) ? requestedDefault : workspaces[0].id;
+    return { version: 1, defaultWorkspaceId, workspaces };
+  }
+  // First start only: neither workspaces.json nor its backup exists.
   const legacyState = loadLegacyState();
   const first = normalizeWorkspaceMeta({ id: DEFAULT_WORKSPACE_ID, name: "Что там у ИИ?", slug: TELEGRAM_PUBLIC_USERNAME || "chtotamai", initials: "AI", telegramChannel: CHANNEL, telegramPublicUsername: TELEGRAM_PUBLIC_USERNAME, state: legacyState }, DEFAULT_WORKSPACE_ID);
   const created = { version: 1, defaultWorkspaceId: first.id, workspaces: [first] };
-  try { fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(created, null, 2), "utf8"); } catch {}
+  if (fs.existsSync(WORKSPACES_FILE)) throw new Error("workspaces.json appeared during startup; refusing to overwrite it");
+  try { workspaceStoreWriter.write(JSON.stringify(created, null, 2)); } catch (error) { console.error("Cannot write initial workspaces.json:", error.message); }
   return created;
 }
 const workspaceContext = new AsyncLocalStorage();
@@ -715,9 +741,13 @@ function workspaceSummary(ws) {
 }
 function persistWorkspaceStore() {
   ensureDataDir();
-  fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
+  if (!workspaceStore || !Array.isArray(workspaceStore.workspaces) || !workspaceStore.workspaces.length) {
+    throw new Error("refusing to persist an empty workspace store");
+  }
+  // temp file + fsync + rename; the previous good copy is rotated to workspaces.json.bak
+  workspaceStoreWriter.write(JSON.stringify(workspaceStore, null, 2));
   const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
-  if (defaultWorkspace && defaultWorkspace.state) fs.writeFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2), "utf8");
+  if (defaultWorkspace && defaultWorkspace.state) atomicWriteFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2));
 }
 
 function ensureConfiguredWorkspaces() {
@@ -793,6 +823,10 @@ function ensureConfiguredWorkspaces() {
     }
   }
 
+  // NOTE (audit): this block recreates the "chtotamtachki" workspace on every start, so an
+  // intentionally deleted channel comes back. Everything below dereferences `cars.state`, and
+  // a tombstone list would have to be persisted in workspaces.json and honoured by the delete
+  // endpoint, so this is deliberately left unchanged (risky for existing deployments).
   let cars = workspaceStore.workspaces.find(function(ws){
     const slug = String(ws.slug || ws.telegramPublicUsername || ws.telegramChannel || "").replace(/^@/, "").toLowerCase();
     return slug === "chtotamtachki" || String(ws.name || "").trim().toLowerCase() === "что там у тачек?";
