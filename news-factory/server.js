@@ -8980,11 +8980,19 @@ setInterval(function() {
 
 async function retryUnavailableEditorialQueueItems() {
   if (costEconomyMode()) return { checked: 0, repaired: 0, held: 0, skipped: 0, economyMode: true };
-  if (!editorialV2Active() || !ANTHROPIC_API_KEY) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
-  const probe = await anthropicEditorialProbe(false);
-  if (!probe.ok) return { checked: 0, repaired: 0, held: 0, skipped: 0, error: probe.error || "Anthropic checker unavailable" };
+  if (!editorialV2Active()) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
 
-  const marker = "structured-json-v1";
+  // Retry even when Anthropic is temporarily unavailable. Editorial v2 now
+  // operates in explicit degraded mode with OpenAI as the primary checker,
+  // instead of leaving the whole queue on hold and causing empty slots.
+  let secondaryChecker = { ok: false, error: "ANTHROPIC_API_KEY не задан" };
+  if (ANTHROPIC_API_KEY) {
+    secondaryChecker = await anthropicEditorialProbe(false).catch(function(error){
+      return { ok: false, error: String(error && error.message || error) };
+    });
+  }
+
+  const marker = "structured-json-v2-degraded-safe";
   const candidates = (state.queue || []).filter(function(item) {
     if (!item || !item.editorialV2) return false;
     if (item.editorialV2RetryVersion === marker) return false;
@@ -9076,7 +9084,14 @@ async function retryUnavailableEditorialQueueItems() {
     }
   }
 
-  return { checked: candidates.length, repaired, held, skipped };
+  return {
+    checked: candidates.length,
+    repaired,
+    held,
+    skipped,
+    degradedSecondaryChecker: !secondaryChecker.ok,
+    secondaryCheckerError: secondaryChecker.ok ? "" : String(secondaryChecker.error || "").slice(0, 240)
+  };
 }
 
 // Re-runs every not-yet-published queue item through the current editorial v2 rules
