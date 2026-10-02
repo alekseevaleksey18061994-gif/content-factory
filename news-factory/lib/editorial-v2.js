@@ -437,6 +437,16 @@ export function normalizeWriterResult(raw, channelId) {
     conflicts: r.conflicts ? str(r.conflicts, 500) : null,
     legalFlags: Array.isArray(r.legal_flags) ? r.legal_flags.map(String).slice(0, 10) : [],
     crosspromoTarget: r.crosspromo_target ? str(r.crosspromo_target, 20) : null,
+    contentBucket: str(r.content_bucket, 40),
+    channelSignals: (function(){
+      const src = r.channel_signals && typeof r.channel_signals === "object" ? r.channel_signals : {};
+      const out = {};
+      ["virality","utility","discussion","visual","wow","local","deal"].forEach(function(key){
+        const n = Number(src[key]);
+        if (Number.isFinite(n)) out[key] = Math.max(0, Math.min(10, Math.round(n)));
+      });
+      return out;
+    })(),
     entities: Array.isArray(r.entities) ? r.entities.map(function(x){ return str(x, 60); }).filter(Boolean).slice(0, 4) : []
   };
   if (out.status === "ok") {
@@ -573,7 +583,7 @@ export function createEditorialPipeline(options) {
       const fixNotes = check.errors.map(function(e){ return { field: e.field, quote: e.quote, problem: e.problem, fix: e.fix }; });
       writer = await runWriter(channelId, Object.assign({}, request, {
         fix_notes: fixNotes,
-        previous_post: { title: post.title, tg_text: post.tgText, vk_text: post.vkText, format: post.format, hook_type: post.hookType, ending_type: post.endingType }
+        previous_post: { title: post.title, tg_text: post.tgText, vk_text: post.vkText, format: post.format, hook_type: post.hookType, ending_type: post.endingType, content_bucket: post.contentBucket, channel_signals: post.channelSignals }
       }));
       log.push({ step: "writer", round, model: writer.model, status: writer.result.status });
       if (writer.result.status === "skip") {
