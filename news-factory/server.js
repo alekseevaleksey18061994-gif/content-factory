@@ -12,17 +12,20 @@ import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPassw
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
-import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
+import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
   createModelClients,
   resolveChannelId,
   channelFreshnessHours,
   timeSlotFor,
+  moscowIso,
   legacyScores,
   loadPrompt as loadEditorialPrompt,
   CHANNEL_IDS as EDITORIAL_CHANNEL_IDS
 } from "./lib/editorial-v2.js";
+import { matchRegistry as matchEditorialRegistry } from "./lib/editorial-registry.js";
+import { CAPTION_VISIBLE_LIMIT, TELEGRAM_CAPTION_HARD_LIMIT, visibleLength, trimPostPreservingTail, missingProtected } from "./lib/telegram-caption.js";
 import {
   COST_STATE_MIGRATION_ID,
   collectLegacyCostRows,
@@ -2609,7 +2612,7 @@ async function replenishSources(reason) {
 
 // One cheap call over all fresh headlines before media and editorial work:
 // drops ads, listings, old press releases and off-topic links.
-const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "мировые новости", stars: "знаменитости", travel: "путешествия", shopping: "покупки и скидки", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "маркетплейсы и покупатели: правила Ozon, Wildberries и Яндекс Маркета, доставка, возвраты, новые товары и тренды; без рекламных подборок, промокодов и скидок", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
 async function prefilterCandidates(candidates, summary) {
   if (!candidates.length) return candidates;
   const now = new Date();
@@ -6276,34 +6279,25 @@ function formatTelegramPost(post) {
   return html.trim();
 }
 
+// Telegram counts VISIBLE characters (tags and link URLs are free); see lib/telegram-caption.js.
+// The body is shortened, legal marks / hashtags / signature are always kept.
+function telegramCaptionFits(html) { return visibleLength(html) <= TELEGRAM_CAPTION_HARD_LIMIT; }
+
 function trimPostToCaptionLimit(post, limit) {
-  const max = Number(limit || 900);
-  const out = Object.assign({}, post);
-  let text = String(out.text || "").trim();
-  let html = formatTelegramPost(out);
-  while (html.length > max && text.length > 140) {
-    const over = html.length - max;
-    let target = Math.max(140, text.length - over - 40);
-    let cut = text.slice(0, target).trim();
-    const punct = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf("\n"));
-    if (punct > Math.floor(target * 0.55)) cut = cut.slice(0, punct + 1).trim();
-    text = cut.replace(/[\s,;:–—-]+$/g, "") + "…";
-    out.text = text;
-    html = formatTelegramPost(out);
-  }
-  return out;
+  return trimPostPreservingTail(post, limit || CAPTION_VISIBLE_LIMIT, formatTelegramPost);
 }
 
 async function preparePostForSingleTelegramCaption(post) {
   const original = Object.assign({}, post);
   const channelName = String(currentWorkspace().name || "News Factory");
-  if (formatTelegramPost(original).length <= 900) return original;
+  if (visibleLength(formatTelegramPost(original)) <= CAPTION_VISIBLE_LIMIT) return original;
 
   if (OPENAI_API_KEY) {
     const prompt = [
       "Сожми готовый новостной пост канала «" + channelName + "» так, чтобы он целиком поместился в подпись к одному фото/видео Telegram.",
       "Сохрани только факты из исходного готового поста. Ничего не добавляй и не меняй цифры, имена, компании, даты и смысл.",
       "Заголовок до 90 знаков. Текст 430–620 знаков. 3–5 коротких абзацев.",
+      "Обязательно сохрани дословно: юридические пометки в скобках (иноагент, запрещённая организация), строку с хэштегами и подпись канала (@имя) в самом конце, строку «👉 Больше про…», если она есть.",
       "Можно сохранить 1–2 выделения **жирным** и максимум одну строку > для важного факта.",
       "Не добавляй слово «Источник» — ссылку добавит система.",
       "Верни строго JSON: {\"title\":\"...\",\"text\":\"...\"}.",
@@ -6334,15 +6328,22 @@ async function preparePostForSingleTelegramCaption(post) {
           title: String(parsed.title || original.title || "").trim(),
           text: String(parsed.text || "").trim()
         });
-        if (compact.text && formatTelegramPost(compact).length <= 900) return compact;
-        return trimPostToCaptionLimit(compact, 900);
+        // The rewrite runs after the fact-check: never accept one that lost legal marks,
+        // hashtags or the signature; fall back to the deterministic trim of the checked text.
+        const lost = missingProtected(original.text, compact.text);
+        if (lost.length) {
+          console.warn("TELEGRAM_CAPTION_COMPACT_REJECTED " + JSON.stringify({ lost: lost.slice(0, 5) }));
+          break;
+        }
+        if (compact.text && visibleLength(formatTelegramPost(compact)) <= CAPTION_VISIBLE_LIMIT) return compact;
+        return trimPostToCaptionLimit(compact, CAPTION_VISIBLE_LIMIT);
       } catch (error) {
         console.warn("Telegram caption compact failed:", error.message);
       }
     }
   }
 
-  return trimPostToCaptionLimit(original, 900);
+  return trimPostToCaptionLimit(original, CAPTION_VISIBLE_LIMIT);
 }
 
 function normalizePublishTargets(value) {
@@ -6515,7 +6516,7 @@ async function sendTelegramPost(post) {
     try {
       return await telegramMediaApi("sendVideo", {
         chat_id: telegramChannel,
-        caption: html.length <= 1000 ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
+        caption: telegramCaptionFits(html) ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
         parse_mode: "HTML",
         supports_streaming: true
       }, "video", videoUrl, "video");
@@ -6541,7 +6542,7 @@ async function sendTelegramPost(post) {
 
   imageUrl = String(post.imageUrl || post.generatedImageUrl || "").trim();
 
-  if (imageUrl && html.length <= 950) {
+  if (imageUrl && telegramCaptionFits(html)) {
     try {
       return await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
@@ -6600,7 +6601,7 @@ async function sendTelegramPost(post) {
         parse_mode: "HTML"
       }, "photo", imageUrl, "image");
     }
-    if (html && html.length > 950) {
+    if (html && !telegramCaptionFits(html)) {
       await telegramApi("sendMessage", {
         chat_id: telegramChannel,
         text: html,
@@ -8310,7 +8311,7 @@ const EDITORIAL_REGISTRY_FILE = path.join(DATA_DIR, "editorial-registry.json");
 const DEFAULT_EDITORIAL_REGISTRY = {
   // Organisations designated as extremist and banned in RF; journalists must mark them.
   banned_orgs: ["Meta Platforms", "Instagram", "Facebook"],
-  // Fill from the official Ministry of Justice register via the admin API.
+  // Not filled automatically: load from the official Ministry of Justice register via the admin API (POST /api/editorial/registry).
   foreign_agents: [],
   updatedAt: ""
 };
@@ -8348,17 +8349,11 @@ function saveEditorialRegistry(raw) {
 
 // Only names that actually occur in the sources are sent to the model: the full
 // register can be thousands of lines and must not bloat every request.
+// Matching is word-based with Russian stems and aliases (lib/editorial-registry.js);
+// a built-in list of banned organisations (Meta/Facebook/Instagram, ...) is always checked
+// in addition to the administrator's lists.
 function editorialRegistryForSources(sourceText) {
-  const registry = loadEditorialRegistry();
-  const hay = String(sourceText || "").toLowerCase();
-  const hit = function(name) {
-    const n = String(name || "").toLowerCase();
-    return n.length >= 3 && hay.includes(n);
-  };
-  return {
-    banned_orgs: registry.banned_orgs.filter(hit),
-    foreign_agents: registry.foreign_agents.filter(hit)
-  };
+  return matchEditorialRegistry(loadEditorialRegistry(), sourceText);
 }
 
 let editorialPipelineInstance = null;
@@ -8414,6 +8409,7 @@ function editorialRecentPosts(limit) {
       return {
         date: item.publishedAt,
         title: String(item.title || "").slice(0, 160),
+        text: stripHtml(String(item.text || "")).replace(/\s+/g, " ").trim().slice(0, 300),
         format: v2.format || item.contentFormatLabel || item.contentFormat || "",
         hook_type: v2.hookType || "",
         ending_type: v2.endingType || "",
@@ -8611,10 +8607,11 @@ async function runEditorialV2(sources, options) {
   const publishAt = new Date(Date.now() + 60 * 60 * 1000);
   const sourceText = sources.map(function(s){ return String(s.title || "") + "\n" + String(s.text || ""); }).join("\n\n");
   const request = {
-    now: new Date().toISOString(),
+    now: moscowIso(new Date()),
     news_id: String(opts.newsId || opts.news_id || ""),
     mode: opts.mode === "digest" ? "digest" : "post",
     time_slot: opts.timeSlot || timeSlotFor(publishAt),
+    vk_enabled: VK_PUBLISH_ENABLED && workspaceVkPublishingAllowed(currentWorkspace()),
     signature: editorialSignature(),
     posts_today: editorialPostsToday(),
     daily_limit: editorialDailyLimit(),
@@ -11593,6 +11590,20 @@ async function seedChannelSources(ws) {
     state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
     if (removed.length && !state.sourceBlockedHosts.includes("cnbc.com")) state.sourceBlockedHosts.push("cnbc.com");
   }
+  // Sources that an earlier seed list added and a newer list retired (trader feeds, promo channels,
+  // tabloids...). Only seeder-added sources are removed, never the editor's own.
+  const retired = retiredSeedSources(state.sources, channelId);
+  if (retired.length) {
+    const retiredIds = new Set(retired.map(function(x){ return x.id; }));
+    state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+    for (const x of retired) {
+      const key = sourceKey(x.url);
+      if (key && !state.sourceBlockedHosts.includes(key)) state.sourceBlockedHosts.push(key);
+      if (state.sourceStats) delete state.sourceStats[x.id];
+      removed.push(x.name);
+    }
+    state.sources = state.sources.filter(function(x){ return !retiredIds.has(x.id); });
+  }
   const added = [];
   const failed = [];
   for (const c of freshCandidates(seeds, state.sources, state.sourceBlockedHosts || [])) {
@@ -11622,6 +11633,10 @@ const SEED_LISTS_V0415 = new Set(["world", "stars"]);
 const SEED_LISTS_V0422 = new Set(["travel", "shopping", "home"]);
 // food/business/crypto: same problem (OpenAI rate limit), hand-made lists since v0.42.3.
 const SEED_LISTS_V0423 = new Set(["food", "business", "crypto"]);
+// v0.42.4: lists cleaned against the channel profiles (trader/promo/tabloid sources retired, replacements added,
+// sourceKey no longer collapses sibling rubrics). Re-seeded once under a new prefix: it adds the new entries and
+// drops only the retired seed sources (see retiredSeedSources); business only regains the sections the old key dropped.
+const SEED_LISTS_V0424 = new Set(["money", "kino", "stars", "world", "travel", "shopping", "home", "food", "business", "crypto"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -11633,7 +11648,7 @@ function setupNewChannels() {
       if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
       // kino/science/sport got hand-made lists in v0.41.3 (their first run relied
       // on AI discovery, which hit the OpenAI rate limit) — seed them again.
-      const migration = (SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
+      const migration = (SEED_LISTS_V0424.has(channelId) ? "v0.42.4-seed-" : SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         if (!state.migrations.includes(migration)) {

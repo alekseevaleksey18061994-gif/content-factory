@@ -5,8 +5,9 @@
 //   checker — verifies facts, Russian legal markings and profile bans.
 // Verification runs on two independent models (OpenAI GPT and Anthropic Claude).
 // The strictest verdict wins; "fix" sends the post back to the writer with notes
-// (max EDITORIAL_V2_MAX_FIX_ROUNDS), "reject" or an unavailable checker holds the
-// post for manual review instead of auto-publishing.
+// (max EDITORIAL_V2_MAX_FIX_ROUNDS). "reject" / "fix_exhausted" posts are NOT reviewed
+// manually: server.js (autoResolveQueue) removes them from the queue with status
+// auto_rejected and a reason; an unavailable checker keeps the post queued for a retry.
 //
 // The module has no dependency on server.js state: everything it needs is passed in,
 // which keeps it unit-testable with a mocked fetch.
@@ -88,6 +89,15 @@ function profileBlock(parsed, channelId) {
   return ["## 9. Профиль этого канала", intro, body].filter(Boolean).join("\n\n");
 }
 
+function legalSubsection(parsed) {
+  const section = parsed.sections.get("2") || "";
+  const start = section.search(/^###\s+2в\./m);
+  if (start < 0) return section ? [section] : [];
+  const rest = section.slice(start);
+  const next = rest.slice(3).search(/^###\s|^---\s*$/m);
+  return [(next < 0 ? rest : rest.slice(0, next + 3)).trim()];
+}
+
 export function buildSystemPrompt(parsed, role, channelId) {
   const pick = function(keys) {
     return keys.map(function(k){ return parsed.sections.get(k) || ""; }).filter(Boolean);
@@ -95,7 +105,9 @@ export function buildSystemPrompt(parsed, role, channelId) {
   // The shared prefix is identical for every channel, the channel profile goes last:
   // this keeps the provider-side prompt cache hot across all channels.
   if (role === "checker") {
-    return [parsed.header].concat(pick(["2", "13"]), [profileBlock(parsed, channelId)]).join("\n\n---\n\n");
+    // The checker needs only the legal rules (2в) and its own section: the rest of
+    // section 2 is the writer's filter ("return status skip") and only confuses a checker.
+    return [parsed.header].concat(legalSubsection(parsed), pick(["13"]), [profileBlock(parsed, channelId)]).join("\n\n---\n\n");
   }
   return [parsed.header].concat(pick(["0", "1", "2", "3", "4", "5", "6", "7", "8", "10", "11", "12"]), [profileBlock(parsed, channelId)]).join("\n\n---\n\n");
 }
@@ -116,6 +128,7 @@ export function loadPrompt(file) {
 // Channel / time helpers
 // ---------------------------------------------------------------------------
 
+// Name patterns (Cyrillic and Latin). Applied to the channel NAME first.
 const CHANNEL_HINTS = [
   [/(^|[^a-z])ai([^a-z]|$)|(^|[^а-яё])ии([^а-яё]|$)|нейросет/i, "ai"],
   [/тач|авто|car|tachk/i, "auto"],
@@ -135,26 +148,76 @@ const CHANNEL_HINTS = [
   [/крипт|crypto/i, "crypto"]
 ];
 
+// Telegram handles / slugs / workspace ids are Latin transliterations («chtotamdengi»,
+// «chtotamvkino»), so the Cyrillic patterns above never match them. Anchored on the handle
+// with the common «chtotam» prefix removed; unknown handles still fall through to "".
+const HANDLE_HINTS = [
+  [/^(ai|ii|nejroset\w*|neuro\w*|ai-main)$/, "ai"],
+  [/^(tachki|tachek|auto|avto|cars?)$/, "auto"],
+  [/^(dengi|deneg|money|finance|finansy)$/, "money"],
+  [/^(tech|technologii|tehnologii|tekhnologii|gadgets?)$/, "tech"],
+  [/^(igry|igr|games?|gaming)$/, "games"],
+  [/^(v?kino|movies?|films?|serialy)$/, "kino"],
+  [/^(nauka|nauki|science)$/, "science"],
+  [/^(sport|sporte)$/, "sport"],
+  [/^(news|world|mir|mire|vmire|v-mire)$/, "world"],
+  [/^(zvezd\w*|zvyozd\w*|stars?|celebs?|shoubiz\w*)$/, "stars"],
+  [/^(tour|tours|travel|trip|puteshestviya|puteshestvii|turizm)$/, "travel"],
+  [/^(pokupki|pokupok|pokupkah|shop|shopping|market\w*)$/, "shopping"],
+  [/^(dom|doma|home|domashnie\w*)$/, "home"],
+  [/^(eda|edy|edoi|food|foods)$/, "food"],
+  [/^(business|biznes|biz)$/, "business"],
+  [/^(crypto|krypto|kripto|kripta|cripto)$/, "crypto"]
+];
+
+function handleToChannel(value) {
+  const h = String(value || "").trim().toLowerCase().replace(/^@/, "");
+  if (!h) return "";
+  if (CHANNEL_IDS.includes(h)) return h;
+  const bare = h.replace(/^chtotam[-_]?/, "").replace(/^(chto-tam|chto_tam)[-_]?/, "");
+  for (const [re, id] of HANDLE_HINTS) if (re.test(bare)) return id;
+  return "";
+}
+
+// Resolution order: explicit profile pin (workspace.channelId) → legacy ids → handles
+// (id / slug / telegram username) → name patterns → loose patterns over all fields.
 export function resolveChannelId(workspace) {
   const ws = workspace || {};
   const explicit = String(ws.channelId || "").trim().toLowerCase();
   if (CHANNEL_IDS.includes(explicit)) return explicit;
   if (ws.id === "ai-main") return "ai";
   if (ws.id === "chtotamtachki") return "auto";
+  for (const handle of [ws.slug, ws.telegramPublicUsername, ws.telegramChannel, ws.id]) {
+    const id = handleToChannel(handle);
+    if (id) return id;
+  }
+  const name = String(ws.name || "");
+  for (const [re, id] of CHANNEL_HINTS) if (re.test(name)) return id;
   const hay = [ws.name, ws.slug, ws.telegramPublicUsername, ws.id].filter(Boolean).join(" ");
   for (const [re, id] of CHANNEL_HINTS) if (re.test(hay)) return id;
   return "";
 }
 
-// Moscow time slot for the moment the post is expected to go out.
-export function timeSlotFor(date) {
+// Moscow wall-clock helpers.
+const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+// ISO timestamp in Moscow time with an explicit +03:00 offset, as the prompt promises.
+export function moscowIso(date) {
   const d = date instanceof Date ? date : new Date(date || Date.now());
-  const msk = new Date(d.getTime() + 3 * 60 * 60 * 1000);
-  const hour = msk.getUTCHours();
-  if (msk.getUTCDay() === 0 && hour >= 18) return "sunday_digest";
-  if (hour >= 7 && hour < 11) return "morning";
+  return new Date(d.getTime() + MSK_OFFSET_MS).toISOString().replace(/\.\d{3}Z$/, "+03:00");
+}
+
+// Moscow time slot for the moment the post is expected to go out:
+// morning 07–11 (night 00–07 counts as morning: read in the morning), day 11–18,
+// evening 18–24. «sunday_digest» is only for the weekly digest itself: the caller passes
+// { digest: "sunday" } (digests normally pass their slot explicitly); ordinary Sunday
+// posts use the usual hour-based slot.
+export function timeSlotFor(date, options) {
+  const d = date instanceof Date ? date : new Date(date || Date.now());
+  if (options && options.digest === "sunday") return "sunday_digest";
+  const hour = new Date(d.getTime() + MSK_OFFSET_MS).getUTCHours();
   if (hour >= 11 && hour < 18) return "day";
-  if (hour >= 18 && hour < 23) return "evening";
+  if (hour >= 18) return "evening";
   return "morning";
 }
 
@@ -251,13 +314,25 @@ export function createModelClients(config) {
     let lastError = "";
     for (const model of models) {
       try {
-        const response = await fetchImpl("https://api.openai.com/v1/responses", {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: "Bearer " + cfg.openaiApiKey },
-          body: JSON.stringify({ model, instructions, input, max_output_tokens: (opts && opts.maxTokens) || 3000 }),
-          signal: AbortSignal.timeout(cfg.timeoutMs || 90000)
-        });
-        const data = await response.json().catch(function(){ return {}; });
+        const send = function(withTemperature) {
+          const body = { model, instructions, input, max_output_tokens: (opts && opts.maxTokens) || 3000 };
+          if (withTemperature) body.temperature = opts.temperature;
+          return fetchImpl("https://api.openai.com/v1/responses", {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: "Bearer " + cfg.openaiApiKey },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(cfg.timeoutMs || 90000)
+          });
+        };
+        // Per-role temperature (prompt section 12: writer 0.7-0.8, checker 0-0.2). Some models
+        // (reasoning ones) reject the parameter: retry the same model without it.
+        const wantTemperature = opts && typeof opts.temperature === "number";
+        let response = await send(wantTemperature);
+        let data = await response.json().catch(function(){ return {}; });
+        if (wantTemperature && !response.ok && response.status === 400 && /temperature/i.test(String(data && data.error && data.error.message || ""))) {
+          response = await send(false);
+          data = await response.json().catch(function(){ return {}; });
+        }
         if (!response.ok) { lastError = (data && data.error && data.error.message) || ("OpenAI HTTP " + response.status); continue; }
         reportUsage("openai", model, opts && opts.purpose || "editorial", data, opts && opts.extra);
         const text = openAIText(data);
@@ -522,7 +597,7 @@ export function createEditorialPipeline(options) {
     const system = buildSystemPrompt(parsed, "writer", channelId);
     const input = JSON.stringify(Object.assign({ role: "writer", channel_id: channelId }, request));
     const res = await clients.callOpenAI(system, input, {
-      maxTokens: 3500, purpose: "editorial_writer", extra: { news_id: String(request.news_id || "") }
+      maxTokens: 3500, temperature: 0.7, purpose: "editorial_writer", extra: { news_id: String(request.news_id || "") }
     });
     return { result: normalizeWriterResult(res.parsed, channelId), model: res.model };
   }
@@ -530,12 +605,17 @@ export function createEditorialPipeline(options) {
   async function runCheckers(channelId, post, request) {
     const parsed = loadPrompt(promptFile);
     const system = buildSystemPrompt(parsed, "checker", channelId);
+    // vk_text is checked (500-1500 chars) only where VK publishing is really on; otherwise a
+    // missing/short vk_text would push every post into fix_exhausted and deletion.
+    const vkEnabled = request.vk_enabled === true && request.mode !== "digest";
     const input = JSON.stringify({
       role: "checker",
       channel_id: channelId,
       now: request.now,
+      mode: request.mode === "digest" ? "digest" : "post",
+      vk_enabled: vkEnabled,
       post: {
-        title: post.title, tg_text: post.tgText, vk_text: post.vkText, cover: post.cover,
+        title: post.title, tg_text: post.tgText, vk_text: vkEnabled ? post.vkText : null, cover: post.cover,
         format: post.format, legal_flags: post.legalFlags, has_photo: Boolean(request.has_photo)
       },
       sources: request.sources,
@@ -543,7 +623,7 @@ export function createEditorialPipeline(options) {
     });
     const jobs = [
       clients.callOpenAI(system, input, {
-        maxTokens: 2500, purpose: "editorial_checker_openai", extra: { news_id: String(request.news_id || "") }
+        maxTokens: 2500, temperature: 0.1, purpose: "editorial_checker_openai", extra: { news_id: String(request.news_id || "") }
       })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "openai", r.model); })
         .catch(function(error){ return { provider: "openai", failed: true, error: String(error && error.message || error) }; })
