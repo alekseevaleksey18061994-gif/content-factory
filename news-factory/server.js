@@ -781,8 +781,24 @@ function loadWorkspaceStore() {
 const workspaceContext = new AsyncLocalStorage();
 let workspaceStore = loadWorkspaceStore();
 function getWorkspaceById(id) { const normalized = String(id || "").trim(); return workspaceStore.workspaces.find(function(ws){ return ws.id === normalized; }) || null; }
-function currentWorkspaceId() { const context = workspaceContext.getStore(); const requested = context && context.workspaceId; if (requested && getWorkspaceById(requested)) return requested; return workspaceStore.defaultWorkspaceId; }
-function currentWorkspace() { return getWorkspaceById(currentWorkspaceId()) || workspaceStore.workspaces[0]; }
+// A background task of a channel that was deleted meanwhile keeps running inside its old context. It must NOT
+// fall back to the default (AI) channel: its writes would land there and its publishes would go to the wrong
+// Telegram channel. It gets a detached, never persisted, channel-less workspace instead.
+const orphanWorkspaces = new Map();
+function orphanWorkspace(id) {
+  let ws = orphanWorkspaces.get(id);
+  if (!ws) {
+    ws = { id: id, name: "(удалён)", slug: "", initials: "NF", telegramChannel: "", telegramPublicUsername: "", orphan: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: freshWorkspaceState() };
+    ws.state.mode = "PAUSED";
+    orphanWorkspaces.set(id, ws);
+    if (orphanWorkspaces.size > 50) orphanWorkspaces.delete(orphanWorkspaces.keys().next().value);
+    console.warn("WORKSPACE_GONE " + JSON.stringify({ workspace: String(id).slice(0, 64), note: "background task of a removed channel is isolated from the default channel" }));
+  }
+  return ws;
+}
+function requestedWorkspaceIdFromContext() { const context = workspaceContext.getStore(); return String(context && context.workspaceId || "").trim(); }
+function currentWorkspaceId() { const requested = requestedWorkspaceIdFromContext(); if (requested) return requested; return workspaceStore.defaultWorkspaceId; }
+function currentWorkspace() { const requested = requestedWorkspaceIdFromContext(); if (requested) { return getWorkspaceById(requested) || orphanWorkspace(requested); } return getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0]; }
 function currentTelegramChannel() {
   const ws = currentWorkspace();
   return ws ? String(ws.telegramChannel || "").trim() : String(CHANNEL || "").trim();
@@ -2036,6 +2052,8 @@ async function enforceCopyrightSafeMedia(post) {
   out.originalVideoUrl = out.originalVideoUrl || out.videoUrl || "";
   out.imageUrl = "";
   out.videoUrl = "";
+  // The album pack holds third-party photos too: when the source media is not reusable it must not bypass the filter.
+  out.mediaPackUrls = [];
 
   if (!generatedIndependent) out.generatedImageUrl = "";
   if (!out.generatedImageUrl) {
@@ -5574,13 +5592,24 @@ function dynamicItemScore(item) {
 function dynamicUsedQueueIds() {
   const used = new Set();
   const schedule = ensureScheduleShape(state);
+  // An assignment whose slot has long passed (missed window, REVIEW mode, downtime) must not keep reserving the
+  // best post forever. A grace period keeps a late retry of the current slot working.
+  const now = new Date();
+  const today = moscowDateKey(now);
+  const nowMinutes = moscowMinutes(now);
   Object.keys(schedule.assignments || {}).forEach(function(day) {
-    Object.values(schedule.assignments[day] || {}).forEach(function(id) {
-      if (id) used.add(id);
+    Object.entries(schedule.assignments[day] || {}).forEach(function(entry) {
+      const id = entry[1];
+      if (!id) return;
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(entry[0] || ""));
+      const slotMinutes = m ? Number(m[1]) * 60 + Number(m[2]) : null;
+      const expired = day < today || (day === today && slotMinutes != null && slotMinutes + DYNAMIC_ASSIGNMENT_GRACE_MIN < nowMinutes);
+      if (!expired) used.add(id);
     });
   });
   return used;
 }
+const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 
 function dynamicBestQueueItem(kind) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
@@ -5596,7 +5625,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
   return (state.queue || [])
     .filter(function(item) {
-      if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
+      if (!(item && item.id && item.newsId && item.status !== "media_failed" && item.status !== "publish_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
+      { const pending = pendingAutoTargets(item); if (!pending.telegram && !pending.vk) return false; }
       if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
@@ -5781,6 +5811,9 @@ async function publishDynamicSlot(kind) {
     return { ok: true, skipped: "missing_item" };
   }
 
+  const releasePublishLock = acquirePublishLock(item.id);
+  if (!releasePublishLock) return { ok: true, skipped: "publish_in_progress", prepared: queueId };
+  try {
   if (dynamicItemAgeMs(item) > dynamicItemMaxAgeMs(item)) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
@@ -5790,6 +5823,11 @@ async function publishDynamicSlot(kind) {
   }
 
   if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) {
+    // Nothing is published in this slot, so it must not keep reserving the best post.
+    delete schedule.assignments[day][time];
+    item.preparedFor = "";
+    schedulerState.lastPublishedSlot = slotKey;
+    saveState();
     return { ok: true, skipped: "auto_disabled", prepared: queueId };
   }
 
@@ -5810,26 +5848,41 @@ async function publishDynamicSlot(kind) {
     return { ok: true, skipped: "cross_channel_duplicate", prepared: queueId };
   }
 
-  const autoTargets = autoPublishTargetsForPost(item);
-  const targets = {
-    telegram: autoTargets.telegram && item.telegramPublished !== true,
-    vk: autoTargets.vk && item.vkPublished !== true
-  };
+  const targets = pendingAutoTargets(item);
 
   if (!targets.telegram && !targets.vk) {
     delete schedule.assignments[day][time];
+    // Everything this channel publishes to is already done (or VK retries are used up): the post is finished.
+    if (item.telegramPublished || item.vkPublished) state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
     schedulerState.lastPublishedSlot = slotKey;
     saveState();
     return { ok: true, skipped: "auto_targets_disabled", slot: time };
   }
 
-  const result = await sendMultiPlatformPost(Object.assign({}, item, {
-    postId: item.id,
-    topicId: item.topicId || "default",
-    allow_text_fallback: allowTextFallbackForPost(item)
-  }), targets);
+  let result;
+  try {
+    result = await sendMultiPlatformPost(Object.assign({}, item, {
+      postId: item.id,
+      topicId: item.topicId || "default",
+      allow_text_fallback: allowTextFallbackForPost(item)
+    }), targets);
+  } catch (error) {
+    // A post that keeps failing must not hold the slot (and every following slot) hostage.
+    item.publishFailures = Number(item.publishFailures || 0) + 1;
+    item.lastPublishError = String(error && error.message || error).slice(0, 300);
+    const permanent = Boolean(error && (error.permanent || error.telegramPermanent));
+    if (permanent || item.publishFailures >= PUBLISH_FAILURE_MAX) {
+      item.status = "publish_failed";
+      delete schedule.assignments[day][time];
+      schedulerState.lastPublishedSlot = slotKey;
+      console.warn("PUBLISH_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), queueId: queueId, failures: item.publishFailures, permanent: permanent, error: item.lastPublishError }));
+    }
+    saveState();
+    throw error;
+  }
   if (result.safeMedia) Object.assign(item, result.safeMedia);
   const publishedAt = new Date().toISOString();
+  if (targets.vk && !result.vkPublished) item.vkAttempts = Number(item.vkAttempts || 0) + 1;
 
   if (result.telegramPublished) {
     item.telegramPublished = true;
@@ -5933,7 +5986,8 @@ async function publishDynamicSlot(kind) {
   schedulerState.lastPublishedAt = publishedAt;
 
   const mediaFailed = result.vkStatus === "media_failed";
-  if (!mediaFailed && (!targets.telegram || item.telegramPublished) && (!targets.vk || item.vkPublished)) {
+  const stillPending = pendingAutoTargets(item);
+  if (!mediaFailed && !stillPending.telegram && !stillPending.vk) {
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
   }
 
@@ -5983,6 +6037,9 @@ async function publishDynamicSlot(kind) {
     vkError: result.vkError || item.vkError || "",
     slot: time
   };
+  } finally {
+    releasePublishLock();
+  }
 }
 
 async function dynamicSchedulerTick() {
@@ -7073,6 +7130,28 @@ function autoPublishTargetsForPost(post) {
     telegram: topic.auto_publish_telegram !== false,
     vk: topic.auto_publish_vk !== false && workspaceVkPublishingAllowed(currentWorkspace())
   };
+}
+
+// VK is optional and often off. A post that already went to Telegram must never occupy a slot again just
+// because VK failed: VK gets a bounded number of automatic retries, then the post leaves the queue.
+const VK_AUTO_RETRY_MAX = Math.max(1, Number(process.env.VK_AUTO_RETRY_MAX || 2));
+const PUBLISH_FAILURE_MAX = Math.max(1, Number(process.env.PUBLISH_FAILURE_MAX || 3));
+function pendingAutoTargets(item) {
+  const t = autoPublishTargetsForPost(item);
+  return {
+    telegram: t.telegram && item.telegramPublished !== true,
+    vk: t.vk && item.vkPublished !== true && Number(item.vkAttempts || 0) < VK_AUTO_RETRY_MAX
+  };
+}
+
+// In-memory guard against publishing the same post twice at once (double click, retry, scheduler + manual).
+// It is taken BEFORE the first await and released in finally.
+const publishLocks = new Set();
+function acquirePublishLock(postId) {
+  const key = currentWorkspaceId() + ":" + String(postId || "");
+  if (publishLocks.has(key)) return null;
+  publishLocks.add(key);
+  return function release() { publishLocks.delete(key); };
 }
 
 async function notifyVkMediaFailure(post, error, attempts) {
@@ -10624,6 +10703,12 @@ const server = http.createServer(async function(req, res) {
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
 
     const requestedWorkspaceId = String(req.headers["x-workspace-id"] || url.searchParams.get("workspace") || "").trim();
+    // A named but unknown workspace (deleted channel, stale tab, typo) must not silently act on the default
+    // channel: a publish or a write would land in the wrong Telegram channel. Only the cabinet list itself
+    // tolerates it, because the admin UI uses that call to repair a stale selection.
+    if (requestedWorkspaceId && !getWorkspaceById(requestedWorkspaceId) && !(req.method === "GET" && p === "/api/workspaces")) {
+      return sendJson(res, 404, { ok: false, code: "unknown_workspace", error: "Неизвестный канал: " + requestedWorkspaceId.slice(0, 64) });
+    }
     const selectedWorkspace = getWorkspaceById(requestedWorkspaceId) || getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
     workspaceContext.enterWith({ workspaceId: selectedWorkspace.id });
 
@@ -11305,6 +11390,16 @@ const server = http.createServer(async function(req, res) {
         }
         return sendJson(res, 404, { ok: false, error: "Черновик не найден" });
       }
+
+      // Double click / retry / scheduler at the same time: only one publish of a post may be in flight.
+      const releaseManualPublishLock = acquirePublishLock(item.id);
+      if (!releaseManualPublishLock) {
+        return sendJson(res, 409, { ok: false, error: "Этот пост уже публикуется. Подождите завершения." });
+      }
+      let manualLockReleased = false;
+      const releaseManualOnce = function() { if (!manualLockReleased) { manualLockReleased = true; releaseManualPublishLock(); } };
+      res.on("close", releaseManualOnce);
+      res.on("finish", releaseManualOnce);
 
       let media = {
         imageUrl: item.imageUrl || "",

@@ -1,5 +1,6 @@
 // Offline regression tests for the security audit fixes (no network, no database).
 // Run: npm run test:security
+import net from "node:net";
 import assert from "node:assert/strict";
 import http from "node:http";
 import zlib from "node:zlib";
@@ -302,8 +303,15 @@ test("F-3 session token: legacy at epoch 0, rotates with epoch, epoch persists",
 // ---------------------------------------------------------------- server integration harness (no DB, no network)
 const PASSWORD = "audit-pass-123";
 const ADMIN_KEY_FOR_TESTS = "test-admin-key-0123456789";
+function freePort() {
+  return new Promise(function(resolve, reject) {
+    const srv = net.createServer();
+    srv.on("error", reject);
+    srv.listen(0, "127.0.0.1", function() { const port = srv.address().port; srv.close(function() { resolve(port); }); });
+  });
+}
 async function startApp(extraEnv) {
-  const port = 41000 + Math.floor(Math.random() * 2000);
+  const port = await freePort();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nf-sec-"));
   const env = Object.assign({}, process.env, {
     PORT: String(port), DATA_DIR: dataDir, DATABASE_URL: "", ADMIN_UI_PASSWORD: PASSWORD, ADMIN_UI_PASSWORD_SHA256: "", ADMIN_UI_PASSWORD_SCRYPT: "",
