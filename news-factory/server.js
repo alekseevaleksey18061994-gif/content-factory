@@ -4426,12 +4426,76 @@ async function ensureMediaForNews(payload) {
   // Source photo: cache it on our media domain so the admin, Telegram and VK do not depend on hotlinking.
   if (imageUrl) {
     const preparedImage = await prepareReusableSourceImage(imageUrl, payload.id || "photo");
-    const publishImageUrl = preparedImage.imageUrl || imageUrl;
+
+    // A dead/expired hotlink must never remain as the post image. If the source
+    // photo cannot be cached, create an independent cover from the news facts.
+    if (!preparedImage.imageUrl) {
+      if (GENERATE_COVER_IF_MISSING) {
+        try {
+          const generated = await generateNewsCover(payload);
+          return {
+            videoUrl: "",
+            imageUrl: "",
+            originalImageUrl: preparedImage.originalImageUrl || imageUrl,
+            originalVideoUrl: "",
+            generatedImageUrl: generated.url,
+            mediaType: "generated",
+            mediaStatus: "generated",
+            mediaPriority: 3,
+            canEnhance: false,
+            mediaLicense: mediaLicense,
+            mediaOrigin: "ai_generated",
+            copyrightSafe: COPYRIGHT_SAFE_MODE,
+            copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+            copyrightMediaDecision: "source_image_unavailable_generated_cover",
+            generatedBy: generated.model,
+            mediaError: preparedImage.cacheError || ""
+          };
+        } catch (error) {
+          console.warn("Source image unavailable and cover generation failed:", error.message);
+          return {
+            videoUrl: "",
+            imageUrl: "",
+            originalImageUrl: preparedImage.originalImageUrl || imageUrl,
+            originalVideoUrl: "",
+            generatedImageUrl: "",
+            mediaType: "none",
+            mediaStatus: "generation_error",
+            mediaPriority: 99,
+            canEnhance: false,
+            mediaLicense: mediaLicense,
+            mediaOrigin: "source_image_unavailable",
+            copyrightSafe: COPYRIGHT_SAFE_MODE,
+            copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+            mediaError: String((preparedImage.cacheError || "") + "; " + error.message).slice(0, 600)
+          };
+        }
+      }
+      return {
+        videoUrl: "",
+        imageUrl: "",
+        originalImageUrl: preparedImage.originalImageUrl || imageUrl,
+        originalVideoUrl: "",
+        generatedImageUrl: "",
+        mediaType: "none",
+        mediaStatus: "missing",
+        mediaPriority: 99,
+        canEnhance: false,
+        mediaLicense: mediaLicense,
+        mediaOrigin: "source_image_unavailable",
+        copyrightSafe: COPYRIGHT_SAFE_MODE,
+        copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+        mediaError: preparedImage.cacheError || "Фото источника недоступно"
+      };
+    }
+
+    const publishImageUrl = preparedImage.imageUrl;
     if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES && sourceReuseAllowed) {
       try {
         const enhanced = await enhanceNewsImage({
           id: payload.id || newId("enhance"),
           title: payload.title || "",
+          text: payload.text || "",
           imageUrl: publishImageUrl
         });
         return {
@@ -4447,19 +4511,20 @@ async function ensureMediaForNews(payload) {
           mediaPriority: 2,
           canEnhance: true,
           mediaLicense: mediaLicense,
-          mediaOrigin: "ai_enhanced_source",
+          mediaOrigin: "quality_enhanced_source",
           copyrightSafe: COPYRIGHT_SAFE_MODE,
           copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
           enhancedBy: enhanced.model,
           enhancedAt: new Date().toISOString()
         };
       } catch (error) {
-        console.warn("Auto image enhancement failed, using licensed source photo:", error.message);
+        console.warn("Auto image enhancement failed, using cached source photo:", error.message);
       }
     }
     return {
       videoUrl: "",
       imageUrl: publishImageUrl,
+      cachedSourceImageUrl: publishImageUrl,
       originalImageUrl: preparedImage.originalImageUrl || imageUrl,
       originalVideoUrl: "",
       generatedImageUrl: "",
@@ -12774,82 +12839,140 @@ const server = http.createServer(async function(req, res) {
       const body = await readJsonObject(req);
       const item = (state.queue || []).find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
-      if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — улучшать фото не требуется" });
+      if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — обложка не требуется" });
 
-      const sourceImage = String(item.originalImageUrl || item.imageUrl || "").trim();
+      const originalSourceImage = String(item.originalImageUrl || item.cachedSourceImageUrl || item.imageUrl || "").trim();
+      const sourceImage = String(item.cachedSourceImageUrl || item.imageUrl || item.originalImageUrl || "").trim();
+      const license = sourceMediaLicense(item);
+
+      const syncCoverMetadata = async function(patch) {
+        if (!db || !dbReady || !item.newsId) return;
+        try {
+          await db.query(
+            "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
+            [item.newsId, JSON.stringify(patch || {}), currentWorkspaceId()]
+          );
+        } catch (dbError) {
+          console.warn("Queue cover DB update failed:", item.newsId, dbError.message);
+        }
+      };
+
+      const applyGeneratedCover = async function(reason) {
+        const generated = await generateNewsCover({
+          id: item.newsId || item.id,
+          newsId: item.newsId || item.id,
+          title: item.title,
+          text: item.text,
+          sourceName: item.sourceName || "",
+          topicId: item.topicId || currentWorkspace().channelId || ""
+        });
+        item.originalImageUrl = originalSourceImage || sourceImage || "";
+        item.imageUrl = "";
+        item.enhancedImageUrl = "";
+        item.cachedSourceImageUrl = "";
+        item.generatedImageUrl = generated.url;
+        item.mediaPackUrls = [];
+        item.mediaType = "generated";
+        item.mediaStatus = "generated";
+        item.mediaPriority = 3;
+        item.mediaLicense = license;
+        item.mediaOrigin = "ai_generated";
+        item.copyrightSafe = COPYRIGHT_SAFE_MODE;
+        item.copyrightMediaDecision = reason ? "source_image_unavailable_generated_cover" : "manual_generated_cover";
+        item.generatedBy = generated.model;
+        item.generatedAt = new Date().toISOString();
+        item.canEnhance = false;
+        item.mediaEnhancementError = reason ? String(reason).slice(0, 600) : "";
+        await syncCoverMetadata({
+          originalImageUrl: item.originalImageUrl,
+          imageUrl: "",
+          enhancedImageUrl: "",
+          cachedSourceImageUrl: "",
+          generatedImageUrl: generated.url,
+          mediaPackUrls: [],
+          mediaType: item.mediaType,
+          mediaStatus: item.mediaStatus,
+          mediaPriority: item.mediaPriority,
+          mediaLicense: item.mediaLicense,
+          mediaOrigin: item.mediaOrigin,
+          copyrightSafe: item.copyrightSafe,
+          copyrightMediaDecision: item.copyrightMediaDecision,
+          generatedBy: item.generatedBy,
+          generatedAt: item.generatedAt,
+          mediaEnhancementError: item.mediaEnhancementError
+        });
+        saveState();
+        return generated;
+      };
 
       try {
-        const license = sourceMediaLicense(item);
         if (COPYRIGHT_SAFE_MODE && !mediaLicenseAllowsReuse(license)) {
-          const generated = await generateNewsCover({
+          const generated = await applyGeneratedCover("source_media_not_reusable");
+          return sendJson(res, 200, { ok: true, mode: "generated", imageUrl: generated.url, model: generated.model, copyrightSafe: true });
+        }
+
+        if (!sourceImage) {
+          const generated = await applyGeneratedCover("source_image_missing");
+          return sendJson(res, 200, { ok: true, mode: "generated", imageUrl: generated.url, model: generated.model, fallback: true });
+        }
+
+        try {
+          const enhanced = await enhanceNewsImage({
             id: item.newsId || item.id,
             title: item.title,
             text: item.text,
-            sourceName: item.sourceName || ""
+            imageUrl: sourceImage
           });
-          item.originalImageUrl = item.originalImageUrl || sourceImage || "";
-          item.imageUrl = "";
-          item.videoUrl = "";
-          item.generatedImageUrl = generated.url;
-          item.mediaType = "generated";
-          item.mediaStatus = "generated";
+          item.originalImageUrl = originalSourceImage || sourceImage;
+          item.cachedSourceImageUrl = isLocalMediaUrl(sourceImage) ? sourceImage : (item.cachedSourceImageUrl || "");
+          item.imageUrl = enhanced.url;
+          item.enhancedImageUrl = enhanced.url;
+          item.generatedImageUrl = "";
+          item.mediaPackUrls = [enhanced.url];
+          item.mediaType = "photo";
+          item.mediaStatus = "enhanced";
           item.mediaPriority = 2;
           item.mediaLicense = license;
-          item.mediaOrigin = "ai_generated";
-          item.copyrightSafe = true;
-          item.copyrightMediaDecision = "third_party_media_blocked";
-          item.generatedBy = generated.model;
-          item.generatedAt = new Date().toISOString();
-          item.canEnhance = false;
+          item.mediaOrigin = "quality_enhanced_source";
+          item.copyrightSafe = COPYRIGHT_SAFE_MODE;
+          item.copyrightMediaDecision = "source_photo_quality_enhanced";
+          item.enhancedBy = enhanced.model;
+          item.enhancedAt = new Date().toISOString();
+          item.canEnhance = true;
+          item.mediaEnhancementError = "";
+
+          await syncCoverMetadata({
+            originalImageUrl: item.originalImageUrl,
+            cachedSourceImageUrl: item.cachedSourceImageUrl,
+            imageUrl: item.imageUrl,
+            enhancedImageUrl: item.enhancedImageUrl,
+            generatedImageUrl: "",
+            mediaPackUrls: item.mediaPackUrls,
+            mediaType: item.mediaType,
+            mediaStatus: item.mediaStatus,
+            mediaPriority: item.mediaPriority,
+            mediaLicense: item.mediaLicense,
+            mediaOrigin: item.mediaOrigin,
+            copyrightSafe: item.copyrightSafe,
+            copyrightMediaDecision: item.copyrightMediaDecision,
+            enhancedBy: item.enhancedBy,
+            enhancedAt: item.enhancedAt,
+            mediaEnhancementError: ""
+          });
+
           saveState();
-          return sendJson(res, 200, { ok: true, imageUrl: generated.url, model: generated.model, copyrightSafe: true });
+          return sendJson(res, 200, { ok: true, mode: "enhanced", imageUrl: enhanced.url, model: enhanced.model });
+        } catch (enhanceError) {
+          console.warn("QUEUE_COVER_SOURCE_FALLBACK " + JSON.stringify({
+            workspace: currentWorkspaceId(),
+            itemId: item.id,
+            error: String(enhanceError && enhanceError.message || enhanceError).slice(0, 180)
+          }));
+          const generated = await applyGeneratedCover(enhanceError && enhanceError.message || "source_image_unavailable");
+          return sendJson(res, 200, { ok: true, mode: "generated", imageUrl: generated.url, model: generated.model, fallback: true });
         }
-
-        if (!sourceImage) return sendJson(res, 400, { ok: false, error: "У новости нет найденного фото для улучшения" });
-        const enhanced = await enhanceNewsImage({
-          id: item.newsId || item.id,
-          title: item.title,
-          text: item.text,
-          imageUrl: sourceImage
-        });
-        item.originalImageUrl = sourceImage;
-        item.imageUrl = sourceImage;
-        item.generatedImageUrl = enhanced.url;
-        item.mediaType = "enhanced";
-        item.mediaStatus = "enhanced";
-        item.mediaPriority = 2;
-        item.mediaLicense = license;
-        item.mediaOrigin = "licensed_derivative";
-        item.copyrightSafe = COPYRIGHT_SAFE_MODE;
-        item.enhancedBy = enhanced.model;
-        item.enhancedAt = new Date().toISOString();
-        item.canEnhance = true;
-
-        if (db && dbReady && item.newsId) {
-          const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 AND workspace_id=$2 LIMIT 1", [item.newsId, currentWorkspaceId()]);
-          if (row.rowCount) {
-            const metadata = Object.assign({}, row.rows[0].metadata || {}, {
-              originalImageUrl: sourceImage,
-              imageUrl: sourceImage,
-              generatedImageUrl: enhanced.url,
-              mediaType: "enhanced",
-              mediaStatus: "enhanced",
-              mediaPriority: 2,
-              mediaLicense: license,
-              mediaOrigin: "licensed_derivative",
-              copyrightSafe: COPYRIGHT_SAFE_MODE,
-              copyrightPolicyVersion: "v1",
-              enhancedBy: enhanced.model,
-              enhancedAt: item.enhancedAt
-            });
-            await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, JSON.stringify(metadata), currentWorkspaceId()]);
-          }
-        }
-
-        saveState();
-        return sendJson(res, 200, { ok: true, imageUrl: enhanced.url, model: enhanced.model });
       } catch (error) {
-        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось улучшить фото" });
+        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось подготовить обложку" });
       }
     }
 
