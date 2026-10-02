@@ -3181,7 +3181,7 @@ function renderNetworkDashboard(){
       var missing=networkMissingLabels(item);
       var status=s.autoPublish?'Авто':(String(s.mode||'').toUpperCase()==='PAUSED'?'Пауза':'Контроль');
       var statusClass=s.autoPublish?'good':(String(s.mode||'').toUpperCase()==='PAUSED'?'bad':'warn');
-      return '<button class="network-account" type="button" onclick="openWorkspaceFromNetwork(\''+esc(item.id)+'\')">'+
+      return '<button class="network-account" type="button" onclick="openWorkspaceFromNetwork('+ja(item.id)+')">'+
         '<span class="network-account-head"><span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
         '<span class="network-account-copy"><b>'+esc(item.name||'Канал')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
         '<span class="network-state '+statusClass+'">'+esc(status)+'</span></span>'+
@@ -3200,7 +3200,7 @@ function renderNetworkDashboard(){
     var problemItems=workspaces.filter(function(item){return wsMissing(item).length});
     attention.innerHTML=problemItems.length?problemItems.map(function(item){
       var labels=networkMissingLabels(item);
-      return '<button class="network-attention-row" type="button" onclick="openWorkspaceFromNetwork(\''+esc(item.id)+'\')">'+
+      return '<button class="network-attention-row" type="button" onclick="openWorkspaceFromNetwork('+ja(item.id)+')">'+
         '<span><b>'+esc(item.name||'Канал')+'</b><small>'+esc(labels.join(' · '))+'</small></span><span>→</span>'+
       '</button>';
     }).join(''):'<div class="network-all-good"><b>Все основные настройки заполнены</b><small>Критичных проблем по аккаунтам не найдено.</small></div>';
