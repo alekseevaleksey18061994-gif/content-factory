@@ -4722,7 +4722,23 @@ async function fetchText(url, timeoutMs) {
   if (!response.ok) throw new Error("HTTP " + response.status + " " + url);
   const type = response.headers.get("content-type") || "";
   if (!type.includes("text/html") && !type.includes("application/xhtml")) throw new Error("Unsupported content type: " + type);
-  return await response.text();
+  return decodeHtmlBody(await response.arrayBuffer(), type);
+}
+
+// Pages in windows-1251 / koi8-r (Пикабу, some Russian media) came out as
+// «����» because response.text() always decodes UTF-8. Charset is taken from
+// the Content-Type header, then from <meta charset> in the first bytes.
+function decodeHtmlBody(buffer, contentType) {
+  const bytes = new Uint8Array(buffer);
+  let charset = (String(contentType || "").match(/charset=["']?([\w-]+)/i) || [])[1] || "";
+  if (!charset) {
+    const head = new TextDecoder("latin1").decode(bytes.subarray(0, 4096));
+    charset = (head.match(/<meta[^>]+charset=["']?([\w-]+)/i) || [])[1] || "";
+  }
+  charset = charset.toLowerCase();
+  if (!charset || charset === "utf-8" || charset === "utf8") return new TextDecoder("utf-8").decode(bytes);
+  try { return new TextDecoder(charset).decode(bytes); }
+  catch { return new TextDecoder("utf-8").decode(bytes); }
 }
 
 // Per-URL counter of transient failures (download, writer outage, DB write). Kept in the workspace
