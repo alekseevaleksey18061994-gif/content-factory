@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { normalizeBalanceInput, computeApiBalance } from "../lib/costs.js";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "news-factory-costs-"));
 const port = 39321;
@@ -40,6 +41,49 @@ async function waitForHealth() {
   throw new Error("server did not become healthy: "+stderr.slice(-600));
 }
 
+// ---- API balance: pure helpers ------------------------------------------
+{
+  const now = new Date("2026-10-02T12:00:00Z");
+  assert.equal(normalizeBalanceInput("google", {amountUsd:5}, null, now).ok, false, "unknown provider rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:-1}, null, now).ok, false, "negative rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:"abc"}, null, now).ok, false, "NaN rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:""}, null, now).ok, false, "empty rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:Infinity}, null, now).ok, false, "Infinity rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:5, asOf:"2026-12-01T00:00:00Z"}, null, now).ok, false, "future asOf rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:5, lowUsd:-2}, null, now).ok, false, "negative threshold rejected");
+  const ok = normalizeBalanceInput("anthropic", {amountUsd:"12,50"}, null, now);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.value.amountUsd, 12.5, "comma decimal accepted");
+  assert.equal(ok.value.lowUsd, 5, "default threshold");
+  assert.equal(ok.value.asOf, now.toISOString(), "asOf defaults to now");
+  const keep = normalizeBalanceInput("anthropic", {amountUsd:3}, {lowUsd:20}, now);
+  assert.equal(keep.value.lowUsd, 20, "previous threshold kept");
+  assert.equal(normalizeBalanceInput("openai", {clear:true}, null, now).clear, true);
+  // regressions from adversarial review: out-of-range asOf poisoned /api/costs; sloppy coercion
+  for (const asOf of ["-000001-01-01T00:00:00Z", "-271821-04-20T00:00:00.000Z", "0000-01-01T00:00:00Z", "1970-01-01T00:00:00Z"]) {
+    assert.equal(normalizeBalanceInput("openai", {amountUsd:10, asOf}, null, now).ok, false, "old asOf rejected: " + asOf);
+  }
+  for (const asOf of [5, true, {}, []]) assert.equal(normalizeBalanceInput("openai", {amountUsd:10, asOf}, null, now).ok, false, "non-string asOf rejected");
+  for (const amountUsd of ["0x10", true, false, [], [7], null, "1e3", "1,000.5", " ", {}]) assert.equal(normalizeBalanceInput("openai", {amountUsd}, null, now).ok, false, "sloppy amount rejected: " + JSON.stringify(amountUsd));
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:10, lowUsd:true}, null, now).ok, false, "boolean threshold rejected");
+  assert.equal(normalizeBalanceInput(["openai"], {amountUsd:10}, null, now).ok, false, "array provider rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:0}, null, now).ok, true, "zero balance allowed");
+
+  const cfg = { amountUsd: 50, asOf: "2026-09-30T12:00:00Z", lowUsd: 10 };
+  const a = computeApiBalance(cfg, 14, 14, now, 400);
+  assert.equal(a.remainingUsd, 36);
+  assert.equal(a.status, "ok");
+  assert.equal(Math.round(a.avgDailyUsd), 7, "2 days window -> 7/day");
+  assert.equal(Math.round(a.daysLeft), 5);
+  assert.equal(computeApiBalance(cfg, 45, 45, now, 400).status, "low");
+  const empty = computeApiBalance(cfg, 60, 60, now, 400);
+  assert.equal(empty.status, "empty");
+  assert.equal(empty.daysLeft, null, "no days-left when balance is empty");
+  assert.equal(computeApiBalance(cfg, 0, 0, now, 400).daysLeft, null, "no spend -> unknown pace");
+  assert.equal(computeApiBalance({amountUsd:5, asOf:"2025-01-01T00:00:00Z", lowUsd:1}, 0, 0, now, 400).spendIncomplete, true);
+  console.log("ok - api balance helpers");
+}
+
 try {
   const health=await waitForHealth();
   assert.equal(health.ok,true);
@@ -56,6 +100,24 @@ try {
     assert.ok(Object.prototype.hasOwnProperty.call(body,key),"missing "+key);
   }
   console.log("ok - local health and /api/costs smoke");
+  // balance endpoint: validation + persistence (no DB in this smoke, so spend is unavailable)
+  const post=function(body){return fetch("http://127.0.0.1:"+port+"/api/costs/balance",{method:"POST",headers:{"content-type":"application/json",cookie:cookie},body:JSON.stringify(body)});};
+  assert.equal((await post({provider:"openai",amountUsd:-5})).status,400);
+  assert.equal((await post({provider:"nope",amountUsd:5})).status,400);
+  const saved=await post({provider:"openai",amountUsd:25,lowUsd:3});
+  assert.equal(saved.status,200);
+  const savedBody=await saved.json();
+  const oa=savedBody.balances.find(function(x){return x.provider==="openai";});
+  const an=savedBody.balances.find(function(x){return x.provider==="anthropic";});
+  assert.equal(oa.configured,true);
+  assert.equal(an.configured,false);
+  const again=await (await fetch("http://127.0.0.1:"+port+"/api/costs?period=30&scope=network",{headers:{cookie:cookie}})).json();
+  assert.ok(Array.isArray(again.balances)&&again.balances.length===2,"balances in /api/costs");
+  assert.equal(JSON.stringify(again).includes("sk-"),false,"no key-like strings in report");
+  const unauth=await fetch("http://127.0.0.1:"+port+"/api/costs/balance",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+  assert.equal(unauth.status,401,"balance endpoint requires auth");
+  console.log("ok - balance endpoint smoke");
+
 } finally {
   child.kill("SIGTERM");
   fs.rmSync(dataDir,{recursive:true,force:true});

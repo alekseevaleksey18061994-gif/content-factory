@@ -2030,6 +2030,15 @@ button{line-height:1.2!important}
 .cost-budget-fill{height:100%;background:var(--accent);width:0}.cost-budget-fill.warn{background:#e2a32b}.cost-budget-fill.danger{background:#d64b4b}
 .cost-budget-meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}
 @media(max-width:600px){.cost-budget-grid{grid-template-columns:1fr 1fr}.cost-budget-grid button{grid-column:1/-1}}
+.cost-balance-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.cost-balance{border:1px solid var(--line);border-radius:16px;padding:14px;background:var(--card);display:grid;gap:8px}
+.cost-balance.low{border-color:#e2a32b}.cost-balance.empty{border-color:#d64b4b}
+.cost-balance-head{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.cost-balance-value{font-size:26px;font-weight:800}
+.cost-balance-form{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end}
+.cost-balance-form label{display:grid;gap:5px;font-size:12px;color:var(--muted);font-weight:700}
+.cost-balance-form input{width:100%;min-height:40px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);padding:0 12px}
+@media(max-width:600px){.cost-balance-form{grid-template-columns:1fr 1fr}.cost-balance-form button{grid-column:1/-1}}
 .cost-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .cost-kpi{padding:14px 15px;border:1px solid var(--line);border-radius:16px;background:var(--card-2)}
 .cost-kpi small{display:block;color:var(--muted);font-size:11px;font-weight:750;margin-bottom:6px}
@@ -2422,6 +2431,12 @@ button{line-height:1.2!important}
           </div>
           <div class="notice" id="costNotice" style="margin-top:12px">Учёт начинается с момента включения этого раздела.</div>
         </section>
+        <section class="card" style="margin-top:14px">
+          <div class="panel-title"><div><h3>Остаток на балансе API</h3><p>OpenAI и Anthropic не отдают остаток по API. Введите сумму из консоли провайдера — дальше она уменьшается на расходы, которые учла система.</p></div></div>
+          <div id="costBalances" class="cost-balance-grid"><div class="empty">Загружаю…</div></div>
+          <div class="notice" style="margin-top:12px">Оценка: учитываются только вызовы News Factory после времени ввода. Расходы того же ключа вне этой системы и пополнения не видны — после пополнения введите актуальный остаток заново.</div>
+        </section>
+
         <section class="card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Бюджет</h3><p>0 или пусто — лимит выключен.</p></div><span class="chip" id="costEconomyStatus">Обычный режим</span></div>
           <div class="cost-budget-grid">
@@ -3650,13 +3665,48 @@ async function saveCostBudget(){
     renderCostBudget(j.budget||{});toast('Бюджет сохранён');await loadCosts(true);
   }catch(e){toast('Бюджет: '+e.message)}
 }
+function balanceUsd(v){var n=Number(v);if(!Number.isFinite(n))return '—';return (n<0?'−':'')+'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function renderCostBalances(list,force){
+  var box=el('costBalances');if(!box)return;
+  list=Array.isArray(list)?list:[];
+  var focused=document.activeElement&&document.activeElement.closest?document.activeElement.closest('#costBalances'):null;
+  if(focused&&!force)return;
+  box.innerHTML=list.map(function(x){
+    var p=esc(x.provider),title=esc(x.name||x.provider),state='',body='';
+    if(!x.configured){
+      body='<small>Остаток не задан.</small>';
+    }else if(x.available===false){
+      body='<small>База данных недоступна, расчёт временно невозможен.</small>';
+    }else{
+      state=x.status==='empty'?'empty':x.status==='low'?'low':'';
+      var chip=x.status==='empty'?'Закончился':x.status==='low'?'Мало':'В порядке';
+      body='<div class="cost-balance-value">'+balanceUsd(x.remainingUsd)+'</div>'+
+        '<small>'+(x.remainingRub!=null?'≈ '+moneyRub(x.remainingRub)+' · ':'')+'введено '+balanceUsd(x.amountUsd)+' '+esc(new Date(x.asOf).toLocaleString('ru-RU'))+', потрачено с тех пор '+balanceUsd(x.spentUsd)+'</small>'+
+        '<small>'+(x.daysLeft!=null?'Хватит примерно на '+Math.max(1,Math.floor(x.daysLeft))+' дн. при текущем темпе ('+balanceUsd(x.avgDailyUsd)+'/день)':'Темп расхода пока не определён')+'</small>'+
+        (x.unpricedCalls?'<small>Вызовов без цены: '+Number(x.unpricedCalls)+' — остаток может быть завышен.</small>':'')+
+        (x.spendIncomplete?'<small>Остаток введён давно, часть расходов уже удалена из учёта — введите актуальный.</small>':'')+
+        '<small>'+chip+' · предупреждение при остатке ≤ '+balanceUsd(x.lowUsd)+'</small>';
+    }
+    return '<div class="cost-balance '+state+'"><div class="cost-balance-head"><b>'+title+'</b></div>'+body+
+      '<div class="cost-balance-form"><label>Остаток сейчас, $<input id="bal_'+p+'" type="number" min="0" step="0.01" inputmode="decimal"></label>'+
+      '<label>Предупредить ≤, $<input id="balLow_'+p+'" type="number" min="0" step="0.5" inputmode="decimal" value="'+(x.configured&&x.lowUsd!=null?Number(x.lowUsd):5)+'"></label>'+
+      '<button onclick="saveApiBalance(\''+p+'\')">Сохранить</button></div></div>';
+  }).join('')||'<div class="empty">Нет данных.</div>';
+}
+async function saveApiBalance(provider){
+  try{
+    var v=el('bal_'+provider).value;
+    var j=await api('/api/costs/balance',{method:'POST',body:JSON.stringify({provider:provider,amountUsd:v,lowUsd:el('balLow_'+provider).value})});
+    renderCostBalances(j.balances||[],true);toast('Остаток сохранён');
+  }catch(e){toast('Остаток: '+e.message)}
+}
 async function loadCosts(force){
   var days=Number((el('costDays')||{}).value||30);
   var scope=String((el('costScope')||{}).value||'network');
   try{
     if(el('costPeriod'))el('costPeriod').textContent='Обновляю…';
     var j=await api('/api/costs?days='+encodeURIComponent(days)+'&scope='+encodeURIComponent(scope));
-    var totals=j.totals||{},providers=j.providers||[],infra=j.infrastructure||{};renderCostBudget(j.budget||{});
+    var totals=j.totals||{},providers=j.providers||[],infra=j.infrastructure||{};renderCostBudget(j.budget||{});renderCostBalances(j.balances||[]);
     var byProvider={};providers.forEach(function(x){byProvider[x.id]=x});
     var oa=byProvider.openai||{},an=byProvider.anthropic||{};
     if(el('costTotal'))el('costTotal').textContent=moneyRub(totals.costRub);
