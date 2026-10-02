@@ -52,6 +52,103 @@ test("A2 failed news_items write: nothing is queued", { db: true }, async () => 
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// B. deterministic cross-channel dedupe
+const twoChannelState = () => ({ chtotampokupki: { sources: [src("rbc-shop")] }, chtotambusiness: { sources: [src("rbc-biz")] } });
+function twoChannelPages() {
+  net.pages.set("https://www.rbc.ru/business/", listHtml([{ href: ART, text: TITLE + " — РБК" }]));
+  net.pages.set(ART, articleHtml({ title: TITLE, date: "2026-10-02T06:00:00+03:00", body: BODY }));
+}
+
+test("B1 same article already queued by another channel is skipped, writer not called", { db: true }, async () => {
+  const t = await loadServer({ db: true, fixedNow: "2026-10-02T09:00:00Z", state: twoChannelState() });
+  twoChannelPages();
+  await collect(t, "chtotampokupki");
+  const calls = writerCalls();
+  const r2 = await collect(t, "chtotambusiness"); await collect(t, "chtotambusiness");
+  assert.equal(t.ws("chtotambusiness").state.queue.length, 0, "second channel must not queue the same article");
+  assert.equal(writerCalls(), calls, "no writer/checker spend on the duplicate");
+  assert.equal(t.ws("chtotampokupki").state.queue.length, 1);
+  assert.equal(r2.found, 0);
+  assert.deepEqual((await dbRows("select workspace_id from news_items")).map((r) => r.workspace_id), ["chtotampokupki"]);
+});
+
+test("B2 two channels processing the same article in parallel: only one wins", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z", state: twoChannelState() });
+  twoChannelPages();
+  const w0 = net.llm.writer;
+  net.llm.writer = async (r) => { await new Promise((res) => setTimeout(res, 120)); return w0(r); };
+  await Promise.all([collect(t, "chtotampokupki"), collect(t, "chtotambusiness")]);
+  const total = t.ws("chtotampokupki").state.queue.length + t.ws("chtotambusiness").state.queue.length;
+  assert.equal(total, 1, "exactly one channel gets the article, got " + total);
+});
+
+test("B3 same content under a different URL is caught by the content hash", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z", state: {
+    chtotampokupki: { sources: [src("a", "https://a.example/")] }, chtotambusiness: { sources: [src("b", "https://b.example/")] } } });
+  net.pages.set("https://a.example/", listHtml([{ href: "https://a.example/news/1", text: TITLE + " — A" }]));
+  net.pages.set("https://b.example/", listHtml([{ href: "https://b.example/other/2", text: TITLE + " — B" }]));
+  net.pages.set("https://a.example/news/1", articleHtml({ title: TITLE, date: iso(2), body: BODY }));
+  net.pages.set("https://b.example/other/2", articleHtml({ title: TITLE, date: iso(2), body: BODY }));
+  await collect(t, "chtotampokupki"); await collect(t, "chtotambusiness");
+  assert.equal(t.ws("chtotampokupki").state.queue.length, 1);
+  assert.equal(t.ws("chtotambusiness").state.queue.length, 0);
+});
+
+test("B4 published elsewhere: recorded as seen; queued copy is never published", { db: true }, async () => {
+  const t = await loadServer({ db: true, autoPublish: true, fixedNow: "2026-10-02T09:00:00Z", state: {
+    chtotampokupki: { history: [{ id: "h1", title: "x", text: "y", publishedAt: iso(3), sourceUrl: ART + "?utm_source=tg" }] },
+    chtotambusiness: { sources: [src("rbc-biz")] } } });
+  twoChannelPages();
+  await collect(t, "chtotambusiness");
+  assert.equal(t.ws("chtotambusiness").state.queue.length, 0);
+  const rows = await dbRows("select status, metadata->>'autoPublishBlocked' b from news_items where workspace_id='chtotambusiness'");
+  assert.deepEqual(rows, [{ status: "duplicate_story", b: "cross_channel_duplicate" }], "recorded as seen so it is not re-fetched");
+  // a copy that was queued before the check existed
+  const q = mkQueueItem({ id: "q_copy", sourceUrl: ART, title: "copy", articlePublishedAt: iso(3) });
+  t.ws("chtotambusiness").state.queue = [q];
+  assert.equal(await inWs(t, "chtotambusiness", async () => t.dynamicBestQueueItem()), null, "not selectable for a slot");
+  const day = t.moscowDateKey(new Date());
+  const sched = await inWs(t, "chtotambusiness", async () => t.ensureScheduleShape(t.state));
+  sched.assignments[day] = { "12:00": "q_copy" };
+  const r = await inWs(t, "chtotambusiness", () => t.publishDynamicSlot());
+  assert.equal(r.skipped, "cross_channel_duplicate");
+  assert.equal(t.ws("chtotambusiness").state.queue.length, 0);
+});
+
+test("B5 network_recent shows every other channel (per-channel cap) and approved queue items", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T12:00:00Z" });
+  for (const [id] of CH) {
+    t.ws(id).state.history = Array.from({ length: 6 }, (_, i) => ({ id: id + i, title: "Пост " + id + " №" + i, text: "x", publishedAt: iso(i + 1) }));
+  }
+  t.ws("chtotamcrypto").state.queue = [mkQueueItem({ title: "В очереди крипта" }), mkQueueItem({ title: "Отклонён", qcStatus: "hold", editorialV2: { status: "hold", verdict: "reject" } })];
+  for (const me of ["chtotambusiness", "chtotampokupki", "chtotamcrypto", "ai-main"]) {
+    const out = await inWs(t, me, async () => t.editorialNetworkRecent());
+    const seen = new Set(out.map((x) => x.channel_id));
+    const missing = CH.map((c) => c[1]).filter((c) => c !== CH.find((x) => x[0] === me)[1] && !seen.has(c));
+    assert.deepEqual(missing, [], me + " must see every other channel");
+    if (me !== "chtotamcrypto") {
+      assert.ok(out.some((x) => x.title === "В очереди крипта" && x.status === "queued"), "approved queue item listed");
+      assert.ok(!out.some((x) => x.title === "Отклонён"), "held item is not a published-to-be twin");
+    }
+  }
+});
+
+test("B6 URL normalization and the off switch", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z" });
+  const n = t.normalizeArticleUrl;
+  assert.equal(n("https://www.RBC.ru/a/b/?utm_source=x&fbclid=1#top"), n("http://rbc.ru/a/b"));
+  assert.notEqual(n("https://rbc.ru/a/b?id=1"), n("https://rbc.ru/a/b?id=2"));
+  assert.equal(n("mailto:x@y.z"), "");
+});
+
+test("B7 CROSS_CHANNEL_DEDUPE_ENABLED=false keeps the old behaviour (own angle per channel)", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z", env: { CROSS_CHANNEL_DEDUPE_ENABLED: "false" }, state: twoChannelState() });
+  twoChannelPages();
+  await collect(t, "chtotampokupki"); await collect(t, "chtotambusiness");
+  assert.equal(t.ws("chtotambusiness").state.queue.length, 1);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 async function main() {
   const only = process.argv[2];
   if (only) {

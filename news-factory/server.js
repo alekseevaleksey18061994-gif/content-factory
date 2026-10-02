@@ -4402,6 +4402,26 @@ function bumpSkipAttempt(url, kind) {
   return entry.n;
 }
 
+// Records a link that will never be worth opening again (stale, too short, unreachable, published by another
+// channel) so it stops being "the first unseen link" of its source. Shown nowhere in the feed (prefilter_skip) unless a status is given.
+async function recordSeenSkip(source, link, reason, text, extra) {
+  const url = String(link && link.url || "");
+  try {
+    await saveNewsItem({
+      id: "news_" + crypto.createHash("sha256").update("prefilter\n" + currentWorkspaceId() + "\n" + url).digest("hex").slice(0, 20),
+      sourceId: source && source.id, sourceName: source && source.name, sourceUrl: source && source.url,
+      originalUrl: url, originalTitle: String(link && link.title || ""), originalText: "",
+      contentHash: "", status: extra && extra.status || "prefilter_skip",
+      metadata: Object.assign({ skipReason: reason, prefilterReason: text || reason, articlePublishedAt: link && link.publishedAt || "" }, extra && extra.metadata || {})
+    });
+  } catch (error) {
+    console.warn("SEEN_SKIP_SAVE_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
+    // Keep the in-memory guard so a failing DB cannot make the same link loop.
+    state.skipAttempts = state.skipAttempts && typeof state.skipAttempts === "object" ? state.skipAttempts : {};
+    state.skipAttempts[url] = { n: SKIP_RETRY_MAX, kind: reason, at: new Date().toISOString() };
+  }
+}
+
 async function seenOriginalUrl(url) {
   if (state.skipAttempts && state.skipAttempts[url] && Number(state.skipAttempts[url].n) >= SKIP_RETRY_MAX) return true;
   if (db && dbReady) {
@@ -4612,15 +4632,26 @@ async function collectOnce(trigger) {
           ? extractTelegramSourcePosts(html, source.url)
           : extractArticleLinks(html, source.url)
         ).slice(0, isTelegramCreator ? 18 : 12);
+        const crossIndex = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex() : null;
         for (const link of links) {
           if (selectedUrls.has(link.url)) continue;
+          // Same article already queued / published by another channel: leave it, look at the next link.
+          // Not recorded as seen, so the link is free again when the other channel's post is dropped.
+          const linkConflict = crossIndex && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() }, { index: crossIndex });
+          if (linkConflict) {
+            summary.skipped += 1;
+            if (linkConflict.where === "published" && !(await seenOriginalUrl(link.url))) {
+              await recordSeenSkip(source, link, "cross_channel_duplicate", "Уже опубликовано в канале " + linkConflict.channel, { status: "duplicate_story", metadata: { autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: linkConflict.workspace, channel: linkConflict.channel, by: linkConflict.by, where: linkConflict.where } } });
+            }
+            continue;
+          }
           if (await seenOriginalUrl(link.url)) {
             summary.skipped += 1;
             continue;
           }
           selectedUrls.add(link.url);
           noteSourceEvent(source, "candidate");
-          return { source: source, link: link };
+          return { source: source, link: link, rest: links.slice(links.indexOf(link) + 1), extra: 0 };
         }
         return null;
       } catch (error) {
@@ -4643,12 +4674,32 @@ async function collectOnce(trigger) {
       saveState();
     }
 
+    // When a link turns out to be unusable (stale, too short, unreachable, taken by another channel) the next
+    // unseen link of the same source is opened in the same run, so one bad link cannot shadow the fresh ones
+    // behind it. Bounded by EXTRA_LINKS_PER_SOURCE.
+    const advanceSource = async function(from) {
+      let current = from;
+      while (current && Array.isArray(current.rest) && current.rest.length && Number(current.extra || 0) < EXTRA_LINKS_PER_SOURCE) {
+        const link = current.rest.shift();
+        if (selectedUrls.has(link.url)) continue;
+        if (CROSS_CHANNEL_DEDUPE_ENABLED && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() })) continue;
+        if (await seenOriginalUrl(link.url)) continue;
+        selectedUrls.add(link.url);
+        noteSourceEvent(current.source, "candidate");
+        const next = { source: current.source, link: link, rest: current.rest, extra: Number(current.extra || 0) + 1 };
+        const kept = await prefilterCandidates([next], summary);
+        if (kept.length) { ordered.push(next); return; }
+        current = next;
+      }
+    };
+
     for (const candidate of ordered) {
       if (summary.found >= MAX_ITEMS_PER_RUN) break;
       const source = candidate.source;
       const url = candidate.link.url;
 
       let baseSaved = false;
+      let claimed = [];
       try {
         const articleHtml = await fetchText(url, 15000);
         const isBlogger = source.group === "blogger" || source.group === "creator";
@@ -4674,6 +4725,28 @@ async function collectOnce(trigger) {
         // same text under two URLs) used to collide on news_items_pkey, and the loser's post stayed queued
         // without a DB row, so it was re-collected every tick. Rows written before this change keep their ids;
         // all lookups go by (workspace_id, original_url).
+        // Exact cross-channel check (URL or content hash) and an in-flight claim: all workspaces tick in
+        // parallel, so two channels can be writing the same article at the same moment.
+        if (CROSS_CHANNEL_DEDUPE_ENABLED) {
+          const articleKeys = itemArticleKeys({ originalUrl: url, contentHash: contentHash });
+          const conflict = crossChannelConflict(articleKeys);
+          if (conflict) {
+            console.log("CROSS_CHANNEL_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, by: conflict.by, otherWorkspace: conflict.workspace, otherChannel: conflict.channel, where: conflict.where, windowHours: CROSS_CHANNEL_DEDUPE_HOURS }));
+            summary.skipped += 1;
+            if (conflict.where === "published") {
+              // Published elsewhere: final. Queued / in flight elsewhere: not recorded, retried while the other post is still undecided.
+              await saveNewsItem({
+                id: "news_" + crypto.createHash("sha256").update("crosschannel\n" + currentWorkspaceId() + "\n" + url).digest("hex").slice(0, 20),
+                sourceId: source.id, sourceName: source.name, sourceUrl: source.url, originalUrl: url, originalTitle: originalTitle,
+                originalText: originalText.slice(0, 2000), contentHash: contentHash, status: "duplicate_story",
+                metadata: { trigger: trigger || "scheduler", articlePublishedAt: articlePublishedAt || "", autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: conflict.workspace, channel: conflict.channel, by: conflict.by, where: conflict.where } }
+              });
+            }
+            await advanceSource(candidate);
+            continue;
+          }
+          claimed = crossChannelClaim(articleKeys);
+        }
         const id = "news_" + crypto.createHash("sha256").update(currentWorkspaceId() + "\n" + contentHash + "\n" + url).digest("hex").slice(0, 20);
         // Cheap duplicate check on the source text BEFORE media preparation and the
         // writer/checker calls: an obvious repeat of a recently published post costs
@@ -4947,6 +5020,7 @@ async function collectOnce(trigger) {
             sourceId: source.id,
             sourceName: source.name,
             sourceUrl: url,
+            contentHash: contentHash,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
@@ -5016,6 +5090,7 @@ async function collectOnce(trigger) {
             canEnhance: Boolean(media.canEnhance),
             sourceName: source.name,
             newsId: id,
+            contentHash: contentHash,
             aiScore: rewrite.editorialScore,
             aiScoreBreakdown: rewrite.scoreBreakdown,
             aiScoreReason: rewrite.scoreReason,
@@ -5106,6 +5181,8 @@ async function collectOnce(trigger) {
         summary.errors.push(url + ": " + error.message);
         // Bounded retry: after SKIP_RETRY_MAX failures the link counts as seen (see seenOriginalUrl).
         bumpSkipAttempt(url, "error");
+      } finally {
+        crossChannelRelease(claimed);
       }
     }
 
@@ -5267,9 +5344,12 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
+  // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
+  const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
   return (state.queue || [])
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
+      if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item);
@@ -5465,6 +5545,23 @@ async function publishDynamicSlot(kind) {
     return { ok: true, skipped: "auto_disabled", prepared: queueId };
   }
 
+  // Last look before publishing: another channel may have published this article since it was queued.
+  const publishConflict = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelConflict(item, { publishedOnly: true }) : null;
+  if (publishConflict) {
+    console.log("CROSS_CHANNEL_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), stage: "publish", queueId: queueId, by: publishConflict.by, otherWorkspace: publishConflict.workspace, otherChannel: publishConflict.channel, windowHours: CROSS_CHANNEL_DEDUPE_HOURS }));
+    delete schedule.assignments[day][time];
+    state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
+    saveState();
+    if (db && dbReady && item.newsId) {
+      try {
+        await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
+          [item.newsId, JSON.stringify({ autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: publishConflict.workspace, channel: publishConflict.channel, by: publishConflict.by } }), currentWorkspaceId()]);
+      } catch (error) { console.warn("Cross-channel duplicate status update failed:", error.message); }
+    }
+    // The slot stays open: the next scheduler tick picks the next best post.
+    return { ok: true, skipped: "cross_channel_duplicate", prepared: queueId };
+  }
+
   const autoTargets = autoPublishTargetsForPost(item);
   const targets = {
     telegram: autoTargets.telegram && item.telegramPublished !== true,
@@ -5526,6 +5623,7 @@ async function publishDynamicSlot(kind) {
       sourceId: item.sourceId || "",
       sourceName: item.sourceName || "",
       sourceUrl: item.sourceUrl || "",
+      contentHash: item.contentHash || "",
       sourceUrls: Array.isArray(item.sourceUrls) ? item.sourceUrls : [],
       sources: Array.isArray(item.sources) ? item.sources : [],
       storySources: Array.isArray(item.storySources) ? item.storySources : [],
@@ -8031,6 +8129,23 @@ function editorialRecentPosts(limit) {
     });
 }
 
+// A queue item that the editorial pipeline approved (not on hold / rejected / skipped on re-check).
+// Only such items count as "the same story is already covered" and may be merged into.
+function isApprovedQueueItem(item) {
+  if (!item || !item.newsId) return false;
+  if (item.qcStatus === "hold") return false;
+  const v2 = item.editorialV2;
+  if (v2 && v2.status && v2.status !== "approved") return false;
+  return true;
+}
+
+const NETWORK_RECENT_PUBLISHED_PER_CHANNEL = 4;
+const NETWORK_RECENT_QUEUED_PER_CHANNEL = 3;
+const NETWORK_RECENT_MAX = 120;
+
+// Titles the writer sees to avoid duplicates across the network: for every OTHER channel its latest published
+// posts of the last 24 hours plus its approved queue (about to go out). The cap is per channel, so channels late in
+// the workspace list are as visible as early ones (a single global cap of 60 hid most of the network).
 function editorialNetworkRecent() {
   const me = currentWorkspaceId();
   const since = Date.now() - 24 * 60 * 60 * 1000;
@@ -8038,15 +8153,124 @@ function editorialNetworkRecent() {
   for (const ws of workspaceStore.workspaces) {
     if (!ws || ws.id === me || !ws.state) continue;
     const channelId = resolveChannelId(ws);
+    const mine = [];
+    for (const item of (ws.state.queue || [])) {
+      if (!isApprovedQueueItem(item)) continue;
+      if (item.telegramPublished || item.vkPublished) continue;
+      mine.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.createdAt || "", status: "queued", t: new Date(item.createdAt || 0).getTime() || 0 });
+    }
+    mine.sort(function(a, b){ return b.t - a.t; });
+    mine.length = Math.min(mine.length, NETWORK_RECENT_QUEUED_PER_CHANNEL);
+    let published = 0;
     for (const item of (ws.state.history || [])) {
       if (!item || !item.publishedAt) continue;
       const t = new Date(item.publishedAt).getTime();
       if (!Number.isFinite(t) || t < since) break;
-      out.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.publishedAt });
-      if (out.length >= 60) return out;
+      mine.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.publishedAt, status: "published" });
+      published += 1;
+      if (published >= NETWORK_RECENT_PUBLISHED_PER_CHANNEL) break;
     }
+    for (const x of mine) { delete x.t; out.push(x); }
+    if (out.length >= NETWORK_RECENT_MAX) break;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic cross-channel dedupe: the same article (normalized URL or content hash) that another channel
+// has queued, is processing, or published within CROSS_CHANNEL_DEDUPE_HOURS is not used a second time.
+// The model-based network_recent check above is only a hint; this one is exact.
+const crossChannelClaims = new Map();
+
+function normalizeArticleUrl(raw) {
+  try {
+    const u = new URL(String(raw || "").trim());
+    if (!/^https?:$/.test(u.protocol)) return "";
+    const drop = /^(utm_|fbclid$|gclid$|yclid$|ysclid$|_openstat$|mc_cid$|mc_eid$|cmpid$|from$|ref$|ref_src$|source$)/i;
+    const params = Array.from(u.searchParams.entries()).filter(function(kv){ return !drop.test(kv[0]); }).sort(function(a, b){ return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+    const search = params.length ? "?" + params.map(function(kv){ return kv[0] + "=" + kv[1]; }).join("&") : "";
+    const path = u.pathname.replace(/\/index\.(html?|php)$/i, "/").replace(/\/+$/, "");
+    return (u.hostname.toLowerCase().replace(/^www\./, "") + path + search).toLowerCase();
+  } catch { return ""; }
+}
+
+// URLs and content hashes that identify the article(s) behind a queue / history item.
+function itemArticleKeys(item) {
+  const urls = new Set();
+  const hashes = new Set();
+  if (!item) return { urls: urls, hashes: hashes };
+  const addUrl = function(value){ const n = normalizeArticleUrl(value); if (n) urls.add(n); };
+  const addHash = function(value){ const h = String(value || "").trim(); if (h.length >= 16) hashes.add(h); };
+  addUrl(item.originalUrl); addUrl(item.sourceUrl);
+  (Array.isArray(item.sourceUrls) ? item.sourceUrls : []).forEach(addUrl);
+  (Array.isArray(item.sources) ? item.sources : []).forEach(function(x){ addUrl(x && x.url); });
+  (Array.isArray(item.storySources) ? item.storySources : []).forEach(function(x){ addUrl(x && x.url); addHash(x && x.contentHash); });
+  addHash(item.contentHash);
+  if (item.sourceOriginalTitle && item.sourceOriginalText) {
+    addHash(crypto.createHash("sha256").update(String(item.sourceOriginalTitle) + "\n" + String(item.sourceOriginalText).slice(0, 6000)).digest("hex"));
+  }
+  return { urls: urls, hashes: hashes };
+}
+
+// Index of everything other channels hold: key -> { workspace, channel, where }. publishedOnly skips queues and in-flight claims.
+function crossChannelIndex(options) {
+  const me = currentWorkspaceId();
+  const publishedOnly = Boolean(options && options.publishedOnly);
+  const cutoff = Date.now() - CROSS_CHANNEL_DEDUPE_HOURS * 60 * 60 * 1000;
+  const index = new Map();
+  const put = function(keys, ws, where) {
+    const info = { workspace: ws.id, channel: resolveChannelId(ws) || ws.id, where: where };
+    keys.urls.forEach(function(k){ if (!index.has("u:" + k) || where === "published") index.set("u:" + k, info); });
+    keys.hashes.forEach(function(k){ if (!index.has("h:" + k) || where === "published") index.set("h:" + k, info); });
+  };
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || ws.id === me || !ws.state) continue;
+    for (const item of (ws.state.history || [])) {
+      if (!item || !item.publishedAt) continue;
+      const t = new Date(item.publishedAt).getTime();
+      if (!Number.isFinite(t)) continue;
+      if (t < cutoff) break;
+      put(itemArticleKeys(item), ws, "published");
+    }
+    if (publishedOnly) continue;
+    for (const item of (ws.state.queue || [])) {
+      if (!item || !item.newsId) continue;
+      const t = new Date(item.createdAt || 0).getTime();
+      if (Number.isFinite(t) && t && t < cutoff) continue;
+      put(itemArticleKeys(item), ws, item.telegramPublished || item.vkPublished ? "published" : "queued");
+    }
+  }
+  if (!publishedOnly) {
+    crossChannelClaims.forEach(function(wsId, key) {
+      if (wsId === me) return;
+      const ws = getWorkspaceById(wsId);
+      if (ws && !index.has(key)) index.set(key, { workspace: wsId, channel: ws && resolveChannelId(ws) || wsId, where: "inflight" });
+    });
+  }
+  return index;
+}
+
+// keys: { urls:Set, hashes:Set } (or an item). Returns null or { workspace, channel, where, by }.
+function crossChannelConflict(keysOrItem, options) {
+  if (!CROSS_CHANNEL_DEDUPE_ENABLED) return null;
+  const keys = keysOrItem && keysOrItem.urls instanceof Set ? keysOrItem : itemArticleKeys(keysOrItem);
+  const index = options && options.index || crossChannelIndex(options);
+  for (const u of keys.urls) { const hit = index.get("u:" + u); if (hit) return Object.assign({ by: "url" }, hit); }
+  for (const h of keys.hashes) { const hit = index.get("h:" + h); if (hit) return Object.assign({ by: "content_hash" }, hit); }
+  return null;
+}
+
+function crossChannelClaim(keys) {
+  const me = currentWorkspaceId();
+  const claimed = [];
+  keys.urls.forEach(function(k){ claimed.push("u:" + k); });
+  keys.hashes.forEach(function(k){ claimed.push("h:" + k); });
+  claimed.forEach(function(k){ crossChannelClaims.set(k, me); });
+  return claimed;
+}
+function crossChannelRelease(claimed) {
+  const me = currentWorkspaceId();
+  (claimed || []).forEach(function(k){ if (crossChannelClaims.get(k) === me) crossChannelClaims.delete(k); });
 }
 
 function editorialNetworkChannels() {
