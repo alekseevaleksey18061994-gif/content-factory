@@ -5,6 +5,10 @@ import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { safeFetch, validateUrl as validateFetchUrl } from "./lib/safe-fetch.js";
+import { assertSafeRaster, SAFE_INPUT_PIXELS } from "./lib/image-guard.js";
+import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-security.js";
+import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
@@ -51,6 +55,16 @@ const TELEGRAM_PUBLIC_USERNAME = String(process.env.TELEGRAM_PUBLIC_USERNAME || 
 const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(32).toString("hex");
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
 const ADMIN_UI_PASSWORD_SHA256 = String(process.env.ADMIN_UI_PASSWORD_SHA256 || "").trim().toLowerCase();
+// Optional salted hash ("scrypt$<salt hex>$<hash hex>", see lib/auth-guard.js hashPasswordScrypt). Preferred over SHA-256 / plain when set.
+const ADMIN_UI_PASSWORD_SCRYPT = String(process.env.ADMIN_UI_PASSWORD_SCRYPT || "").trim();
+// Railway puts exactly one proxy in front of the app; XFF entries to the left of it are client-controlled.
+const TRUSTED_PROXY_HOPS = Math.max(0, Math.min(5, Number(process.env.TRUSTED_PROXY_HOPS == null || process.env.TRUSTED_PROXY_HOPS === "" ? 1 : process.env.TRUSTED_PROXY_HOPS) || 0));
+const authFailureLimiter = createFailureLimiter({
+  maxFailures: Math.max(1, Number(process.env.AUTH_MAX_FAILURES || 8) || 8),
+  windowMs: 15 * 60 * 1000,
+  baseLockMs: 30 * 1000,
+  maxLockMs: 15 * 60 * 1000
+});
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
@@ -2435,11 +2449,17 @@ function sourceStatKey(sourceOrItem) {
   return found ? String(found.id) : "";
 }
 
+// Keys that would reach Object.prototype when used as an object property name.
+function isReservedKey(key) {
+  const k = String(key);
+  return k === "__proto__" || k === "constructor" || k === "prototype";
+}
+
 function ensureSourceStat(sourceOrItem) {
   state.sourceStats = state.sourceStats && typeof state.sourceStats === "object" ? state.sourceStats : {};
   const key = sourceStatKey(sourceOrItem);
-  if (!key) return null;
-  if (!state.sourceStats[key]) {
+  if (!key || isReservedKey(key)) return null;
+  if (!Object.prototype.hasOwnProperty.call(state.sourceStats, key)) {
     state.sourceStats[key] = {
       checks: 0, candidates: 0, discovered: 0, scored: 0, strong: 0, top: 0,
       selected: 0, published: 0, errors: 0, scoreSum: 0,
@@ -3188,17 +3208,18 @@ async function loadPreviewSourceBytes(rawUrl) {
 
   const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
   if (!/^https:\/\//i.test(absolute)) throw new Error("Для preview требуется HTTPS-изображение");
-  const response = await fetch(absolute, {
+  // Third-party URL: SSRF-safe download with a hard size cap, raster formats only (no SVG).
+  const response = await safeFetch(absolute, {
     headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreview/1.0)" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(30000)
+    timeoutMs: 30000,
+    maxBytes: 20 * 1024 * 1024
   });
   if (!response.ok) throw new Error("Не удалось скачать preview-изображение: HTTP " + response.status);
   const type = String(response.headers.get("content-type") || "").toLowerCase();
   if (!type.startsWith("image/")) throw new Error("Preview-источник не является изображением");
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) throw new Error("Preview-изображение пустое");
-  if (bytes.length > 20 * 1024 * 1024) throw new Error("Preview-изображение слишком большое");
+  await assertSafeRaster(bytes);
   return bytes;
 }
 
@@ -3732,23 +3753,22 @@ async function enhanceNewsImage(payload) {
     bytes = fs.readFileSync(localFile);
   } else {
     if (!/^https?:\/\//i.test(imageUrl)) throw new Error("Нет исходного изображения для улучшения");
-    const sourceResponse = await fetch(imageUrl, {
+    const sourceResponse = await safeFetch(imageUrl, {
       headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryMedia/1.0)" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: 25 * 1024 * 1024
     });
     if (!sourceResponse.ok) throw new Error("Не удалось скачать исходное фото: HTTP " + sourceResponse.status);
-    bytes = Buffer.from(await sourceResponse.arrayBuffer());
+    bytes = sourceResponse.body;
   }
   if (!bytes || !bytes.length) throw new Error("Исходное изображение пустое");
   if (bytes.length > 25 * 1024 * 1024) throw new Error("Исходное изображение слишком большое");
 
-  let meta;
-  try { meta = await sharp(bytes).metadata(); } catch { throw new Error("Исходный файл не является изображением"); }
+  const meta = await assertSafeRaster(bytes);
   const width = Number(meta.width || 0);
   if (!width) throw new Error("Не удалось определить размер изображения");
 
-  let pipeline = sharp(bytes, { failOn: "none" }).rotate();
+  let pipeline = sharp(bytes, { failOn: "none", limitInputPixels: SAFE_INPUT_PIXELS }).rotate();
   if (width < ENHANCE_TARGET_WIDTH) {
     // Upscale at most 2x: beyond that interpolation only adds blur.
     pipeline = pipeline.resize({ width: Math.min(ENHANCE_TARGET_WIDTH, width * 2), kernel: "lanczos3", withoutEnlargement: false });
@@ -3778,28 +3798,29 @@ async function cacheSourceImage(imageUrl, id) {
   if (!sourceUrl) return "";
   if (isLocalMediaUrl(sourceUrl)) return sourceUrl;
 
-  const response = await fetch(sourceUrl, {
-    redirect: "follow",
+  const response = await safeFetch(sourceUrl, {
     headers: {
       "user-agent": "Mozilla/5.0 (compatible; NewsFactory/1.0; +https://news-factory-api-production.up.railway.app)",
-      "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      "accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
     },
-    signal: AbortSignal.timeout(30000)
+    timeoutMs: 30000,
+    maxBytes: 20 * 1024 * 1024
   });
   if (!response.ok) throw new Error("Фото источника HTTP " + response.status);
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
   if (!contentType.startsWith("image/")) throw new Error("Источник вернул не изображение");
 
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) throw new Error("Фото источника пустое");
   if (bytes.length > 20 * 1024 * 1024) throw new Error("Фото источника больше 20 МБ");
+  await assertSafeRaster(bytes); // jpeg/png/webp/gif/avif only: SVG is never rasterised
 
   ensureDataDir();
   const safeId = String(id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 70);
   const fileName = "source_" + safeId + "_" + Date.now() + ".webp";
   const filePath = path.join(MEDIA_DIR, fileName);
 
-  await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+  await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
     .rotate()
     .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
     .webp({ quality: 90 })
@@ -4229,6 +4250,7 @@ function isSourcePlaceholderImage(sourceName, newsId, fp) {
   if (!fp || !Array.isArray(fp.bits) || !sourceName) return false;
   state.sourceImagePrints = state.sourceImagePrints && typeof state.sourceImagePrints === "object" ? state.sourceImagePrints : {};
   const key = String(sourceName);
+  if (isReservedKey(key)) return false;
   const list = Array.isArray(state.sourceImagePrints[key]) ? state.sourceImagePrints[key] : [];
   const id = String(newsId || "");
   const bits = fp.bits.join("");
@@ -4533,12 +4555,13 @@ function extractArticleLinks(html, sourceUrl) {
 }
 
 async function fetchText(url, timeoutMs) {
-  const response = await fetch(url, {
+  // Source pages are third-party: SSRF-safe client (public IPs only, re-validated redirects, size cap).
+  const response = await safeFetch(url, {
     headers: {
       "user-agent": "Mozilla/5.0 (compatible; NewsFactoryBot/0.6; +https://news-factory-api-production.up.railway.app)"
     },
-    redirect: "follow",
-    signal: AbortSignal.timeout(timeoutMs || 15000)
+    timeoutMs: timeoutMs || 15000,
+    maxBytes: 5 * 1024 * 1024
   });
   if (!response.ok) throw new Error("HTTP " + response.status + " " + url);
   const type = response.headers.get("content-type") || "";
@@ -6040,7 +6063,7 @@ function sendHtmlFile(res, fileName) {
   const file = path.join(PUBLIC_DIR, fileName);
   try {
     const body = fs.readFileSync(file, "utf8");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": ADMIN_CSP });
     res.end(body);
   } catch {
     sendJson(res, 500, { ok: false, error: "UI file missing" });
@@ -6061,6 +6084,23 @@ async function readJson(req, maxBytes) {
   }
   if (!body) return {};
   return JSON.parse(body);
+}
+
+class BadRequestError extends Error {
+  constructor(message) { super(message); this.name = "BadRequestError"; this.statusCode = 400; }
+}
+
+// JSON body that must be an object: null / arrays / scalars / malformed JSON answer 400 instead of crashing into a 500.
+async function readJsonObject(req, maxBytes) {
+  let body;
+  try { body = await readJson(req, maxBytes); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new BadRequestError("invalid JSON");
+    if (/request too large/.test(String(error && error.message))) { const e = new BadRequestError("request too large"); e.statusCode = 413; throw e; }
+    throw error;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestError("JSON object expected");
+  return body;
 }
 
 async function saveWorkspaceAvatar(workspace, dataUrl) {
@@ -6124,12 +6164,43 @@ function parseCookies(req) {
   return out;
 }
 
+// Session epoch lives next to the other state on the persistent volume. Epoch 0 (nothing stored) keeps the
+// legacy token so cookies issued before this feature stay valid; "logout everywhere" bumps it.
+let sessionEpochStore = null;
+function getSessionEpochStore() {
+  if (!sessionEpochStore) sessionEpochStore = createSessionEpochStore(path.join(DATA_DIR, "session-epoch.json"));
+  return sessionEpochStore;
+}
+
 function sessionToken() {
-  return crypto.createHmac("sha256", ADMIN_KEY).update("news-factory-admin").digest("hex");
+  return sessionTokenFor(ADMIN_KEY, getSessionEpochStore().get());
 }
 
 function isAuthed(req) {
-  return parseCookies(req).nf_session === sessionToken();
+  const provided = parseCookies(req).nf_session;
+  return typeof provided === "string" && provided.length > 0 && safeEqual(provided, sessionToken());
+}
+
+function requestClientIp(req) {
+  return proxyClientIp(req, TRUSTED_PROXY_HOPS);
+}
+
+// x-admin-key check for the machine endpoints: constant-time, and failures count towards the per-IP lockout.
+// Returns true when authorised; otherwise has already answered 401/429 and returns false.
+function requireAdminKey(req, res) {
+  const ip = requestClientIp(req);
+  const gate = authFailureLimiter.check(ip);
+  if (!gate.allowed) {
+    sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(gate.retryAfterSec), "cache-control": "no-store" });
+    return false;
+  }
+  if (!safeEqual(req.headers["x-admin-key"], ADMIN_KEY)) {
+    authFailureLimiter.fail(ip);
+    sendJson(res, 401, { ok: false, error: "unauthorized" });
+    return false;
+  }
+  authFailureLimiter.success(ip);
+  return true;
 }
 
 function requireAuth(req, res) {
@@ -6327,17 +6398,18 @@ async function loadTelegramUpload(rawUrl, kind) {
     bytes = fs.readFileSync(localPath);
   } else {
     const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
-    const response = await fetch(absolute, {
+    const response = await safeFetch(absolute, {
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegram/1.0)",
-        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
       },
-      redirect: "follow",
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: kind === "video" ? 50 * 1024 * 1024 : 20 * 1024 * 1024
     });
     if (!response.ok) throw new Error("Telegram media download HTTP " + response.status);
     mime = String(response.headers.get("content-type") || mime).split(";")[0].trim() || mime;
-    bytes = Buffer.from(await response.arrayBuffer());
+    bytes = response.body;
+    if (kind !== "video" && bytes.length) await assertSafeRaster(bytes); // no SVG / non-raster payloads
   }
 
   if (!bytes || !bytes.length) throw new Error("Telegram media is empty");
@@ -6345,7 +6417,7 @@ async function loadTelegramUpload(rawUrl, kind) {
     if (bytes.length > 49 * 1024 * 1024) throw new Error("Видео больше лимита Telegram Bot API");
   } else {
     if (bytes.length > 9 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/i.test(mime)) {
-      bytes = await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+      bytes = await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
         .rotate()
         .resize(1800, 1800, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality: 88, mozjpeg: true })
@@ -6586,9 +6658,16 @@ function base64Url(buffer) {
 }
 
 function secretMatches(provided, expected) {
-  const a = Buffer.from(String(provided || ""));
-  const b = Buffer.from(String(expected || ""));
-  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+  return String(provided || "").length > 0 && String(expected || "").length > 0 && safeEqual(provided, expected);
+}
+
+// Who may start / capture a VK OAuth session: a logged-in admin cookie, the handoff secret, or the admin key.
+// The VK callback itself cannot carry our SameSite=Strict cookie (cross-site redirect), so it is protected by
+// the one-time random state that only an authorised start call ever hands out.
+function vkOAuthCallerAuthorized(req) {
+  if (isAuthed(req)) return true;
+  if (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET)) return true;
+  return safeEqual(req.headers["x-admin-key"], ADMIN_KEY);
 }
 
 function createVkPkcePair() {
@@ -6908,11 +6987,24 @@ async function downloadVkImage(imageUrl, context) {
   if (!sourceUrl) throw createVkError("image.download", "no_image", "No image URL for VK publication", context);
   if (sourceUrl.startsWith("/")) sourceUrl = PUBLIC_BASE_URL + sourceUrl;
 
+  // Our own cached media is read from disk (no self-HTTP round trip, no SSRF surface).
+  const localVkPath = localMediaPathFromUrl(sourceUrl);
+  if (localVkPath) {
+    let localBytes = null;
+    try { localBytes = fs.readFileSync(localVkPath); } catch {}
+    if (localBytes && localBytes.length) {
+      const localExt = path.extname(localVkPath).replace(/^\./, "").toLowerCase();
+      const localMime = localExt === "png" ? "image/png" : localExt === "webp" ? "image/webp" : "image/jpeg";
+      return { bytes: localBytes, mime: localMime, ext: localExt === "png" ? "png" : localExt === "webp" ? "webp" : "jpg" };
+    }
+  }
+
   let response;
   try {
-    response = await fetch(sourceUrl, {
+    response = await safeFetch(sourceUrl, {
       headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryVK/1.0)" },
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: 20 * 1024 * 1024
     });
   } catch (error) {
     logVkError("image.download", "network", error && error.message || error, context);
@@ -6924,10 +7016,16 @@ async function downloadVkImage(imageUrl, context) {
     throw createVkError("image.download", response.status, "Image HTTP " + response.status, context);
   }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) {
     logVkError("image.download", "empty", "Downloaded image is empty", context);
     throw createVkError("image.download", "empty", "Downloaded image is empty", context);
+  }
+  try {
+    await assertSafeRaster(bytes);
+  } catch (error) {
+    logVkError("image.download", "not_raster", error && error.message || error, context);
+    throw createVkError("image.download", "not_raster", error && error.message || error, context);
   }
 
   const mime = String(response.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
@@ -10172,20 +10270,16 @@ const server = http.createServer(async function(req, res) {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
 
+    const secHeaders = baseSecurityHeaders(p);
+    for (const name of Object.keys(secHeaders)) res.setHeader(name, secHeaders[name]);
+    // CSRF defence in depth on top of SameSite=Strict: a state-changing request from a browser must come from this site.
+    if (!originAllowed(req, [new URL(PUBLIC_BASE_URL).host])) {
+      return sendJson(res, 403, { ok: false, error: "cross-origin request refused" });
+    }
+
     if (req.method === "GET" && p === "/health") {
-      return sendJson(res, 200, {
-        ok: true,
-        service: "news-factory",
-        telegramConfigured: Boolean(BOT_TOKEN && workspaceStore.workspaces.some(function(ws){ return Boolean(ws.telegramChannel); })),
-        workspaceCount: workspaceStore.workspaces.length,
-        uiConfigured: Boolean(ADMIN_UI_PASSWORD),
-        openaiConfigured: Boolean(OPENAI_API_KEY),
-        openaiModel: OPENAI_MODEL,
-        mediaRequired: MEDIA_REQUIRED,
-        imageEnhancementEnabled: IMAGE_ENHANCEMENT_ENABLED,
-        imageModel: OPENAI_IMAGE_MODEL,
-        version: APP_VERSION
-      });
+      // Public: liveness + version only (no model names, counts or configuration flags). Details live behind /api/status.
+      return sendJson(res, 200, { ok: true, service: "news-factory", version: APP_VERSION });
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
@@ -10234,31 +10328,52 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/login") {
-      const body = await readJson(req);
-      const providedPassword = String(body.password || "");
-      const providedHash = crypto.createHash("sha256").update(providedPassword).digest("hex");
-      const hashConfigured = /^[a-f0-9]{64}$/.test(ADMIN_UI_PASSWORD_SHA256);
-      const hashMatches = hashConfigured &&
-        crypto.timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(ADMIN_UI_PASSWORD_SHA256, "hex"));
-      const plainMatches = !hashConfigured && Boolean(ADMIN_UI_PASSWORD) && providedPassword === ADMIN_UI_PASSWORD;
-      if (!hashMatches && !plainMatches) {
+      const loginIp = requestClientIp(req);
+      const loginGate = authFailureLimiter.check(loginIp);
+      if (!loginGate.allowed) {
+        return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(loginGate.retryAfterSec), "cache-control": "no-store" });
+      }
+      const body = await readJsonObject(req);
+      const providedPassword = String(body.password == null ? "" : body.password).slice(0, 1024);
+      let passwordOk = false;
+      if (ADMIN_UI_PASSWORD_SCRYPT) {
+        passwordOk = verifyPasswordScrypt(providedPassword, ADMIN_UI_PASSWORD_SCRYPT);
+      } else if (/^[a-f0-9]{64}$/.test(ADMIN_UI_PASSWORD_SHA256)) {
+        // legacy unsalted SHA-256 stays supported; prefer ADMIN_UI_PASSWORD_SCRYPT
+        const providedHash = crypto.createHash("sha256").update(providedPassword).digest("hex");
+        passwordOk = crypto.timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(ADMIN_UI_PASSWORD_SHA256, "hex"));
+      } else if (ADMIN_UI_PASSWORD) {
+        passwordOk = safeEqual(providedPassword, ADMIN_UI_PASSWORD);
+      }
+      if (!passwordOk) {
+        authFailureLimiter.fail(loginIp);
         return sendJson(res, 401, { ok: false, error: "invalid password" });
       }
+      authFailureLimiter.success(loginIp);
       return sendJson(res, 200, { ok: true }, {
         "set-cookie": "nf_session=" + sessionToken() + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000"
       });
     }
 
     if (req.method === "POST" && p === "/api/logout") {
-      return sendJson(res, 200, { ok: true }, {
+      // {"everywhere": true} (authenticated) rotates the session epoch: every issued cookie stops working.
+      let everywhere = false;
+      if (isAuthed(req)) {
+        try { const b = await readJsonObject(req); everywhere = b.everywhere === true; } catch {}
+      }
+      if (everywhere) getSessionEpochStore().bump();
+      return sendJson(res, 200, { ok: true, everywhere: everywhere }, {
         "set-cookie": "nf_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
       });
     }
 
     if (req.method === "POST" && p === "/internal/vk-preview-test-page") {
-      const smokeAuthorized = req.headers["x-admin-key"] === ADMIN_KEY ||
+      const smokeAuthorized = safeEqual(req.headers["x-admin-key"], ADMIN_KEY) ||
         (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET));
-      if (!smokeAuthorized) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      if (!smokeAuthorized) {
+        authFailureLimiter.fail(requestClientIp(req));
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
         const marker = crypto.randomBytes(4).toString("hex");
         const preview = await createPublicPostPage({
@@ -10273,7 +10388,8 @@ const server = http.createServer(async function(req, res) {
         const preflight = await preflightPublicPostPage(preview);
         return sendJson(res, 200, { ok: true, preview: preview, preflight: preflight }, { "cache-control": "no-store" });
       } catch (error) {
-        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) }, { "cache-control": "no-store" });
+        console.error("vk-preview-test-page failed:", error);
+        return sendJson(res, 500, { ok: false, error: "internal error" }, { "cache-control": "no-store" });
       }
     }
 
@@ -10314,8 +10430,15 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/vk/oauth/capture") {
+      const captureIp = requestClientIp(req);
+      const captureGate = authFailureLimiter.check(captureIp);
+      if (!captureGate.allowed) return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(captureGate.retryAfterSec) });
+      if (!vkOAuthCallerAuthorized(req)) {
+        if (req.headers["x-admin-key"] || req.headers["x-oauth-handoff-secret"]) authFailureLimiter.fail(captureIp);
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
-        const body = await readJson(req);
+        const body = await readJsonObject(req);
         await captureVkOAuthToken(body.accessToken, body.state, body.userId);
         return sendJson(res, 200, { ok: true, verified: true });
       } catch (error) {
@@ -10326,7 +10449,13 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/vk/oauth/handoff") {
       if (!VK_OAUTH_HANDOFF_SECRET) return sendJson(res, 503, { ok: false, error: "handoff is not configured" });
       const provided = String(req.headers["x-oauth-handoff-secret"] || "");
-      if (!secretMatches(provided, VK_OAUTH_HANDOFF_SECRET)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      const handoffIp = requestClientIp(req);
+      const handoffGate = authFailureLimiter.check(handoffIp);
+      if (!handoffGate.allowed) return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(handoffGate.retryAfterSec) });
+      if (!secretMatches(provided, VK_OAUTH_HANDOFF_SECRET)) {
+        authFailureLimiter.fail(handoffIp);
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       if (!vkOAuthHandoff || !vkOAuthHandoff.accessToken || Date.now() - Number(vkOAuthHandoff.createdAt || 0) > VK_OAUTH_TTL_MS) {
         vkOAuthHandoff = null;
         return sendJson(res, 404, { ok: false, ready: false });
@@ -10346,10 +10475,16 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/start") {
+      // Starting a session overwrites the global OAuth state and reveals the state value: authorised callers only.
+      if (!vkOAuthCallerAuthorized(req)) {
+        if (req.headers["x-admin-key"] || req.headers["x-oauth-handoff-secret"]) authFailureLimiter.fail(requestClientIp(req));
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
         return redirect(res, buildVkOAuthUrl());
       } catch (error) {
-        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) });
+        console.error("vk oauth start failed:", error);
+        return sendJson(res, 500, { ok: false, error: "VK OAuth is not configured" });
       }
     }
 
@@ -10366,7 +10501,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId(), period), { "cache-control": "no-store" });
     }
     if (req.method === "POST" && p === "/api/costs/budget") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const b = networkCostBudgetState();
       if (Object.prototype.hasOwnProperty.call(body,"monthlyRub")) b.monthlyRub = Math.max(0, Number(body.monthlyRub || 0) || 0);
       if (Object.prototype.hasOwnProperty.call(body,"dailyRub")) b.dailyRub = Math.max(0, Number(body.dailyRub || 0) || 0);
@@ -10375,7 +10510,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res,200,{ok:true,budget:await evaluateCostBudget(true)});
     }
     if (req.method === "POST" && p === "/api/costs/balance") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const provider = String(body && body.provider || "").toLowerCase();
       const stored = networkApiBalances();
       const parsed = normalizeBalanceInput(provider, body, stored[provider], new Date());
@@ -10390,7 +10525,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, registry: loadEditorialRegistry() });
     }
     if ((req.method === "POST" || req.method === "PUT") && p === "/api/editorial/registry") {
-      const body = await readJson(req, 4 * 1024 * 1024);
+      const body = await readJsonObject(req, 4 * 1024 * 1024);
       const current = loadEditorialRegistry();
       const registry = saveEditorialRegistry({
         banned_orgs: body.banned_orgs != null ? body.banned_orgs : current.banned_orgs,
@@ -10426,9 +10561,11 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, profiles: EDITORIAL_CHANNEL_IDS, workspaces: workspaceStore.workspaces.map(function(ws){ return Object.assign(publicWorkspaceMeta(ws), { summary: workspaceSummary(ws) }); }) });
     }
     if (req.method === "POST" && p === "/api/workspaces") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const name = String(body.name || "").trim().slice(0, 80);
       if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название канала" });
+      const requestedProfile = String(body.channelId || "").trim().toLowerCase();
+      if (requestedProfile && !EDITORIAL_CHANNEL_IDS.includes(requestedProfile)) return sendJson(res, 400, { ok: false, error: "Неизвестный профиль канала: " + requestedProfile.slice(0, 40) });
       const tgChannel = normalizeTelegramChannelInput(body.telegramChannel || body.telegramPublicUsername || "");
       const handle = /^@[A-Za-z0-9_]+$/.test(tgChannel) ? tgChannel.slice(1) : "";
       let username = String(normalizeTelegramChannelInput(body.telegramPublicUsername || "")).replace(/^@/, "").trim();
@@ -10453,7 +10590,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 201, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
     if (req.method === "POST" && p === "/api/workspaces/update") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       if (body.name != null) workspace.name = String(body.name || "").trim().slice(0, 80) || workspace.name;
@@ -10474,7 +10611,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
     if (req.method === "POST" && p === "/api/workspaces/avatar") {
-      const body = await readJson(req, 10 * 1024 * 1024);
+      const body = await readJsonObject(req, 10 * 1024 * 1024);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       try {
@@ -10486,7 +10623,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/workspaces/avatar/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       removeWorkspaceAvatar(workspace);
@@ -10494,7 +10631,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/workspaces/remove") {
-      const body = await readJson(req), id = String(body.id || "");
+      const body = await readJsonObject(req), id = String(body.id || "");
       if (!id || id === workspaceStore.defaultWorkspaceId) return sendJson(res, 400, { ok: false, error: "Основной кабинет удалить нельзя" });
       const deletingWorkspace = getWorkspaceById(id);
       if (!deletingWorkspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
@@ -10506,7 +10643,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/media/enhance-queue") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await backfillQueueImageEnhancements({ force: Boolean(body && body.force) });
       return sendJson(res, 200, { ok: true, result: result });
     }
@@ -10538,7 +10675,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/assign") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || "");
       const time = String(body.time || "");
       const queueId = String(body.queueId || "");
@@ -10569,9 +10706,12 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || "");
       const time = String(body.time || "");
+      // date/time become object keys below: only YYYY-MM-DD / HH:MM (blocks "__proto__", "constructor", ...)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
+      if (!/^\d{2}:\d{2}$/.test(time)) return sendJson(res, 400, { ok: false, error: "Некорректное время" });
       const schedule = ensureScheduleShape(state);
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
@@ -10581,9 +10721,11 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/auto") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || moscowDateKey(new Date()));
       const time = String(body.time || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
+      if (!/^\d{2}:\d{2}$/.test(time)) return sendJson(res, 400, { ok: false, error: "Некорректное время" });
       const schedule = ensureScheduleShape(state);
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       delete schedule.suppressed[day][time];
@@ -10658,7 +10800,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/ai/rewrite") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await callOpenAIRewrite(body);
       state.stats.rewritten += 1;
       saveState();
@@ -10666,7 +10808,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/mode") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const mode = String(body.mode || "");
       if (!["AUTO", "REVIEW", "PAUSED"].includes(mode)) {
         return sendJson(res, 400, { ok: false, error: "invalid mode" });
@@ -10684,8 +10826,9 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/topic-settings") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const topicId = String(body.topicId || body.topic_id || "default").trim() || "default";
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(topicId) || isReservedKey(topicId)) return sendJson(res, 400, { ok: false, error: "Некорректный topicId" });
       if (!state.topicSettings || typeof state.topicSettings !== "object") {
         state.topicSettings = structuredClone(defaultState.topicSettings);
       }
@@ -10730,7 +10873,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Введите текст" });
 
@@ -10805,10 +10948,14 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const name = String(body.name || "").trim();
       const sourceUrl = String(body.url || "").trim();
       if (!name || !sourceUrl) return sendJson(res, 400, { ok: false, error: "Заполните название и ссылку" });
+      if (name.length > 200) return sendJson(res, 400, { ok: false, error: "Название не длиннее 200 символов" });
+      if (sourceUrl.length > 2000) return sendJson(res, 400, { ok: false, error: "Ссылка не длиннее 2000 символов" });
+      try { validateFetchUrl(sourceUrl); } // http(s) only, no credentials, allowed ports, no internal addresses
+      catch (error) { return sendJson(res, 400, { ok: false, error: "Некорректная ссылка: " + (error && error.message || "разрешены только http/https") }); }
       state.sources.push({ id: newId("src"), name: name, type: "web", group: "custom", priority: 3, url: sourceUrl, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only" });
       saveState();
       return sendJson(res, 200, { ok: true });
@@ -10820,13 +10967,13 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, result.ok ? 200 : 409, result);
     }
     if (req.method === "POST" && p === "/api/digest/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await publishDigest(body.kind === "sunday" ? "sunday" : "evening", body.force === true);
       return sendJson(res, result.ok ? 200 : 409, result);
     }
 
     if (req.method === "POST" && p === "/api/sources/target") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const target = Math.max(0, Math.min(200, Math.round(Number(body.target))));
       if (!Number.isFinite(target)) return sendJson(res, 400, { ok: false, error: "Укажите число" });
       state.sourceTarget = target;
@@ -10837,7 +10984,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/media-license") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const src = state.sources.find(function(x){ return x.id === body.id; });
       if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
       const license = normalizeMediaLicense(body.mediaLicense);
@@ -10851,7 +10998,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/toggle") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const src = state.sources.find(function(x){ return x.id === body.id; });
       if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
       src.enabled = !src.enabled;
@@ -10866,7 +11013,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const removed = state.sources.find(function(x){ return x.id === body.id; });
       // A source the editor removed is never re-added automatically.
       const removedHost = removed && sourceKey(removed.url);
@@ -10875,13 +11022,13 @@ const server = http.createServer(async function(req, res) {
         if (!state.sourceBlockedHosts.includes(removedHost)) state.sourceBlockedHosts.push(removedHost);
       }
       state.sources = state.sources.filter(function(x){ return x.id !== body.id; });
-      if (state.sourceStats && body.id) delete state.sourceStats[body.id];
+      if (state.sourceStats && body.id && !isReservedKey(body.id)) delete state.sourceStats[String(body.id)];
       saveState();
       return sendJson(res, 200, { ok: true });
     }
 
     if (req.method === "POST" && p === "/api/queue") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Нужен текст" });
       state.queue.unshift({
@@ -10905,7 +11052,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
       removeQueueIdFromSchedule(state, body.id);
       ensureScheduleAssignments(state);
@@ -10914,7 +11061,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/enhance-media") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const item = (state.queue || []).find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
       if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — улучшать фото не требуется" });
@@ -10997,7 +11144,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const item = state.queue.find(function(x){ return x.id === body.id; });
       if (!item) {
         const published = (state.history || []).find(function(h){ return h && h.queueId === body.id; });
@@ -11250,8 +11397,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/publish") {
-      if (req.headers["x-admin-key"] !== ADMIN_KEY) return sendJson(res, 401, { ok: false, error: "unauthorized" });
-      const body = await readJson(req);
+      if (!requireAdminKey(req, res)) return;
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "text is required" });
 
@@ -11307,8 +11454,14 @@ const server = http.createServer(async function(req, res) {
 
     return sendJson(res, 404, { ok: false, error: "not found" });
   } catch (error) {
-    console.error(error);
-    if (!res.headersSent) sendJson(res, 500, { ok: false, error: error.message });
+    if (error instanceof BadRequestError) {
+      if (!res.headersSent) sendJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+    // Full detail stays in the server log; the client only gets a generic message (no paths, SQL, upstream bodies).
+    const errorId = crypto.randomBytes(4).toString("hex");
+    console.error("REQUEST_FAILED id=" + errorId + " " + req.method + " " + String(req.url || "").split("?")[0] + ":", error);
+    if (!res.headersSent) sendJson(res, 500, { ok: false, error: "Внутренняя ошибка сервера (код " + errorId + "), подробности в логах", errorId: errorId });
   }
 });
 

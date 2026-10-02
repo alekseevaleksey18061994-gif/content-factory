@@ -14,7 +14,8 @@
     "test:accounts-smoke": "node scripts/accounts-smoke.js",
     "test:seed-lists": "node scripts/seed-lists-test.js",
     "test:data-safety": "node scripts/data-safety-test.js",
-    "test:dedupe": "node scripts/dedupe-test.js"
+    "test:dedupe": "node scripts/dedupe-test.js",
+    "test:security": "node scripts/security-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
