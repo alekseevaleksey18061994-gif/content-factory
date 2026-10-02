@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
+import { channelTopic, channelFocus, SOURCE_REWORK_V0430 } from "./lib/channel-dna.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
@@ -2397,7 +2398,7 @@ async function discoverSourcesWithAI(count) {
   const channelId = resolveChannelId(ws);
   const prompt = buildDiscoveryPrompt({
     channelName: ws && ws.name || "",
-    topic: CHANNEL_TOPICS_RU[channelId] || "",
+    topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "",
     count: count,
     existingHosts: Array.from(new Set((state.sources || []).map(function(x){ return sourceHost(x && x.url); }).filter(Boolean)))
   });
@@ -2502,7 +2503,8 @@ async function prefilterCandidates(candidates, summary) {
     const channelId = resolveChannelId(ws);
     const prompt = buildPrefilterPrompt({
       channelName: ws && ws.name || "",
-      topic: CHANNEL_TOPICS_RU[channelId] || "",
+      topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "",
+      focus: channelFocus(channelId),
       today: new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Moscow" }).format(now),
       items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
     });
@@ -4579,7 +4581,7 @@ async function collectOnce(trigger) {
         if (!source.preview || Date.now() - new Date(source.preview.at || 0).getTime() > 7 * 24 * 3600000) {
           try { source.preview = extractSitePreview(html, source.url); } catch {}
         }
-        const isTelegramCreator = source.group === "blogger" || source.group === "creator";
+        const isTelegramCreator = source.group === "blogger" || source.group === "creator" || /^https?:\/\/t\.me\/s\//i.test(String(source.url || ""));
         const links = (isTelegramCreator
           ? extractTelegramSourcePosts(html, source.url)
           : extractArticleLinks(html, source.url)
@@ -11016,6 +11018,83 @@ function setupNewChannels() {
     }
   })().catch(function(error){ console.warn("Source seed failed:", error.message); }).finally(function(){ channelSetupRunning = false; });
 }
+// v0.43.0: source rework after the owner's review — off-topic sources are paused
+// (kept, not deleted) and new ones added after server validation. «Что там в
+// мире?» becomes «Что там в сети?» (viral and internet trends).
+async function reworkChannelSources(ws) {
+  const channelId = resolveChannelId(ws);
+  const plan = SOURCE_REWORK_V0430[channelId];
+  if (!plan) return null;
+  // Exact URL match (not sourceKey): a key covers the whole section, and pausing
+  // iz.ru/rubric/obshchestvo must not pause iz.ru/rubric/zhizn.
+  const normUrl = function(u) { try { const x = new URL(String(u || "")); return (x.hostname.replace(/^www\./i, "") + x.pathname.replace(/\/+$/, "") + x.search).toLowerCase(); } catch { return ""; } };
+  const disableUrls = new Set((plan.disable || []).map(normUrl).filter(Boolean));
+  const paused = [];
+  const now = new Date().toISOString();
+  for (const src of (state.sources || [])) {
+    if (!src || !src.enabled || !disableUrls.has(normUrl(src.url))) continue;
+    src.enabled = false;
+    src.autoPaused = { reason: "не по теме канала (пересборка источников v0.43.0)", at: now };
+    paused.push(src.name);
+  }
+  const added = [];
+  const failed = [];
+  for (const c of freshCandidates(plan.add || [], state.sources, state.sourceBlockedHosts || [])) {
+    const check = await validateSourceCandidate(c.url);
+    if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
+    state.sources.push({
+      id: "dna-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
+      name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
+      url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
+      autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: "v0.43.0" }
+    });
+    added.push(c.name);
+  }
+  let renamed = false;
+  if (channelId === "world" && /в мире/i.test(String(ws.name || ""))) {
+    ws.name = "Что там в сети?";
+    // The channel profile was resolved from the old name; keep it explicit.
+    if (!ws.channelId) ws.channelId = "world";
+    ws.updatedAt = now;
+    renamed = true;
+  }
+  saveState();
+  if (renamed) persistWorkspaceStore();
+  return { channel: channelId, paused: paused, added: added, failed: failed, renamed: renamed, active: (state.sources || []).filter(function(x){ return x && x.enabled; }).length };
+}
+let sourceReworkRetryTimer = null;
+function scheduleSourceReworkRetry() {
+  if (sourceReworkRetryTimer) return;
+  sourceReworkRetryTimer = setTimeout(function(){ sourceReworkRetryTimer = null; runSourceRework(); }, 30 * 60 * 1000);
+}
+let sourceReworkRunning = false;
+function runSourceRework() {
+  if (sourceReworkRunning) return;
+  sourceReworkRunning = true;
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      const migration = "v0.43.0-source-rework";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws);
+        // Sites unreachable at start: retry on the next starts (up to 3) instead
+        // of leaving the channel with old sources paused and no new ones.
+        state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+        state.seedAttempts[migration] = Number(state.seedAttempts[migration] || 0) + 1;
+        const planned = result && SOURCE_REWORK_V0430[result.channel] ? SOURCE_REWORK_V0430[result.channel].add.length : 0;
+        const done = !result || !planned || result.added.length > 0 || state.seedAttempts[migration] >= 3;
+        if (done) state.migrations.push(migration);
+        else scheduleSourceReworkRetry();
+        saveState();
+        if (result) console.log("SOURCE_REWORK " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+      });
+    }
+  })().catch(function(error){ console.warn("Source rework failed:", error.message); }).finally(function(){ sourceReworkRunning = false; });
+}
+setTimeout(runSourceRework, 90000);
+
 setTimeout(setupNewChannels, 30000);
 setInterval(setupNewChannels, 15 * 60 * 1000);
 

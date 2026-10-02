@@ -576,4 +576,36 @@ await test("adversarial review regressions (sources, report, Claude retry)", asy
   assert.equal(calls, 1, "no paid retry on refusal");
 });
 
+await test("channel DNA: all channels, prompt profiles, prefilter focus, rework lists", async function() {
+  const dna = await import("../lib/channel-dna.js");
+  const sq = await import("../lib/source-quality.js");
+  const fsMod = await import("node:fs");
+  const prompt = fsMod.readFileSync(new URL("../prompts/chto-tam.md", import.meta.url), "utf8");
+  const ids = ["ai","auto","money","tech","games","kino","science","sport","world","stars","travel","shopping","home","food","business","crypto"];
+  for (const id of ids) {
+    assert.ok(dna.channelTopic(id), "topic for " + id);
+    assert.ok(["news","news_fun","blogger","trends"].includes(dna.CHANNEL_DNA[id].type), "type for " + id);
+    const section = prompt.split("### `" + id + "`")[1] || "";
+    assert.ok(/\*\*Тип:\*\*/.test(section.split("\n### ")[0]), "prompt profile has a type: " + id);
+  }
+  assert.match(prompt, /### `world` — 🌐 Что там в сети\?/);
+  assert.notEqual(sq.sourceKey("https://www.reddit.com/r/aivideo/top/?t=day"), sq.sourceKey("https://www.reddit.com/r/ChatGPT/top/?t=day"), "each subreddit is its own source");
+  const p1 = sq.buildPrefilterPrompt({ channelName: "X", topic: "t", focus: "вирусное", items: [{ title: "a" }] });
+  assert.match(p1, /Фокус канала: вирусное/);
+  const p2 = sq.buildPrefilterPrompt({ channelName: "X", topic: "t", items: [{ title: "a" }] });
+  assert.ok(!/Фокус канала/.test(p2) && !/\n\n/.test(p2), "no empty focus line");
+  for (const [id, plan] of Object.entries(dna.SOURCE_REWORK_V0430)) {
+    assert.ok(ids.includes(id));
+    const keys = new Set();
+    for (const c of plan.add) {
+      assert.match(c.url, /^https:\/\//);
+      if (/t\.me\/s\//.test(c.url)) assert.equal(c.group, "creator", "Telegram sources must be parsed as Telegram: " + c.name);
+      assert.ok(["media","official","creator"].includes(c.group), c.name);
+      keys.add(sq.sourceKey(c.url));
+    }
+    assert.equal(keys.size, plan.add.length, "no duplicate candidates in " + id);
+    for (const u of plan.disable) assert.ok(!keys.has(sq.sourceKey(u)), "not both added and paused: " + u);
+  }
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));

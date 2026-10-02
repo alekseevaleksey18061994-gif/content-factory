@@ -32,8 +32,10 @@ export function buildPrefilterPrompt(options) {
       text: item.text ? String(item.text).slice(0, 280) : undefined
     };
   });
+  const focus = String(options.focus || "").trim();
   return [
     "Ты выпускающий редактор Telegram-канала «" + channel + "»" + (topic ? " (тема: " + topic + ")" : "") + ".",
+    focus ? "Фокус канала: " + focus : "",
     "Сегодня " + today + ". Ниже заголовки свежих ссылок с сайтов-источников.",
     "Для каждой ссылки реши, стоит ли тратить на неё работу редакции.",
     "Отсеивай (keep=false):",
@@ -42,10 +44,10 @@ export function buildPrefilterPrompt(options) {
     "- старые новости: события, отчёты и выставки прошлых месяцев и лет; если дата неизвестна, а речь о прошедшем событии — тоже отсеивай;",
     "- не по теме канала;",
     "- служебные страницы: о компании, контакты, вакансии, подписка, рубрики.",
-    "Оставляй (keep=true) настоящие новости по теме канала и дай им оценку важности score от 1 до 10.",
+    "Оставляй (keep=true) настоящие новости и материалы по теме и фокусу канала и дай им оценку score от 1 до 10: насколько это интересно читателю канала.",
     "Ответь строго JSON без пояснений: {\"items\":[{\"n\":1,\"keep\":true,\"score\":7,\"reason\":\"коротко по-русски\"}]}.",
     "ITEMS: " + JSON.stringify(items)
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 export function parsePrefilterResult(text, count) {
@@ -128,6 +130,8 @@ export function sourceKey(url) {
     const host = u.hostname.replace(/^www\./i, "").toLowerCase();
     // Telegram: every channel is its own source (t.me/s/<channel>).
     if (host === "t.me" || host === "telegram.me") return "t.me/" + (segs[0] === "s" ? segs[1] || "" : segs[0] || "");
+    // Reddit: every subreddit is its own source (reddit.com/r/<sub>).
+    if (/(^|\.)reddit\.com$/.test(host) && segs[0] === "r" && segs[1]) return "reddit.com/r/" + segs[1];
     const section = segs[0] && /^[a-z]{2}(-[a-z]{2})?$/.test(segs[0]) ? segs.slice(0, 3).join("/") : (segs[0] || "");
     return u.hostname.replace(/^www\./i, "").toLowerCase() + "/" + section;
   } catch { return ""; }
