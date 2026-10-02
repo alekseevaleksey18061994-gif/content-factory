@@ -2564,19 +2564,20 @@ button{line-height:1.2!important}
 <div id="toast" class="toast"></div>
 
 <script>
-var state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],previewCurrentItem=null;
+var ratingMinAuto=50,state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],previewCurrentItem=null;
 var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 // One human-readable decision per queue card instead of several raw scores.
-function queueDecision(q){
+function queueDecision(q,rating){
   if(q.status==='media_failed')return {label:'Ошибка медиа VK',cls:'media_failed',reason:'VK не принял медиа'+(q.vkError?': '+q.vkError:'')};
   if(q.qcStatus==='hold'){
     var reason=String(q.decisionSummary||'').replace(/^Пост отложен на ручную проверку:\s*/,'').replace(/^Пропущено при пересборке:\s*/,'Редакция пропустила: ');
     if(!reason&&Array.isArray(q.qcIssues)&&q.qcIssues.length)reason=String(q.qcIssues[0]);
     return {label:'На ручной проверке',cls:'hold',reason:reason?('Почему: '+reason+'. Можно опубликовать вручную или удалить.'):'Пост не прошёл автоматическую проверку.'};
   }
+  if(rating&&ratingMinAuto>0&&rating.total<ratingMinAuto)return {label:'На ручной проверке',cls:'hold',reason:'Почему: рейтинг '+rating.total+' из 100 ниже порога '+ratingMinAuto+', сам не опубликуется. Можно опубликовать вручную или удалить.'};
   if(q.preparedFor)return {label:'Запланирован · '+String(q.preparedFor).split(' ').pop(),cls:'scheduled',reason:''};
   return {label:'Готов к публикации',cls:'ready',reason:''};
 }
@@ -2967,7 +2968,7 @@ document.addEventListener('click',function(e){var sw=el('accountSwitcher');if(sw
 document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListener('click',function(){goPage(btn.dataset.page)})});
 
 async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});if(activeWorkspaceId)opt.headers['x-workspace-id']=activeWorkspaceId;var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
-async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderConnections(false).catch(function(e){toast(e.message)})}
+async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderConnections(false).catch(function(e){toast(e.message)})}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode(\''+m+'\')">'+labels[m]+'</button>'}).join('');
@@ -3074,8 +3075,8 @@ function render(){
     var storyNames=storyCount?(q.storySources||[]).map(function(s){return s.sourceName||s.name||''}).filter(Boolean).slice(0,5).join(' · '):'';
     var v2=q.editorialV2||{};
     var importance=Number.isFinite(Number(v2.importance))&&v2.importance!==null?Number(v2.importance):(Number.isFinite(aiScore)?Math.round(aiScore/10):null);
-    var decision=queueDecision(q);
     var queueRating=postRating({editorialV2:v2,aiScore:q.aiScore,qcStatus:q.qcStatus,status:q.status,articlePublishedAt:q.articlePublishedAt,foundAt:q.createdAt,mediaKind:q.videoUrl?'video':(sourceImage?'photo':(q.generatedImageUrl?'generated':'none')),sourceRole:q.sourceRole,sourceCount:storyCount});
+    var decision=queueDecision(q,queueRating);
     var mediaChip=q.videoUrl?{label:'Видео',cls:'found'}:(sourceImage?{label:'Фото источника',cls:'found'}:(q.generatedImageUrl?{label:'AI-обложка',cls:'generated'}:{label:'Нет медиа',cls:'bad'}));
     return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+

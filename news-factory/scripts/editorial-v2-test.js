@@ -492,4 +492,22 @@ await test("source replenishment helpers", async function() {
   assert.ok(/уже подключённые сайты: zr\.ru/.test(sq.buildDiscoveryPrompt({ channelName: "Тачки", topic: "авто", count: 3, existingHosts: ["zr.ru"] })));
 });
 
+await test("server and admin post ratings are identical", async function() {
+  const fs = await import("node:fs");
+  const html = fs.readFileSync(fileURLToPath(new URL("../public/admin.html", import.meta.url)), "utf8");
+  const admin = new Function("esc", html.slice(html.indexOf("function postRating("), html.indexOf("// Compact rating under the status badge")) + "; return postRating;")(function(v){ return String(v || ""); });
+  const lib = await import("../lib/post-rating.js");
+  const samples = [
+    { editorialV2: { status: "approved", verdict: "pass", importance: 8, rounds: 1 }, createdAt: "2026-10-01T11:00:00Z", articlePublishedAt: "2026-10-01T09:30:00Z", imageUrl: "/media/a.jpg", sourceRole: "media_context" },
+    { editorialV2: { status: "approved", verdict: "unavailable", importance: 4 }, qcStatus: "hold", videoUrl: "v.mp4", storySources: [1, 2, 3] },
+    { aiScore: 61, qcStatus: "pass", generatedImageUrl: "/g.png", sourceRole: "author_opinion" },
+    {}
+  ];
+  for (const q of samples) {
+    const input = lib.queueItemRatingInput(q);
+    assert.deepEqual(lib.postRating(input), admin(input));
+  }
+  assert.equal(lib.postRating(lib.queueItemRatingInput(samples[0])).total, 32 + 21 + 15 + 8 + 7);
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));

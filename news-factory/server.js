@@ -6,6 +6,7 @@ import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
+import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
@@ -63,6 +64,7 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
 const HEADLINE_PREFILTER_ENABLED = String(process.env.HEADLINE_PREFILTER_ENABLED || "true").toLowerCase() !== "false";
 const SOURCE_AUTO_PAUSE_ENABLED = String(process.env.SOURCE_AUTO_PAUSE_ENABLED || "true").toLowerCase() !== "false";
+const POST_RATING_MIN_AUTO = Math.max(0, Math.min(100, Number(process.env.POST_RATING_MIN_AUTO || 50)));
 const SOURCES_MIN_ACTIVE = Math.max(0, Math.min(200, Number(process.env.SOURCES_MIN_ACTIVE || 40)));
 const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 120));
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
@@ -2086,9 +2088,19 @@ function editorialLearningBonus(item) {
   return { bonus: Math.max(-10, Math.min(10, Math.round(bonus))), reasons: reasons.slice(0, 4) };
 }
 
+function queueItemRating(item) {
+  return postRating(queueItemRatingInput(item)).total;
+}
+
+// Posts below the rating threshold are not published automatically: they wait
+// for the editor (the queue card says why).
+function ratingBelowAutoThreshold(item) {
+  return POST_RATING_MIN_AUTO > 0 && queueItemRating(item) < POST_RATING_MIN_AUTO;
+}
+
 function autoQualityEligible(item) {
   const score = Number(item && item.qualityScore);
-  return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold";
+  return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold" && !ratingBelowAutoThreshold(item);
 }
 
 function buildDecisionExplanation(item) {
@@ -4605,6 +4617,7 @@ async function collectOnce(trigger) {
           enoughTimePassed &&
           qc.qualityScore >= AUTO_QUALITY_MIN &&
           qc.qcStatus !== "hold" &&
+          !ratingBelowAutoThreshold({ editorialV2: editorialV2Meta, aiScore: rewrite.editorialScore, qcStatus: qc.qcStatus, articlePublishedAt: articlePublishedAt || "", createdAt: new Date().toISOString(), videoUrl: media.videoUrl, imageUrl: media.imageUrl, generatedImageUrl: media.generatedImageUrl, sourceRole: sourceRole }) &&
           summary.published < 1;
 
         if (canAutoPublish) {
@@ -4906,7 +4919,8 @@ function dynamicItemScore(item) {
   const aiScore = Number(item && item.aiScore);
 
   if (Number.isFinite(aiScore)) {
-    const base = Math.max(0, Math.min(100, aiScore));
+    // Order of publication follows the 100-point post rating shown in the admin.
+    const base = Math.max(0, Math.min(100, queueItemRating(item)));
     const quality = Number(item && item.qualityScore);
     const qualityBonus = Number.isFinite(quality) ? Math.max(-8, Math.min(8, (quality - AUTO_QUALITY_MIN) * 0.35)) : -4;
     const diversity = editorialDiversityPenalty(item);
@@ -9417,7 +9431,7 @@ const server = http.createServer(async function(req, res) {
         item.decisionExplanation = buildDecisionExplanation(item);
         item.decisionExplanation.priorityScore = item.priorityScore;
       }
-      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings() });
+      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), ratingMinAuto: POST_RATING_MIN_AUTO });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
