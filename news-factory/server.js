@@ -6,7 +6,7 @@ import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
-import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus } from "./lib/source-quality.js";
+import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
   createModelClients,
@@ -63,6 +63,8 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
 const HEADLINE_PREFILTER_ENABLED = String(process.env.HEADLINE_PREFILTER_ENABLED || "true").toLowerCase() !== "false";
 const SOURCE_AUTO_PAUSE_ENABLED = String(process.env.SOURCE_AUTO_PAUSE_ENABLED || "true").toLowerCase() !== "false";
+const SOURCES_MIN_ACTIVE = Math.max(0, Math.min(200, Number(process.env.SOURCES_MIN_ACTIVE || 40)));
+const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 120));
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
 const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
@@ -2181,6 +2183,94 @@ function autoPauseWeakSources() {
     console.log("SOURCE_AUTO_PAUSED " + JSON.stringify({ workspace: currentWorkspaceId(), id: source.id, name: source.name, reason: reason }));
   }
   return paused;
+}
+
+// Keep at least SOURCES_MIN_ACTIVE enabled sources per channel: replacements
+// come from the reserve list, then from AI discovery (web search). Every
+// candidate must open and show a list of article links before it is enabled.
+async function validateSourceCandidate(url) {
+  try {
+    const html = await fetchText(url, 15000);
+    const links = extractArticleLinks(html, url).filter(function(l){ return String(l.title || "").trim().length >= 25; });
+    if (links.length < 6) return { ok: false, reason: "на странице мало новостей (" + links.length + ")" };
+    return { ok: true, links: links.length };
+  } catch (error) {
+    return { ok: false, reason: "не открывается: " + String(error.message || error).slice(0, 80) };
+  }
+}
+
+async function discoverSourcesWithAI(count) {
+  if (!OPENAI_API_KEY) return [];
+  const ws = currentWorkspace();
+  const channelId = resolveChannelId(ws);
+  const prompt = buildDiscoveryPrompt({
+    channelName: ws && ws.name || "",
+    topic: CHANNEL_TOPICS_RU[channelId] || "",
+    count: count,
+    existingHosts: Array.from(new Set((state.sources || []).map(function(x){ return sourceHost(x && x.url); }).filter(Boolean)))
+  });
+  for (const withSearch of [true, false]) {
+    try {
+      const body = { model: OPENAI_MODEL, input: prompt, max_output_tokens: 2500 };
+      if (withSearch) body.tools = [{ type: "web_search" }];
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(90000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+      recordOpenAIResponseUsage(OPENAI_MODEL, "source_discovery", data, "responses", { web_search: withSearch });
+      return parseDiscoveryResult(extractOpenAIText(data));
+    } catch (error) {
+      console.warn("SOURCE_DISCOVERY_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), webSearch: withSearch, error: error.message }));
+    }
+  }
+  return [];
+}
+
+async function replenishSources(reason) {
+  const target = Number.isFinite(Number(state.sourceTarget)) && state.sourceTarget !== "" && state.sourceTarget != null ? Number(state.sourceTarget) : SOURCES_MIN_ACTIVE;
+  let need = Math.min(MAX_SOURCES_ADDED_PER_RUN, sourcesNeeded(state.sources, target));
+  if (!need) return { added: [], need: 0 };
+  state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
+  const last = new Date(state.sourceReplenish.lastAt || 0).getTime();
+  if (Date.now() - last < SOURCE_REPLENISH_INTERVAL_MINUTES * 60000) return { added: [], need: need, throttled: true };
+  state.sourceReplenish.lastAt = new Date().toISOString();
+
+  const rejected = state.sourceReplenish.rejected && typeof state.sourceReplenish.rejected === "object" ? state.sourceReplenish.rejected : {};
+  const weekAgo = Date.now() - 7 * 24 * 3600000;
+  for (const key of Object.keys(rejected)) if (new Date(rejected[key].at || 0).getTime() < weekAgo) delete rejected[key];
+  state.sourceReplenish.rejected = rejected;
+  const blocked = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+  const channelId = resolveChannelId(currentWorkspace());
+  const added = [];
+
+  async function tryList(list, from) {
+    for (const c of freshCandidates(list, state.sources, blocked)) {
+      if (need <= 0) return;
+      const key = sourceKey(c.url);
+      if (rejected[key]) continue;
+      const check = await validateSourceCandidate(c.url);
+      if (!check.ok) { rejected[key] = { at: new Date().toISOString(), reason: check.reason }; continue; }
+      const source = {
+        id: "auto-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
+        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", priority: 2,
+        url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
+        autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" }
+      };
+      state.sources.push(source);
+      added.push({ name: source.name, url: source.url, from: from });
+      need -= 1;
+      console.log("SOURCE_AUTO_ADDED " + JSON.stringify({ workspace: currentWorkspaceId(), name: source.name, url: source.url, from: from, links: check.links }));
+    }
+  }
+
+  await tryList(RESERVE_SOURCES[channelId] || [], "reserve");
+  if (need > 0) await tryList(await discoverSourcesWithAI(need + 4), "ai");
+  saveState();
+  return { added: added, need: need };
 }
 
 // One cheap call over all fresh headlines before media and editorial work:
@@ -4708,6 +4798,10 @@ async function collectOnce(trigger) {
 
     const pausedSources = autoPauseWeakSources();
     if (pausedSources.length) summary.pausedSources = pausedSources;
+    // Top up sources in the background so the collector run is not delayed.
+    replenishSources(pausedSources.length ? "replace_paused" : "below_target").catch(function(error){
+      console.warn("SOURCE_REPLENISH_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: error.message }));
+    });
     summary.finishedAt = new Date().toISOString();
     lastCollectorRuns.set(currentWorkspaceId(), summary);
     if (db && dbReady && runId) {
@@ -9617,6 +9711,17 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true });
     }
 
+    if (req.method === "POST" && p === "/api/sources/target") {
+      const body = await readJson(req);
+      const target = Math.max(0, Math.min(200, Math.round(Number(body.target))));
+      if (!Number.isFinite(target)) return sendJson(res, 400, { ok: false, error: "Укажите число" });
+      state.sourceTarget = target;
+      if (state.sourceReplenish) state.sourceReplenish.lastAt = "";
+      saveState();
+      const result = await replenishSources("target_changed");
+      return sendJson(res, 200, { ok: true, target: target, result: result });
+    }
+
     if (req.method === "POST" && p === "/api/sources/media-license") {
       const body = await readJson(req);
       const src = state.sources.find(function(x){ return x.id === body.id; });
@@ -9648,6 +9753,13 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "POST" && p === "/api/sources/remove") {
       const body = await readJson(req);
+      const removed = state.sources.find(function(x){ return x.id === body.id; });
+      // A source the editor removed is never re-added automatically.
+      const removedHost = removed && sourceHost(removed.url);
+      if (removedHost) {
+        state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+        if (!state.sourceBlockedHosts.includes(removedHost)) state.sourceBlockedHosts.push(removedHost);
+      }
       state.sources = state.sources.filter(function(x){ return x.id !== body.id; });
       if (state.sourceStats && body.id) delete state.sourceStats[body.id];
       saveState();
@@ -10170,6 +10282,19 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("Queue logo photos clean-up failed:", error.message); });
 }, 75000);
+
+// Top up sources to the target shortly after start (respects the throttle).
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await replenishSources("startup");
+        console.log("Source replenish " + ws.id + ": " + JSON.stringify(result));
+      });
+    }
+  })().catch(function(error){ console.warn("Source replenish failed:", error.message); });
+}, 120000);
 
 // One-time clean-up of photo sets already in the queue (duplicates, logos, thumbnails).
 setTimeout(function() {

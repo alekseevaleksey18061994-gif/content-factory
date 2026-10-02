@@ -600,7 +600,7 @@ button,.quick button,.quick a{
 .news-badges{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}
 .card-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:0 0 auto;max-width:48%}.rating-mini{width:158px;max-width:100%;border:1px solid rgba(111,147,255,.28);background:rgba(111,147,255,.06);border-radius:12px;padding:7px 9px;cursor:pointer;font-size:10px;line-height:1.25}.rating-mini-top{display:flex;align-items:baseline;gap:2px;margin-bottom:4px}.rating-mini-top b{font-size:18px;font-weight:900}.rating-mini-top small{font-size:10px;opacity:.6;font-weight:700}.rating-mini-top .rating-grade{margin-left:auto;font-size:9px;padding:2px 6px}.rating-mini-row{display:grid;grid-template-columns:1fr auto;gap:1px 6px;margin-top:3px}.rating-mini-row span{font-weight:700}.rating-mini-row em{font-style:normal;font-weight:800}.rating-mini-row i{grid-column:1 / -1;height:3px;border-radius:9px;background:rgba(128,140,160,.2);overflow:hidden}.rating-mini-row u{display:block;height:100%;background:linear-gradient(90deg,#20c7ff,#625bff)}.rating-mini-note{display:none;grid-column:1 / -1;opacity:.7;margin-top:1px}.rating-mini.open .rating-mini-note{display:block}.rating-mini-hint{margin-top:5px;opacity:.55;text-align:right}.rating-mini.open .rating-mini-hint{display:none}.rating-mini.open{width:200px}
 .rating-box{margin-top:10px;border:1px solid rgba(111,147,255,.28);background:rgba(111,147,255,.06);border-radius:14px;padding:10px 12px}.rating-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.rating-total{font-size:22px;font-weight:900;letter-spacing:-.01em}.rating-total small{font-size:12px;font-weight:700;opacity:.65;margin-left:3px}.rating-grade{font-size:11px;font-weight:800;border-radius:999px;padding:3px 9px;border:1px solid currentColor}.rating-grade.g1{color:#1a9a5b}.rating-grade.g2{color:#2f6fe0}.rating-grade.g3{color:#c98a12}.rating-grade.g4{color:#c0392b}.rating-rows{display:grid;gap:6px;margin-top:8px}.rating-row{display:grid;grid-template-columns:minmax(0,1fr) 54px;gap:2px 10px;align-items:center;font-size:11px}.rating-row-label{font-weight:700}.rating-row-pts{text-align:right;font-weight:800;white-space:nowrap}.rating-row-bar{grid-column:1 / -1;height:5px;border-radius:99px;background:rgba(128,140,160,.2);overflow:hidden}.rating-row-bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#20c7ff,#625bff)}.rating-row-note{grid-column:1 / -1;opacity:.7;line-height:1.35}
-.source-paused-note{margin-top:6px;padding:7px 10px;border-radius:10px;font-size:12px;line-height:1.4;color:#a5541a;background:rgba(255,190,85,.12);border:1px solid rgba(255,190,85,.35)}.feed-why{margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.45;background:rgba(138,148,166,.12);border:1px solid rgba(138,148,166,.3)}.feed-why b{font-weight:800}.feed-why.bad{background:rgba(255,107,115,.08);border-color:rgba(255,107,115,.3);color:#c0392b}
+.source-target-box{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0;padding:12px;border-radius:14px;border:1px solid rgba(111,147,255,.28);background:rgba(111,147,255,.06)}.source-target-box b{display:block;font-size:13px}.source-target-box span{display:block;font-size:12px;opacity:.75;margin-top:3px;line-height:1.4;max-width:520px}.source-target-form{display:flex;gap:8px;align-items:center}.source-target-form input{width:84px}.source-added-note{margin-top:6px;padding:6px 10px;border-radius:10px;font-size:12px;line-height:1.4;color:#2f6fe0;background:rgba(47,111,224,.08);border:1px solid rgba(47,111,224,.25)}.source-paused-note{margin-top:6px;padding:7px 10px;border-radius:10px;font-size:12px;line-height:1.4;color:#a5541a;background:rgba(255,190,85,.12);border:1px solid rgba(255,190,85,.35)}.feed-why{margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.45;background:rgba(138,148,166,.12);border:1px solid rgba(138,148,166,.3)}.feed-why b{font-weight:800}.feed-why.bad{background:rgba(255,107,115,.08);border-color:rgba(255,107,115,.3);color:#c0392b}
 .news-score-badge{color:#c9d6ff;border-color:rgba(111,147,255,.32);background:rgba(111,147,255,.07)}
 .news-score-reason{margin-top:8px;color:#9daac0;font-size:11px;line-height:1.45}
 .news-runtime-meta{margin-top:7px;color:#8fb0ff;font-size:11px}
@@ -2212,6 +2212,7 @@ button{line-height:1.2!important}
             <div class="source-summary-box"><b id="sourceWeakCount">0</b><span>Слабые</span></div>
             <div class="source-summary-box source-summary-bad"><b id="sourceReplaceCount">0</b><span>На замену</span></div>
           </div>
+          <div class="source-target-box"><div><b>Минимум активных источников</b><span id="sourceTargetInfo">—</span></div><div class="source-target-form"><input id="sourceTargetInput" type="number" min="0" max="200" inputmode="numeric"><button onclick="saveSourceTarget()">Сохранить</button></div></div>
           <div class="notice source-rating-note">Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.</div>
           <div class="notice copyright-safe-note"><b>Balanced Media включён.</b> Фото и видео из новостного источника используются по умолчанию с сохранением ссылки на источник. AI-обложка создаётся только как запасной вариант, если медиа нет или источник помечен «Медиа запрещено».</div>
           <div id="sources" class="source-ranked-list"></div>
@@ -2705,6 +2706,16 @@ function whyPostHtml(q){
   var summary=d.summary||q.decisionSummary||'Система учитывает рейтинг новости, качество текста, разнообразие ленты и медиа.';
   return '<div class="why-panel" id="why_'+esc(q.id)+'"><b>'+esc(summary)+'</b>'+(f.length?'<ul>'+f.map(function(x){return '<li>'+esc(x)+'</li>'}).join('')+'</ul>':'')+'</div>';
 }
+async function saveSourceTarget(){
+  var v=Number(el('sourceTargetInput').value);
+  if(!Number.isFinite(v)||v<0){toast('Укажите число');return}
+  try{
+    var r=await api('/api/sources/target',{method:'POST',body:JSON.stringify({target:v})});
+    var n=r.result&&r.result.added?r.result.added.length:0;
+    toast('Цель: '+v+(n?' · добавлено источников: '+n:''));
+    await load();
+  }catch(e){toast(e.message)}
+}
 function toggleWhy(id){
   var node=el('why_'+id);if(node)node.classList.toggle('open');
 }
@@ -2984,6 +2995,10 @@ function render(){
   if(el('sourceWorkingCount'))el('sourceWorkingCount').textContent=statusCounts.working;
   if(el('sourceWeakCount'))el('sourceWeakCount').textContent=statusCounts.weak;
   if(el('sourceReplaceCount'))el('sourceReplaceCount').textContent=statusCounts.replace;
+  var activeCount=(state.sources||[]).filter(function(x){return x&&x.enabled}).length;
+  var target=(state.sourceTarget!=null&&state.sourceTarget!=='')?Number(state.sourceTarget):40;
+  if(el('sourceTargetInfo'))el('sourceTargetInfo').textContent='Активных '+activeCount+' из '+target+'. Если источник отключится, система сама подберёт и проверит замену: сначала из резервного списка, потом через поиск AI.';
+  if(el('sourceTargetInput')&&document.activeElement!==el('sourceTargetInput'))el('sourceTargetInput').value=target;
   el('sources').innerHTML=sortedSources.map(function(s){
     var group=s.group==='official'?'Официальный':s.group==='media'?'СМИ':s.group==='blogger'?'Автоблогер':s.group==='creator'?'Блогер':'Свой';
     var r=rankingMap[s.id]||{rating:null,status:'Собираем данные',rank:'—',checks:0,scored:0,strong:0,selected:0,published:0,errors:0,avgScore:null};
@@ -2995,6 +3010,7 @@ function render(){
       '<div class="source-ranked-main"><div class="source-ranked-title"><div class="name">'+esc(s.name)+'</div><span class="source-rating '+cls+'">'+esc(rating)+'/100 · '+esc(r.status)+'</span></div>'+
       '<div class="meta">'+group+(s.enabled?' · включён':' · выключен')+'<span class="source-license-badge '+mediaLicenseClass(s.mediaLicense)+'">'+esc(mediaLicenseLabel(s.mediaLicense))+'</span></div>'+
       '<div class="url">'+esc(s.url)+'</div>'+
+      (s.autoAdded?'<div class="source-added-note">Добавлен автоматически '+esc(safeDate(s.autoAdded.at))+(s.autoAdded.from==='ai'?' · найден AI-поиском':' · из резерва')+(s.autoAdded.why?' · '+esc(s.autoAdded.why):'')+'</div>':'')+
       (s.autoPaused&&!s.enabled?'<div class="source-paused-note">Выключен автоматически: '+esc(s.autoPaused.reason||'')+'. Можно включить вручную.</div>':'')+
       '<div class="source-metrics">'+
         '<span>Полезных <b>'+esc(r.useful||0)+'</b></span>'+

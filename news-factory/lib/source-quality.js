@@ -102,3 +102,114 @@ export function outcomeForStatus(status) {
   if (s === "queued" || s === "published" || s === "scheduled") return "ok";
   return "";
 }
+
+// ---------------------------------------------------------------------------
+// Keeping the number of active sources at a target: when sources are paused,
+// replacements come first from a reserve list and then from AI discovery.
+// Every candidate is validated by the server (page opens, has article links)
+// before it is enabled, and then lives under the same auto-pause rules.
+
+export const DEFAULT_SOURCE_TARGET = 40;
+export const MAX_SOURCES_ADDED_PER_RUN = 5;
+
+export function sourceHost(url) {
+  try { return new URL(String(url || "")).hostname.replace(/^www\./i, "").toLowerCase(); }
+  catch { return ""; }
+}
+
+// Same host + same first path segment counts as the same source; different
+// sections of one big site (e.g. blog.google/technology/ai) stay distinct.
+export function sourceKey(url) {
+  try {
+    const u = new URL(String(url || ""));
+    const first = u.pathname.split("/").filter(Boolean)[0] || "";
+    return u.hostname.replace(/^www\./i, "").toLowerCase() + "/" + first.toLowerCase();
+  } catch { return ""; }
+}
+
+export function activeSourceCount(sources) {
+  return (sources || []).filter(function(s){ return s && s.enabled; }).length;
+}
+
+export function sourcesNeeded(sources, target) {
+  const want = Math.max(0, Number(target) || DEFAULT_SOURCE_TARGET);
+  return Math.max(0, want - activeSourceCount(sources));
+}
+
+// Candidates not yet present (by host+section) and not blocked by the editor.
+export function freshCandidates(candidates, sources, blockedHosts) {
+  const keys = new Set((sources || []).map(function(s){ return sourceKey(s && s.url); }).filter(Boolean));
+  const blocked = new Set((blockedHosts || []).map(function(h){ return String(h || "").toLowerCase(); }));
+  const out = [];
+  for (const c of (candidates || [])) {
+    if (!c || !/^https?:\/\//i.test(c.url || "")) continue;
+    const key = sourceKey(c.url);
+    const host = sourceHost(c.url);
+    if (!key || keys.has(key) || blocked.has(host)) continue;
+    keys.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
+export const RESERVE_SOURCES = {
+  auto: [
+    { name: "Motor Trend", url: "https://www.motortrend.com/news/", group: "media" },
+    { name: "Road & Track", url: "https://www.roadandtrack.com/news/", group: "media" },
+    { name: "Autoweek", url: "https://www.autoweek.com/news/", group: "media" },
+    { name: "Autoblog", url: "https://www.autoblog.com/news", group: "media" },
+    { name: "CarBuzz", url: "https://carbuzz.com/news/", group: "media" },
+    { name: "Automotive News", url: "https://www.autonews.com/", group: "media" },
+    { name: "electrive", url: "https://www.electrive.com/", group: "media" },
+    { name: "CarExpert", url: "https://www.carexpert.com.au/car-news", group: "media" },
+    { name: "АвтоВзгляд", url: "https://www.avtovzglyad.ru/news/", group: "media" },
+    { name: "Газета.ру Авто", url: "https://www.gazeta.ru/auto/news/", group: "media" },
+    { name: "110km.ru", url: "https://110km.ru/novosti/", group: "media" },
+    { name: "Автоновости дня", url: "https://avtonovostidnya.ru/", group: "media" }
+  ],
+  ai: [
+    { name: "AI News", url: "https://www.artificialintelligence-news.com/", group: "media" },
+    { name: "MarkTechPost", url: "https://www.marktechpost.com/", group: "media" },
+    { name: "Unite.AI", url: "https://www.unite.ai/", group: "media" },
+    { name: "AI Business", url: "https://aibusiness.com/", group: "media" },
+    { name: "ZDNET AI", url: "https://www.zdnet.com/topic/artificial-intelligence/", group: "media" },
+    { name: "The Register AI", url: "https://www.theregister.com/software/ai_ml/", group: "media" },
+    { name: "InfoQ AI", url: "https://www.infoq.com/ai-ml-data-eng/", group: "media" },
+    { name: "Synced", url: "https://syncedreview.com/", group: "media" },
+    { name: "Хабр: ИИ", url: "https://habr.com/ru/hubs/artificial_intelligence/news/", group: "media" },
+    { name: "Engadget AI", url: "https://www.engadget.com/ai/", group: "media" },
+    { name: "Axios AI", url: "https://www.axios.com/technology/artificial-intelligence", group: "media" },
+    { name: "SiliconANGLE AI", url: "https://siliconangle.com/category/ai/", group: "media" }
+  ]
+};
+
+export function buildDiscoveryPrompt(options) {
+  const existing = (options.existingHosts || []).slice(0, 120);
+  return [
+    "Подбери новые источники новостей для Telegram-канала «" + (options.channelName || "") + "» (тема: " + (options.topic || "новости") + ").",
+    "Нужны " + (options.count || 5) + " сайтов с ежедневно обновляемой лентой новостей по этой теме: крупные СМИ, отраслевые издания, официальные пресс-центры компаний.",
+    "Желательно часть русскоязычных, если они пишут о российском рынке.",
+    "Дай прямую ссылку именно на страницу-ленту новостей (не на главную, если лента отдельная), без RSS и без Telegram.",
+    "Не предлагай агрегаторы, форумы, доски объявлений, сайты с платным доступом ко всем статьям и эти уже подключённые сайты: " + existing.join(", ") + ".",
+    "Ответь строго JSON без пояснений: {\"sources\":[{\"name\":\"Название\",\"url\":\"https://…\",\"group\":\"media|official\",\"why\":\"коротко\"}]}"
+  ].join("\n");
+}
+
+export function parseDiscoveryResult(text) {
+  const raw = String(text || "").replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "");
+  let parsed = null;
+  try { parsed = JSON.parse(raw); }
+  catch {
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) { try { parsed = JSON.parse(m[0]); } catch { parsed = null; } }
+  }
+  const list = parsed && Array.isArray(parsed.sources) ? parsed.sources : (Array.isArray(parsed) ? parsed : []);
+  return list.map(function(x){
+    return {
+      name: String(x && x.name || "").trim().slice(0, 80),
+      url: String(x && x.url || "").trim(),
+      group: x && x.group === "official" ? "official" : "media",
+      why: String(x && x.why || "").trim().slice(0, 160)
+    };
+  }).filter(function(x){ return x.name && /^https?:\/\//i.test(x.url); });
+}

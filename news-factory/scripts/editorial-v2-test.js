@@ -467,4 +467,29 @@ await test("collector pre-filters headlines before processing candidates", async
   assert.ok(pre > 0 && loop > pre);
 });
 
+await test("source replenishment helpers", async function() {
+  const sq = await import("../lib/source-quality.js");
+  const sources = [
+    { url: "https://www.motortrend.com/news/", enabled: true },
+    { url: "https://blog.google/technology/ai/", enabled: false },
+    { url: "https://example.com/a", enabled: true }
+  ];
+  assert.equal(sq.sourcesNeeded(sources, 40), 38);
+  assert.equal(sq.sourcesNeeded(sources, 2), 0);
+  const fresh = sq.freshCandidates([
+    { name: "MT", url: "https://motortrend.com/news/" },
+    { name: "Google Cloud", url: "https://blog.google/products/cloud/" },
+    { name: "Blocked", url: "https://www.bad.ru/news" },
+    { name: "Dup", url: "https://new.ru/news" },
+    { name: "Dup2", url: "https://www.new.ru/news/" },
+    { name: "No url", url: "ftp://x" }
+  ], sources, ["bad.ru"]);
+  assert.deepEqual(fresh.map(function(x){ return x.name; }), ["Google Cloud", "Dup"]);
+  assert.ok(sq.RESERVE_SOURCES.auto.length >= 10 && sq.RESERVE_SOURCES.ai.length >= 10);
+  const found = sq.parseDiscoveryResult('{"sources":[{"name":"За рулём","url":"https://www.zr.ru/","group":"media","why":"рынок РФ"},{"name":"","url":"https://x.ru"},{"name":"Bad","url":"javascript:1"}]}');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].group, "media");
+  assert.ok(/уже подключённые сайты: zr\.ru/.test(sq.buildDiscoveryPrompt({ channelName: "Тачки", topic: "авто", count: 3, existingHosts: ["zr.ru"] })));
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));
