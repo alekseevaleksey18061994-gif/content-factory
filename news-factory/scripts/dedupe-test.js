@@ -272,6 +272,104 @@ test("F3 undated articles: stale year dropped, others kept short and flagged", {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// D. merge / twin handling
+const SEC_T = "SEC предложила новые правила хранения криптоактивов кастодианами";
+function approvedSec(over) {
+  return mkQueueItem(Object.assign({ id: "q_approved", newsId: "news_Q", title: "🔐 SEC предложила новые правила хранения криптовалют", text: "Текст одобренного поста про SEC и правила хранения криптовалют.",
+    sourceOriginalTitle: "SEC предложила новые правила хранения криптовалют", sourceOriginalText: "SEC предложила новые правила хранения криптовалют кастодианами 60 дней комментарии.", sourceName: "Forklog", sourceId: "fl",
+    sourceUrl: "https://forklog.example/a", articlePublishedAt: "2026-10-02T06:00:00Z", qualityScore: 90, qcStatus: "pass" }, over || {}));
+}
+const incomingSec = () => mkQueueItem({ id: "q_new", newsId: "news_N", title: "SEC предложила новые правила хранения криптоактивов", text: "SEC предложила новые правила хранения криптоактивов кастодианами.",
+  sourceName: "RBC", sourceId: "rb", sourceUrl: "https://rbc.example/b", sourceOriginalTitle: "SEC предложила новые правила хранения криптоактивов", sourceOriginalText: "SEC предложила новые правила хранения криптоактивов кастодианами.", articlePublishedAt: "2026-10-02T06:30:00Z" });
+
+test("D1 failed merge never overwrites or removes the approved queue item", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z" });
+  const Q = approvedSec(); t.ws("chtotamcrypto").state.queue = [Q];
+  const snapshot = JSON.stringify(Q);
+  net.llm.checker = () => ({ verdict: "reject", errors: [{ severity: "critical", type: "fact", field: "tg_text", quote: "60 дней", problem: "источники расходятся", fix: "" }], checked_claims: 2, summary: "x" });
+  const merged = await inWs(t, "chtotamcrypto", () => t.tryMergeStoryQueueItem(incomingSec()));
+  assert.equal(merged, null);
+  assert.equal(JSON.stringify(Q), snapshot, "the approved post is untouched");
+  assert.deepEqual(await inWs(t, "chtotamcrypto", () => t.autoResolveQueue()), { removed: 0 });
+  assert.equal(t.ws("chtotamcrypto").state.queue.length, 1);
+});
+
+test("D2 a held / rejected twin in the queue does not swallow a good article", {}, async () => {
+  const bad = mkQueueItem({ id: "q_bad", newsId: "news_bad", title: "🔐 SEC предложила новые правила хранения криптоактивов", text: "SEC предложила новые правила хранения криптоактивов кастодианами. Ошибка в цифре.", qcStatus: "hold", qualityScore: 55,
+    editorialV2: { status: "hold", verdict: "reject", importance: 8 }, sourceId: "fl", sourceName: "Forklog", sourceUrl: "https://forklog.example/a", articlePublishedAt: "2026-10-02T05:00:00Z" });
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z", state: { chtotamcrypto: { sources: [src("rb", "https://rbc.example/", { name: "RBC" })], queue: [bad] } } });
+  net.pages.set("https://rbc.example/", listHtml([{ href: "https://rbc.example/sec-rules", text: SEC_T }]));
+  net.pages.set("https://rbc.example/sec-rules", articleHtml({ title: SEC_T, date: "2026-10-02T06:00:00Z", body: SEC_T + ". " + LONG }));
+  net.llm.relation = () => ({ relation: "duplicate", new_fact: "", reason: "те же факты" });
+  const r = await collect(t, "chtotamcrypto");
+  assert.equal(r.queued, 1, "good article is queued: " + JSON.stringify(r));
+  await inWs(t, "chtotamcrypto", () => t.autoResolveQueue());
+  const q = t.ws("chtotamcrypto").state.queue;
+  assert.equal(q.length, 1);
+  assert.equal(q[0].newsId === "news_bad", false, "the held twin is gone, the good one stays");
+});
+
+test("D3 a queued post's 'update' is merged, not dropped by the precheck", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z", state: { chtotamcrypto: { sources: [src("rb", "https://rbc.example/", { name: "RBC" })], queue: [approvedSec()] } } });
+  net.pages.set("https://rbc.example/", listHtml([{ href: "https://rbc.example/sec-rules", text: SEC_T }]));
+  net.pages.set("https://rbc.example/sec-rules", articleHtml({ title: SEC_T, date: "2026-10-02T06:00:00Z", body: SEC_T + ". " + LONG }));
+  net.llm.relation = () => ({ relation: "update", new_fact: "срок комментариев 90 дней", reason: "новая цифра" });
+  const r = await collect(t, "chtotamcrypto");
+  const q = t.ws("chtotamcrypto").state.queue;
+  assert.equal(q.length, 1, "one post: " + JSON.stringify(r));
+  assert.equal((q[0].storySources || []).length, 2, "the second source was merged into the queued post");
+  assert.equal(r.queued, 1);
+});
+
+test("D4 any writer skip in merge mode keeps the posts separate (no source absorbed)", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z" });
+  const Q = approvedSec(); t.ws("chtotamcrypto").state.queue = [Q];
+  const snapshot = JSON.stringify(Q);
+  net.llm.writer = () => ({ status: "skip", skip_reason: "реклама: партнёрская подборка", importance: 2, title_ru: "" });
+  assert.equal(await inWs(t, "chtotamcrypto", () => t.tryMergeStoryQueueItem(incomingSec())), null);
+  assert.equal(JSON.stringify(Q), snapshot, "an ad source is not attached to the approved post");
+});
+
+// G. classifier compares more than the top-1 candidate and the source text
+test("G1 top-3 candidates are judged, not only the highest Jaccard", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z" });
+  const mk = (id, title, text) => ({ id, title, text, publishedAt: iso(3), sourceId: "x" + id, sourceName: "X" + id });
+  t.ws("chtotamcrypto").state.history = [
+    mk("h1", "SEC предложила новые правила хранения криптоактивов", "SEC предложила новые правила хранения криптоактивов кастодианами банками"),
+    mk("h2", "SEC обновила требования к хранению криптоактивов у кастодианов", "SEC обновила требования к хранению криптоактивов у кастодианов, срок 60 дней"),
+    mk("h3", "Погода в Москве", "Дождь и ветер") ];
+  net.llm.relation = (n, p) => p.title.startsWith("SEC предложила") ? { relation: "new_story", new_fact: "", reason: "другое" } : { relation: "duplicate", new_fact: "", reason: "то же" };
+  const item = { id: "i", newsId: "n", title: SEC_T, text: "SEC предложила новые правила хранения криптоактивов кастодианами, срок 60 дней", sourceId: "s", sourceName: "S" };
+  const rel = await inWs(t, "chtotamcrypto", () => t.classifyPublishedStoryRelationship(item));
+  assert.equal(rel.relation, "duplicate", JSON.stringify(rel));
+  assert.ok(net.log.filter((x) => x.role === "relation").length >= 2, "more than one comparison");
+});
+
+test("G2 a foreign-language source is compared with the source text of queued posts", {}, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z" });
+  t.ws("chtotamcrypto").state.queue = [mkQueueItem({ id: "q1", newsId: "n1", title: "SEC предложила правила хранения крипты", text: "Регулятор США хочет изменить порядок", sourceId: "fl", sourceName: "Forklog",
+    sourceOriginalTitle: "SEC proposes custody rules for crypto assets held by custodians", sourceOriginalText: "SEC proposes custody rules for crypto assets held by custodians with a 60 day comment period" })];
+  net.llm.relation = () => ({ relation: "duplicate", new_fact: "", reason: "то же" });
+  const item = { id: "i", newsId: "n", title: "SEC proposes custody rules for crypto assets held by custodians", text: "SEC proposes custody rules for crypto assets held by custodians with a 60 day comment period", sourceId: "cd", sourceName: "CoinDesk" };
+  const rel = await inWs(t, "chtotamcrypto", () => t.classifyPublishedStoryRelationship(item));
+  assert.equal(rel.relation, "duplicate", JSON.stringify(rel));
+});
+
+// H. queue overflow keeps the post that can actually be published
+test("H1 pruneQueueItems does not drop an approved ready post for held ones with higher AI scores", { env: { QUEUE_MAX_AUTO_ITEMS: "5" } }, async () => {
+  const t = await loadServer({ fixedNow: "2026-10-02T09:00:00Z", env: { QUEUE_MAX_AUTO_ITEMS: "5" } });
+  const held = Array.from({ length: 5 }, (_, i) => mkQueueItem({ id: "h" + i, newsId: "nh" + i, aiScore: 95, qcStatus: "hold", editorialV2: { status: "hold", verdict: "reject" } }));
+  const ready = mkQueueItem({ id: "ready", newsId: "nready", aiScore: 60 });
+  const stale = mkQueueItem({ id: "stale", newsId: "nstale", aiScore: 99, articlePublishedAt: iso(30) });
+  t.ws("chtotamcrypto").state.queue = held.concat([stale, ready]);
+  await inWs(t, "chtotamcrypto", async () => t.pruneQueueItems(t.state));
+  const ids = t.ws("chtotamcrypto").state.queue.map((q) => q.id);
+  assert.ok(ids.includes("ready"), "approved ready post survives: " + ids);
+  assert.equal(ids.length, 5);
+  assert.ok(ids.indexOf("stale") === -1 || ids.indexOf("ready") !== -1);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 async function main() {
   const only = process.argv[2];
   if (only) {

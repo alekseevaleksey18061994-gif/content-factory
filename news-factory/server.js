@@ -479,7 +479,23 @@ function pruneQueueItems(targetState, options) {
     automatic.push(item);
   }
 
+  // Overflow drops the tail of this order, so it has to put the posts that can actually go out first:
+  // 0 = already assigned to a slot, 1 = approved and inside its publish window, 2 = approved but past it,
+  // 3 = on hold / rejected. Inside a tier the AI score decides (it used to decide alone, so a held post
+  // with a high score could push an approved, ready one out of the queue).
+  const assignedIds = new Set();
+  try {
+    const schedule = ensureScheduleShape(targetState);
+    Object.keys(schedule.assignments || {}).forEach(function(day){ Object.values(schedule.assignments[day] || {}).forEach(function(id){ if (id) assignedIds.add(id); }); });
+  } catch {}
+  const pruneTier = function(item) {
+    if (assignedIds.has(item.id)) return 0;
+    if (!isApprovedQueueItem(item)) return 3;
+    return dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item) ? 1 : 2;
+  };
   automatic.sort(function(a, b) {
+    const aTier = pruneTier(a), bTier = pruneTier(b);
+    if (aTier !== bTier) return aTier - bTier;
     const aAi = Number(a && a.aiScore);
     const bAi = Number(b && b.aiScore);
     const aScore = Number.isFinite(aAi) ? aAi : 0;
@@ -2131,6 +2147,8 @@ function findStoryClusterCandidate(newItem) {
   let bestScore = 0;
   for (const item of (state.queue || [])) {
     if (!item || item.telegramPublished || item.vkPublished) continue;
+    // Only an approved post may absorb another source; a held / rejected one is about to be removed.
+    if (!isApprovedQueueItem(item)) continue;
     if (storySourceSnapshot(item).length >= STORY_CLUSTER_MAX_SOURCES) continue;
     const age = Math.abs(now - (queueItemTimeMs(item) || now));
     if (age > STORY_CLUSTER_WINDOW_HOURS * 60 * 60 * 1000) continue;
@@ -4821,7 +4839,10 @@ async function collectOnce(trigger) {
             console.warn("STORY_PRECHECK_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
             storyPrecheck = null;
           }
-          if (storyPrecheck && storyPrecheck.relation === "duplicate") {
+          // A queued post's "update" is reported as "duplicate" (queued: true) so that it is merged into the queued
+          // post instead of published twice; that merge needs the full pipeline, so only a genuine duplicate
+          // (the model said "duplicate", not "update") is dropped here.
+          if (storyPrecheck && storyPrecheck.relation === "duplicate" && !(storyPrecheck.queued && storyPrecheck.judgedRelation === "update")) {
             console.log("STORY_PRECHECK_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, similarity: Number(storyPrecheck.similarity || 0).toFixed(2), publishedId: storyPrecheck.candidate && (storyPrecheck.candidate.id || storyPrecheck.candidate.queueId) || "" }));
             await saveNewsItem({
               id: id,
@@ -9151,85 +9172,114 @@ async function dedupeQueueOnce() {
   return removed;
 }
 
+const STORY_CLASSIFIER_CANDIDATES = 3;
+
 async function classifyPublishedStoryRelationship(item, options) {
   const queueItems = options && Array.isArray(options.queueItems) ? options.queueItems : (state.queue || []);
   if (!item) return { relation: "new_story", candidate: null, reason: "" };
   const cutoff = Date.now() - STORY_UPDATE_WINDOW_HOURS * 60 * 60 * 1000;
-  let best = null;
-  let bestScore = 0;
 
   const ownIds = new Set([item && item.id, item && item.queueId, item && item.newsId].filter(Boolean).map(String));
+  // The new item may carry its own source text (original language); candidates are compared both ways, so a foreign
+  // source is no longer measured only against the Russian text of a published post.
+  const newAsText = Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") });
+  const newAsSource = item.sourceOriginalText || item.sourceOriginalTitle
+    ? Object.assign({}, item, { title: item.sourceOriginalTitle || item.title, text: item.sourceOriginalText || item.text, sourceId: "new:" + String(item.sourceId || item.sourceName || "") })
+    : null;
+  const scoreAgainst = function(candidate, prefix) {
+    const cand = Object.assign({}, candidate, { sourceId: prefix + String(candidate.sourceId || candidate.sourceName || "") });
+    let score = storySimilarity(newAsText, cand);
+    const candSource = candidate.sourceOriginalText || candidate.sourceOriginalTitle
+      ? Object.assign({}, cand, { title: candidate.sourceOriginalTitle || candidate.title, text: candidate.sourceOriginalText || candidate.text })
+      : null;
+    if (newAsSource) score = Math.max(score, storySimilarity(newAsSource, cand));
+    if (candSource) {
+      score = Math.max(score, storySimilarity(newAsText, candSource));
+      if (newAsSource) score = Math.max(score, storySimilarity(newAsSource, candSource));
+    }
+    return score;
+  };
+
+  const ranked = [];
   for (const h of (state.history || [])) {
     if (!h || !h.publishedAt || new Date(h.publishedAt).getTime() < cutoff) continue;
     // A queued post that is already partly published (Telegram yes, VK pending)
     // must not be compared with its own history entry.
     if (ownIds.has(String(h.queueId || "")) || ownIds.has(String(h.newsId || "")) || ownIds.has(String(h.id || ""))) continue;
-    const score = storySimilarity(
-      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
-      Object.assign({}, h, { sourceId: "published:" + String(h.sourceId || h.sourceName || "") })
-    );
-    if (score > bestScore) { bestScore = score; best = h; }
+    ranked.push({ score: scoreAgainst(h, "published:"), candidate: h });
   }
-  // Posts already waiting in the queue count too: the same story from two
-  // sources must not be published twice.
+  // Posts already waiting in the queue count too: the same story from two sources must not be published twice.
+  // Only approved posts: a held / rejected twin is removed by the auto-resolver and must not swallow a good article.
   const selfIds = new Set([item.id, item.queueId, item.newsId].filter(Boolean).map(String));
   for (const q of queueItems) {
     if (!q || !q.newsId || selfIds.has(String(q.id)) || selfIds.has(String(q.newsId))) continue;
-    const score = storySimilarity(
-      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
-      Object.assign({}, q, { sourceId: "queued:" + String(q.sourceId || q.sourceName || "") })
-    );
-    if (score > bestScore) { bestScore = score; best = Object.assign({}, q, { __queued: true }); }
+    if (!isApprovedQueueItem(q)) continue;
+    ranked.push({ score: scoreAgainst(q, "queued:"), candidate: Object.assign({}, q, { __queued: true }) });
   }
-  if (!best || bestScore < 0.16) return { relation: "new_story", candidate: null, reason: "" };
+  ranked.sort(function(a, b){ return b.score - a.score; });
+  const candidates = ranked.filter(function(r){ return r.score >= 0.16; }).slice(0, STORY_CLASSIFIER_CANDIDATES);
+  const bestScore = candidates.length ? candidates[0].score : 0;
+  if (!candidates.length) return { relation: "new_story", candidate: null, reason: "" };
 
   if (!OPENAI_API_KEY) {
-    return bestScore >= 0.55
-      ? { relation: "possible_update", candidate: best, similarity: bestScore, reason: "Похож на недавно опубликованный сюжет" }
-      : { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+    const top = candidates[0];
+    return top.score >= 0.55
+      ? { relation: "possible_update", candidate: top.candidate, similarity: top.score, reason: "Похож на недавно опубликованный сюжет" }
+      : { relation: "new_story", candidate: null, similarity: top.score, reason: "" };
   }
 
-  const prompt = [
-    "Сравни новую новость с уже опубликованным постом.",
-    "Определи одно из трёх:",
-    "duplicate — по сути те же факты, существенного нового нет;",
-    "update — это развитие того же сюжета и есть новый важный факт/цифра/решение/дата;",
-    "new_story — отдельное событие, даже если компания/тема та же.",
-    "Не путай новости одной компании с одним событием.",
-    "Верни строго JSON: {\"relation\":\"duplicate|update|new_story\",\"new_fact\":\"что именно новое\",\"reason\":\"коротко\"}.",
-    "NEW: " + JSON.stringify({ title: item.title, text: String(item.text || "").slice(0, 2600), entities: item.topicEntities || [] }),
-    "PUBLISHED: " + JSON.stringify({ title: best.title, text: String(best.text || "").slice(0, 2600), entities: best.topicEntities || [] })
-  ].join("\n");
+  let answered = 0;
+  for (const entry of candidates) {
+    const best = entry.candidate;
+    const prompt = [
+      "Сравни новую новость с уже опубликованным постом.",
+      "Определи одно из трёх:",
+      "duplicate — по сути те же факты, существенного нового нет;",
+      "update — это развитие того же сюжета и есть новый важный факт/цифра/решение/дата;",
+      "new_story — отдельное событие, даже если компания/тема та же.",
+      "Не путай новости одной компании с одним событием.",
+      "Верни строго JSON: {\"relation\":\"duplicate|update|new_story\",\"new_fact\":\"что именно новое\",\"reason\":\"коротко\"}.",
+      "NEW: " + JSON.stringify({ title: item.title, text: String(item.text || "").slice(0, 2600), entities: item.topicEntities || [] }),
+      "PUBLISHED: " + JSON.stringify({ title: best.title, text: String(best.text || "").slice(0, 2600), entities: best.topicEntities || [] })
+    ].join("\n");
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
-      body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
-      signal: AbortSignal.timeout(30000)
-    });
-    const data = await response.json().catch(function(){ return {}; });
-    if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
-    recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
-    const output = extractOpenAIText(data);
-    const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
-    let relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
-    // An "update" of a post that has not been published yet is the same story:
-    // the queued post goes out, the new one is dropped.
-    if (best.__queued && relation === "update") relation = "duplicate";
-    return {
-      relation: relation,
-      candidate: relation === "new_story" ? null : best,
-      queued: Boolean(best.__queued),
-      similarity: bestScore,
-      judged: true,
-      newFact: String(parsed.new_fact || "").trim(),
-      reason: String(parsed.reason || "").trim()
-    };
-  } catch (error) {
-    console.warn("Story update classifier fallback:", error.message);
-    return { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
+        signal: AbortSignal.timeout(30000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+      recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
+      const output = extractOpenAIText(data);
+      const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      answered += 1;
+      const judgedRelation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
+      let relation = judgedRelation;
+      // An "update" of a post that has not been published yet is the same story:
+      // the queued post goes out, the new one is dropped (or merged into it).
+      if (best.__queued && relation === "update") relation = "duplicate";
+      if (relation === "new_story") continue;
+      return {
+        relation: relation,
+        judgedRelation: judgedRelation,
+        candidate: best,
+        queued: Boolean(best.__queued),
+        similarity: entry.score,
+        judged: true,
+        newFact: String(parsed.new_fact || "").trim(),
+        reason: String(parsed.reason || "").trim()
+      };
+    } catch (error) {
+      console.warn("Story update classifier fallback:", error.message);
+    }
   }
+  if (answered === candidates.length) return { relation: "new_story", candidate: null, similarity: bestScore, judged: true, reason: "" };
+  // Fail open (the post is treated as new) but leave a trace: some comparisons never got an answer.
+  console.warn("STORY_CLASSIFIER_FAIL_OPEN " + JSON.stringify({ workspace: currentWorkspaceId(), candidates: candidates.length, answered: answered, similarity: Number(bestScore.toFixed(2)), title: String(item.title || "").slice(0, 80) }));
+  return { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
 }
 
 async function callOpenAIStoryComposer(storySources, existingItem, incomingItem) {
@@ -9396,18 +9446,12 @@ async function tryMergeStoryQueueItem(newItem) {
       return null;
     }
     if (storyV2.skip) {
-      if (storyV2.reason === "different_story") return null;
-      // Same event, but the writer saw nothing worth rewriting: absorb the new source
-      // into the existing story (no duplicate post), keep the already checked text.
-      const refs = sources.map(function(source){ return { name: source.sourceName || "Источник", url: source.url || "" }; }).filter(function(x){ return x.url; });
-      Object.assign(target, {
-        sources: refs,
-        sourceUrls: refs.map(function(x){ return x.url; }),
-        storySources: sources,
-        storyNewsIds: Array.from(new Set(sources.map(function(source){ return source.newsId; }).filter(Boolean))),
-        updatedAt: new Date().toISOString()
-      });
-      return target;
+      // The merge contract: only a post the writer actually produced (status ok) merges sources. Any skip is
+      // "keep these as separate items": "different_story" is the documented reason, but the skip reason is free
+      // Russian text (low importance, advertising, network duplicate...), so it cannot be matched by equality, and
+      // absorbing the new source into the approved post on any other skip attached ad sources to it.
+      console.log("STORY_MERGE_SKIPPED " + JSON.stringify({ workspace: currentWorkspaceId(), target: target.id, reason: String(storyV2.reason || "").slice(0, 120) }));
+      return null;
     }
     composed = {
       sameStory: true,
@@ -9431,6 +9475,11 @@ async function tryMergeStoryQueueItem(newItem) {
   }
 
   if (!composed || composed.sameStory === false) return null;
+
+  // Everything below mutates the queued post. If the merged text then fails the checkers, the post must come
+  // back exactly as it was: overwriting an approved post with a hold/reject version got it auto-removed together
+  // with the incoming article, and the story was lost.
+  const targetBefore = Object.assign({}, target);
 
   // One media for the merged story with the usual priority: video → real photo → one
   // generated cover (no generated multi-image packs).
@@ -9538,6 +9587,16 @@ async function tryMergeStoryQueueItem(newItem) {
   target.mediaStatus = target.mediaPackUrls.length > 1 ? "photo_found" : target.mediaStatus;
   target.copyrightSafe = COPYRIGHT_SAFE_MODE;
   target.copyrightPolicyVersion = "v2";
+
+  const mergedApproved = storyV2
+    ? (storyV2.meta && storyV2.meta.status === "approved")
+    : (qc.qcStatus !== "hold");
+  if (!mergedApproved) {
+    Object.keys(target).forEach(function(key){ if (!(key in targetBefore)) delete target[key]; });
+    Object.assign(target, targetBefore);
+    console.warn("STORY_MERGE_REJECTED " + JSON.stringify({ workspace: currentWorkspaceId(), target: target.id, verdict: storyV2 && storyV2.meta && storyV2.meta.verdict || qc.qcStatus }));
+    return null;
+  }
 
   return target;
 }
