@@ -15,7 +15,7 @@ for (const [channel, list] of Object.entries(SEED_SOURCES)) {
   }
 }
 // Lists of 25+ entries skip AI discovery (it hit the OpenAI rate limit), and need >=15 working sources to enable auto-publishing.
-for (const channel of ["travel", "shopping", "home"]) {
+for (const channel of ["travel", "shopping", "home", "food", "business", "crypto"]) {
   assert.ok((SEED_SOURCES[channel] || []).length >= 25, channel + " needs a hand-made list of 25+ candidates");
 }
 console.log("ok - seed lists");
