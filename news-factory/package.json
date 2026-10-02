@@ -13,6 +13,7 @@
     "test:costs-smoke": "node scripts/costs-smoke.js"
   },
   "dependencies": {
+    "pdfjs-dist": "^4.10.38",
     "pg": "^8.13.1",
     "sharp": "^0.34.4"
   },

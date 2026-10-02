@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
+import { extractPdfText, extractRegistryNames, registryNameMentioned } from "./lib/registry-import.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
@@ -7602,6 +7603,9 @@ function normalizeEditorialRegistry(raw) {
   return {
     banned_orgs: list(r.banned_orgs != null ? r.banned_orgs : DEFAULT_EDITORIAL_REGISTRY.banned_orgs),
     foreign_agents: list(r.foreign_agents),
+    // Names parsed from the official Ministry of Justice register (replaced on each import).
+    foreign_agents_auto: Array.from(new Set((Array.isArray(r.foreign_agents_auto) ? r.foreign_agents_auto : []).map(function(x){ return String(x || "").trim().slice(0, 160); }).filter(Boolean))).slice(0, 30000),
+    importInfo: r.importInfo && typeof r.importInfo === "object" ? r.importInfo : null,
     updatedAt: String(r.updatedAt || "")
   };
 }
@@ -7627,15 +7631,64 @@ function saveEditorialRegistry(raw) {
 function editorialRegistryForSources(sourceText) {
   const registry = loadEditorialRegistry();
   const hay = String(sourceText || "").toLowerCase();
-  const hit = function(name) {
-    const n = String(name || "").toLowerCase();
-    return n.length >= 3 && hay.includes(n);
-  };
+  const hit = function(name) { return registryNameMentioned(name, hay); };
   return {
     banned_orgs: registry.banned_orgs.filter(hit),
-    foreign_agents: registry.foreign_agents.filter(hit)
+    foreign_agents: Array.from(new Set(registry.foreign_agents.concat(registry.foreign_agents_auto || []))).filter(hit).slice(0, 40)
   };
 }
+
+// Import of the official register (PDF from minjust.gov.ru): automatic weekly
+// attempt from the server plus manual upload from the admin when the site is
+// not reachable from the hosting region.
+async function importForeignAgentsPdf(buffer, from, fileName) {
+  const text = await extractPdfText(buffer);
+  const names = extractRegistryNames(text);
+  const all = names.persons.concat(names.orgs);
+  if (all.length < 50) throw new Error("в файле найдено слишком мало имён (" + all.length + ") — похоже, это не реестр иноагентов");
+  const current = loadEditorialRegistry();
+  const registry = saveEditorialRegistry(Object.assign({}, current, {
+    foreign_agents_auto: all,
+    importInfo: { from: from, file: String(fileName || "").slice(0, 200), at: new Date().toISOString(), persons: names.persons.length, orgs: names.orgs.length, error: "" }
+  }));
+  console.log("FOREIGN_AGENTS_IMPORTED " + JSON.stringify({ from: from, persons: names.persons.length, orgs: names.orgs.length }));
+  return registry;
+}
+
+const MINJUST_REGISTRY_PAGES = [
+  "https://minjust.gov.ru/ru/activity/directions/998/",
+  "https://minjust.gov.ru/ru/pages/reestr-inostryannyih-agentov/"
+];
+async function refreshForeignAgentsFromMinjust() {
+  let lastError = "";
+  for (const page of MINJUST_REGISTRY_PAGES) {
+    try {
+      const html = await fetchText(page, 20000);
+      const m = String(html).match(/href=["']([^"']*uploaded\/files\/[^"']*\.pdf)["']/i) || String(html).match(/href=["']([^"']*reestr[^"']*\.pdf)["']/i);
+      if (!m) { lastError = "на странице Минюста не найдена ссылка на PDF"; continue; }
+      const url = new URL(m[1], page).toString();
+      const response = await fetch(url, { signal: AbortSignal.timeout(90000), headers: { "user-agent": "Mozilla/5.0 NewsFactory" } });
+      if (!response.ok) { lastError = "PDF не скачался: HTTP " + response.status; continue; }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      return await importForeignAgentsPdf(buffer, "minjust_auto", url);
+    } catch (error) {
+      lastError = String(error.message || error).slice(0, 200);
+    }
+  }
+  const current = loadEditorialRegistry();
+  const info = Object.assign({}, current.importInfo || {}, { lastAutoAttemptAt: new Date().toISOString(), error: "Автозагрузка с сайта Минюста не удалась: " + lastError });
+  saveEditorialRegistry(Object.assign({}, current, { importInfo: info }));
+  console.warn("FOREIGN_AGENTS_AUTO_FAILED " + JSON.stringify({ error: lastError }));
+  return null;
+}
+
+function foreignAgentsImportDue() {
+  const info = loadEditorialRegistry().importInfo || {};
+  const last = Math.max(new Date(info.at || 0).getTime() || 0, new Date(info.lastAutoAttemptAt || 0).getTime() || 0);
+  return Date.now() - last > 7 * 24 * 3600000;
+}
+setTimeout(function(){ if (foreignAgentsImportDue()) refreshForeignAgentsFromMinjust().catch(function(){}); }, 180000);
+setInterval(function(){ if (foreignAgentsImportDue()) refreshForeignAgentsFromMinjust().catch(function(){}); }, 6 * 3600000);
 
 let editorialPipelineInstance = null;
 function editorialPipeline() {
@@ -9311,11 +9364,33 @@ const server = http.createServer(async function(req, res) {
     if ((req.method === "POST" || req.method === "PUT") && p === "/api/editorial/registry") {
       const body = await readJson(req, 4 * 1024 * 1024);
       const current = loadEditorialRegistry();
-      const registry = saveEditorialRegistry({
+      const registry = saveEditorialRegistry(Object.assign({}, current, {
         banned_orgs: body.banned_orgs != null ? body.banned_orgs : current.banned_orgs,
         foreign_agents: body.foreign_agents != null ? body.foreign_agents : current.foreign_agents
-      });
+      }));
       return sendJson(res, 200, { ok: true, registry: registry });
+    }
+    if (req.method === "POST" && p === "/api/editorial/registry/upload") {
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 40 * 1024 * 1024) return sendJson(res, 413, { ok: false, error: "Файл больше 40 МБ" });
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+      if (buffer.slice(0, 5).toString("latin1") !== "%PDF-") return sendJson(res, 400, { ok: false, error: "Нужен PDF-файл реестра с сайта Минюста" });
+      try {
+        const registry = await importForeignAgentsPdf(buffer, "upload", String(req.headers["x-file-name"] || ""));
+        return sendJson(res, 200, { ok: true, importInfo: registry.importInfo, total: registry.foreign_agents_auto.length });
+      } catch (error) {
+        return sendJson(res, 400, { ok: false, error: error.message });
+      }
+    }
+    if (req.method === "POST" && p === "/api/editorial/registry/refresh") {
+      const registry = await refreshForeignAgentsFromMinjust();
+      const current = loadEditorialRegistry();
+      return sendJson(res, registry ? 200 : 502, registry ? { ok: true, importInfo: registry.importInfo, total: registry.foreign_agents_auto.length } : { ok: false, error: current.importInfo && current.importInfo.error || "Не удалось" });
     }
     if (req.method === "POST" && p === "/api/editorial/rebuild-queue") {
       const result = await rebuildQueueWithEditorialV2();
