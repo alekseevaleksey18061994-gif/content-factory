@@ -125,8 +125,10 @@ const DYNAMIC_SLOT_END_HOUR = 23;
 const DYNAMIC_SLOT_PREP_MINUTE = 45;
 const SCHEDULER_SLOT_WINDOW_MINUTES = Math.max(1, Math.min(14, Number(process.env.SCHEDULER_SLOT_WINDOW_MINUTES || 10)));
 const DYNAMIC_SLOT_MAX_AGE_HOURS = Math.max(4, Math.min(48, Number(process.env.DYNAMIC_SLOT_MAX_AGE_HOURS || 24)));
-const DYNAMIC_DAILY_TARGET = 10;
-const DYNAMIC_DAILY_MAX = 12;
+// Regular channel promise: one regular publication slot every hour from 08:00
+// through 23:00 Moscow. The old 12-post cap silently skipped evening slots.
+const DYNAMIC_DAILY_TARGET = DYNAMIC_SLOT_END_HOUR - DYNAMIC_SLOT_START_HOUR + 1;
+const DYNAMIC_DAILY_MAX = Math.max(DYNAMIC_DAILY_TARGET, Math.min(24, Number(process.env.DYNAMIC_DAILY_MAX || DYNAMIC_DAILY_TARGET)));
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
@@ -8690,6 +8692,8 @@ async function runEditorialV2(sources, options) {
     rounds: outcome.rounds || 0,
     writerModel: outcome.writerModel || "",
     checkers: checkerModels,
+    degradedQc: Boolean(outcome.degraded),
+    failedProviders: outcome.failedProviders || [],
     errors: (outcome.errors || []).slice(0, 12),
     log: outcome.log || [],
     checkedAt: new Date().toISOString()
@@ -8706,6 +8710,8 @@ async function runEditorialV2(sources, options) {
     contentBucket: meta.contentBucket || undefined,
     rounds: meta.rounds,
     checkers: checkerModels,
+    degradedQc: Boolean(outcome.degraded),
+    failedProviders: outcome.failedProviders || [],
     errors: (outcome.errors || []).length,
     skipReason: meta.skipReason ? String(meta.skipReason).slice(0, 120) : undefined,
     checkerErrors: (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + ": " + String(c.error || "").slice(0, 160); }),
@@ -8721,9 +8727,10 @@ async function runEditorialV2(sources, options) {
     issues.unshift("Проверка недоступна: " + (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + " — " + String(c.error || "").slice(0, 120); }).join("; "));
   }
   const approved = outcome.status === "approved";
+  const degradedNote = outcome.degraded ? " · резервный режим: недоступен " + (outcome.failedProviders || []).join(", ") : "";
   const decision = approved
-    ? "Пост прошёл проверку: " + checkerModels.join(", ") + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
-    : "Пост не прошёл проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "одна из нейросетей-проверщиков недоступна", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
+    ? "Пост прошёл проверку: " + checkerModels.join(", ") + degradedNote + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
+    : "Пост не прошёл проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "основной проверщик недоступен", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
 
   return {
     skip: false,
