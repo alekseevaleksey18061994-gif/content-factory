@@ -5,19 +5,27 @@ import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { safeFetch, validateUrl as validateFetchUrl } from "./lib/safe-fetch.js";
+import { assertSafeRaster, SAFE_INPUT_PIXELS } from "./lib/image-guard.js";
+import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-security.js";
+import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
-import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
+import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
   createModelClients,
   resolveChannelId,
+  channelFreshnessHours,
   timeSlotFor,
+  moscowIso,
   legacyScores,
   loadPrompt as loadEditorialPrompt,
   CHANNEL_IDS as EDITORIAL_CHANNEL_IDS
 } from "./lib/editorial-v2.js";
+import { matchRegistry as matchEditorialRegistry } from "./lib/editorial-registry.js";
+import { CAPTION_VISIBLE_LIMIT, TELEGRAM_CAPTION_HARD_LIMIT, visibleLength, trimPostPreservingTail, missingProtected } from "./lib/telegram-caption.js";
 import {
   COST_STATE_MIGRATION_ID,
   collectLegacyCostRows,
@@ -31,6 +39,18 @@ import {
   normalizeBalanceInput,
   computeApiBalance
 } from "./lib/costs.js";
+import {
+  atomicWriteFileSync,
+  loadJsonStoreWithRecovery,
+  createAtomicStoreWriter,
+  createKeyedDebouncer,
+  retryWithBackoff,
+  withAdvisoryLock,
+  parseCbrUsdRate,
+  resolveUsdRubFallback,
+  dispatchBudgetAlerts,
+  DEFAULT_USD_RUB_RATE
+} from "./lib/data-safety.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -38,6 +58,16 @@ const TELEGRAM_PUBLIC_USERNAME = String(process.env.TELEGRAM_PUBLIC_USERNAME || 
 const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(32).toString("hex");
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
 const ADMIN_UI_PASSWORD_SHA256 = String(process.env.ADMIN_UI_PASSWORD_SHA256 || "").trim().toLowerCase();
+// Optional salted hash ("scrypt$<salt hex>$<hash hex>", see lib/auth-guard.js hashPasswordScrypt). Preferred over SHA-256 / plain when set.
+const ADMIN_UI_PASSWORD_SCRYPT = String(process.env.ADMIN_UI_PASSWORD_SCRYPT || "").trim();
+// Railway puts exactly one proxy in front of the app; XFF entries to the left of it are client-controlled.
+const TRUSTED_PROXY_HOPS = Math.max(0, Math.min(5, Number(process.env.TRUSTED_PROXY_HOPS == null || process.env.TRUSTED_PROXY_HOPS === "" ? 1 : process.env.TRUSTED_PROXY_HOPS) || 0));
+const authFailureLimiter = createFailureLimiter({
+  maxFailures: Math.max(1, Number(process.env.AUTH_MAX_FAILURES || 8) || 8),
+  windowMs: 15 * 60 * 1000,
+  baseLockMs: 30 * 1000,
+  maxLockMs: 15 * 60 * 1000
+});
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
@@ -94,6 +124,9 @@ const MEDIA_EXTRA_MIN_HEIGHT = 400;
 const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
 const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
 const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
+// Telegram Bot API: timeout of one JSON call, and the longest "retry_after" (429) we are willing to sit out once.
+const TELEGRAM_API_TIMEOUT_MS = Math.max(5000, Math.min(120000, Number(process.env.TELEGRAM_API_TIMEOUT_MS || 30000)));
+const TELEGRAM_RETRY_AFTER_MAX_SECONDS = Math.max(1, Math.min(120, Number(process.env.TELEGRAM_RETRY_AFTER_MAX_SECONDS || 30)));
 const SOURCE_IMAGE_ENHANCE_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.SOURCE_IMAGE_ENHANCE_CONCURRENCY || 1)));
 const IMAGE_ENHANCE_MIN_GAP_MS = Math.max(8000, Number(process.env.IMAGE_ENHANCE_MIN_GAP_MS || 13000));
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
@@ -129,6 +162,15 @@ const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
 const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
+// Articles whose page carries no publication date are judged by fetch time, but only for this long.
+const UNDATED_ARTICLE_MAX_AGE_HOURS = Math.max(2, Math.min(48, Number(process.env.UNDATED_ARTICLE_MAX_AGE_HOURS || 12)));
+// A link that fails transiently (download, writer outage, DB write) is retried this many times in total, then recorded as seen.
+const SKIP_RETRY_MAX = Math.max(1, Math.min(6, Number(process.env.SKIP_RETRY_MAX || 3)));
+// After a skipped link (stale, too short, unreachable) the collector opens up to this many further unseen links of the same source in the same run.
+const EXTRA_LINKS_PER_SOURCE = Math.max(0, Math.min(8, Number(process.env.EXTRA_LINKS_PER_SOURCE || 3)));
+// The same article (normalized URL or content hash) queued/published by another channel is skipped for this long.
+const CROSS_CHANNEL_DEDUPE_ENABLED = String(process.env.CROSS_CHANNEL_DEDUPE_ENABLED || "true").toLowerCase() !== "false";
+const CROSS_CHANNEL_DEDUPE_HOURS = Math.max(1, Math.min(168, Number(process.env.CROSS_CHANNEL_DEDUPE_HOURS || 48)));
 const AI_STRONG_NEWS_SCORE_RAW = Number(process.env.AI_STRONG_NEWS_SCORE || 75);
 const AI_STRONG_NEWS_SCORE = Math.max(60, Math.min(95, Number.isFinite(AI_STRONG_NEWS_SCORE_RAW) ? AI_STRONG_NEWS_SCORE_RAW : 75));
 const AI_TOP_NEWS_SCORE_RAW = Number(process.env.AI_TOP_NEWS_SCORE || 88);
@@ -158,6 +200,7 @@ const COST_PRICING_CONFIG = resolveCostPricing(process.env.COST_PRICING_JSON || 
 const COST_PRICING_UPDATED_AT = COST_PRICING_CONFIG.updatedAt;
 const COST_PRICING = COST_PRICING_CONFIG.pricing;
 if (COST_PRICING_CONFIG.error) console.warn("COST_PRICING_JSON ignored:", COST_PRICING_CONFIG.error);
+for (const warning of (COST_PRICING_CONFIG.warnings || [])) console.warn("COST_PRICING_JSON:", warning);
 
 const CURATED_SOURCES = [
   { id: "openai", name: "OpenAI News", type: "web", group: "official", priority: 1, url: "https://openai.com/news/", enabled: true },
@@ -332,12 +375,36 @@ function ensureDataDir() {
   try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
 }
 
-function normalizeDate(value) {
+// options.assumeMoscow: a timestamp without a zone ("2026-10-01T11:30:00") comes from a Russian site and means
+// Moscow time (+03:00); read as UTC it would look 3 hours newer than it is.
+function normalizeDate(value, options) {
   if (!value) return "";
-  const d = new Date(String(value).trim());
+  const raw = String(value).trim();
+  let d;
+  const naive = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/.exec(raw);
+  if (naive && options && options.assumeMoscow) d = new Date(naive[1] + "T" + naive[2] + "+03:00");
+  else d = new Date(raw);
   if (!Number.isFinite(d.getTime())) return "";
   if (d.getTime() > Date.now() + 24 * 60 * 60 * 1000) return "";
   return d.toISOString();
+}
+
+// Per-channel freshness (prompts/chto-tam.md section 2): the base limits (ARTICLE_MAX_AGE_HOURS, DYNAMIC_SLOT_MAX_AGE_HOURS,
+// QUEUE_MAX_AGE_HOURS) are for 24-hour channels and are scaled up for the 72-hour ones (science, world, home, food).
+function channelFreshnessFactor(ws) {
+  try {
+    const target = ws || currentWorkspace();
+    return channelFreshnessHours(resolveChannelId(target), 24) / 24;
+  } catch { return 1; }
+}
+function articleMaxAgeMs(ws) { return ARTICLE_MAX_AGE_HOURS * 3600000 * channelFreshnessFactor(ws); }
+function dynamicSlotMaxAgeMs(ws) { return DYNAMIC_SLOT_MAX_AGE_HOURS * 3600000 * channelFreshnessFactor(ws); }
+function queueMaxAgeHoursFor(ws) { return Math.min(96, QUEUE_MAX_AGE_HOURS * channelFreshnessFactor(ws)); }
+// A queue item whose article carried no date lives shorter: its age is only known from the fetch time.
+function dynamicItemMaxAgeMs(item) {
+  const base = dynamicSlotMaxAgeMs();
+  const undated = item && item.newsId && !item.articlePublishedAt;
+  return undated ? Math.min(base, UNDATED_ARTICLE_MAX_AGE_HOURS * 3600000) : base;
 }
 
 function moscowDateKey(date) {
@@ -417,9 +484,16 @@ function removeQueueIdFromSchedule(targetState, queueId) {
 }
 
 
-function pruneQueueItems(targetState) {
+function pruneQueueItems(targetState, options) {
   if (!targetState || !Array.isArray(targetState.queue)) return { removed: 0, expired: 0, overflow: 0 };
-  const cutoff = Date.now() - QUEUE_MAX_AGE_HOURS * 60 * 60 * 1000;
+  let factor = options && Number(options.factor) > 0 ? Number(options.factor) : 1;
+  if (!(options && options.factor)) {
+    try {
+      const owner = targetState === state ? currentWorkspace() : workspaceStore.workspaces.find(function(w){ return w && w.state === targetState; });
+      if (owner) factor = channelFreshnessFactor(owner);
+    } catch {}
+  }
+  const cutoff = Date.now() - QUEUE_MAX_AGE_HOURS * factor * 60 * 60 * 1000;
   let expired = 0;
   let overflow = 0;
   const manual = [];
@@ -438,7 +512,23 @@ function pruneQueueItems(targetState) {
     automatic.push(item);
   }
 
+  // Overflow drops the tail of this order, so it has to put the posts that can actually go out first:
+  // 0 = already assigned to a slot, 1 = approved and inside its publish window, 2 = approved but past it,
+  // 3 = on hold / rejected. Inside a tier the AI score decides (it used to decide alone, so a held post
+  // with a high score could push an approved, ready one out of the queue).
+  const assignedIds = new Set();
+  try {
+    const schedule = ensureScheduleShape(targetState);
+    Object.keys(schedule.assignments || {}).forEach(function(day){ Object.values(schedule.assignments[day] || {}).forEach(function(id){ if (id) assignedIds.add(id); }); });
+  } catch {}
+  const pruneTier = function(item) {
+    if (assignedIds.has(item.id)) return 0;
+    if (!isApprovedQueueItem(item)) return 3;
+    return dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item) ? 1 : 2;
+  };
   automatic.sort(function(a, b) {
+    const aTier = pruneTier(a), bTier = pruneTier(b);
+    if (aTier !== bTier) return aTier - bTier;
     const aAi = Number(a && a.aiScore);
     const bAi = Number(b && b.aiScore);
     const aScore = Number.isFinite(aAi) ? aAi : 0;
@@ -464,8 +554,8 @@ function pruneQueueItems(targetState) {
     targetState.stats.expired = Number(targetState.stats.expired || 0) + removed;
   }
   targetState.queuePolicy = {
-    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
-    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
+    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS * factor,
+    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS * factor,
     queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
   };
   cleanupScheduleAssignments(targetState);
@@ -588,7 +678,7 @@ function loadLegacyState() {
   }
 }
 
-function normalizeWorkspaceState(saved) {
+function normalizeWorkspaceState(saved, freshnessFactor) {
   const source = saved && typeof saved === "object" ? saved : {};
   const loaded = Object.assign({}, structuredClone(defaultState), source);
   loaded.sources = Array.isArray(source.sources) ? source.sources : structuredClone(defaultState.sources);
@@ -607,12 +697,16 @@ function normalizeWorkspaceState(saved) {
   loaded.publicationSchedule = Object.assign(structuredClone(defaultState.publicationSchedule), loaded.publicationSchedule || {});
   loaded.dynamicScheduler = Object.assign(structuredClone(defaultState.dynamicScheduler), loaded.dynamicScheduler || {});
   ensureScheduleShape(loaded);
-  pruneQueueItems(loaded);
+  pruneQueueItems(loaded, { factor: freshnessFactor });
   return loaded;
 }
 function freshWorkspaceState() {
   const fresh = structuredClone(defaultState);
-  fresh.mode = "AUTO";
+  // Safe start: nothing is published automatically until enableAutoPublishingAfterChecks
+  // (Telegram reachable + bot can post + enough sources + profile) has passed and switched it to AUTO.
+  // A manual mode / auto-publish choice made in the admin before that clears the pending flag, so the gate never overrides it.
+  fresh.mode = "REVIEW";
+  fresh.autoGate = { pending: true, since: new Date().toISOString() };
   fresh.sources = [];
   fresh.sourceStats = {};
   fresh.queue = [];
@@ -633,6 +727,11 @@ function freshWorkspaceState() {
   return fresh;
 }
 
+// A public @username (not a numeric chat id like -1001234567890, which must never be shown as "@-100…").
+function telegramUsernameOrEmpty(value) {
+  const v = String(value || "").trim().replace(/^@/, "");
+  return /^[A-Za-z][A-Za-z0-9_]*$/.test(v) ? v : "";
+}
 function normalizeWorkspaceMeta(raw, fallbackId) {
   const id = String(raw && raw.id || fallbackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || DEFAULT_WORKSPACE_ID;
   const name = String(raw && raw.name || "Новый канал").trim().slice(0, 80) || "Новый канал";
@@ -640,36 +739,66 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const initialsRaw = String(raw && raw.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3);
   const initials = initialsRaw || name.split(/\s+/).filter(Boolean).slice(0, 2).map(function(x){ return x[0] || ""; }).join("").toUpperCase().slice(0, 3) || "NF";
   const telegramChannel = String(raw && raw.telegramChannel || "").trim();
-  const telegramPublicUsername = String(raw && raw.telegramPublicUsername || telegramChannel || slug || "").replace(/^@/, "").trim();
+  const telegramPublicUsername = telegramUsernameOrEmpty(raw && raw.telegramPublicUsername) || telegramUsernameOrEmpty(telegramChannel) || telegramUsernameOrEmpty(slug);
   const avatarUrl = String(raw && raw.avatarUrl || "").trim();
   const avatarFile = String(raw && raw.avatarFile || "").trim();
   const channelIdRaw = String(raw && raw.channelId || "").trim().toLowerCase();
   const channelId = EDITORIAL_CHANNEL_IDS.includes(channelIdRaw) ? channelIdRaw : "";
-  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
+  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state, channelFreshnessFactor({ id, name, slug, telegramPublicUsername, channelId })) };
 }
+function isUsableWorkspaceStoreFile(parsed) {
+  return Boolean(parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0);
+}
+const WORKSPACES_BAK_FILE = WORKSPACES_FILE + ".bak";
+const workspaceStoreWriter = createAtomicStoreWriter({
+  file: WORKSPACES_FILE,
+  bakFile: WORKSPACES_BAK_FILE,
+  validate: isUsableWorkspaceStoreFile,
+  backupIntervalMs: Math.max(0, Number(process.env.WORKSPACES_BACKUP_INTERVAL_MS || 60000))
+});
 function loadWorkspaceStore() {
   ensureDataDir();
-  try {
-    const parsed = JSON.parse(fs.readFileSync(WORKSPACES_FILE, "utf8"));
-    const rawWorkspaces = Array.isArray(parsed && parsed.workspaces) ? parsed.workspaces : [];
-    if (rawWorkspaces.length) {
-      const workspaces = rawWorkspaces.map(function(ws, index){ return normalizeWorkspaceMeta(ws, index === 0 ? DEFAULT_WORKSPACE_ID : "workspace-" + (index + 1)); });
-      const requestedDefault = String(parsed.defaultWorkspaceId || "");
-      const defaultWorkspaceId = workspaces.some(function(ws){ return ws.id === requestedDefault; }) ? requestedDefault : workspaces[0].id;
-      return { version: 1, defaultWorkspaceId, workspaces };
-    }
-  } catch {}
+  // A damaged workspaces.json is NEVER replaced by a fresh one-channel store: it is moved
+  // to workspaces.json.corrupt-<ts>, the last good .bak is used, and if that is unusable too
+  // loadJsonStoreWithRecovery throws so the process refuses to start (and overwrite data).
+  const loaded = loadJsonStoreWithRecovery({ file: WORKSPACES_FILE, bakFile: WORKSPACES_BAK_FILE, validate: isUsableWorkspaceStoreFile });
+  if (loaded.status !== "missing") {
+    if (loaded.status === "ok") workspaceStoreWriter.backupNow(); // a known-good copy exists from the very first boot after this change
+    const parsed = loaded.data;
+    const workspaces = parsed.workspaces.map(function(ws, index){ return normalizeWorkspaceMeta(ws, index === 0 ? DEFAULT_WORKSPACE_ID : "workspace-" + (index + 1)); });
+    const requestedDefault = String(parsed.defaultWorkspaceId || "");
+    const defaultWorkspaceId = workspaces.some(function(ws){ return ws.id === requestedDefault; }) ? requestedDefault : workspaces[0].id;
+    return { version: 1, defaultWorkspaceId, workspaces };
+  }
+  // First start only: neither workspaces.json nor its backup exists.
   const legacyState = loadLegacyState();
   const first = normalizeWorkspaceMeta({ id: DEFAULT_WORKSPACE_ID, name: "Что там у ИИ?", slug: TELEGRAM_PUBLIC_USERNAME || "chtotamai", initials: "AI", telegramChannel: CHANNEL, telegramPublicUsername: TELEGRAM_PUBLIC_USERNAME, state: legacyState }, DEFAULT_WORKSPACE_ID);
   const created = { version: 1, defaultWorkspaceId: first.id, workspaces: [first] };
-  try { fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(created, null, 2), "utf8"); } catch {}
+  if (fs.existsSync(WORKSPACES_FILE)) throw new Error("workspaces.json appeared during startup; refusing to overwrite it");
+  try { workspaceStoreWriter.write(JSON.stringify(created, null, 2)); } catch (error) { console.error("Cannot write initial workspaces.json:", error.message); }
   return created;
 }
 const workspaceContext = new AsyncLocalStorage();
 let workspaceStore = loadWorkspaceStore();
 function getWorkspaceById(id) { const normalized = String(id || "").trim(); return workspaceStore.workspaces.find(function(ws){ return ws.id === normalized; }) || null; }
-function currentWorkspaceId() { const context = workspaceContext.getStore(); const requested = context && context.workspaceId; if (requested && getWorkspaceById(requested)) return requested; return workspaceStore.defaultWorkspaceId; }
-function currentWorkspace() { return getWorkspaceById(currentWorkspaceId()) || workspaceStore.workspaces[0]; }
+// A background task of a channel that was deleted meanwhile keeps running inside its old context. It must NOT
+// fall back to the default (AI) channel: its writes would land there and its publishes would go to the wrong
+// Telegram channel. It gets a detached, never persisted, channel-less workspace instead.
+const orphanWorkspaces = new Map();
+function orphanWorkspace(id) {
+  let ws = orphanWorkspaces.get(id);
+  if (!ws) {
+    ws = { id: id, name: "(удалён)", slug: "", initials: "NF", telegramChannel: "", telegramPublicUsername: "", orphan: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: freshWorkspaceState() };
+    ws.state.mode = "PAUSED";
+    orphanWorkspaces.set(id, ws);
+    if (orphanWorkspaces.size > 50) orphanWorkspaces.delete(orphanWorkspaces.keys().next().value);
+    console.warn("WORKSPACE_GONE " + JSON.stringify({ workspace: String(id).slice(0, 64), note: "background task of a removed channel is isolated from the default channel" }));
+  }
+  return ws;
+}
+function requestedWorkspaceIdFromContext() { const context = workspaceContext.getStore(); return String(context && context.workspaceId || "").trim(); }
+function currentWorkspaceId() { const requested = requestedWorkspaceIdFromContext(); if (requested) return requested; return workspaceStore.defaultWorkspaceId; }
+function currentWorkspace() { const requested = requestedWorkspaceIdFromContext(); if (requested) { return getWorkspaceById(requested) || orphanWorkspace(requested); } return getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0]; }
 function currentTelegramChannel() {
   const ws = currentWorkspace();
   return ws ? String(ws.telegramChannel || "").trim() : String(CHANNEL || "").trim();
@@ -677,14 +806,25 @@ function currentTelegramChannel() {
 function currentTelegramPublicUsername() {
   const ws = currentWorkspace();
   return ws
-    ? String(ws.telegramPublicUsername || ws.slug || ws.telegramChannel || "").replace(/^@/, "").trim()
-    : String(TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
+    ? (telegramUsernameOrEmpty(ws.telegramPublicUsername) || telegramUsernameOrEmpty(ws.slug) || telegramUsernameOrEmpty(ws.telegramChannel))
+    : (telegramUsernameOrEmpty(TELEGRAM_PUBLIC_USERNAME) || telegramUsernameOrEmpty(CHANNEL));
 }
 function workspaceVkPublishingAllowed(ws) {
   const target = ws || currentWorkspace();
   return Boolean(target && target.id === workspaceStore.defaultWorkspaceId);
 }
 function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", vkPublishingAllowed: workspaceVkPublishingAllowed(ws), channelId: ws.channelId || "", editorialChannelId: resolveChannelId(ws), createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+// Two cabinets posting into one Telegram chat would publish every post twice into it.
+function telegramChatKey(raw) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  return /^-?\d+$/.test(v) ? v : v.replace(/^@/, "").toLowerCase();
+}
+function findWorkspaceByTelegramChat(raw, exceptId) {
+  const key = telegramChatKey(raw);
+  if (!key) return null;
+  return workspaceStore.workspaces.find(function(ws){ return ws && ws.id !== exceptId && telegramChatKey(ws.telegramChannel) === key; }) || null;
+}
 function normalizeTelegramChannelInput(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
@@ -715,9 +855,13 @@ function workspaceSummary(ws) {
 }
 function persistWorkspaceStore() {
   ensureDataDir();
-  fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
+  if (!workspaceStore || !Array.isArray(workspaceStore.workspaces) || !workspaceStore.workspaces.length) {
+    throw new Error("refusing to persist an empty workspace store");
+  }
+  // temp file + fsync + rename; the previous good copy is rotated to workspaces.json.bak
+  workspaceStoreWriter.write(JSON.stringify(workspaceStore, null, 2));
   const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
-  if (defaultWorkspace && defaultWorkspace.state) fs.writeFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2), "utf8");
+  if (defaultWorkspace && defaultWorkspace.state) atomicWriteFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2));
 }
 
 function ensureConfiguredWorkspaces() {
@@ -793,6 +937,10 @@ function ensureConfiguredWorkspaces() {
     }
   }
 
+  // NOTE (audit): this block recreates the "chtotamtachki" workspace on every start, so an
+  // intentionally deleted channel comes back. Everything below dereferences `cars.state`, and
+  // a tombstone list would have to be persisted in workspaces.json and honoured by the delete
+  // endpoint, so this is deliberately left unchanged (risky for existing deployments).
   let cars = workspaceStore.workspaces.find(function(ws){
     const slug = String(ws.slug || ws.telegramPublicUsername || ws.telegramChannel || "").replace(/^@/, "").toLowerCase();
     return slug === "chtotamtachki" || String(ws.name || "").trim().toLowerCase() === "что там у тачек?";
@@ -1251,30 +1399,55 @@ function providerLabel(value) {
   return map[String(value || "")] || String(value || "Другое");
 }
 
+// USD/RUB: CBR (cached 6 h) -> last known good CBR value (persisted in the network cost-budget
+// state, survives restarts) -> COST_USD_RUB_RATE -> built-in constant. It never returns 0/null:
+// a missing rate used to make budgets compute as 0 RUB and silently switch economy mode off.
+let usdRubFailedAt = 0;
+let usdRubFallbackLogged = "";
+let lastUsdRubInfo = { source: "none", at: 0 };
 async function getUsdRubRate() {
   const now = Date.now();
   if (cbrUsdRubCache.value && now - cbrUsdRubCache.at < 6 * 60 * 60 * 1000) return cbrUsdRubCache.value;
-  try {
-    const response = await fetch("https://www.cbr.ru/scripts/XML_daily.asp", {
-      headers: { "user-agent": "NewsFactory/1.0" },
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!response.ok) throw new Error("CBR HTTP " + response.status);
-    const xml = await response.text();
-    const block = xml.match(/<Valute[^>]*>[\s\S]*?<CharCode>USD<\/CharCode>[\s\S]*?<\/Valute>/i);
-    if (!block) throw new Error("USD not found");
-    const nominalMatch = block[0].match(/<Nominal>([^<]+)<\/Nominal>/i);
-    const valueMatch = block[0].match(/<Value>([^<]+)<\/Value>/i);
-    const nominal = Number(String(nominalMatch && nominalMatch[1] || "1").replace(",", "."));
-    const value = Number(String(valueMatch && valueMatch[1] || "").replace(",", "."));
-    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(nominal) || nominal <= 0) throw new Error("bad CBR rate");
-    const rate = value / nominal;
-    cbrUsdRubCache = { at: now, value: rate };
-    return rate;
-  } catch {
-    const fallback = Number(process.env.COST_USD_RUB_RATE || 0);
-    return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+  const retryAfterFailureMs = 5 * 60 * 1000;
+  if (!(usdRubFailedAt && now - usdRubFailedAt < retryAfterFailureMs)) {
+    try {
+      const response = await fetch("https://www.cbr.ru/scripts/XML_daily.asp", {
+        headers: { "user-agent": "NewsFactory/1.0" },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!response.ok) throw new Error("CBR HTTP " + response.status);
+      const rate = parseCbrUsdRate(await response.text());
+      cbrUsdRubCache = { at: now, value: rate };
+      usdRubFailedAt = 0;
+      usdRubFallbackLogged = "";
+      lastUsdRubInfo = { source: "cbr", at: now };
+      try {
+        const budget = networkCostBudgetState();
+        const stored = Number(budget.lastUsdRub && budget.lastUsdRub.value);
+        if (!(Math.abs(stored - rate) < 0.00001)) {
+          budget.lastUsdRub = { value: rate, at: new Date(now).toISOString() };
+          persistWorkspaceStore();
+        }
+      } catch (error) { console.warn("Cannot persist last known USD/RUB rate:", error.message); }
+      return rate;
+    } catch (error) {
+      usdRubFailedAt = now;
+      console.warn("CBR USD/RUB rate unavailable:", error && error.message || error);
+    }
   }
+  let stored = null;
+  try {
+    const saved = networkCostBudgetState().lastUsdRub;
+    if (saved && Number(saved.value) > 0) stored = { value: Number(saved.value), at: Date.parse(saved.at) || 0 };
+  } catch {}
+  const lastGood = cbrUsdRubCache.value ? { value: cbrUsdRubCache.value, at: cbrUsdRubCache.at } : stored;
+  const fb = resolveUsdRubFallback({ lastGood: lastGood, configured: process.env.COST_USD_RUB_RATE, defaultRate: DEFAULT_USD_RUB_RATE });
+  lastUsdRubInfo = { source: fb.source, at: fb.at };
+  if (usdRubFallbackLogged !== fb.source) {
+    usdRubFallbackLogged = fb.source; // log once per outage / source change
+    console.warn("USD/RUB: CBR unavailable, using " + fb.source + " rate " + fb.rate + " for cost budgets and economy mode");
+  }
+  return fb.rate;
 }
 
 function directoryBytes(dir) {
@@ -1376,7 +1549,8 @@ async function costBudgetSnapshot(knownRate) {
     dailyRatio: b.dailyRub ? todayRub / b.dailyRub : 0,
     economyMode: Boolean(b.economyMode),
     economyReason: String(b.economyReason || ""),
-    fxAvailable: Boolean(rate)
+    fxAvailable: Boolean(rate),
+    fxSource: lastUsdRubInfo.source
   };
 }
 
@@ -1457,6 +1631,11 @@ async function sendCostBudgetAlert(snapshot, threshold) {
 async function evaluateCostBudget(notify) {
   const b = networkCostBudgetState();
   const snap = await costBudgetSnapshot();
+  if (!snap.fxAvailable) {
+    // Defensive: with no rate every RUB figure is 0 and the ratios would switch economy mode off.
+    // Keep the previous decision instead.
+    return Object.assign({}, snap, { economyMode: Boolean(b.economyMode), economyReason: String(b.economyReason || "") });
+  }
   const dailyOver = snap.dailyBudgetRub > 0 && snap.dailyRatio >= 1;
   const monthlyOver = snap.monthlyBudgetRub > 0 && snap.monthlyRatio >= 1;
   const economy = Boolean(dailyOver || monthlyOver);
@@ -1468,20 +1647,17 @@ async function evaluateCostBudget(notify) {
 
   if (notify && snap.configured && snap.fxAvailable) {
     const mskDay = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0,10);
-    for (const threshold of [80,100]) {
-      const reached = (snap.dailyBudgetRub && snap.dailyRatio >= threshold/100) || (snap.monthlyBudgetRub && snap.monthlyRatio >= threshold/100);
-      const key = "last" + threshold + "Day";
-      if (reached && b.alerts[key] !== mskDay) {
-        try {
-          if (await sendCostBudgetAlert(snap, threshold)) {
-            b.alerts[key] = mskDay;
-            dirty = true;
-          }
-        } catch (error) {
-          console.warn("Cost budget Telegram alert failed:", error.message);
-        }
-      }
-    }
+    // The dedupe key is claimed BEFORE the Telegram await (concurrent evaluations and a failing
+    // 403/slow Telegram used to produce 6-8 identical sends); failures back off for 30 minutes.
+    const alertsDirty = await dispatchBudgetAlerts({
+      alerts: b.alerts,
+      day: mskDay,
+      thresholds: [80, 100],
+      reached: function(threshold) { return Boolean((snap.dailyBudgetRub && snap.dailyRatio >= threshold/100) || (snap.monthlyBudgetRub && snap.monthlyRatio >= threshold/100)); },
+      send: function(threshold) { return sendCostBudgetAlert(snap, threshold); },
+      onError: function(error) { console.warn("Cost budget Telegram alert failed:", error.message); }
+    });
+    if (alertsDirty) dirty = true;
   }
   if (dirty) persistWorkspaceStore();
   return Object.assign({}, snap, { economyMode: economy, economyReason: reason });
@@ -1876,6 +2052,8 @@ async function enforceCopyrightSafeMedia(post) {
   out.originalVideoUrl = out.originalVideoUrl || out.videoUrl || "";
   out.imageUrl = "";
   out.videoUrl = "";
+  // The album pack holds third-party photos too: when the source media is not reusable it must not bypass the filter.
+  out.mediaPackUrls = [];
 
   if (!generatedIndependent) out.generatedImageUrl = "";
   if (!out.generatedImageUrl) {
@@ -2090,6 +2268,8 @@ function findStoryClusterCandidate(newItem) {
   let bestScore = 0;
   for (const item of (state.queue || [])) {
     if (!item || item.telegramPublished || item.vkPublished) continue;
+    // Only an approved post may absorb another source; a held / rejected one is about to be removed.
+    if (!isApprovedQueueItem(item)) continue;
     if (storySourceSnapshot(item).length >= STORY_CLUSTER_MAX_SOURCES) continue;
     const age = Math.abs(now - (queueItemTimeMs(item) || now));
     if (age > STORY_CLUSTER_WINDOW_HOURS * 60 * 60 * 1000) continue;
@@ -2313,11 +2493,17 @@ function sourceStatKey(sourceOrItem) {
   return found ? String(found.id) : "";
 }
 
+// Keys that would reach Object.prototype when used as an object property name.
+function isReservedKey(key) {
+  const k = String(key);
+  return k === "__proto__" || k === "constructor" || k === "prototype";
+}
+
 function ensureSourceStat(sourceOrItem) {
   state.sourceStats = state.sourceStats && typeof state.sourceStats === "object" ? state.sourceStats : {};
   const key = sourceStatKey(sourceOrItem);
-  if (!key) return null;
-  if (!state.sourceStats[key]) {
+  if (!key || isReservedKey(key)) return null;
+  if (!Object.prototype.hasOwnProperty.call(state.sourceStats, key)) {
     state.sourceStats[key] = {
       checks: 0, candidates: 0, discovered: 0, scored: 0, strong: 0, top: 0,
       selected: 0, published: 0, errors: 0, scoreSum: 0,
@@ -2467,7 +2653,7 @@ async function replenishSources(reason) {
 
 // One cheap call over all fresh headlines before media and editorial work:
 // drops ads, listings, old press releases and off-topic links.
-const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "мировые новости", stars: "знаменитости", travel: "путешествия", shopping: "покупки и скидки", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "маркетплейсы и покупатели: правила Ozon, Wildberries и Яндекс Маркета, доставка, возвраты, новые товары и тренды; без рекламных подборок, промокодов и скидок", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
 async function prefilterCandidates(candidates, summary) {
   if (!candidates.length) return candidates;
   const now = new Date();
@@ -2612,7 +2798,14 @@ function buildSourceRankings() {
   return rows;
 }
 
-const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000 }) : null;
+const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000, connectionTimeoutMillis: 15000 }) : null;
+if (db) {
+  // Without an 'error' listener a dropped idle connection (DB restart, network blip) is an
+  // unhandled 'error' event and kills the process. Only the message is logged (never the URL).
+  db.on("error", function(error) {
+    console.error("PostgreSQL pool error (idle client):", error && error.message || error);
+  });
+}
 let dbReady = false;
 // Collector lock is per workspace: one channel's slow collection must not block
 // slot preparation of the other channels in the network.
@@ -2621,7 +2814,6 @@ function isCollectorRunning(workspaceId) { return collectorRunningWorkspaces.has
 const schedulerTickRunning = new Set();
 let collectorTimer = null;
 const lastCollectorRuns = new Map();
-let snapshotTimer = null;
 function saveState() {
   pruneQueueItems(state);
   state.updatedAt = new Date().toISOString();
@@ -2646,7 +2838,10 @@ async function runMigrations() {
       .filter(function(name){ return /\.sql$/i.test(name); })
       .sort();
   } catch (error) {
-    if (error && error.code === "ENOENT") return;
+    if (error && error.code === "ENOENT") {
+      console.error("DB migrations directory not found, no migrations were applied: " + migrationsDir);
+      return;
+    }
     throw error;
   }
 
@@ -2672,9 +2867,11 @@ async function runMigrations() {
   }
 }
 
-async function initDb() {
-  if (!db) return false;
-  try {
+// Serialises schema bootstrap + migrations between concurrently starting instances
+// (rolling deploys): the session-level advisory lock is held on a dedicated connection.
+const DB_INIT_ADVISORY_LOCK_KEY = 7242001;
+async function initDbAttempt() {
+  await withAdvisoryLock(db, DB_INIT_ADVISORY_LOCK_KEY, async function() {
     await db.query(`
       CREATE TABLE IF NOT EXISTS news_items (
         id TEXT PRIMARY KEY,
@@ -2721,6 +2918,8 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS app_snapshots_created_idx ON app_snapshots(created_at DESC);
     `);
     await runMigrations();
+  });
+  {
     dbReady = true;
     await migrateLegacyCostEventsToPostgres();
     await refreshStoredCostPricing();
@@ -2732,10 +2931,39 @@ async function initDb() {
     await saveStateSnapshot();
     console.log("PostgreSQL ready");
     return true;
+  }
+}
+
+// Bounded retry with exponential backoff (DB_INIT_MAX_ATTEMPTS, DB_INIT_RETRY_BASE_MS). If every
+// attempt fails the app keeps running without the DB, but a background retry round is scheduled
+// every DB_INIT_RECOVERY_MS so dbReady does not stay false forever after one outage.
+let dbInitRunning = false;
+let dbInitRecoveryTimer = null;
+async function initDb() {
+  if (!db) return false;
+  if (dbInitRunning) return dbReady;
+  dbInitRunning = true;
+  try {
+    await retryWithBackoff(initDbAttempt, {
+      attempts: Math.max(1, Math.min(10, Number(process.env.DB_INIT_MAX_ATTEMPTS || 5))),
+      baseMs: Math.max(0, Number(process.env.DB_INIT_RETRY_BASE_MS || 1000)),
+      maxMs: 15000,
+      onRetry: function(error, attempt, delay) {
+        dbReady = false;
+        console.warn("PostgreSQL init attempt " + attempt + " failed: " + (error && error.message || error) + "; retrying in " + delay + " ms");
+      }
+    });
+    return true;
   } catch (error) {
     dbReady = false;
-    console.error("PostgreSQL init failed:", error.message);
+    console.error("PostgreSQL init failed:", error && error.message || error);
+    const recoveryMs = Math.max(1000, Number(process.env.DB_INIT_RECOVERY_MS || 30000));
+    if (dbInitRecoveryTimer) clearTimeout(dbInitRecoveryTimer);
+    dbInitRecoveryTimer = setTimeout(function() { dbInitRecoveryTimer = null; initDb().catch(function(){}); }, recoveryMs);
+    if (dbInitRecoveryTimer.unref) dbInitRecoveryTimer.unref();
     return false;
+  } finally {
+    dbInitRunning = false;
   }
 }
 
@@ -2750,10 +2978,15 @@ async function saveStateSnapshot() {
   }
 }
 
+// One debounce timer per workspace: a single global timer made a save in workspace B
+// cancel the pending snapshot of workspace A. The callback re-enters the workspace context.
+const snapshotDebouncer = createKeyedDebouncer(1500, function(workspaceId) {
+  if (!getWorkspaceById(workspaceId)) return;
+  return workspaceContext.run({ workspaceId: workspaceId }, function(){ return saveStateSnapshot(); });
+});
 function scheduleStateSnapshot() {
   if (!db || !dbReady) return;
-  clearTimeout(snapshotTimer);
-  snapshotTimer = setTimeout(function(){ saveStateSnapshot(); }, 1500);
+  snapshotDebouncer.schedule(currentWorkspaceId());
 }
 
 function canonicalizeUrl(raw, base) {
@@ -2798,8 +3031,10 @@ function extractTitle(html) {
   return m ? stripHtml(m[1]).slice(0, 300) : "";
 }
 
-function extractPublishedAt(html) {
+function extractPublishedAt(html, hint) {
   const source = String(html || "");
+  let assumeMoscow = false;
+  try { assumeMoscow = /(\.ru|\.su|\.рф|\.xn--p1ai)$/i.test(new URL(String(hint && hint.url || "")).hostname); } catch {}
   const patterns = [
     /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
     /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
@@ -2811,7 +3046,7 @@ function extractPublishedAt(html) {
   for (const re of patterns) {
     const m = source.match(re);
     if (!m || !m[1]) continue;
-    const normalized = normalizeDate(htmlDecode(m[1]));
+    const normalized = normalizeDate(htmlDecode(m[1]), { assumeMoscow: assumeMoscow });
     if (normalized) return normalized;
   }
   return "";
@@ -2855,16 +3090,17 @@ function extractMetaImage(html, pageUrl) {
   return "";
 }
 
-// Telegram sendVideo only plays MPEG-4: a .webm is delivered as a plain "logo.webm" file
-// attachment. Short decorative clips (animated logos, backgrounds, hero loops) found on
+// Telegram sendVideo only plays MPEG-4 (.mp4 / .m4v): a .webm is delivered as a plain "logo.webm" file
+// attachment, and a QuickTime .mov is not reliably accepted, so only MPEG-4 containers pass. Short decorative clips (animated logos, backgrounds, hero loops) found on
 // article pages are not news video either, so neither is accepted as a post video.
 function isUsableNewsVideoUrl(rawUrl) {
   const value = String(rawUrl || "").trim();
   if (!value) return false;
   let pathname = value;
   try { pathname = new URL(value, PUBLIC_BASE_URL).pathname; } catch {}
-  if (!/\.(mp4|m4v|mov)$/i.test(pathname)) return false;
-  const base = decodeURIComponent(pathname.split("/").pop() || "");
+  if (!/\.(mp4|m4v)$/i.test(pathname)) return false;
+  let base = pathname.split("/").pop() || "";
+  try { base = decodeURIComponent(base); } catch { return false; }
   if (/(^|[-_.\s])(logo|logotype|loop|intro|outro|bg|background|header|hero|banner|favicon|icon|sprite|placeholder|ambient|teaser-loop)([-_.\s\d]|$)/i.test(base)) return false;
   return true;
 }
@@ -3017,17 +3253,18 @@ async function loadPreviewSourceBytes(rawUrl) {
 
   const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
   if (!/^https:\/\//i.test(absolute)) throw new Error("Для preview требуется HTTPS-изображение");
-  const response = await fetch(absolute, {
+  // Third-party URL: SSRF-safe download with a hard size cap, raster formats only (no SVG).
+  const response = await safeFetch(absolute, {
     headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreview/1.0)" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(30000)
+    timeoutMs: 30000,
+    maxBytes: 20 * 1024 * 1024
   });
   if (!response.ok) throw new Error("Не удалось скачать preview-изображение: HTTP " + response.status);
   const type = String(response.headers.get("content-type") || "").toLowerCase();
   if (!type.startsWith("image/")) throw new Error("Preview-источник не является изображением");
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) throw new Error("Preview-изображение пустое");
-  if (bytes.length > 20 * 1024 * 1024) throw new Error("Preview-изображение слишком большое");
+  await assertSafeRaster(bytes);
   return bytes;
 }
 
@@ -3561,23 +3798,22 @@ async function enhanceNewsImage(payload) {
     bytes = fs.readFileSync(localFile);
   } else {
     if (!/^https?:\/\//i.test(imageUrl)) throw new Error("Нет исходного изображения для улучшения");
-    const sourceResponse = await fetch(imageUrl, {
+    const sourceResponse = await safeFetch(imageUrl, {
       headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryMedia/1.0)" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: 25 * 1024 * 1024
     });
     if (!sourceResponse.ok) throw new Error("Не удалось скачать исходное фото: HTTP " + sourceResponse.status);
-    bytes = Buffer.from(await sourceResponse.arrayBuffer());
+    bytes = sourceResponse.body;
   }
   if (!bytes || !bytes.length) throw new Error("Исходное изображение пустое");
   if (bytes.length > 25 * 1024 * 1024) throw new Error("Исходное изображение слишком большое");
 
-  let meta;
-  try { meta = await sharp(bytes).metadata(); } catch { throw new Error("Исходный файл не является изображением"); }
+  const meta = await assertSafeRaster(bytes);
   const width = Number(meta.width || 0);
   if (!width) throw new Error("Не удалось определить размер изображения");
 
-  let pipeline = sharp(bytes, { failOn: "none" }).rotate();
+  let pipeline = sharp(bytes, { failOn: "none", limitInputPixels: SAFE_INPUT_PIXELS }).rotate();
   if (width < ENHANCE_TARGET_WIDTH) {
     // Upscale at most 2x: beyond that interpolation only adds blur.
     pipeline = pipeline.resize({ width: Math.min(ENHANCE_TARGET_WIDTH, width * 2), kernel: "lanczos3", withoutEnlargement: false });
@@ -3607,28 +3843,29 @@ async function cacheSourceImage(imageUrl, id) {
   if (!sourceUrl) return "";
   if (isLocalMediaUrl(sourceUrl)) return sourceUrl;
 
-  const response = await fetch(sourceUrl, {
-    redirect: "follow",
+  const response = await safeFetch(sourceUrl, {
     headers: {
       "user-agent": "Mozilla/5.0 (compatible; NewsFactory/1.0; +https://news-factory-api-production.up.railway.app)",
-      "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      "accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
     },
-    signal: AbortSignal.timeout(30000)
+    timeoutMs: 30000,
+    maxBytes: 20 * 1024 * 1024
   });
   if (!response.ok) throw new Error("Фото источника HTTP " + response.status);
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
   if (!contentType.startsWith("image/")) throw new Error("Источник вернул не изображение");
 
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) throw new Error("Фото источника пустое");
   if (bytes.length > 20 * 1024 * 1024) throw new Error("Фото источника больше 20 МБ");
+  await assertSafeRaster(bytes); // jpeg/png/webp/gif/avif only: SVG is never rasterised
 
   ensureDataDir();
   const safeId = String(id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 70);
   const fileName = "source_" + safeId + "_" + Date.now() + ".webp";
   const filePath = path.join(MEDIA_DIR, fileName);
 
-  await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+  await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
     .rotate()
     .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
     .webp({ quality: 90 })
@@ -4058,6 +4295,7 @@ function isSourcePlaceholderImage(sourceName, newsId, fp) {
   if (!fp || !Array.isArray(fp.bits) || !sourceName) return false;
   state.sourceImagePrints = state.sourceImagePrints && typeof state.sourceImagePrints === "object" ? state.sourceImagePrints : {};
   const key = String(sourceName);
+  if (isReservedKey(key)) return false;
   const list = Array.isArray(state.sourceImagePrints[key]) ? state.sourceImagePrints[key] : [];
   const id = String(newsId || "");
   const bits = fp.bits.join("");
@@ -4362,12 +4600,13 @@ function extractArticleLinks(html, sourceUrl) {
 }
 
 async function fetchText(url, timeoutMs) {
-  const response = await fetch(url, {
+  // Source pages are third-party: SSRF-safe client (public IPs only, re-validated redirects, size cap).
+  const response = await safeFetch(url, {
     headers: {
       "user-agent": "Mozilla/5.0 (compatible; NewsFactoryBot/0.6; +https://news-factory-api-production.up.railway.app)"
     },
-    redirect: "follow",
-    signal: AbortSignal.timeout(timeoutMs || 15000)
+    timeoutMs: timeoutMs || 15000,
+    maxBytes: 5 * 1024 * 1024
   });
   if (!response.ok) throw new Error("HTTP " + response.status + " " + url);
   const type = response.headers.get("content-type") || "";
@@ -4375,7 +4614,45 @@ async function fetchText(url, timeoutMs) {
   return await response.text();
 }
 
+// Per-URL counter of transient failures (download, writer outage, DB write). Kept in the workspace
+// state so it survives restarts; after SKIP_RETRY_MAX attempts the link counts as seen.
+function bumpSkipAttempt(url, kind) {
+  state.skipAttempts = state.skipAttempts && typeof state.skipAttempts === "object" ? state.skipAttempts : {};
+  const entry = state.skipAttempts[url] || { n: 0 };
+  entry.n = Number(entry.n || 0) + 1;
+  entry.kind = String(kind || "");
+  entry.at = new Date().toISOString();
+  state.skipAttempts[url] = entry;
+  const keys = Object.keys(state.skipAttempts);
+  if (keys.length > 300) {
+    keys.sort(function(a, b){ return String(state.skipAttempts[a].at || "").localeCompare(String(state.skipAttempts[b].at || "")); })
+      .slice(0, keys.length - 300).forEach(function(k){ delete state.skipAttempts[k]; });
+  }
+  return entry.n;
+}
+
+// Records a link that will never be worth opening again (stale, too short, unreachable, published by another
+// channel) so it stops being "the first unseen link" of its source. Shown nowhere in the feed (prefilter_skip) unless a status is given.
+async function recordSeenSkip(source, link, reason, text, extra) {
+  const url = String(link && link.url || "");
+  try {
+    await saveNewsItem({
+      id: "news_" + crypto.createHash("sha256").update("prefilter\n" + currentWorkspaceId() + "\n" + url).digest("hex").slice(0, 20),
+      sourceId: source && source.id, sourceName: source && source.name, sourceUrl: source && source.url,
+      originalUrl: url, originalTitle: String(link && link.title || ""), originalText: "",
+      contentHash: "", status: extra && extra.status || "prefilter_skip",
+      metadata: Object.assign({ skipReason: reason, prefilterReason: text || reason, articlePublishedAt: link && link.publishedAt || "" }, extra && extra.metadata || {})
+    });
+  } catch (error) {
+    console.warn("SEEN_SKIP_SAVE_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
+    // Keep the in-memory guard so a failing DB cannot make the same link loop.
+    state.skipAttempts = state.skipAttempts && typeof state.skipAttempts === "object" ? state.skipAttempts : {};
+    state.skipAttempts[url] = { n: SKIP_RETRY_MAX, kind: reason, at: new Date().toISOString() };
+  }
+}
+
 async function seenOriginalUrl(url) {
+  if (state.skipAttempts && state.skipAttempts[url] && Number(state.skipAttempts[url].n) >= SKIP_RETRY_MAX) return true;
   if (db && dbReady) {
     const r = await db.query("SELECT 1 FROM news_items WHERE workspace_id=$1 AND original_url=$2 LIMIT 1", [currentWorkspaceId(), url]);
     return r.rowCount > 0;
@@ -4584,15 +4861,26 @@ async function collectOnce(trigger) {
           ? extractTelegramSourcePosts(html, source.url)
           : extractArticleLinks(html, source.url)
         ).slice(0, isTelegramCreator ? 18 : 12);
+        const crossIndex = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex() : null;
         for (const link of links) {
           if (selectedUrls.has(link.url)) continue;
+          // Same article already queued / published by another channel: leave it, look at the next link.
+          // Not recorded as seen, so the link is free again when the other channel's post is dropped.
+          const linkConflict = crossIndex && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() }, { index: crossIndex });
+          if (linkConflict) {
+            summary.skipped += 1;
+            if (linkConflict.where === "published" && !(await seenOriginalUrl(link.url))) {
+              await recordSeenSkip(source, link, "cross_channel_duplicate", "Уже опубликовано в канале " + linkConflict.channel, { status: "duplicate_story", metadata: { autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: linkConflict.workspace, channel: linkConflict.channel, by: linkConflict.by, where: linkConflict.where } } });
+            }
+            continue;
+          }
           if (await seenOriginalUrl(link.url)) {
             summary.skipped += 1;
             continue;
           }
           selectedUrls.add(link.url);
           noteSourceEvent(source, "candidate");
-          return { source: source, link: link };
+          return { source: source, link: link, rest: links.slice(links.indexOf(link) + 1), extra: 0 };
         }
         return null;
       } catch (error) {
@@ -4615,20 +4903,68 @@ async function collectOnce(trigger) {
       saveState();
     }
 
+    // When a link turns out to be unusable (stale, too short, unreachable, taken by another channel) the next
+    // unseen link of the same source is opened in the same run, so one bad link cannot shadow the fresh ones
+    // behind it. Bounded by EXTRA_LINKS_PER_SOURCE.
+    const advanceSource = async function(from) {
+      let current = from;
+      while (current && Array.isArray(current.rest) && current.rest.length && Number(current.extra || 0) < EXTRA_LINKS_PER_SOURCE) {
+        const link = current.rest.shift();
+        if (selectedUrls.has(link.url)) continue;
+        if (CROSS_CHANNEL_DEDUPE_ENABLED && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() })) continue;
+        if (await seenOriginalUrl(link.url)) continue;
+        selectedUrls.add(link.url);
+        noteSourceEvent(current.source, "candidate");
+        const next = { source: current.source, link: link, rest: current.rest, extra: Number(current.extra || 0) + 1 };
+        const kept = await prefilterCandidates([next], summary);
+        if (kept.length) { ordered.push(next); return; }
+        current = next;
+      }
+    };
+
     for (const candidate of ordered) {
       if (summary.found >= MAX_ITEMS_PER_RUN) break;
       const source = candidate.source;
       const url = candidate.link.url;
 
+      let baseSaved = false;
+      let claimed = [];
       try {
-        const articleHtml = await fetchText(url, 15000);
+        let articleHtml;
+        try {
+          articleHtml = await fetchText(url, 15000);
+        } catch (fetchError) {
+          // A removed / forbidden page is final; a timeout or 5xx is retried a few times and then recorded as
+          // seen. Before this the same dead link stayed the first unseen link of its source forever.
+          noteSourceEvent(source, "error");
+          summary.errors.push(url + ": " + fetchError.message);
+          const permanent = /HTTP (401|403|404|410|451)\b|Unsupported content type/.test(String(fetchError.message || ""));
+          if (permanent || bumpSkipAttempt(url, "fetch_failed") >= SKIP_RETRY_MAX) {
+            await recordSeenSkip(source, candidate.link, "fetch_failed", "Страница недоступна: " + String(fetchError.message || "").slice(0, 120));
+          }
+          await advanceSource(candidate);
+          continue;
+        }
         const isBlogger = source.group === "blogger" || source.group === "creator";
         const originalTitle = isBlogger
           ? (candidate.link.title || extractTitle(articleHtml) || source.name)
           : (extractTitle(articleHtml) || candidate.link.title);
-        const articlePublishedAt = candidate.link.publishedAt || extractPublishedAt(articleHtml);
-        if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > ARTICLE_MAX_AGE_HOURS * 60 * 60 * 1000) {
+        const articlePublishedAt = candidate.link.publishedAt || extractPublishedAt(articleHtml, { url: url });
+        const windowMs = articleMaxAgeMs();
+        if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > windowMs) {
           summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle, publishedAt: articlePublishedAt }), "stale_article", "Старше " + Math.round(windowMs / 3600000) + " ч: " + articlePublishedAt);
+          await advanceSource(candidate);
+          continue;
+        }
+        // No date on the page: freshness is unknown. A past year in the title (an old press release) is dropped;
+        // anything else goes on with extra care (the writer is told the date is unknown, and the queue item gets a
+        // shorter life, see dynamicItemMaxAgeMs).
+        const dateUnknown = !articlePublishedAt;
+        if (dateUnknown && !isBlogger && staleYearInTitle(originalTitle, false, new Date())) {
+          summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle }), "stale_year_in_title", "Без даты, в заголовке прошлый год");
+          await advanceSource(candidate);
           continue;
         }
         const mediaCandidates = extractArticleMediaCandidates(articleHtml, url);
@@ -4638,10 +4974,38 @@ async function collectOnce(trigger) {
         const originalText = (isBlogger && candidate.link.text ? String(candidate.link.text) : raw).slice(0, 14000);
         if (originalText.length < (isBlogger ? 40 : 250)) {
           summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle, publishedAt: articlePublishedAt || "" }), "too_short", "Слишком короткая страница (" + originalText.length + " зн.)");
+          await advanceSource(candidate);
           continue;
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
-        const id = "news_" + contentHash.slice(0, 20);
+        // The id is scoped to the workspace and the URL: the same article collected by two channels (or the
+        // same text under two URLs) used to collide on news_items_pkey, and the loser's post stayed queued
+        // without a DB row, so it was re-collected every tick. Rows written before this change keep their ids;
+        // all lookups go by (workspace_id, original_url).
+        // Exact cross-channel check (URL or content hash) and an in-flight claim: all workspaces tick in
+        // parallel, so two channels can be writing the same article at the same moment.
+        if (CROSS_CHANNEL_DEDUPE_ENABLED) {
+          const articleKeys = itemArticleKeys({ originalUrl: url, contentHash: contentHash });
+          const conflict = crossChannelConflict(articleKeys);
+          if (conflict) {
+            console.log("CROSS_CHANNEL_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, by: conflict.by, otherWorkspace: conflict.workspace, otherChannel: conflict.channel, where: conflict.where, windowHours: CROSS_CHANNEL_DEDUPE_HOURS }));
+            summary.skipped += 1;
+            if (conflict.where === "published") {
+              // Published elsewhere: final. Queued / in flight elsewhere: not recorded, retried while the other post is still undecided.
+              await saveNewsItem({
+                id: "news_" + crypto.createHash("sha256").update("crosschannel\n" + currentWorkspaceId() + "\n" + url).digest("hex").slice(0, 20),
+                sourceId: source.id, sourceName: source.name, sourceUrl: source.url, originalUrl: url, originalTitle: originalTitle,
+                originalText: originalText.slice(0, 2000), contentHash: contentHash, status: "duplicate_story",
+                metadata: { trigger: trigger || "scheduler", articlePublishedAt: articlePublishedAt || "", autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: conflict.workspace, channel: conflict.channel, by: conflict.by, where: conflict.where } }
+              });
+            }
+            await advanceSource(candidate);
+            continue;
+          }
+          claimed = crossChannelClaim(articleKeys);
+        }
+        const id = "news_" + crypto.createHash("sha256").update(currentWorkspaceId() + "\n" + contentHash + "\n" + url).digest("hex").slice(0, 20);
         // Cheap duplicate check on the source text BEFORE media preparation and the
         // writer/checker calls: an obvious repeat of a recently published post costs
         // one short classifier call instead of media + 3-6 LLM calls.
@@ -4653,7 +5017,10 @@ async function collectOnce(trigger) {
             console.warn("STORY_PRECHECK_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
             storyPrecheck = null;
           }
-          if (storyPrecheck && storyPrecheck.relation === "duplicate") {
+          // A queued post's "update" is reported as "duplicate" (queued: true) so that it is merged into the queued
+          // post instead of published twice; that merge needs the full pipeline, so only a genuine duplicate
+          // (the model said "duplicate", not "update") is dropped here.
+          if (storyPrecheck && storyPrecheck.relation === "duplicate" && !(storyPrecheck.queued && storyPrecheck.judgedRelation === "update")) {
             console.log("STORY_PRECHECK_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, similarity: Number(storyPrecheck.similarity || 0).toFixed(2), publishedId: storyPrecheck.candidate && (storyPrecheck.candidate.id || storyPrecheck.candidate.queueId) || "" }));
             await saveNewsItem({
               id: id,
@@ -4701,6 +5068,7 @@ async function collectOnce(trigger) {
           metadata: {
             trigger: trigger || "scheduler",
             articlePublishedAt: articlePublishedAt || "",
+            articleDateUnknown: dateUnknown || undefined,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || imageUrl || "",
             originalVideoUrl: media.originalVideoUrl || videoUrl || "",
@@ -4763,10 +5131,13 @@ async function collectOnce(trigger) {
             });
             state.stats.rewritten += 1;
           } catch (error) {
+            summary.errors.push(originalTitle + ": " + error.message);
+            // A transient model error (429, timeout) must not lose the article: retried on the next ticks,
+            // recorded as rewrite_error (and so seen) only after SKIP_RETRY_MAX attempts.
+            if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
             baseItem.status = "rewrite_error";
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
-            summary.errors.push(originalTitle + ": " + error.message);
             continue;
           }
           baseItem.metadata.editorialV2 = v2.meta;
@@ -4800,10 +5171,11 @@ async function collectOnce(trigger) {
             rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "", newsId: id });
             state.stats.rewritten += 1;
           } catch (error) {
+            summary.errors.push(originalTitle + ": " + error.message);
+            if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
             baseItem.status = "rewrite_error";
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
-            summary.errors.push(originalTitle + ": " + error.message);
             continue;
           }
         }
@@ -4914,6 +5286,7 @@ async function collectOnce(trigger) {
             sourceId: source.id,
             sourceName: source.name,
             sourceUrl: url,
+            contentHash: contentHash,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
@@ -4957,6 +5330,7 @@ async function collectOnce(trigger) {
             sourceOriginalText: originalText.slice(0, 7000),
             createdAt: new Date().toISOString(),
             articlePublishedAt: articlePublishedAt || "",
+            articleDateUnknown: dateUnknown || undefined,
             sourceId: source.id,
             sourceGroup: source.group || "",
             sourceUrl: url,
@@ -4983,6 +5357,7 @@ async function collectOnce(trigger) {
             canEnhance: Boolean(media.canEnhance),
             sourceName: source.name,
             newsId: id,
+            contentHash: contentHash,
             aiScore: rewrite.editorialScore,
             aiScoreBreakdown: rewrite.scoreBreakdown,
             aiScoreReason: rewrite.scoreReason,
@@ -5044,29 +5419,37 @@ async function collectOnce(trigger) {
             saveState();
             continue;
           }
-          if (mergedStory) {
-            baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
-            baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
-            baseItem.metadata.storySourceCount = mergedStory.storySources && mergedStory.storySources.length || 0;
-          } else {
-            state.queue.unshift(queueItem);
-          }
           baseItem.metadata.storyRelation = {
             relation: storyRelation.relation,
             updateOf: queueItem.storyUpdateOf || "",
             updateTitle: queueItem.storyUpdateTitle || "",
             reason: storyRelation.reason || ""
           };
+          if (mergedStory) {
+            baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
+            baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
+            baseItem.metadata.storySourceCount = mergedStory.storySources && mergedStory.storySources.length || 0;
+          } else {
+            // DB row first: when the write fails (throws into the catch below) nothing is queued, so a post
+            // can never sit in the queue without a news_items row and be re-collected on every tick.
+            await saveNewsItem(baseItem);
+            baseSaved = true;
+            state.queue.unshift(queueItem);
+          }
           pruneQueueItems(state);
           summary.queued += 1;
           noteSourceEvent(source, "useful");
         }
 
-        await saveNewsItem(baseItem);
+        if (!baseSaved) await saveNewsItem(baseItem);
         saveState();
       } catch (error) {
         noteSourceEvent(source, "error");
         summary.errors.push(url + ": " + error.message);
+        // Bounded retry: after SKIP_RETRY_MAX failures the link counts as seen (see seenOriginalUrl).
+        bumpSkipAttempt(url, "error");
+      } finally {
+        crossChannelRelease(claimed);
       }
     }
 
@@ -5209,13 +5592,24 @@ function dynamicItemScore(item) {
 function dynamicUsedQueueIds() {
   const used = new Set();
   const schedule = ensureScheduleShape(state);
+  // An assignment whose slot has long passed (missed window, REVIEW mode, downtime) must not keep reserving the
+  // best post forever. A grace period keeps a late retry of the current slot working.
+  const now = new Date();
+  const today = moscowDateKey(now);
+  const nowMinutes = moscowMinutes(now);
   Object.keys(schedule.assignments || {}).forEach(function(day) {
-    Object.values(schedule.assignments[day] || {}).forEach(function(id) {
-      if (id) used.add(id);
+    Object.entries(schedule.assignments[day] || {}).forEach(function(entry) {
+      const id = entry[1];
+      if (!id) return;
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(entry[0] || ""));
+      const slotMinutes = m ? Number(m[1]) * 60 + Number(m[2]) : null;
+      const expired = day < today || (day === today && slotMinutes != null && slotMinutes + DYNAMIC_ASSIGNMENT_GRACE_MIN < nowMinutes);
+      if (!expired) used.add(id);
     });
   });
   return used;
 }
+const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 
 function dynamicBestQueueItem(kind) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
@@ -5225,12 +5619,15 @@ function dynamicBestQueueItem(kind) {
 
 function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const used = dynamicUsedQueueIds();
-  const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
+  // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
+  const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
   return (state.queue || [])
     .filter(function(item) {
-      if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
+      if (!(item && item.id && item.newsId && item.status !== "media_failed" && item.status !== "publish_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
+      { const pending = pendingAutoTargets(item); if (!pending.telegram && !pending.vk) return false; }
+      if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item);
@@ -5414,7 +5811,10 @@ async function publishDynamicSlot(kind) {
     return { ok: true, skipped: "missing_item" };
   }
 
-  if (dynamicItemAgeMs(item) > DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000) {
+  const releasePublishLock = acquirePublishLock(item.id);
+  if (!releasePublishLock) return { ok: true, skipped: "publish_in_progress", prepared: queueId };
+  try {
+  if (dynamicItemAgeMs(item) > dynamicItemMaxAgeMs(item)) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
     schedulerState.lastPublishedSlot = slotKey;
@@ -5423,29 +5823,66 @@ async function publishDynamicSlot(kind) {
   }
 
   if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) {
+    // Nothing is published in this slot, so it must not keep reserving the best post.
+    delete schedule.assignments[day][time];
+    item.preparedFor = "";
+    schedulerState.lastPublishedSlot = slotKey;
+    saveState();
     return { ok: true, skipped: "auto_disabled", prepared: queueId };
   }
 
-  const autoTargets = autoPublishTargetsForPost(item);
-  const targets = {
-    telegram: autoTargets.telegram && item.telegramPublished !== true,
-    vk: autoTargets.vk && item.vkPublished !== true
-  };
+  // Last look before publishing: another channel may have published this article since it was queued.
+  const publishConflict = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelConflict(item, { publishedOnly: true }) : null;
+  if (publishConflict) {
+    console.log("CROSS_CHANNEL_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), stage: "publish", queueId: queueId, by: publishConflict.by, otherWorkspace: publishConflict.workspace, otherChannel: publishConflict.channel, windowHours: CROSS_CHANNEL_DEDUPE_HOURS }));
+    delete schedule.assignments[day][time];
+    state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
+    saveState();
+    if (db && dbReady && item.newsId) {
+      try {
+        await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
+          [item.newsId, JSON.stringify({ autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: publishConflict.workspace, channel: publishConflict.channel, by: publishConflict.by } }), currentWorkspaceId()]);
+      } catch (error) { console.warn("Cross-channel duplicate status update failed:", error.message); }
+    }
+    // The slot stays open: the next scheduler tick picks the next best post.
+    return { ok: true, skipped: "cross_channel_duplicate", prepared: queueId };
+  }
+
+  const targets = pendingAutoTargets(item);
 
   if (!targets.telegram && !targets.vk) {
     delete schedule.assignments[day][time];
+    // Everything this channel publishes to is already done (or VK retries are used up): the post is finished.
+    if (item.telegramPublished || item.vkPublished) state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
     schedulerState.lastPublishedSlot = slotKey;
     saveState();
     return { ok: true, skipped: "auto_targets_disabled", slot: time };
   }
 
-  const result = await sendMultiPlatformPost(Object.assign({}, item, {
-    postId: item.id,
-    topicId: item.topicId || "default",
-    allow_text_fallback: allowTextFallbackForPost(item)
-  }), targets);
+  let result;
+  try {
+    result = await sendMultiPlatformPost(Object.assign({}, item, {
+      postId: item.id,
+      topicId: item.topicId || "default",
+      allow_text_fallback: allowTextFallbackForPost(item)
+    }), targets);
+  } catch (error) {
+    // A post that keeps failing must not hold the slot (and every following slot) hostage.
+    item.publishFailures = Number(item.publishFailures || 0) + 1;
+    item.lastPublishError = String(error && error.message || error).slice(0, 300);
+    const permanent = Boolean(error && (error.permanent || error.telegramPermanent));
+    if (permanent || item.publishFailures >= PUBLISH_FAILURE_MAX) {
+      item.status = "publish_failed";
+      delete schedule.assignments[day][time];
+      schedulerState.lastPublishedSlot = slotKey;
+      console.warn("PUBLISH_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), queueId: queueId, failures: item.publishFailures, permanent: permanent, error: item.lastPublishError }));
+    }
+    saveState();
+    throw error;
+  }
   if (result.safeMedia) Object.assign(item, result.safeMedia);
   const publishedAt = new Date().toISOString();
+  if (targets.vk && !result.vkPublished) item.vkAttempts = Number(item.vkAttempts || 0) + 1;
 
   if (result.telegramPublished) {
     item.telegramPublished = true;
@@ -5487,6 +5924,7 @@ async function publishDynamicSlot(kind) {
       sourceId: item.sourceId || "",
       sourceName: item.sourceName || "",
       sourceUrl: item.sourceUrl || "",
+      contentHash: item.contentHash || "",
       sourceUrls: Array.isArray(item.sourceUrls) ? item.sourceUrls : [],
       sources: Array.isArray(item.sources) ? item.sources : [],
       storySources: Array.isArray(item.storySources) ? item.storySources : [],
@@ -5548,7 +5986,8 @@ async function publishDynamicSlot(kind) {
   schedulerState.lastPublishedAt = publishedAt;
 
   const mediaFailed = result.vkStatus === "media_failed";
-  if (!mediaFailed && (!targets.telegram || item.telegramPublished) && (!targets.vk || item.vkPublished)) {
+  const stillPending = pendingAutoTargets(item);
+  if (!mediaFailed && !stillPending.telegram && !stillPending.vk) {
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
   }
 
@@ -5598,6 +6037,9 @@ async function publishDynamicSlot(kind) {
     vkError: result.vkError || item.vkError || "",
     slot: time
   };
+  } finally {
+    releasePublishLock();
+  }
 }
 
 async function dynamicSchedulerTick() {
@@ -5705,7 +6147,7 @@ function sendHtmlFile(res, fileName) {
   const file = path.join(PUBLIC_DIR, fileName);
   try {
     const body = fs.readFileSync(file, "utf8");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": ADMIN_CSP });
     res.end(body);
   } catch {
     sendJson(res, 500, { ok: false, error: "UI file missing" });
@@ -5726,6 +6168,23 @@ async function readJson(req, maxBytes) {
   }
   if (!body) return {};
   return JSON.parse(body);
+}
+
+class BadRequestError extends Error {
+  constructor(message) { super(message); this.name = "BadRequestError"; this.statusCode = 400; }
+}
+
+// JSON body that must be an object: null / arrays / scalars / malformed JSON answer 400 instead of crashing into a 500.
+async function readJsonObject(req, maxBytes) {
+  let body;
+  try { body = await readJson(req, maxBytes); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new BadRequestError("invalid JSON");
+    if (/request too large/.test(String(error && error.message))) { const e = new BadRequestError("request too large"); e.statusCode = 413; throw e; }
+    throw error;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestError("JSON object expected");
+  return body;
 }
 
 async function saveWorkspaceAvatar(workspace, dataUrl) {
@@ -5784,17 +6243,49 @@ function parseCookies(req) {
     if (!trimmed) return;
     const i = trimmed.indexOf("=");
     if (i === -1) return;
-    out[trimmed.slice(0, i)] = decodeURIComponent(trimmed.slice(i + 1));
+    const rawValue = trimmed.slice(i + 1);
+    try { out[trimmed.slice(0, i)] = decodeURIComponent(rawValue); } catch { out[trimmed.slice(0, i)] = rawValue; }
   });
   return out;
 }
 
+// Session epoch lives next to the other state on the persistent volume. Epoch 0 (nothing stored) keeps the
+// legacy token so cookies issued before this feature stay valid; "logout everywhere" bumps it.
+let sessionEpochStore = null;
+function getSessionEpochStore() {
+  if (!sessionEpochStore) sessionEpochStore = createSessionEpochStore(path.join(DATA_DIR, "session-epoch.json"));
+  return sessionEpochStore;
+}
+
 function sessionToken() {
-  return crypto.createHmac("sha256", ADMIN_KEY).update("news-factory-admin").digest("hex");
+  return sessionTokenFor(ADMIN_KEY, getSessionEpochStore().get());
 }
 
 function isAuthed(req) {
-  return parseCookies(req).nf_session === sessionToken();
+  const provided = parseCookies(req).nf_session;
+  return typeof provided === "string" && provided.length > 0 && safeEqual(provided, sessionToken());
+}
+
+function requestClientIp(req) {
+  return proxyClientIp(req, TRUSTED_PROXY_HOPS);
+}
+
+// x-admin-key check for the machine endpoints: constant-time, and failures count towards the per-IP lockout.
+// Returns true when authorised; otherwise has already answered 401/429 and returns false.
+function requireAdminKey(req, res) {
+  const ip = requestClientIp(req);
+  const gate = authFailureLimiter.check(ip);
+  if (!gate.allowed) {
+    sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(gate.retryAfterSec), "cache-control": "no-store" });
+    return false;
+  }
+  if (!safeEqual(req.headers["x-admin-key"], ADMIN_KEY)) {
+    authFailureLimiter.fail(ip);
+    sendJson(res, 401, { ok: false, error: "unauthorized" });
+    return false;
+  }
+  authFailureLimiter.success(ip);
+  return true;
 }
 
 function requireAuth(req, res) {
@@ -5821,10 +6312,19 @@ function escapeTelegramAttr(value) {
 }
 
 function formatTelegramInline(value) {
-  let out = escapeTelegramHtml(value);
-  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  out = out.replace(/__([^_\n]+)__/g, "<i>$1</i>");
-  return out;
+  const escaped = escapeTelegramHtml(value);
+  const italic = function(part) { return part.replace(/__([^_\n]+)__/g, "<i>$1</i>"); };
+  // Bold spans first; italics are applied inside and outside them separately, so
+  // "**a __b** c__" can never produce crossed tags (<b>..<i>..</b>..</i>) that Telegram rejects.
+  let out = "";
+  let last = 0;
+  const boldRe = /\*\*([^*\n]+)\*\*/g;
+  let m;
+  while ((m = boldRe.exec(escaped)) !== null) {
+    out += italic(escaped.slice(last, m.index)) + "<b>" + italic(m[1]) + "</b>";
+    last = m.index + m[0].length;
+  }
+  return out + italic(escaped.slice(last));
 }
 
 function formatTelegramBody(value) {
@@ -5870,34 +6370,25 @@ function formatTelegramPost(post) {
   return html.trim();
 }
 
+// Telegram counts VISIBLE characters (tags and link URLs are free); see lib/telegram-caption.js.
+// The body is shortened, legal marks / hashtags / signature are always kept.
+function telegramCaptionFits(html) { return visibleLength(html) <= TELEGRAM_CAPTION_HARD_LIMIT; }
+
 function trimPostToCaptionLimit(post, limit) {
-  const max = Number(limit || 900);
-  const out = Object.assign({}, post);
-  let text = String(out.text || "").trim();
-  let html = formatTelegramPost(out);
-  while (html.length > max && text.length > 140) {
-    const over = html.length - max;
-    let target = Math.max(140, text.length - over - 40);
-    let cut = text.slice(0, target).trim();
-    const punct = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf("\n"));
-    if (punct > Math.floor(target * 0.55)) cut = cut.slice(0, punct + 1).trim();
-    text = cut.replace(/[\s,;:–—-]+$/g, "") + "…";
-    out.text = text;
-    html = formatTelegramPost(out);
-  }
-  return out;
+  return trimPostPreservingTail(post, limit || CAPTION_VISIBLE_LIMIT, formatTelegramPost);
 }
 
 async function preparePostForSingleTelegramCaption(post) {
   const original = Object.assign({}, post);
   const channelName = String(currentWorkspace().name || "News Factory");
-  if (formatTelegramPost(original).length <= 900) return original;
+  if (visibleLength(formatTelegramPost(original)) <= CAPTION_VISIBLE_LIMIT) return original;
 
   if (OPENAI_API_KEY) {
     const prompt = [
       "Сожми готовый новостной пост канала «" + channelName + "» так, чтобы он целиком поместился в подпись к одному фото/видео Telegram.",
       "Сохрани только факты из исходного готового поста. Ничего не добавляй и не меняй цифры, имена, компании, даты и смысл.",
       "Заголовок до 90 знаков. Текст 430–620 знаков. 3–5 коротких абзацев.",
+      "Обязательно сохрани дословно: юридические пометки в скобках (иноагент, запрещённая организация), строку с хэштегами и подпись канала (@имя) в самом конце, строку «👉 Больше про…», если она есть.",
       "Можно сохранить 1–2 выделения **жирным** и максимум одну строку > для важного факта.",
       "Не добавляй слово «Источник» — ссылку добавит система.",
       "Верни строго JSON: {\"title\":\"...\",\"text\":\"...\"}.",
@@ -5928,15 +6419,22 @@ async function preparePostForSingleTelegramCaption(post) {
           title: String(parsed.title || original.title || "").trim(),
           text: String(parsed.text || "").trim()
         });
-        if (compact.text && formatTelegramPost(compact).length <= 900) return compact;
-        return trimPostToCaptionLimit(compact, 900);
+        // The rewrite runs after the fact-check: never accept one that lost legal marks,
+        // hashtags or the signature; fall back to the deterministic trim of the checked text.
+        const lost = missingProtected(original.text, compact.text);
+        if (lost.length) {
+          console.warn("TELEGRAM_CAPTION_COMPACT_REJECTED " + JSON.stringify({ lost: lost.slice(0, 5) }));
+          break;
+        }
+        if (compact.text && visibleLength(formatTelegramPost(compact)) <= CAPTION_VISIBLE_LIMIT) return compact;
+        return trimPostToCaptionLimit(compact, CAPTION_VISIBLE_LIMIT);
       } catch (error) {
         console.warn("Telegram caption compact failed:", error.message);
       }
     }
   }
 
-  return trimPostToCaptionLimit(original, 900);
+  return trimPostToCaptionLimit(original, CAPTION_VISIBLE_LIMIT);
 }
 
 function normalizePublishTargets(value) {
@@ -5948,17 +6446,108 @@ function normalizePublishTargets(value) {
   };
 }
 
+// Telegram errors carry the Bot API error_code / description so callers can tell
+// "the channel will never accept this" (permanent) from "try again / fix the media".
+const TELEGRAM_PERMANENT_DESCRIPTION = /chat not found|chat_id is empty|peer_id_invalid|bot was kicked|bot is not a member|bot was blocked|not enough rights|have no rights|need administrator rights|chat_admin_required|chat_write_forbidden|channel_private|chat_restricted|user is deactivated|group chat was upgraded|bot can't initiate|forbidden/i;
+function classifyTelegramError(errorCode, description) {
+  const code = Number(errorCode) || 0;
+  const text = String(description || "");
+  return {
+    parseError: code === 400 && /can't parse entities|can't find end tag|unsupported start tag|unmatched end tag/i.test(text),
+    // 401 = bad token, 403 = forbidden / kicked / blocked, 404 = unknown bot token or method.
+    permanent: code === 401 || code === 403 || code === 404 || (code === 400 && TELEGRAM_PERMANENT_DESCRIPTION.test(text))
+  };
+}
+function createTelegramError(method, httpStatus, data, fallbackMessage) {
+  const body = data && typeof data === "object" ? data : {};
+  const code = Number(body.error_code) || Number(httpStatus) || 0;
+  const description = String(body.description || fallbackMessage || "Telegram API error");
+  const params = body.parameters && typeof body.parameters === "object" ? body.parameters : {};
+  const retryAfter = Number(params.retry_after);
+  const kind = classifyTelegramError(code, description);
+  const error = new Error(description);
+  error.telegram = true;
+  error.telegramMethod = method;
+  error.telegramErrorCode = code;
+  error.telegramDescription = description;
+  error.telegramRetryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0;
+  error.telegramRateLimited = code === 429;
+  error.telegramPermanent = kind.permanent;
+  error.telegramParseError = kind.parseError;
+  return error;
+}
+// Errors where another attempt (URL -> upload, generated cover, repair loop) cannot help:
+// the chat rejects us, or Telegram told us to slow down.
+function isTelegramFatalError(error) {
+  return Boolean(error && error.telegram && (error.telegramPermanent || error.telegramRateLimited));
+}
+
+function stripTelegramHtml(html) {
+  return String(html || "")
+    .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, function(_m, href, label) {
+      const url = String(href).replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      const text = String(label).replace(/<[^>]*>/g, "");
+      return text && text !== url ? text + " (" + url + ")" : url;
+    })
+    .replace(/<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|span|tg-emoji)(?:\s[^>]*)?>/gi, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+}
+// The same call without HTML parsing: used when Telegram answers "can't parse entities".
+function telegramPlainPayload(payload) {
+  const out = Object.assign({}, payload || {});
+  let changed = false;
+  if (String(out.parse_mode || "").toUpperCase() === "HTML") {
+    delete out.parse_mode;
+    changed = true;
+    ["caption", "text"].forEach(function(key) { if (typeof out[key] === "string") out[key] = stripTelegramHtml(out[key]); });
+  }
+  if (Array.isArray(out.media)) {
+    out.media = out.media.map(function(item) {
+      if (!item || String(item.parse_mode || "").toUpperCase() !== "HTML") return item;
+      changed = true;
+      const copy = Object.assign({}, item);
+      delete copy.parse_mode;
+      if (typeof copy.caption === "string") copy.caption = stripTelegramHtml(copy.caption);
+      return copy;
+    });
+  }
+  return changed ? out : null;
+}
+
+// One Telegram request with: timeout, error classification, one bounded 429 retry_after wait.
+async function telegramRequest(method, makeInit, timeoutMs) {
+  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
+  for (let attempt = 0; ; attempt += 1) {
+    const init = makeInit();
+    init.signal = AbortSignal.timeout(timeoutMs);
+    const response = await fetch(endpoint, init);
+    const data = await response.json().catch(function(){ return null; });
+    if (response.ok && data && data.ok) return data.result;
+    const error = createTelegramError(method, response.status, data, "Telegram " + method + " HTTP " + response.status);
+    if (error.telegramRateLimited && attempt === 0 && error.telegramRetryAfter > 0 && error.telegramRetryAfter <= TELEGRAM_RETRY_AFTER_MAX_SECONDS) {
+      console.warn("TELEGRAM_RATE_LIMITED " + JSON.stringify({ method: method, retry_after: error.telegramRetryAfter }));
+      await sleepMs(error.telegramRetryAfter * 1000 + 250);
+      continue;
+    }
+    throw error;
+  }
+}
+
 async function telegramApi(method, payload) {
   if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (!response.ok || !data.ok) throw new Error((data && data.description) || "Telegram API error");
-  return data.result;
+  try {
+    return await telegramRequest(method, function() {
+      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) };
+    }, TELEGRAM_API_TIMEOUT_MS);
+  } catch (error) {
+    // Invalid markup (e.g. crossed tags) must not keep a post from going out: send it as plain text.
+    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
+    if (!plain) throw error;
+    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
+    return await telegramRequest(method, function() {
+      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(plain) };
+    }, TELEGRAM_API_TIMEOUT_MS);
+  }
 }
 
 function telegramUploadMeta(rawUrl, fallbackKind) {
@@ -5992,17 +6581,18 @@ async function loadTelegramUpload(rawUrl, kind) {
     bytes = fs.readFileSync(localPath);
   } else {
     const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
-    const response = await fetch(absolute, {
+    const response = await safeFetch(absolute, {
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegram/1.0)",
-        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
       },
-      redirect: "follow",
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: kind === "video" ? 50 * 1024 * 1024 : 20 * 1024 * 1024
     });
     if (!response.ok) throw new Error("Telegram media download HTTP " + response.status);
     mime = String(response.headers.get("content-type") || mime).split(";")[0].trim() || mime;
-    bytes = Buffer.from(await response.arrayBuffer());
+    bytes = response.body;
+    if (kind !== "video" && bytes.length) await assertSafeRaster(bytes); // no SVG / non-raster payloads
   }
 
   if (!bytes || !bytes.length) throw new Error("Telegram media is empty");
@@ -6010,7 +6600,7 @@ async function loadTelegramUpload(rawUrl, kind) {
     if (bytes.length > 49 * 1024 * 1024) throw new Error("Видео больше лимита Telegram Bot API");
   } else {
     if (bytes.length > 9 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/i.test(mime)) {
-      bytes = await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+      bytes = await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
         .rotate()
         .resize(1800, 1800, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality: 88, mozjpeg: true })
@@ -6025,31 +6615,52 @@ async function loadTelegramUpload(rawUrl, kind) {
 async function telegramMultipartApi(method, payload, fieldName, mediaUrl, kind) {
   if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
   const media = await loadTelegramUpload(mediaUrl, kind);
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
-  const form = new FormData();
-  Object.entries(payload || {}).forEach(function(entry) {
-    const key = entry[0], value = entry[1];
-    if (value === undefined || value === null || value === "") return;
-    form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
-  });
-  form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
-  const response = await fetch(endpoint, {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(kind === "video" ? 60000 : 45000)
-  });
-  const data = await response.json().catch(function(){ return {}; });
-  if (!response.ok || !data.ok) throw new Error((data && data.description) || ("Telegram multipart HTTP " + response.status));
-  return data.result;
+  const upload = async function(fields) {
+    return telegramRequest(method, function() {
+      const form = new FormData();
+      Object.entries(fields || {}).forEach(function(entry) {
+        const key = entry[0], value = entry[1];
+        if (value === undefined || value === null || value === "") return;
+        form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
+      });
+      form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
+      return { method: "POST", body: form };
+    }, kind === "video" ? 60000 : 45000);
+  };
+  try {
+    return await upload(payload);
+  } catch (error) {
+    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
+    if (!plain) throw error;
+    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
+    return await upload(plain);
+  }
 }
 
 async function telegramMediaApi(method, payload, fieldName, mediaUrl, kind) {
   try {
     return await telegramApi(method, Object.assign({}, payload, { [fieldName]: mediaUrl }));
   } catch (urlError) {
+    // The chat rejects us / rate limit: uploading the same file again cannot succeed (and would double the calls).
+    if (isTelegramFatalError(urlError)) throw urlError;
     console.warn(method + " URL mode failed, retrying upload:", urlError.message);
     return telegramMultipartApi(method, payload, fieldName, mediaUrl, kind);
   }
+}
+
+// A cover for a post whose media Telegram refused. At most one paid generation per post:
+// a cover created by an earlier attempt (or by the media director) is reused.
+async function telegramCoverFallback(post, failingUrl, idPrefix) {
+  const existing = String(post.generatedImageUrl || "").trim();
+  if (existing && existing !== String(failingUrl || "").trim() && isLocalMediaUrl(existing)) return { url: existing, reused: true };
+  const cover = await generateNewsCover({
+    id: post.id || newId(idPrefix),
+    title: post.title || currentWorkspace().name || "News Factory",
+    text: post.text || "",
+    sourceName: post.sourceName || "Telegram fallback"
+  });
+  post.generatedImageUrl = cover.url;
+  return cover;
 }
 
 async function sendTelegramPost(post) {
@@ -6096,6 +6707,7 @@ async function sendTelegramPost(post) {
       }
     } catch (error) {
       console.warn("sendMediaGroup failed, falling back to one image:", error.message);
+      if (isTelegramFatalError(error)) throw error;
       imageUrl = mediaPackUrls[0] || imageUrl;
     }
   }
@@ -6108,21 +6720,16 @@ async function sendTelegramPost(post) {
     try {
       return await telegramMediaApi("sendVideo", {
         chat_id: telegramChannel,
-        caption: html.length <= 1000 ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
+        caption: telegramCaptionFits(html) ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
         parse_mode: "HTML",
         supports_streaming: true
       }, "video", videoUrl, "video");
     } catch (error) {
       console.warn("sendVideo failed:", error.message);
+      if (isTelegramFatalError(error)) throw error;
       if (!imageUrl && GENERATE_COVER_IF_MISSING) {
         try {
-          const generatedFallback = await generateNewsCover({
-            id: post.id || newId("video_fallback"),
-            title: post.title || "Что там у ИИ?",
-            text: post.text || "",
-            sourceName: post.sourceName || "Telegram fallback"
-          });
-          post.generatedImageUrl = generatedFallback.url;
+          await telegramCoverFallback(post, "", "video_fallback");
         } catch (fallbackError) {
           throw new Error("Видео недоступно, а резервное фото не удалось подготовить: " + fallbackError.message);
         }
@@ -6132,9 +6739,9 @@ async function sendTelegramPost(post) {
     }
   }
 
-  imageUrl = String(post.imageUrl || post.generatedImageUrl || "").trim();
+  imageUrl = String(post.imageUrl || post.generatedImageUrl || imageUrl || "").trim();
 
-  if (imageUrl && html.length <= 950) {
+  if (imageUrl && telegramCaptionFits(html)) {
     try {
       return await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
@@ -6143,15 +6750,11 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto failed:", error.message);
+      // Chat rejected us / rate limit / bad markup: a new cover cannot fix it, do not pay for one.
+      if (isTelegramFatalError(error) || error.telegramParseError) throw error;
       if (GENERATE_COVER_IF_MISSING) {
         try {
-          const generatedFallback = await generateNewsCover({
-            id: post.id || newId("telegram_photo_fallback"),
-            title: post.title || currentWorkspace().name || "News Factory",
-            text: post.text || "",
-            sourceName: post.sourceName || "Telegram fallback"
-          });
-          post.generatedImageUrl = generatedFallback.url;
+          const generatedFallback = await telegramCoverFallback(post, imageUrl, "telegram_photo_fallback");
           imageUrl = generatedFallback.url;
           return await telegramMediaApi("sendPhoto", {
             chat_id: telegramChannel,
@@ -6178,14 +6781,8 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto long-caption media failed:", error.message);
-      if (!GENERATE_COVER_IF_MISSING) throw error;
-      const generatedFallback = await generateNewsCover({
-        id: post.id || newId("telegram_photo_fallback"),
-        title: post.title || currentWorkspace().name || "News Factory",
-        text: post.text || "",
-        sourceName: post.sourceName || "Telegram fallback"
-      });
-      post.generatedImageUrl = generatedFallback.url;
+      if (!GENERATE_COVER_IF_MISSING || isTelegramFatalError(error) || error.telegramParseError) throw error;
+      const generatedFallback = await telegramCoverFallback(post, imageUrl, "telegram_photo_fallback");
       imageUrl = generatedFallback.url;
       photo = await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
@@ -6193,7 +6790,7 @@ async function sendTelegramPost(post) {
         parse_mode: "HTML"
       }, "photo", imageUrl, "image");
     }
-    if (html && html.length > 950) {
+    if (html && !telegramCaptionFits(html)) {
       await telegramApi("sendMessage", {
         chat_id: telegramChannel,
         text: html,
@@ -6251,9 +6848,16 @@ function base64Url(buffer) {
 }
 
 function secretMatches(provided, expected) {
-  const a = Buffer.from(String(provided || ""));
-  const b = Buffer.from(String(expected || ""));
-  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+  return String(provided || "").length > 0 && String(expected || "").length > 0 && safeEqual(provided, expected);
+}
+
+// Who may start / capture a VK OAuth session: a logged-in admin cookie, the handoff secret, or the admin key.
+// The VK callback itself cannot carry our SameSite=Strict cookie (cross-site redirect), so it is protected by
+// the one-time random state that only an authorised start call ever hands out.
+function vkOAuthCallerAuthorized(req) {
+  if (isAuthed(req)) return true;
+  if (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET)) return true;
+  return safeEqual(req.headers["x-admin-key"], ADMIN_KEY);
 }
 
 function createVkPkcePair() {
@@ -6528,6 +7132,28 @@ function autoPublishTargetsForPost(post) {
   };
 }
 
+// VK is optional and often off. A post that already went to Telegram must never occupy a slot again just
+// because VK failed: VK gets a bounded number of automatic retries, then the post leaves the queue.
+const VK_AUTO_RETRY_MAX = Math.max(1, Number(process.env.VK_AUTO_RETRY_MAX || 2));
+const PUBLISH_FAILURE_MAX = Math.max(1, Number(process.env.PUBLISH_FAILURE_MAX || 3));
+function pendingAutoTargets(item) {
+  const t = autoPublishTargetsForPost(item);
+  return {
+    telegram: t.telegram && item.telegramPublished !== true,
+    vk: t.vk && item.vkPublished !== true && Number(item.vkAttempts || 0) < VK_AUTO_RETRY_MAX
+  };
+}
+
+// In-memory guard against publishing the same post twice at once (double click, retry, scheduler + manual).
+// It is taken BEFORE the first await and released in finally.
+const publishLocks = new Set();
+function acquirePublishLock(postId) {
+  const key = currentWorkspaceId() + ":" + String(postId || "");
+  if (publishLocks.has(key)) return null;
+  publishLocks.add(key);
+  return function release() { publishLocks.delete(key); };
+}
+
 async function notifyVkMediaFailure(post, error, attempts) {
   const errorContext = error && error.vkContext || {};
   const context = vkPostContext(post, errorContext);
@@ -6573,11 +7199,24 @@ async function downloadVkImage(imageUrl, context) {
   if (!sourceUrl) throw createVkError("image.download", "no_image", "No image URL for VK publication", context);
   if (sourceUrl.startsWith("/")) sourceUrl = PUBLIC_BASE_URL + sourceUrl;
 
+  // Our own cached media is read from disk (no self-HTTP round trip, no SSRF surface).
+  const localVkPath = localMediaPathFromUrl(sourceUrl);
+  if (localVkPath) {
+    let localBytes = null;
+    try { localBytes = fs.readFileSync(localVkPath); } catch {}
+    if (localBytes && localBytes.length) {
+      const localExt = path.extname(localVkPath).replace(/^\./, "").toLowerCase();
+      const localMime = localExt === "png" ? "image/png" : localExt === "webp" ? "image/webp" : "image/jpeg";
+      return { bytes: localBytes, mime: localMime, ext: localExt === "png" ? "png" : localExt === "webp" ? "webp" : "jpg" };
+    }
+  }
+
   let response;
   try {
-    response = await fetch(sourceUrl, {
+    response = await safeFetch(sourceUrl, {
       headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryVK/1.0)" },
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: 20 * 1024 * 1024
     });
   } catch (error) {
     logVkError("image.download", "network", error && error.message || error, context);
@@ -6589,10 +7228,16 @@ async function downloadVkImage(imageUrl, context) {
     throw createVkError("image.download", response.status, "Image HTTP " + response.status, context);
   }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) {
     logVkError("image.download", "empty", "Downloaded image is empty", context);
     throw createVkError("image.download", "empty", "Downloaded image is empty", context);
+  }
+  try {
+    await assertSafeRaster(bytes);
+  } catch (error) {
+    logVkError("image.download", "not_raster", error && error.message || error, context);
+    throw createVkError("image.download", "not_raster", error && error.message || error, context);
   }
 
   const mime = String(response.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
@@ -7029,6 +7674,8 @@ function postForPlatform(post, platform) {
 }
 
 function publishErrorLooksRepairable(error) {
+  // Permanent chat errors and rate limits are not media problems: repairing and re-sending only repeats them.
+  if (isTelegramFatalError(error)) return false;
   const text = String(error && (error.vkErrorMsg || error.message) || error || "").toLowerCase();
   return /media|photo|video|image|file|upload|caption|too long|400|413|preview|размер|фото|видео|медиа/.test(text);
 }
@@ -7877,7 +8524,7 @@ const EDITORIAL_REGISTRY_FILE = path.join(DATA_DIR, "editorial-registry.json");
 const DEFAULT_EDITORIAL_REGISTRY = {
   // Organisations designated as extremist and banned in RF; journalists must mark them.
   banned_orgs: ["Meta Platforms", "Instagram", "Facebook"],
-  // Fill from the official Ministry of Justice register via the admin API.
+  // Not filled automatically: load from the official Ministry of Justice register via the admin API (POST /api/editorial/registry).
   foreign_agents: [],
   updatedAt: ""
 };
@@ -7915,17 +8562,11 @@ function saveEditorialRegistry(raw) {
 
 // Only names that actually occur in the sources are sent to the model: the full
 // register can be thousands of lines and must not bloat every request.
+// Matching is word-based with Russian stems and aliases (lib/editorial-registry.js);
+// a built-in list of banned organisations (Meta/Facebook/Instagram, ...) is always checked
+// in addition to the administrator's lists.
 function editorialRegistryForSources(sourceText) {
-  const registry = loadEditorialRegistry();
-  const hay = String(sourceText || "").toLowerCase();
-  const hit = function(name) {
-    const n = String(name || "").toLowerCase();
-    return n.length >= 3 && hay.includes(n);
-  };
-  return {
-    banned_orgs: registry.banned_orgs.filter(hit),
-    foreign_agents: registry.foreign_agents.filter(hit)
-  };
+  return matchEditorialRegistry(loadEditorialRegistry(), sourceText);
 }
 
 let editorialPipelineInstance = null;
@@ -7968,7 +8609,7 @@ function editorialChannelId() {
 
 function editorialSignature(ws) {
   const target = ws || currentWorkspace();
-  const username = String(target && (target.telegramPublicUsername || target.slug) || "").replace(/^@/, "").trim();
+  const username = target ? (telegramUsernameOrEmpty(target.telegramPublicUsername) || telegramUsernameOrEmpty(target.slug)) : "";
   return username ? "@" + username : "";
 }
 
@@ -7981,6 +8622,7 @@ function editorialRecentPosts(limit) {
       return {
         date: item.publishedAt,
         title: String(item.title || "").slice(0, 160),
+        text: stripHtml(String(item.text || "")).replace(/\s+/g, " ").trim().slice(0, 300),
         format: v2.format || item.contentFormatLabel || item.contentFormat || "",
         hook_type: v2.hookType || "",
         ending_type: v2.endingType || "",
@@ -7992,6 +8634,23 @@ function editorialRecentPosts(limit) {
     });
 }
 
+// A queue item that the editorial pipeline approved (not on hold / rejected / skipped on re-check).
+// Only such items count as "the same story is already covered" and may be merged into.
+function isApprovedQueueItem(item) {
+  if (!item || !item.newsId) return false;
+  if (item.qcStatus === "hold") return false;
+  const v2 = item.editorialV2;
+  if (v2 && v2.status && v2.status !== "approved") return false;
+  return true;
+}
+
+const NETWORK_RECENT_PUBLISHED_PER_CHANNEL = 4;
+const NETWORK_RECENT_QUEUED_PER_CHANNEL = 3;
+const NETWORK_RECENT_MAX = 120;
+
+// Titles the writer sees to avoid duplicates across the network: for every OTHER channel its latest published
+// posts of the last 24 hours plus its approved queue (about to go out). The cap is per channel, so channels late in
+// the workspace list are as visible as early ones (a single global cap of 60 hid most of the network).
 function editorialNetworkRecent() {
   const me = currentWorkspaceId();
   const since = Date.now() - 24 * 60 * 60 * 1000;
@@ -7999,15 +8658,124 @@ function editorialNetworkRecent() {
   for (const ws of workspaceStore.workspaces) {
     if (!ws || ws.id === me || !ws.state) continue;
     const channelId = resolveChannelId(ws);
+    const mine = [];
+    for (const item of (ws.state.queue || [])) {
+      if (!isApprovedQueueItem(item)) continue;
+      if (item.telegramPublished || item.vkPublished) continue;
+      mine.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.createdAt || "", status: "queued", t: new Date(item.createdAt || 0).getTime() || 0 });
+    }
+    mine.sort(function(a, b){ return b.t - a.t; });
+    mine.length = Math.min(mine.length, NETWORK_RECENT_QUEUED_PER_CHANNEL);
+    let published = 0;
     for (const item of (ws.state.history || [])) {
       if (!item || !item.publishedAt) continue;
       const t = new Date(item.publishedAt).getTime();
       if (!Number.isFinite(t) || t < since) break;
-      out.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.publishedAt });
-      if (out.length >= 60) return out;
+      mine.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.publishedAt, status: "published" });
+      published += 1;
+      if (published >= NETWORK_RECENT_PUBLISHED_PER_CHANNEL) break;
     }
+    for (const x of mine) { delete x.t; out.push(x); }
+    if (out.length >= NETWORK_RECENT_MAX) break;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic cross-channel dedupe: the same article (normalized URL or content hash) that another channel
+// has queued, is processing, or published within CROSS_CHANNEL_DEDUPE_HOURS is not used a second time.
+// The model-based network_recent check above is only a hint; this one is exact.
+const crossChannelClaims = new Map();
+
+function normalizeArticleUrl(raw) {
+  try {
+    const u = new URL(String(raw || "").trim());
+    if (!/^https?:$/.test(u.protocol)) return "";
+    const drop = /^(utm_|fbclid$|gclid$|yclid$|ysclid$|_openstat$|mc_cid$|mc_eid$|cmpid$|from$|ref$|ref_src$|source$)/i;
+    const params = Array.from(u.searchParams.entries()).filter(function(kv){ return !drop.test(kv[0]); }).sort(function(a, b){ return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+    const search = params.length ? "?" + params.map(function(kv){ return kv[0] + "=" + kv[1]; }).join("&") : "";
+    const path = u.pathname.replace(/\/index\.(html?|php)$/i, "/").replace(/\/+$/, "");
+    return (u.hostname.toLowerCase().replace(/^www\./, "") + path + search).toLowerCase();
+  } catch { return ""; }
+}
+
+// URLs and content hashes that identify the article(s) behind a queue / history item.
+function itemArticleKeys(item) {
+  const urls = new Set();
+  const hashes = new Set();
+  if (!item) return { urls: urls, hashes: hashes };
+  const addUrl = function(value){ const n = normalizeArticleUrl(value); if (n) urls.add(n); };
+  const addHash = function(value){ const h = String(value || "").trim(); if (h.length >= 16) hashes.add(h); };
+  addUrl(item.originalUrl); addUrl(item.sourceUrl);
+  (Array.isArray(item.sourceUrls) ? item.sourceUrls : []).forEach(addUrl);
+  (Array.isArray(item.sources) ? item.sources : []).forEach(function(x){ addUrl(x && x.url); });
+  (Array.isArray(item.storySources) ? item.storySources : []).forEach(function(x){ addUrl(x && x.url); addHash(x && x.contentHash); });
+  addHash(item.contentHash);
+  if (item.sourceOriginalTitle && item.sourceOriginalText) {
+    addHash(crypto.createHash("sha256").update(String(item.sourceOriginalTitle) + "\n" + String(item.sourceOriginalText).slice(0, 6000)).digest("hex"));
+  }
+  return { urls: urls, hashes: hashes };
+}
+
+// Index of everything other channels hold: key -> { workspace, channel, where }. publishedOnly skips queues and in-flight claims.
+function crossChannelIndex(options) {
+  const me = currentWorkspaceId();
+  const publishedOnly = Boolean(options && options.publishedOnly);
+  const cutoff = Date.now() - CROSS_CHANNEL_DEDUPE_HOURS * 60 * 60 * 1000;
+  const index = new Map();
+  const put = function(keys, ws, where) {
+    const info = { workspace: ws.id, channel: resolveChannelId(ws) || ws.id, where: where };
+    keys.urls.forEach(function(k){ if (!index.has("u:" + k) || where === "published") index.set("u:" + k, info); });
+    keys.hashes.forEach(function(k){ if (!index.has("h:" + k) || where === "published") index.set("h:" + k, info); });
+  };
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || ws.id === me || !ws.state) continue;
+    for (const item of (ws.state.history || [])) {
+      if (!item || !item.publishedAt) continue;
+      const t = new Date(item.publishedAt).getTime();
+      if (!Number.isFinite(t)) continue;
+      if (t < cutoff) break;
+      put(itemArticleKeys(item), ws, "published");
+    }
+    if (publishedOnly) continue;
+    for (const item of (ws.state.queue || [])) {
+      if (!item || !item.newsId) continue;
+      const t = new Date(item.createdAt || 0).getTime();
+      if (Number.isFinite(t) && t && t < cutoff) continue;
+      put(itemArticleKeys(item), ws, item.telegramPublished || item.vkPublished ? "published" : "queued");
+    }
+  }
+  if (!publishedOnly) {
+    crossChannelClaims.forEach(function(wsId, key) {
+      if (wsId === me) return;
+      const ws = getWorkspaceById(wsId);
+      if (ws && !index.has(key)) index.set(key, { workspace: wsId, channel: ws && resolveChannelId(ws) || wsId, where: "inflight" });
+    });
+  }
+  return index;
+}
+
+// keys: { urls:Set, hashes:Set } (or an item). Returns null or { workspace, channel, where, by }.
+function crossChannelConflict(keysOrItem, options) {
+  if (!CROSS_CHANNEL_DEDUPE_ENABLED) return null;
+  const keys = keysOrItem && keysOrItem.urls instanceof Set ? keysOrItem : itemArticleKeys(keysOrItem);
+  const index = options && options.index || crossChannelIndex(options);
+  for (const u of keys.urls) { const hit = index.get("u:" + u); if (hit) return Object.assign({ by: "url" }, hit); }
+  for (const h of keys.hashes) { const hit = index.get("h:" + h); if (hit) return Object.assign({ by: "content_hash" }, hit); }
+  return null;
+}
+
+function crossChannelClaim(keys) {
+  const me = currentWorkspaceId();
+  const claimed = [];
+  keys.urls.forEach(function(k){ claimed.push("u:" + k); });
+  keys.hashes.forEach(function(k){ claimed.push("h:" + k); });
+  claimed.forEach(function(k){ crossChannelClaims.set(k, me); });
+  return claimed;
+}
+function crossChannelRelease(claimed) {
+  const me = currentWorkspaceId();
+  (claimed || []).forEach(function(k){ if (crossChannelClaims.get(k) === me) crossChannelClaims.delete(k); });
 }
 
 function editorialNetworkChannels() {
@@ -8052,10 +8820,11 @@ async function runEditorialV2(sources, options) {
   const publishAt = new Date(Date.now() + 60 * 60 * 1000);
   const sourceText = sources.map(function(s){ return String(s.title || "") + "\n" + String(s.text || ""); }).join("\n\n");
   const request = {
-    now: new Date().toISOString(),
+    now: moscowIso(new Date()),
     news_id: String(opts.newsId || opts.news_id || ""),
     mode: opts.mode === "digest" ? "digest" : "post",
     time_slot: opts.timeSlot || timeSlotFor(publishAt),
+    vk_enabled: VK_PUBLISH_ENABLED && workspaceVkPublishingAllowed(currentWorkspace()),
     signature: editorialSignature(),
     posts_today: editorialPostsToday(),
     daily_limit: editorialDailyLimit(),
@@ -8821,85 +9590,114 @@ async function dedupeQueueOnce() {
   return removed;
 }
 
+const STORY_CLASSIFIER_CANDIDATES = 3;
+
 async function classifyPublishedStoryRelationship(item, options) {
   const queueItems = options && Array.isArray(options.queueItems) ? options.queueItems : (state.queue || []);
   if (!item) return { relation: "new_story", candidate: null, reason: "" };
   const cutoff = Date.now() - STORY_UPDATE_WINDOW_HOURS * 60 * 60 * 1000;
-  let best = null;
-  let bestScore = 0;
 
   const ownIds = new Set([item && item.id, item && item.queueId, item && item.newsId].filter(Boolean).map(String));
+  // The new item may carry its own source text (original language); candidates are compared both ways, so a foreign
+  // source is no longer measured only against the Russian text of a published post.
+  const newAsText = Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") });
+  const newAsSource = item.sourceOriginalText || item.sourceOriginalTitle
+    ? Object.assign({}, item, { title: item.sourceOriginalTitle || item.title, text: item.sourceOriginalText || item.text, sourceId: "new:" + String(item.sourceId || item.sourceName || "") })
+    : null;
+  const scoreAgainst = function(candidate, prefix) {
+    const cand = Object.assign({}, candidate, { sourceId: prefix + String(candidate.sourceId || candidate.sourceName || "") });
+    let score = storySimilarity(newAsText, cand);
+    const candSource = candidate.sourceOriginalText || candidate.sourceOriginalTitle
+      ? Object.assign({}, cand, { title: candidate.sourceOriginalTitle || candidate.title, text: candidate.sourceOriginalText || candidate.text })
+      : null;
+    if (newAsSource) score = Math.max(score, storySimilarity(newAsSource, cand));
+    if (candSource) {
+      score = Math.max(score, storySimilarity(newAsText, candSource));
+      if (newAsSource) score = Math.max(score, storySimilarity(newAsSource, candSource));
+    }
+    return score;
+  };
+
+  const ranked = [];
   for (const h of (state.history || [])) {
     if (!h || !h.publishedAt || new Date(h.publishedAt).getTime() < cutoff) continue;
     // A queued post that is already partly published (Telegram yes, VK pending)
     // must not be compared with its own history entry.
     if (ownIds.has(String(h.queueId || "")) || ownIds.has(String(h.newsId || "")) || ownIds.has(String(h.id || ""))) continue;
-    const score = storySimilarity(
-      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
-      Object.assign({}, h, { sourceId: "published:" + String(h.sourceId || h.sourceName || "") })
-    );
-    if (score > bestScore) { bestScore = score; best = h; }
+    ranked.push({ score: scoreAgainst(h, "published:"), candidate: h });
   }
-  // Posts already waiting in the queue count too: the same story from two
-  // sources must not be published twice.
+  // Posts already waiting in the queue count too: the same story from two sources must not be published twice.
+  // Only approved posts: a held / rejected twin is removed by the auto-resolver and must not swallow a good article.
   const selfIds = new Set([item.id, item.queueId, item.newsId].filter(Boolean).map(String));
   for (const q of queueItems) {
     if (!q || !q.newsId || selfIds.has(String(q.id)) || selfIds.has(String(q.newsId))) continue;
-    const score = storySimilarity(
-      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
-      Object.assign({}, q, { sourceId: "queued:" + String(q.sourceId || q.sourceName || "") })
-    );
-    if (score > bestScore) { bestScore = score; best = Object.assign({}, q, { __queued: true }); }
+    if (!isApprovedQueueItem(q)) continue;
+    ranked.push({ score: scoreAgainst(q, "queued:"), candidate: Object.assign({}, q, { __queued: true }) });
   }
-  if (!best || bestScore < 0.16) return { relation: "new_story", candidate: null, reason: "" };
+  ranked.sort(function(a, b){ return b.score - a.score; });
+  const candidates = ranked.filter(function(r){ return r.score >= 0.16; }).slice(0, STORY_CLASSIFIER_CANDIDATES);
+  const bestScore = candidates.length ? candidates[0].score : 0;
+  if (!candidates.length) return { relation: "new_story", candidate: null, reason: "" };
 
   if (!OPENAI_API_KEY) {
-    return bestScore >= 0.55
-      ? { relation: "possible_update", candidate: best, similarity: bestScore, reason: "Похож на недавно опубликованный сюжет" }
-      : { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+    const top = candidates[0];
+    return top.score >= 0.55
+      ? { relation: "possible_update", candidate: top.candidate, similarity: top.score, reason: "Похож на недавно опубликованный сюжет" }
+      : { relation: "new_story", candidate: null, similarity: top.score, reason: "" };
   }
 
-  const prompt = [
-    "Сравни новую новость с уже опубликованным постом.",
-    "Определи одно из трёх:",
-    "duplicate — по сути те же факты, существенного нового нет;",
-    "update — это развитие того же сюжета и есть новый важный факт/цифра/решение/дата;",
-    "new_story — отдельное событие, даже если компания/тема та же.",
-    "Не путай новости одной компании с одним событием.",
-    "Верни строго JSON: {\"relation\":\"duplicate|update|new_story\",\"new_fact\":\"что именно новое\",\"reason\":\"коротко\"}.",
-    "NEW: " + JSON.stringify({ title: item.title, text: String(item.text || "").slice(0, 2600), entities: item.topicEntities || [] }),
-    "PUBLISHED: " + JSON.stringify({ title: best.title, text: String(best.text || "").slice(0, 2600), entities: best.topicEntities || [] })
-  ].join("\n");
+  let answered = 0;
+  for (const entry of candidates) {
+    const best = entry.candidate;
+    const prompt = [
+      "Сравни новую новость с уже опубликованным постом.",
+      "Определи одно из трёх:",
+      "duplicate — по сути те же факты, существенного нового нет;",
+      "update — это развитие того же сюжета и есть новый важный факт/цифра/решение/дата;",
+      "new_story — отдельное событие, даже если компания/тема та же.",
+      "Не путай новости одной компании с одним событием.",
+      "Верни строго JSON: {\"relation\":\"duplicate|update|new_story\",\"new_fact\":\"что именно новое\",\"reason\":\"коротко\"}.",
+      "NEW: " + JSON.stringify({ title: item.title, text: String(item.text || "").slice(0, 2600), entities: item.topicEntities || [] }),
+      "PUBLISHED: " + JSON.stringify({ title: best.title, text: String(best.text || "").slice(0, 2600), entities: best.topicEntities || [] })
+    ].join("\n");
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
-      body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
-      signal: AbortSignal.timeout(30000)
-    });
-    const data = await response.json().catch(function(){ return {}; });
-    if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
-    recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
-    const output = extractOpenAIText(data);
-    const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
-    let relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
-    // An "update" of a post that has not been published yet is the same story:
-    // the queued post goes out, the new one is dropped.
-    if (best.__queued && relation === "update") relation = "duplicate";
-    return {
-      relation: relation,
-      candidate: relation === "new_story" ? null : best,
-      queued: Boolean(best.__queued),
-      similarity: bestScore,
-      judged: true,
-      newFact: String(parsed.new_fact || "").trim(),
-      reason: String(parsed.reason || "").trim()
-    };
-  } catch (error) {
-    console.warn("Story update classifier fallback:", error.message);
-    return { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
+        signal: AbortSignal.timeout(30000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+      recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
+      const output = extractOpenAIText(data);
+      const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      answered += 1;
+      const judgedRelation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
+      let relation = judgedRelation;
+      // An "update" of a post that has not been published yet is the same story:
+      // the queued post goes out, the new one is dropped (or merged into it).
+      if (best.__queued && relation === "update") relation = "duplicate";
+      if (relation === "new_story") continue;
+      return {
+        relation: relation,
+        judgedRelation: judgedRelation,
+        candidate: best,
+        queued: Boolean(best.__queued),
+        similarity: entry.score,
+        judged: true,
+        newFact: String(parsed.new_fact || "").trim(),
+        reason: String(parsed.reason || "").trim()
+      };
+    } catch (error) {
+      console.warn("Story update classifier fallback:", error.message);
+    }
   }
+  if (answered === candidates.length) return { relation: "new_story", candidate: null, similarity: bestScore, judged: true, reason: "" };
+  // Fail open (the post is treated as new) but leave a trace: some comparisons never got an answer.
+  console.warn("STORY_CLASSIFIER_FAIL_OPEN " + JSON.stringify({ workspace: currentWorkspaceId(), candidates: candidates.length, answered: answered, similarity: Number(bestScore.toFixed(2)), title: String(item.title || "").slice(0, 80) }));
+  return { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
 }
 
 async function callOpenAIStoryComposer(storySources, existingItem, incomingItem) {
@@ -9066,18 +9864,12 @@ async function tryMergeStoryQueueItem(newItem) {
       return null;
     }
     if (storyV2.skip) {
-      if (storyV2.reason === "different_story") return null;
-      // Same event, but the writer saw nothing worth rewriting: absorb the new source
-      // into the existing story (no duplicate post), keep the already checked text.
-      const refs = sources.map(function(source){ return { name: source.sourceName || "Источник", url: source.url || "" }; }).filter(function(x){ return x.url; });
-      Object.assign(target, {
-        sources: refs,
-        sourceUrls: refs.map(function(x){ return x.url; }),
-        storySources: sources,
-        storyNewsIds: Array.from(new Set(sources.map(function(source){ return source.newsId; }).filter(Boolean))),
-        updatedAt: new Date().toISOString()
-      });
-      return target;
+      // The merge contract: only a post the writer actually produced (status ok) merges sources. Any skip is
+      // "keep these as separate items": "different_story" is the documented reason, but the skip reason is free
+      // Russian text (low importance, advertising, network duplicate...), so it cannot be matched by equality, and
+      // absorbing the new source into the approved post on any other skip attached ad sources to it.
+      console.log("STORY_MERGE_SKIPPED " + JSON.stringify({ workspace: currentWorkspaceId(), target: target.id, reason: String(storyV2.reason || "").slice(0, 120) }));
+      return null;
     }
     composed = {
       sameStory: true,
@@ -9101,6 +9893,11 @@ async function tryMergeStoryQueueItem(newItem) {
   }
 
   if (!composed || composed.sameStory === false) return null;
+
+  // Everything below mutates the queued post. If the merged text then fails the checkers, the post must come
+  // back exactly as it was: overwriting an approved post with a hold/reject version got it auto-removed together
+  // with the incoming article, and the story was lost.
+  const targetBefore = Object.assign({}, target);
 
   // One media for the merged story with the usual priority: video → real photo → one
   // generated cover (no generated multi-image packs).
@@ -9208,6 +10005,16 @@ async function tryMergeStoryQueueItem(newItem) {
   target.mediaStatus = target.mediaPackUrls.length > 1 ? "photo_found" : target.mediaStatus;
   target.copyrightSafe = COPYRIGHT_SAFE_MODE;
   target.copyrightPolicyVersion = "v2";
+
+  const mergedApproved = storyV2
+    ? (storyV2.meta && storyV2.meta.status === "approved")
+    : (qc.qcStatus !== "hold");
+  if (!mergedApproved) {
+    Object.keys(target).forEach(function(key){ if (!(key in targetBefore)) delete target[key]; });
+    Object.assign(target, targetBefore);
+    console.warn("STORY_MERGE_REJECTED " + JSON.stringify({ workspace: currentWorkspaceId(), target: target.id, verdict: storyV2 && storyV2.meta && storyV2.meta.verdict || qc.qcStatus }));
+    return null;
+  }
 
   return target;
 }
@@ -9673,24 +10480,21 @@ const server = http.createServer(async function(req, res) {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
 
+    const secHeaders = baseSecurityHeaders(p);
+    for (const name of Object.keys(secHeaders)) res.setHeader(name, secHeaders[name]);
+    // CSRF defence in depth on top of SameSite=Strict: a state-changing request from a browser must come from this site.
+    if (!originAllowed(req, [new URL(PUBLIC_BASE_URL).host])) {
+      return sendJson(res, 403, { ok: false, error: "cross-origin request refused" });
+    }
+
     if (req.method === "GET" && p === "/health") {
-      return sendJson(res, 200, {
-        ok: true,
-        service: "news-factory",
-        telegramConfigured: Boolean(BOT_TOKEN && workspaceStore.workspaces.some(function(ws){ return Boolean(ws.telegramChannel); })),
-        workspaceCount: workspaceStore.workspaces.length,
-        uiConfigured: Boolean(ADMIN_UI_PASSWORD),
-        openaiConfigured: Boolean(OPENAI_API_KEY),
-        openaiModel: OPENAI_MODEL,
-        mediaRequired: MEDIA_REQUIRED,
-        imageEnhancementEnabled: IMAGE_ENHANCEMENT_ENABLED,
-        imageModel: OPENAI_IMAGE_MODEL,
-        version: APP_VERSION
-      });
+      // Public: liveness + version only (no model names, counts or configuration flags). Details live behind /api/status.
+      return sendJson(res, 200, { ok: true, service: "news-factory", version: APP_VERSION });
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
-      const slug = decodeURIComponent(p.slice("/p/".length));
+      let slug = "";
+      try { slug = decodeURIComponent(p.slice("/p/".length)); } catch { return sendJson(res, 400, { ok: false, error: "invalid page path" }); }
       if (!slug || !/^[a-z0-9_-]{8,120}$/i.test(slug)) return sendJson(res, 404, { ok: false, error: "page not found" });
       const page = await getPublicPostPage(slug);
       if (!page) return sendJson(res, 404, { ok: false, error: "page not found" });
@@ -9705,7 +10509,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/media/")) {
-      const fileName = decodeURIComponent(p.slice("/media/".length));
+      let fileName = "";
+      try { fileName = decodeURIComponent(p.slice("/media/".length)); } catch { return sendJson(res, 400, { ok: false, error: "invalid media path" }); }
       if (!fileName || fileName !== path.basename(fileName)) return sendJson(res, 400, { ok: false, error: "invalid media path" });
       const filePath = path.join(MEDIA_DIR, fileName);
       try {
@@ -9735,31 +10540,52 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/login") {
-      const body = await readJson(req);
-      const providedPassword = String(body.password || "");
-      const providedHash = crypto.createHash("sha256").update(providedPassword).digest("hex");
-      const hashConfigured = /^[a-f0-9]{64}$/.test(ADMIN_UI_PASSWORD_SHA256);
-      const hashMatches = hashConfigured &&
-        crypto.timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(ADMIN_UI_PASSWORD_SHA256, "hex"));
-      const plainMatches = !hashConfigured && Boolean(ADMIN_UI_PASSWORD) && providedPassword === ADMIN_UI_PASSWORD;
-      if (!hashMatches && !plainMatches) {
+      const loginIp = requestClientIp(req);
+      const loginGate = authFailureLimiter.check(loginIp);
+      if (!loginGate.allowed) {
+        return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(loginGate.retryAfterSec), "cache-control": "no-store" });
+      }
+      const body = await readJsonObject(req);
+      const providedPassword = String(body.password == null ? "" : body.password).slice(0, 1024);
+      let passwordOk = false;
+      if (ADMIN_UI_PASSWORD_SCRYPT) {
+        passwordOk = verifyPasswordScrypt(providedPassword, ADMIN_UI_PASSWORD_SCRYPT);
+      } else if (/^[a-f0-9]{64}$/.test(ADMIN_UI_PASSWORD_SHA256)) {
+        // legacy unsalted SHA-256 stays supported; prefer ADMIN_UI_PASSWORD_SCRYPT
+        const providedHash = crypto.createHash("sha256").update(providedPassword).digest("hex");
+        passwordOk = crypto.timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(ADMIN_UI_PASSWORD_SHA256, "hex"));
+      } else if (ADMIN_UI_PASSWORD) {
+        passwordOk = safeEqual(providedPassword, ADMIN_UI_PASSWORD);
+      }
+      if (!passwordOk) {
+        authFailureLimiter.fail(loginIp);
         return sendJson(res, 401, { ok: false, error: "invalid password" });
       }
+      authFailureLimiter.success(loginIp);
       return sendJson(res, 200, { ok: true }, {
         "set-cookie": "nf_session=" + sessionToken() + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000"
       });
     }
 
     if (req.method === "POST" && p === "/api/logout") {
-      return sendJson(res, 200, { ok: true }, {
+      // {"everywhere": true} (authenticated) rotates the session epoch: every issued cookie stops working.
+      let everywhere = false;
+      if (isAuthed(req)) {
+        try { const b = await readJsonObject(req); everywhere = b.everywhere === true; } catch {}
+      }
+      if (everywhere) getSessionEpochStore().bump();
+      return sendJson(res, 200, { ok: true, everywhere: everywhere }, {
         "set-cookie": "nf_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
       });
     }
 
     if (req.method === "POST" && p === "/internal/vk-preview-test-page") {
-      const smokeAuthorized = req.headers["x-admin-key"] === ADMIN_KEY ||
+      const smokeAuthorized = safeEqual(req.headers["x-admin-key"], ADMIN_KEY) ||
         (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET));
-      if (!smokeAuthorized) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      if (!smokeAuthorized) {
+        authFailureLimiter.fail(requestClientIp(req));
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
         const marker = crypto.randomBytes(4).toString("hex");
         const preview = await createPublicPostPage({
@@ -9774,7 +10600,8 @@ const server = http.createServer(async function(req, res) {
         const preflight = await preflightPublicPostPage(preview);
         return sendJson(res, 200, { ok: true, preview: preview, preflight: preflight }, { "cache-control": "no-store" });
       } catch (error) {
-        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) }, { "cache-control": "no-store" });
+        console.error("vk-preview-test-page failed:", error);
+        return sendJson(res, 500, { ok: false, error: "internal error" }, { "cache-control": "no-store" });
       }
     }
 
@@ -9815,8 +10642,15 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/vk/oauth/capture") {
+      const captureIp = requestClientIp(req);
+      const captureGate = authFailureLimiter.check(captureIp);
+      if (!captureGate.allowed) return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(captureGate.retryAfterSec) });
+      if (!vkOAuthCallerAuthorized(req)) {
+        if (req.headers["x-admin-key"] || req.headers["x-oauth-handoff-secret"]) authFailureLimiter.fail(captureIp);
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
-        const body = await readJson(req);
+        const body = await readJsonObject(req);
         await captureVkOAuthToken(body.accessToken, body.state, body.userId);
         return sendJson(res, 200, { ok: true, verified: true });
       } catch (error) {
@@ -9827,7 +10661,13 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/vk/oauth/handoff") {
       if (!VK_OAUTH_HANDOFF_SECRET) return sendJson(res, 503, { ok: false, error: "handoff is not configured" });
       const provided = String(req.headers["x-oauth-handoff-secret"] || "");
-      if (!secretMatches(provided, VK_OAUTH_HANDOFF_SECRET)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      const handoffIp = requestClientIp(req);
+      const handoffGate = authFailureLimiter.check(handoffIp);
+      if (!handoffGate.allowed) return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(handoffGate.retryAfterSec) });
+      if (!secretMatches(provided, VK_OAUTH_HANDOFF_SECRET)) {
+        authFailureLimiter.fail(handoffIp);
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       if (!vkOAuthHandoff || !vkOAuthHandoff.accessToken || Date.now() - Number(vkOAuthHandoff.createdAt || 0) > VK_OAUTH_TTL_MS) {
         vkOAuthHandoff = null;
         return sendJson(res, 404, { ok: false, ready: false });
@@ -9847,16 +10687,28 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/start") {
+      // Starting a session overwrites the global OAuth state and reveals the state value: authorised callers only.
+      if (!vkOAuthCallerAuthorized(req)) {
+        if (req.headers["x-admin-key"] || req.headers["x-oauth-handoff-secret"]) authFailureLimiter.fail(requestClientIp(req));
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
         return redirect(res, buildVkOAuthUrl());
       } catch (error) {
-        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) });
+        console.error("vk oauth start failed:", error);
+        return sendJson(res, 500, { ok: false, error: "VK OAuth is not configured" });
       }
     }
 
     if (p.startsWith("/api/") && !requireAuth(req, res)) return;
 
     const requestedWorkspaceId = String(req.headers["x-workspace-id"] || url.searchParams.get("workspace") || "").trim();
+    // A named but unknown workspace (deleted channel, stale tab, typo) must not silently act on the default
+    // channel: a publish or a write would land in the wrong Telegram channel. Only the cabinet list itself
+    // tolerates it, because the admin UI uses that call to repair a stale selection.
+    if (requestedWorkspaceId && !getWorkspaceById(requestedWorkspaceId) && !(req.method === "GET" && p === "/api/workspaces")) {
+      return sendJson(res, 404, { ok: false, code: "unknown_workspace", error: "Неизвестный канал: " + requestedWorkspaceId.slice(0, 64) });
+    }
     const selectedWorkspace = getWorkspaceById(requestedWorkspaceId) || getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
     workspaceContext.enterWith({ workspaceId: selectedWorkspace.id });
 
@@ -9867,7 +10719,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId(), period), { "cache-control": "no-store" });
     }
     if (req.method === "POST" && p === "/api/costs/budget") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const b = networkCostBudgetState();
       if (Object.prototype.hasOwnProperty.call(body,"monthlyRub")) b.monthlyRub = Math.max(0, Number(body.monthlyRub || 0) || 0);
       if (Object.prototype.hasOwnProperty.call(body,"dailyRub")) b.dailyRub = Math.max(0, Number(body.dailyRub || 0) || 0);
@@ -9876,7 +10728,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res,200,{ok:true,budget:await evaluateCostBudget(true)});
     }
     if (req.method === "POST" && p === "/api/costs/balance") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const provider = String(body && body.provider || "").toLowerCase();
       const stored = networkApiBalances();
       const parsed = normalizeBalanceInput(provider, body, stored[provider], new Date());
@@ -9891,7 +10743,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, registry: loadEditorialRegistry() });
     }
     if ((req.method === "POST" || req.method === "PUT") && p === "/api/editorial/registry") {
-      const body = await readJson(req, 4 * 1024 * 1024);
+      const body = await readJsonObject(req, 4 * 1024 * 1024);
       const current = loadEditorialRegistry();
       const registry = saveEditorialRegistry({
         banned_orgs: body.banned_orgs != null ? body.banned_orgs : current.banned_orgs,
@@ -9927,9 +10779,11 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, profiles: EDITORIAL_CHANNEL_IDS, workspaces: workspaceStore.workspaces.map(function(ws){ return Object.assign(publicWorkspaceMeta(ws), { summary: workspaceSummary(ws) }); }) });
     }
     if (req.method === "POST" && p === "/api/workspaces") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const name = String(body.name || "").trim().slice(0, 80);
       if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название канала" });
+      const requestedProfile = String(body.channelId || "").trim().toLowerCase();
+      if (requestedProfile && !EDITORIAL_CHANNEL_IDS.includes(requestedProfile)) return sendJson(res, 400, { ok: false, error: "Неизвестный профиль канала: " + requestedProfile.slice(0, 40) });
       const tgChannel = normalizeTelegramChannelInput(body.telegramChannel || body.telegramPublicUsername || "");
       const handle = /^@[A-Za-z0-9_]+$/.test(tgChannel) ? tgChannel.slice(1) : "";
       let username = String(normalizeTelegramChannelInput(body.telegramPublicUsername || "")).replace(/^@/, "").trim();
@@ -9938,6 +10792,8 @@ const server = http.createServer(async function(req, res) {
       if (!/^[A-Za-z0-9_-]+$/.test(slug)) slug = username;
       // id только из латиницы/цифр: normalizeWorkspaceMeta всё остальное вырезает, и id мог совпасть с существующим.
       const base = String(slug || username || name).toLowerCase().replace(/^@/, "").replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "channel";
+      const sharedChat = findWorkspaceByTelegramChat(tgChannel, "");
+      if (sharedChat) return sendJson(res, 409, { ok: false, error: "Этот Telegram-канал уже подключён к кабинету «" + sharedChat.name + "»", conflictWorkspaceId: sharedChat.id });
       let id = base, suffix = 2;
       while (getWorkspaceById(id)) id = base + "-" + suffix++;
       const workspace = normalizeWorkspaceMeta({
@@ -9954,9 +10810,14 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 201, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
     if (req.method === "POST" && p === "/api/workspaces/update") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      if (body.telegramChannel != null) {
+        const nextChannel = normalizeTelegramChannelInput(body.telegramChannel);
+        const sharedChat = telegramChatKey(nextChannel) !== telegramChatKey(workspace.telegramChannel) ? findWorkspaceByTelegramChat(nextChannel, workspace.id) : null;
+        if (sharedChat) return sendJson(res, 409, { ok: false, error: "Этот Telegram-канал уже подключён к кабинету «" + sharedChat.name + "»", conflictWorkspaceId: sharedChat.id });
+      }
       if (body.name != null) workspace.name = String(body.name || "").trim().slice(0, 80) || workspace.name;
       if (body.initials != null) workspace.initials = String(body.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3) || workspace.initials;
       if (body.slug != null) workspace.slug = String(body.slug || "").replace(/^@/, "").trim().slice(0, 80);
@@ -9975,7 +10836,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
     if (req.method === "POST" && p === "/api/workspaces/avatar") {
-      const body = await readJson(req, 10 * 1024 * 1024);
+      const body = await readJsonObject(req, 10 * 1024 * 1024);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       try {
@@ -9987,7 +10848,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/workspaces/avatar/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       removeWorkspaceAvatar(workspace);
@@ -9995,7 +10856,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/workspaces/remove") {
-      const body = await readJson(req), id = String(body.id || "");
+      const body = await readJsonObject(req), id = String(body.id || "");
       if (!id || id === workspaceStore.defaultWorkspaceId) return sendJson(res, 400, { ok: false, error: "Основной кабинет удалить нельзя" });
       const deletingWorkspace = getWorkspaceById(id);
       if (!deletingWorkspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
@@ -10007,7 +10868,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/media/enhance-queue") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await backfillQueueImageEnhancements({ force: Boolean(body && body.force) });
       return sendJson(res, 200, { ok: true, result: result });
     }
@@ -10039,7 +10900,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/assign") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || "");
       const time = String(body.time || "");
       const queueId = String(body.queueId || "");
@@ -10070,9 +10931,12 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || "");
       const time = String(body.time || "");
+      // date/time become object keys below: only YYYY-MM-DD / HH:MM (blocks "__proto__", "constructor", ...)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
+      if (!/^\d{2}:\d{2}$/.test(time)) return sendJson(res, 400, { ok: false, error: "Некорректное время" });
       const schedule = ensureScheduleShape(state);
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
@@ -10082,9 +10946,11 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/auto") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || moscowDateKey(new Date()));
       const time = String(body.time || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
+      if (!/^\d{2}:\d{2}$/.test(time)) return sendJson(res, 400, { ok: false, error: "Некорректное время" });
       const schedule = ensureScheduleShape(state);
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       delete schedule.suppressed[day][time];
@@ -10159,7 +11025,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/ai/rewrite") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await callOpenAIRewrite(body);
       state.stats.rewritten += 1;
       saveState();
@@ -10167,12 +11033,13 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/mode") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const mode = String(body.mode || "");
       if (!["AUTO", "REVIEW", "PAUSED"].includes(mode)) {
         return sendJson(res, 400, { ok: false, error: "invalid mode" });
       }
       state.mode = mode;
+      if (state.autoGate && state.autoGate.pending) state.autoGate = Object.assign({}, state.autoGate, { pending: false, manualAt: new Date().toISOString() });
       saveState();
       return sendJson(res, 200, { ok: true, mode: mode });
     }
@@ -10185,8 +11052,9 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/topic-settings") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const topicId = String(body.topicId || body.topic_id || "default").trim() || "default";
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(topicId) || isReservedKey(topicId)) return sendJson(res, 400, { ok: false, error: "Некорректный topicId" });
       if (!state.topicSettings || typeof state.topicSettings !== "object") {
         state.topicSettings = structuredClone(defaultState.topicSettings);
       }
@@ -10200,6 +11068,7 @@ const server = http.createServer(async function(req, res) {
       }
       if (Object.prototype.hasOwnProperty.call(body, "auto_publish_telegram")) {
         current.auto_publish_telegram = body.auto_publish_telegram !== false;
+        if (state.autoGate && state.autoGate.pending) state.autoGate = Object.assign({}, state.autoGate, { pending: false, manualAt: new Date().toISOString() });
       }
       if (Object.prototype.hasOwnProperty.call(body, "auto_publish_vk")) {
         current.auto_publish_vk = body.auto_publish_vk !== false;
@@ -10217,7 +11086,7 @@ const server = http.createServer(async function(req, res) {
       const marker = crypto.randomBytes(3).toString("hex");
       const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «" + String(currentWorkspace().name || "текущий канал") + "» работает.\nТест: " + marker);
       state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString(), publicationOrigin: "test" });
-      state.history = state.history.slice(0, 100);
+      state.history = state.history.slice(0, 300);
       state.stats.published += 1;
       saveState();
       return sendJson(res, 200, {
@@ -10231,7 +11100,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Введите текст" });
 
@@ -10287,7 +11156,7 @@ const server = http.createServer(async function(req, res) {
         publicationOrigin: "manual"
       };
       state.history.unshift(historyItem);
-      state.history = state.history.slice(0, 100);
+      state.history = state.history.slice(0, 300);
       if (result.telegramPublished || result.vkPublished) state.stats.published += 1;
       saveState();
 
@@ -10306,10 +11175,14 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const name = String(body.name || "").trim();
       const sourceUrl = String(body.url || "").trim();
       if (!name || !sourceUrl) return sendJson(res, 400, { ok: false, error: "Заполните название и ссылку" });
+      if (name.length > 200) return sendJson(res, 400, { ok: false, error: "Название не длиннее 200 символов" });
+      if (sourceUrl.length > 2000) return sendJson(res, 400, { ok: false, error: "Ссылка не длиннее 2000 символов" });
+      try { validateFetchUrl(sourceUrl); } // http(s) only, no credentials, allowed ports, no internal addresses
+      catch (error) { return sendJson(res, 400, { ok: false, error: "Некорректная ссылка: " + (error && error.message || "разрешены только http/https") }); }
       state.sources.push({ id: newId("src"), name: name, type: "web", group: "custom", priority: 3, url: sourceUrl, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only" });
       saveState();
       return sendJson(res, 200, { ok: true });
@@ -10321,13 +11194,13 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, result.ok ? 200 : 409, result);
     }
     if (req.method === "POST" && p === "/api/digest/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await publishDigest(body.kind === "sunday" ? "sunday" : "evening", body.force === true);
       return sendJson(res, result.ok ? 200 : 409, result);
     }
 
     if (req.method === "POST" && p === "/api/sources/target") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const target = Math.max(0, Math.min(200, Math.round(Number(body.target))));
       if (!Number.isFinite(target)) return sendJson(res, 400, { ok: false, error: "Укажите число" });
       state.sourceTarget = target;
@@ -10338,7 +11211,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/media-license") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const src = state.sources.find(function(x){ return x.id === body.id; });
       if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
       const license = normalizeMediaLicense(body.mediaLicense);
@@ -10352,7 +11225,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/toggle") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const src = state.sources.find(function(x){ return x.id === body.id; });
       if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
       src.enabled = !src.enabled;
@@ -10367,7 +11240,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const removed = state.sources.find(function(x){ return x.id === body.id; });
       // A source the editor removed is never re-added automatically.
       const removedHost = removed && sourceKey(removed.url);
@@ -10376,13 +11249,13 @@ const server = http.createServer(async function(req, res) {
         if (!state.sourceBlockedHosts.includes(removedHost)) state.sourceBlockedHosts.push(removedHost);
       }
       state.sources = state.sources.filter(function(x){ return x.id !== body.id; });
-      if (state.sourceStats && body.id) delete state.sourceStats[body.id];
+      if (state.sourceStats && body.id && !isReservedKey(body.id)) delete state.sourceStats[String(body.id)];
       saveState();
       return sendJson(res, 200, { ok: true });
     }
 
     if (req.method === "POST" && p === "/api/queue") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Нужен текст" });
       state.queue.unshift({
@@ -10406,7 +11279,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
       removeQueueIdFromSchedule(state, body.id);
       ensureScheduleAssignments(state);
@@ -10415,7 +11288,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/enhance-media") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const item = (state.queue || []).find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
       if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — улучшать фото не требуется" });
@@ -10498,7 +11371,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const item = state.queue.find(function(x){ return x.id === body.id; });
       if (!item) {
         const published = (state.history || []).find(function(h){ return h && h.queueId === body.id; });
@@ -10517,6 +11390,16 @@ const server = http.createServer(async function(req, res) {
         }
         return sendJson(res, 404, { ok: false, error: "Черновик не найден" });
       }
+
+      // Double click / retry / scheduler at the same time: only one publish of a post may be in flight.
+      const releaseManualPublishLock = acquirePublishLock(item.id);
+      if (!releaseManualPublishLock) {
+        return sendJson(res, 409, { ok: false, error: "Этот пост уже публикуется. Подождите завершения." });
+      }
+      let manualLockReleased = false;
+      const releaseManualOnce = function() { if (!manualLockReleased) { manualLockReleased = true; releaseManualPublishLock(); } };
+      res.on("close", releaseManualOnce);
+      res.on("finish", releaseManualOnce);
 
       let media = {
         imageUrl: item.imageUrl || "",
@@ -10666,7 +11549,7 @@ const server = http.createServer(async function(req, res) {
           manualPublishedFromSchedule: item.preparedFor || ""
         };
         state.history.unshift(historyItem);
-        state.history = state.history.slice(0, 100);
+        state.history = state.history.slice(0, 300);
         item.historyId = historyItem.id;
         state.stats.published += 1;
       } else if (historyItem) {
@@ -10751,8 +11634,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/publish") {
-      if (req.headers["x-admin-key"] !== ADMIN_KEY) return sendJson(res, 401, { ok: false, error: "unauthorized" });
-      const body = await readJson(req);
+      if (!requireAdminKey(req, res)) return;
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "text is required" });
 
@@ -10808,8 +11691,14 @@ const server = http.createServer(async function(req, res) {
 
     return sendJson(res, 404, { ok: false, error: "not found" });
   } catch (error) {
-    console.error(error);
-    if (!res.headersSent) sendJson(res, 500, { ok: false, error: error.message });
+    if (error instanceof BadRequestError) {
+      if (!res.headersSent) sendJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+    // Full detail stays in the server log; the client only gets a generic message (no paths, SQL, upstream bodies).
+    const errorId = crypto.randomBytes(4).toString("hex");
+    console.error("REQUEST_FAILED id=" + errorId + " " + req.method + " " + String(req.url || "").split("?")[0] + ":", error);
+    if (!res.headersSent) sendJson(res, 500, { ok: false, error: "Внутренняя ошибка сервера (код " + errorId + "), подробности в логах", errorId: errorId });
   }
 });
 
@@ -10941,6 +11830,20 @@ async function seedChannelSources(ws) {
     state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
     if (removed.length && !state.sourceBlockedHosts.includes("cnbc.com")) state.sourceBlockedHosts.push("cnbc.com");
   }
+  // Sources that an earlier seed list added and a newer list retired (trader feeds, promo channels,
+  // tabloids...). Only seeder-added sources are removed, never the editor's own.
+  const retired = retiredSeedSources(state.sources, channelId);
+  if (retired.length) {
+    const retiredIds = new Set(retired.map(function(x){ return x.id; }));
+    state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+    for (const x of retired) {
+      const key = sourceKey(x.url);
+      if (key && !state.sourceBlockedHosts.includes(key)) state.sourceBlockedHosts.push(key);
+      if (state.sourceStats) delete state.sourceStats[x.id];
+      removed.push(x.name);
+    }
+    state.sources = state.sources.filter(function(x){ return !retiredIds.has(x.id); });
+  }
   const added = [];
   const failed = [];
   for (const c of freshCandidates(seeds, state.sources, state.sourceBlockedHosts || [])) {
@@ -10970,6 +11873,10 @@ const SEED_LISTS_V0415 = new Set(["world", "stars"]);
 const SEED_LISTS_V0422 = new Set(["travel", "shopping", "home"]);
 // food/business/crypto: same problem (OpenAI rate limit), hand-made lists since v0.42.3.
 const SEED_LISTS_V0423 = new Set(["food", "business", "crypto"]);
+// v0.42.4: lists cleaned against the channel profiles (trader/promo/tabloid sources retired, replacements added,
+// sourceKey no longer collapses sibling rubrics). Re-seeded once under a new prefix: it adds the new entries and
+// drops only the retired seed sources (see retiredSeedSources); business only regains the sections the old key dropped.
+const SEED_LISTS_V0424 = new Set(["money", "kino", "stars", "world", "travel", "shopping", "home", "food", "business", "crypto"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -10981,7 +11888,7 @@ function setupNewChannels() {
       if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
       // kino/science/sport got hand-made lists in v0.41.3 (their first run relied
       // on AI discovery, which hit the OpenAI rate limit) — seed them again.
-      const migration = (SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
+      const migration = (SEED_LISTS_V0424.has(channelId) ? "v0.42.4-seed-" : SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         if (!state.migrations.includes(migration)) {
@@ -11000,6 +11907,10 @@ function setupNewChannels() {
         const autoMigration = "v0.40.3-auto-publish";
         if (!state.migrations.includes(autoMigration) && !state.migrations.includes("v0.40.2-money-auto-publish")) {
           const auto = await enableAutoPublishingAfterChecks(ws);
+          if (auto.skippedManual) {
+            state.migrations.push(autoMigration);
+            saveState();
+          }
           if (auto.enabled) {
             state.migrations.push(autoMigration);
             saveState();
@@ -11024,6 +11935,13 @@ setInterval(setupNewChannels, 15 * 60 * 1000);
 // sources, editorial profile resolved. VK stays off (not connected).
 async function enableAutoPublishingAfterChecks(ws) {
   const checks = {};
+  // Never override an explicit manual choice: a REVIEW / PAUSED mode or auto_publish_telegram:false that is not the
+  // fresh-workspace default (autoGate.pending) was set by a person, so the gate leaves it alone.
+  const gatePending = Boolean(state.autoGate && state.autoGate.pending);
+  const currentTopic = state.topicSettings && state.topicSettings.default || {};
+  if (!gatePending && (state.mode !== "AUTO" || currentTopic.auto_publish_telegram === false)) {
+    return { enabled: false, skippedManual: true, mode: state.mode };
+  }
   checks.channelId = resolveChannelId(ws);
   checks.profile = Boolean(checks.channelId);
   checks.telegramChannel = String(ws.telegramChannel || "").trim();
@@ -11034,7 +11952,12 @@ async function enableAutoPublishingAfterChecks(ws) {
     const chat = await telegramApi("getChat", { chat_id: checks.telegramChannel });
     const me = await telegramApi("getMe", {});
     const member = await telegramApi("getChatMember", { chat_id: chat.id, user_id: me.id });
-    botCanPost = member && (member.status === "creator" || (member.status === "administrator" && member.can_post_messages !== false));
+    // Telegram omits can_post_messages for the creator only; an administrator must have it explicitly true.
+    // The news channels are broadcast channels, so any other chat type is rejected.
+    checks.chatType = String(chat.type || "");
+    botCanPost = Boolean(member) && checks.chatType === "channel" &&
+      (member.status === "creator" || (member.status === "administrator" && member.can_post_messages === true));
+    if (checks.chatType && checks.chatType !== "channel") checks.telegramError = "chat type is " + checks.chatType + ", expected channel";
     checks.chatTitle = chat.title || "";
   } catch (error) { checks.telegramError = String(error.message || error).slice(0, 160); }
   checks.botCanPost = Boolean(botCanPost);
@@ -11043,6 +11966,7 @@ async function enableAutoPublishingAfterChecks(ws) {
     state.mode = "AUTO";
     state.topicSettings = state.topicSettings || {};
     state.topicSettings.default = Object.assign({}, state.topicSettings.default || {}, { auto_publish_telegram: true, auto_publish_vk: false });
+    if (state.autoGate) state.autoGate = Object.assign({}, state.autoGate, { pending: false, enabledAt: new Date().toISOString() });
     saveState();
   }
   return Object.assign({ enabled: Boolean(ok), mode: state.mode }, checks);
@@ -11057,7 +11981,7 @@ setTimeout(function() {
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         const result = await enableAutoPublishingAfterChecks(ws);
         // Retried on the next start until all checks pass.
-        if (result.enabled) { state.migrations.push(migration); saveState(); }
+        if (result.enabled || result.skippedManual) { state.migrations.push(migration); saveState(); }
         console.log("AUTO_PUBLISH_SETUP " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
       });
     }
@@ -11299,102 +12223,6 @@ setTimeout(function() {
           }
         } catch (error) {
           console.warn("Car startup catch-up publish failed:", error.message);
-        }
-
-        const repairMarker = "v0.29.1-car-telegram-media-repair-test";
-        state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
-        if (!state.migrations.includes(repairMarker)) {
-          try {
-            let item = (state.queue || [])
-              .filter(function(q){ return q && q.id && q.telegramPublished !== true && !isBloggerSource(q); })
-              .sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); })[0] || null;
-            if (!item) {
-              await collectOnce("car-repair-test");
-              item = (state.queue || [])
-                .filter(function(q){ return q && q.id && q.telegramPublished !== true && !isBloggerSource(q); })
-                .sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); })[0] || null;
-            }
-            if (!item) throw new Error("Нет подходящей новости для контрольной публикации");
-
-            let media = {
-              imageUrl: item.imageUrl || "",
-              generatedImageUrl: item.generatedImageUrl || "",
-              videoUrl: item.videoUrl || ""
-            };
-            if (!(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
-              media = await ensureMediaForNews({
-                id: item.newsId || item.id,
-                title: item.title,
-                text: item.text,
-                sourceName: item.sourceName || "Контрольная публикация",
-                imageUrl: "",
-                videoUrl: "",
-                mediaLicense: sourceMediaLicense(item)
-              });
-              item.imageUrl = media.imageUrl || "";
-              item.generatedImageUrl = media.generatedImageUrl || "";
-              item.videoUrl = media.videoUrl || "";
-            }
-
-            const result = await sendMultiPlatformPost({
-              id: item.id,
-              postId: item.id,
-              newsId: item.newsId || "",
-              topicId: item.topicId || "default",
-              allow_text_fallback: false,
-              title: item.title,
-              text: item.text,
-              sourceName: item.sourceName || "",
-              sourceId: item.sourceId || "",
-              sourceUrl: item.sourceUrl || "",
-              imageUrl: item.imageUrl || media.imageUrl || "",
-              originalImageUrl: item.originalImageUrl || media.originalImageUrl || "",
-              originalVideoUrl: item.originalVideoUrl || media.originalVideoUrl || "",
-              generatedImageUrl: item.generatedImageUrl || media.generatedImageUrl || "",
-              videoUrl: item.videoUrl || media.videoUrl || "",
-              mediaStatus: item.mediaStatus || media.mediaStatus || "",
-              mediaOrigin: item.mediaOrigin || media.mediaOrigin || "",
-              mediaLicense: item.mediaLicense || media.mediaLicense || sourceMediaLicense(item)
-            }, { telegram: true, vk: false });
-
-            if (!result.telegramPublished) throw new Error("Telegram не подтвердил публикацию");
-            const publishedAt = new Date().toISOString();
-            item.telegramPublished = true;
-            item.telegramMessageId = result.message_id;
-            item.telegramPublishedAt = publishedAt;
-            item.published = item.vkPublished === true;
-            item.publishedAt = publishedAt;
-            state.history.unshift({
-              id: newId("hist"),
-              queueId: item.id,
-              newsId: item.newsId || "",
-              title: result.publishedTitle || item.title || "",
-              text: result.publishedText || item.text || "",
-              telegramPublished: true,
-              telegramMessageId: result.message_id,
-              telegramPublishedAt: publishedAt,
-              vkPublished: false,
-              sourceId: item.sourceId || "",
-              sourceName: item.sourceName || "",
-              sourceUrl: item.sourceUrl || "",
-              imageUrl: item.imageUrl || "",
-              generatedImageUrl: item.generatedImageUrl || "",
-              videoUrl: item.videoUrl || "",
-              publishedAt: publishedAt,
-              publicationOrigin: "repair-test"
-            });
-            state.stats.published = Number(state.stats.published || 0) + 1;
-            noteSourceEvent(item, "published");
-            state.migrations.push(repairMarker);
-            saveState();
-            console.log("CAR_TELEGRAM_REPAIR_TEST_SUCCESS " + JSON.stringify({
-              queue_id: item.id,
-              message_id: result.message_id,
-              title: item.title || ""
-            }));
-          } catch (error) {
-            console.error("CAR_TELEGRAM_REPAIR_TEST_FAILED " + String(error && error.message || error));
-          }
         }
       });
     }

@@ -118,35 +118,69 @@ function mergeRateMaps(base, override) {
   return out;
 }
 
+function priceNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : NaN;
+  if (typeof value === "string" && value.trim() !== "") { const n = Number(value.trim()); return Number.isFinite(n) && n >= 0 ? n : NaN; }
+  return NaN;
+}
+
+// Keeps only finite, non-negative numeric prices; every rejected value is reported in `warnings`.
+function sanitizeRateMap(section, override, warnings) {
+  const out = {};
+  if (!override || typeof override !== "object" || Array.isArray(override)) return out;
+  for (const model of Object.keys(override)) {
+    const rate = override[model];
+    if (!rate || typeof rate !== "object" || Array.isArray(rate)) { warnings.push(section + "." + model + ": ожидался объект с ценами, пропущено"); continue; }
+    const clean = {};
+    for (const field of Object.keys(rate)) {
+      const n = priceNumber(rate[field]);
+      if (Number.isNaN(n)) warnings.push(section + "." + model + "." + field + ": недопустимая цена " + JSON.stringify(rate[field]) + " (нужно число >= 0), пропущено");
+      else clean[field] = n;
+    }
+    if (Object.keys(clean).length) out[model] = clean;
+    else warnings.push(section + "." + model + ": нет ни одной допустимой цены, модель пропущена");
+  }
+  return out;
+}
+
 export function resolveCostPricing(rawJson) {
   const pricing = cloneJson(BUILTIN_COST_PRICING);
   const raw = String(rawJson || "").trim();
   if (!raw) {
-    return { pricing, updatedAt: BUILTIN_COST_PRICING_UPDATED_AT, overridden: false, error: "" };
+    return { pricing, updatedAt: BUILTIN_COST_PRICING_UPDATED_AT, overridden: false, error: "", warnings: [] };
   }
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("ожидался JSON-объект");
+    const warnings = [];
     for (const section of ["openaiText", "openaiImage", "anthropic"]) {
       if (parsed[section] && typeof parsed[section] === "object" && !Array.isArray(parsed[section])) {
-        pricing[section] = mergeRateMaps(pricing[section], parsed[section]);
+        pricing[section] = mergeRateMaps(pricing[section], sanitizeRateMap(section, parsed[section], warnings));
       }
     }
     if (parsed.railway && typeof parsed.railway === "object" && !Array.isArray(parsed.railway)) {
-      pricing.railway = Object.assign({}, pricing.railway, parsed.railway);
+      const railway = {};
+      for (const key of Object.keys(parsed.railway)) {
+        const n = priceNumber(parsed.railway[key]);
+        if (Number.isNaN(n)) warnings.push("railway." + key + ": недопустимая цена " + JSON.stringify(parsed.railway[key]) + " (нужно число >= 0), пропущено");
+        else railway[key] = n;
+      }
+      pricing.railway = Object.assign({}, pricing.railway, railway);
     }
     return {
       pricing,
       updatedAt: String(parsed.updatedAt || parsed.pricingUpdatedAt || BUILTIN_COST_PRICING_UPDATED_AT).slice(0, 40),
       overridden: true,
-      error: ""
+      error: "",
+      warnings
     };
   } catch (error) {
     return {
       pricing,
       updatedAt: BUILTIN_COST_PRICING_UPDATED_AT,
       overridden: false,
-      error: String(error && error.message || error)
+      error: String(error && error.message || error),
+      warnings: []
     };
   }
 }
@@ -156,7 +190,16 @@ function usageNum(value) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// Never lets a NaN/negative/infinite cost escape (a poisoned price would otherwise be written into rows).
 export function calculateUsageCost(provider, model, usage, endpoint, pricingInput) {
+  const result = calculateUsageCostRaw(provider, model, usage, endpoint, pricingInput);
+  if (!Number.isFinite(result.costUsd) || result.costUsd < 0) {
+    return Object.assign({}, result, { costUsd: 0, pricingKnown: false });
+  }
+  return result;
+}
+
+function calculateUsageCostRaw(provider, model, usage, endpoint, pricingInput) {
   const pricing = pricingInput && pricingInput.openaiText ? pricingInput : BUILTIN_COST_PRICING;
   const u = usage && typeof usage === "object" ? usage : {};
   const p = String(provider || "").toLowerCase();

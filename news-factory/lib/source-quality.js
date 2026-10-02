@@ -117,9 +117,36 @@ export function sourceHost(url) {
   catch { return ""; }
 }
 
-// Same host + same first path segment counts as the same source; different
-// sections of one big site (e.g. blog.google/technology/ai) stay distinct.
+// Hosts whose rubrics live deeper than the first path segment («kommersant.ru/rubric/3»,
+// «lenta.ru/rubrics/life/», «rg.ru/tema/ekonomika/zhkh»): the key keeps this many segments,
+// otherwise sibling sections collapse into one key and are silently dropped (or blocked
+// together when the editor removes one of them).
+export const SECTION_DEPTH_BY_HOST = {
+  "kommersant.ru": 2,
+  "lenta.ru": 2,
+  "iz.ru": 2,
+  "rg.ru": 3,
+  "vedomosti.ru": 2
+};
+
+// Same host + same first path segment counts as the same source (more segments for the hosts
+// above); different sections of one big site (e.g. blog.google/technology/ai) stay distinct.
 export function sourceKey(url) {
+  try {
+    const u = new URL(String(url || ""));
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    const depth = SECTION_DEPTH_BY_HOST[host];
+    if (depth) {
+      const segs = u.pathname.split("/").filter(Boolean).map(function(x){ return x.toLowerCase(); });
+      return host + "/" + segs.slice(0, depth).join("/");
+    }
+    return legacySourceKey(url);
+  } catch { return ""; }
+}
+
+// The key as it was before SECTION_DEPTH_BY_HOST. Blocked keys saved by older versions are in
+// this form, so they must keep blocking (freshCandidates checks both).
+export function legacySourceKey(url) {
   try {
     const u = new URL(String(url || ""));
     const segs = u.pathname.split("/").filter(Boolean).map(function(x){ return x.toLowerCase(); });
@@ -154,7 +181,7 @@ export function freshCandidates(candidates, sources, blockedHosts) {
     if (!c || !/^https?:\/\//i.test(c.url || "")) continue;
     const key = sourceKey(c.url);
     const host = sourceHost(c.url);
-    if (!key || keys.has(key) || blocked.has(host) || blocked.has(key) || rootHosts.has(host)) continue;
+    if (!key || keys.has(key) || blocked.has(host) || blocked.has(key) || blocked.has(legacySourceKey(c.url)) || rootHosts.has(host)) continue;
     keys.add(key);
     out.push(c);
   }
@@ -327,11 +354,10 @@ export const SEED_SOURCES = {
     { name: "КГ-Портал (Telegram)", url: "https://t.me/s/kgportal", group: "creator" },
     { name: "Бюллетень кинопрокатчика (Telegram)", url: "https://t.me/s/kinometro", group: "creator" },
     { name: "Флешфорвард (Telegram)", url: "https://t.me/s/flashforwardmag", group: "creator" },
-    { name: "Okko (Telegram)", url: "https://t.me/s/okkotv", group: "creator" },
-    { name: "Иви (Telegram)", url: "https://t.me/s/ivi_ru", group: "creator" },
-    { name: "Кион (Telegram)", url: "https://t.me/s/kion_ru", group: "creator" },
-    { name: "Wink (Telegram)", url: "https://t.me/s/wink_rt", group: "creator" },
     { name: "Канобу (Telegram)", url: "https://t.me/s/kanobu", group: "creator" },
+    { name: "Screen Daily", url: "https://www.screendaily.com/", group: "media" },
+    { name: "The Numbers — News", url: "https://www.the-numbers.com/news", group: "media" },
+    { name: "Rotten Tomatoes — Editorial", url: "https://editorial.rottentomatoes.com/news/", group: "media" }
   ],
   science: [
     { name: "N + 1", url: "https://nplus1.ru/news", group: "media" },
@@ -420,24 +446,19 @@ export const SEED_SOURCES = {
     { name: "This Is Colossal", url: "https://www.thisiscolossal.com/", group: "media" },
     { name: "Messy Nessy Chic", url: "https://www.messynessychic.com/", group: "media" },
     { name: "Euronews — Culture", url: "https://www.euronews.com/culture", group: "media" },
-    { name: "Metro — Weird", url: "https://metro.co.uk/tag/weird-news/", group: "media" },
     { name: "Вокруг света", url: "https://www.vokrugsveta.ru/news/", group: "media" },
     { name: "National Geographic Россия", url: "https://www.nat-geo.ru/", group: "media" },
-    { name: "Лента.ру — Из жизни", url: "https://lenta.ru/rubrics/life/", group: "media" },
     { name: "ТАСС — Культура", url: "https://tass.ru/kultura", group: "media" },
     { name: "Хайтек — наука", url: "https://hightech.fm/", group: "media" },
     { name: "Вокруг света (Telegram)", url: "https://t.me/s/vokrugsvetaru", group: "creator" },
     { name: "National Geographic Россия (Telegram)", url: "https://t.me/s/natgeoru", group: "creator" },
     { name: "Guinness World Records (Telegram)", url: "https://t.me/s/guinnessworldrecords", group: "creator" },
+    { name: "Boing Boing", url: "https://boingboing.net/", group: "media" },
+    { name: "Arzamas", url: "https://arzamas.academy/", group: "media" }
   ],
   // «Что там у звёзд?»: знаменитости, шоу-бизнес, музыка, премьеры, блогеры. Жёлтые и
   // скандальные ленты не берём: профиль канала запрещает слухи, здоровье и травлю.
   stars: [
-    { name: "Starhit — новости", url: "https://www.starhit.ru/novosti/", group: "media" },
-    { name: "PeopleTalk", url: "https://peopletalk.ru/news/", group: "media" },
-    { name: "7Дней — звёзды", url: "https://7days.ru/stars/", group: "media" },
-    { name: "Super.ru", url: "https://www.super.ru/news", group: "media" },
-    { name: "Экспресс газета — шоу-бизнес", url: "https://www.eg.ru/showbusiness/", group: "media" },
     { name: "Леди Mail.ru — звёзды", url: "https://lady.mail.ru/stars/", group: "media" },
     { name: "Cosmopolitan — звёзды", url: "https://www.cosmo.ru/stars/", group: "media" },
     { name: "Elle — звёзды", url: "https://www.elle.ru/zvezdy/", group: "media" },
@@ -461,9 +482,11 @@ export const SEED_SOURCES = {
     { name: "NME — News", url: "https://www.nme.com/news", group: "media" },
     { name: "The Guardian — Culture", url: "https://www.theguardian.com/culture", group: "media" },
     { name: "Pitchfork — News", url: "https://pitchfork.com/news/", group: "media" },
-    { name: "Starhit (Telegram)", url: "https://t.me/s/starhit", group: "creator" },
-    { name: "PeopleTalk (Telegram)", url: "https://t.me/s/peopletalk", group: "creator" },
-    { name: "Super.ru (Telegram)", url: "https://t.me/s/superru", group: "creator" },
+    { name: "ТАСС — Культура", url: "https://tass.ru/kultura", group: "media" },
+    { name: "Российская газета — Культура", url: "https://rg.ru/tema/kultura", group: "media" },
+    { name: "InterMedia — музыкальные новости", url: "https://intermedia.ru/news", group: "media" },
+    { name: "TheWrap", url: "https://www.thewrap.com/", group: "media" },
+    { name: "The Guardian — Music", url: "https://www.theguardian.com/music", group: "media" }
   ],
   travel: [
     { name: "АТОР — новости", url: "https://www.atorus.ru/news", group: "media" },
@@ -474,14 +497,13 @@ export const SEED_SOURCES = {
     { name: "Travel.ru — новости", url: "https://www.travel.ru/news/", group: "media" },
     { name: "РИА Новости — Туризм", url: "https://ria.ru/tourism/", group: "media" },
     { name: "Лента.ру — Путешествия", url: "https://lenta.ru/rubrics/travel/", group: "media" },
-    { name: "Вокруг света", url: "https://www.vokrug-sveta.ru/", group: "media" },
+    { name: "Вокруг света", url: "https://www.vokrugsveta.ru/", group: "media" },
     { name: "Журнал Авиасейлс", url: "https://journal.aviasales.ru/", group: "media" },
     { name: "Туту.ру — Путешествия", url: "https://journey.tutu.ru/", group: "media" },
     { name: "Российская газета — Туризм", url: "https://rg.ru/tema/turizm", group: "media" },
     { name: "Коммерсантъ — Туризм", url: "https://www.kommersant.ru/theme/2095", group: "media" },
     { name: "РБК — Туризм", url: "https://www.rbc.ru/tourism/", group: "media" },
     { name: "Ростуризм", url: "https://tourism.gov.ru/news/", group: "official" },
-    { name: "МИД России — для туристов", url: "https://www.mid.ru/ru/press_service/", group: "official" },
     { name: "Euronews — Travel", url: "https://www.euronews.com/travel", group: "media" },
     { name: "BBC — Travel", url: "https://www.bbc.com/travel", group: "media" },
     { name: "The Guardian — Travel", url: "https://www.theguardian.com/travel", group: "media" },
@@ -500,6 +522,7 @@ export const SEED_SOURCES = {
     { name: "АТОР (Telegram)", url: "https://t.me/s/ator_russia", group: "creator" },
     { name: "Ростуризм (Telegram)", url: "https://t.me/s/rostourism", group: "creator" },
     { name: "Вокруг света (Telegram)", url: "https://t.me/s/vokrugsvetaru", group: "creator" },
+    { name: "Росавиация — новости", url: "https://favt.gov.ru/", group: "official" }
   ],
   shopping: [
     { name: "Retail.ru — новости", url: "https://www.retail.ru/news/", group: "media" },
@@ -511,8 +534,7 @@ export const SEED_SOURCES = {
     { name: "Российская газета — Потребитель", url: "https://rg.ru/tema/ekonomika/potrebrynok", group: "media" },
     { name: "Лента.ру — Экономика", url: "https://lenta.ru/rubrics/economics/", group: "media" },
     { name: "РИА Новости — Экономика", url: "https://ria.ru/economy/", group: "media" },
-    { name: "Т—Ж", url: "https://journal.tinkoff.ru/", group: "media" },
-    { name: "Яндекс Маркет — Журнал", url: "https://market.yandex.ru/journal", group: "media" },
+    { name: "Т—Ж", url: "https://journal.tbank.ru/", group: "media" },
     { name: "Sostav — Ритейл", url: "https://www.sostav.ru/news/", group: "media" },
     { name: "Rusbase — Ecommerce", url: "https://rb.ru/tag/e-commerce/", group: "media" },
     { name: "Forbes — Ритейл", url: "https://www.forbes.ru/biznes", group: "media" },
@@ -521,45 +543,35 @@ export const SEED_SOURCES = {
     { name: "Роскачество — новости", url: "https://rskrf.ru/news/", group: "official" },
     { name: "ФАС России", url: "https://fas.gov.ru/news", group: "official" },
     { name: "Минпромторг — новости", url: "https://minpromtorg.gov.ru/press-centre/news/", group: "official" },
-    { name: "Хайтек — гаджеты", url: "https://hightech.fm/", group: "media" },
-    { name: "3DNews — новости", url: "https://3dnews.ru/news/", group: "media" },
-    { name: "iXBT — новости", url: "https://www.ixbt.com/news/", group: "media" },
-    { name: "Ferra — новости", url: "https://www.ferra.ru/news/", group: "media" },
-    { name: "The Verge — Deals & Gadgets", url: "https://www.theverge.com/tech", group: "media" },
-    { name: "Engadget", url: "https://www.engadget.com/", group: "media" },
     { name: "Retail Dive", url: "https://www.retaildive.com/", group: "media" },
     { name: "Digital Commerce 360", url: "https://www.digitalcommerce360.com/", group: "media" },
     { name: "Modern Retail", url: "https://www.modernretail.co/", group: "media" },
     { name: "TechCrunch — Commerce", url: "https://techcrunch.com/category/commerce/", group: "media" },
-    { name: "Ozon (Telegram)", url: "https://t.me/s/ozon_ru", group: "creator" },
-    { name: "Wildberries (Telegram)", url: "https://t.me/s/wildberries_ru", group: "creator" },
-    { name: "Яндекс Маркет (Telegram)", url: "https://t.me/s/yandexmarket", group: "creator" },
     { name: "Роспотребнадзор (Telegram)", url: "https://t.me/s/rospotrebnadzor", group: "creator" },
     { name: "Retail.ru (Telegram)", url: "https://t.me/s/retailru", group: "creator" },
     { name: "Известия — Экономика", url: "https://iz.ru/rubric/ekonomika", group: "media" },
     { name: "Газета.Ru — Бизнес", url: "https://www.gazeta.ru/business/news/", group: "media" },
     { name: "Коммерсантъ — Бизнес", url: "https://www.kommersant.ru/rubric/3", group: "media" },
     { name: "Интерфакс — Экономика", url: "https://www.interfax.ru/business/", group: "media" },
-    { name: "Banki.ru — Новости", url: "https://www.banki.ru/news/lenta/", group: "media" },
-    { name: "CNews — Новости", url: "https://www.cnews.ru/news", group: "media" },
-    { name: "Overclockers — Новости", url: "https://overclockers.ru/", group: "media" },
-    { name: "iPhones.ru", url: "https://www.iphones.ru/", group: "media" },
-    { name: "ComputerRA — Новости", url: "https://www.computerra.ru/", group: "media" },
-    { name: "Wired — Gear", url: "https://www.wired.com/category/gear/", group: "media" },
-    { name: "Android Authority", url: "https://www.androidauthority.com/news/", group: "media" },
-    { name: "9to5Google", url: "https://9to5google.com/", group: "media" },
     { name: "Business Insider — Retail", url: "https://www.businessinsider.com/retail", group: "media" },
     { name: "vc.ru (Telegram)", url: "https://t.me/s/vc_ru", group: "creator" },
     { name: "Т—Ж (Telegram)", url: "https://t.me/s/tinkoffjournal", group: "creator" },
-    { name: "Rozetked (Telegram)", url: "https://t.me/s/rozetked", group: "creator" },
-    { name: "Wylsacom (Telegram)", url: "https://t.me/s/wylsared", group: "creator" },
+    { name: "Shopolog — новости e-commerce", url: "https://shopolog.ru/", group: "media" },
+    { name: "E-Pepper — новости ритейла", url: "https://e-pepper.ru/news/", group: "media" },
+    { name: "РБК Тренды", url: "https://trends.rbc.ru/trends/industry", group: "media" },
+    { name: "АКИТ — новости", url: "https://akit.ru/news", group: "official" },
+    { name: "ЦРПТ — новости", url: "https://crpt.ru/press-center/news/", group: "official" },
+    { name: "Marketplace Pulse", url: "https://www.marketplacepulse.com/articles", group: "media" },
+    { name: "CNBC — Retail", url: "https://www.cnbc.com/retail/", group: "media" },
+    { name: "Retail Gazette", url: "https://www.retailgazette.co.uk/", group: "media" },
+    { name: "Chain Store Age", url: "https://chainstoreage.com/", group: "media" },
+    { name: "Which? — News", url: "https://www.which.co.uk/news", group: "media" },
+    { name: "Роскачество (Telegram)", url: "https://t.me/s/roskachestvo", group: "creator" }
   ],
   home: [
     { name: "Lifehacker — Дом", url: "https://lifehacker.ru/topics/home/", group: "media" },
     { name: "AD Magazine — Интерьеры", url: "https://www.admagazine.ru/interior", group: "media" },
     { name: "Elle Decoration — Дом", url: "https://elledecoration.ru/", group: "media" },
-    { name: "Inmyroom — Журнал", url: "https://www.inmyroom.ru/posts", group: "media" },
-    { name: "Houzz — Журнал", url: "https://www.houzz.ru/magazine", group: "media" },
     { name: "Циан.Журнал", url: "https://www.cian.ru/magazine/", group: "media" },
     { name: "Яндекс Недвижимость — Журнал", url: "https://realty.yandex.ru/journal/", group: "media" },
     { name: "РБК Недвижимость", url: "https://realty.rbc.ru/news/", group: "media" },
@@ -574,12 +586,8 @@ export const SEED_SOURCES = {
     { name: "Минстрой России — новости", url: "https://minstroyrf.gov.ru/press/", group: "official" },
     { name: "Роспотребнадзор — новости", url: "https://www.rospotrebnadzor.ru/about/info/news/", group: "official" },
     { name: "Хайтек — умный дом", url: "https://hightech.fm/tag/smart-home", group: "media" },
-    { name: "3DNews — новости", url: "https://3dnews.ru/news/", group: "media" },
-    { name: "iXBT — новости", url: "https://www.ixbt.com/news/", group: "media" },
-    { name: "Ferra — умный дом", url: "https://www.ferra.ru/news/", group: "media" },
     { name: "Dezeen — Interiors", url: "https://www.dezeen.com/interiors/", group: "media" },
     { name: "Architectural Digest — Дом", url: "https://www.architecturaldigest.com/story", group: "media" },
-    { name: "Apartment Therapy", url: "https://www.apartmenttherapy.com/", group: "media" },
     { name: "Treehugger — Home", url: "https://www.treehugger.com/home-and-garden-4846040", group: "media" },
     { name: "The Verge — Smart Home", url: "https://www.theverge.com/smart-home", group: "media" },
     { name: "CNET — Smart Home", url: "https://www.cnet.com/home/smart-home/", group: "media" },
@@ -589,15 +597,15 @@ export const SEED_SOURCES = {
     { name: "Яндекс Недвижимость (Telegram)", url: "https://t.me/s/yandexrealty", group: "creator" },
     { name: "Минстрой России (Telegram)", url: "https://t.me/s/minstroyrf", group: "creator" },
     { name: "Умный дом Яндекса (Telegram)", url: "https://t.me/s/yandex_smart_home", group: "creator" },
+    { name: "ТАСС — Недвижимость", url: "https://tass.ru/nedvizhimost", group: "media" },
+    { name: "Росреестр — новости", url: "https://rosreestr.gov.ru/press/archive/", group: "official" },
+    { name: "Designboom — Interiors", url: "https://www.designboom.com/interior/", group: "media" },
+    { name: "Consumer Reports — Home & Garden", url: "https://www.consumerreports.org/home-garden/", group: "media" }
   ],
   food: [
     { name: "Афиша Daily — Еда", url: "https://daily.afisha.ru/eating/", group: "media" },
     { name: "The Village — Еда", url: "https://www.the-village.ru/food", group: "media" },
     { name: "Gastronom.ru", url: "https://www.gastronom.ru/", group: "media" },
-    { name: "Лента.ру — Из жизни", url: "https://lenta.ru/rubrics/life/", group: "media" },
-    { name: "Лента.ру — Ценности", url: "https://lenta.ru/rubrics/style/", group: "media" },
-    { name: "РИА Новости — Общество", url: "https://ria.ru/society/", group: "media" },
-    { name: "Известия — Общество", url: "https://iz.ru/rubric/obshchestvo", group: "media" },
     { name: "Коммерсантъ — Потребительский рынок", url: "https://www.kommersant.ru/rubric/4", group: "media" },
     { name: "Retail.ru — новости", url: "https://www.retail.ru/news/", group: "media" },
     { name: "vc.ru — Ритейл", url: "https://vc.ru/retail", group: "media" },
@@ -625,6 +633,9 @@ export const SEED_SOURCES = {
     { name: "Афиша Daily (Telegram)", url: "https://t.me/s/afishadaily", group: "creator" },
     { name: "The Village (Telegram)", url: "https://t.me/s/thevillagerussia", group: "creator" },
     { name: "Роскачество (Telegram)", url: "https://t.me/s/roskachestvo", group: "creator" },
+    { name: "Минсельхоз России — новости", url: "https://mcx.gov.ru/press-service/news/", group: "official" },
+    { name: "Агроинвестор", url: "https://www.agroinvestor.ru/", group: "media" },
+    { name: "Time Out — News", url: "https://www.timeout.com/news", group: "media" }
   ],
   business: [
     { name: "vc.ru", url: "https://vc.ru/", group: "media" },
@@ -679,13 +690,7 @@ export const SEED_SOURCES = {
     { name: "The Block", url: "https://www.theblock.co/", group: "media" },
     { name: "Bitcoin Magazine", url: "https://bitcoinmagazine.com/", group: "media" },
     { name: "CryptoSlate", url: "https://cryptoslate.com/", group: "media" },
-    { name: "BeInCrypto", url: "https://beincrypto.com/news/", group: "media" },
     { name: "Blockworks", url: "https://blockworks.co/", group: "media" },
-    { name: "Bitcoinist", url: "https://bitcoinist.com/", group: "media" },
-    { name: "NewsBTC", url: "https://www.newsbtc.com/", group: "media" },
-    { name: "U.Today", url: "https://u.today/", group: "media" },
-    { name: "CryptoPotato", url: "https://cryptopotato.com/", group: "media" },
-    { name: "AMBCrypto", url: "https://ambcrypto.com/", group: "media" },
     { name: "The Defiant", url: "https://thedefiant.io/news", group: "media" },
     { name: "TON — Blog", url: "https://blog.ton.org/", group: "official" },
     { name: "Ethereum Foundation — Blog", url: "https://blog.ethereum.org/", group: "official" },
@@ -697,6 +702,9 @@ export const SEED_SOURCES = {
     { name: "TON (Telegram)", url: "https://t.me/s/toncoin", group: "creator" },
     { name: "Cointelegraph (Telegram)", url: "https://t.me/s/cointelegraph", group: "creator" },
     { name: "Банк России (Telegram)", url: "https://t.me/s/centralbank_russia", group: "creator" },
+    { name: "CFTC — Press Releases", url: "https://www.cftc.gov/PressRoom/PressReleases", group: "official" },
+    { name: "Chainalysis — Blog", url: "https://www.chainalysis.com/blog/", group: "media" },
+    { name: "Protos", url: "https://protos.com/", group: "media" }
   ],
   money: [
     // Official: rates, taxes, laws
@@ -706,7 +714,6 @@ export const SEED_SOURCES = {
     { name: "Минфин (Telegram)", url: "https://t.me/s/minfin", group: "creator" },
     { name: "ФНС России", url: "https://www.nalog.gov.ru/rn77/news/activities_fts/", group: "official" },
     { name: "Росстат", url: "https://rosstat.gov.ru/folder/313/document/", group: "official" },
-    { name: "Мосбиржа", url: "https://www.moex.com/ru/news/", group: "official" },
     { name: "АСВ (страхование вкладов)", url: "https://www.asv.org.ru/news/", group: "official" },
     { name: "Госдума", url: "http://duma.gov.ru/news/", group: "official" },
     { name: "Социальный фонд России", url: "https://sfr.gov.ru/press_center/news/", group: "official" },
@@ -721,7 +728,6 @@ export const SEED_SOURCES = {
     { name: "РИА Новости — Экономика", url: "https://ria.ru/economy/", group: "media" },
     { name: "Frank Media", url: "https://frankmedia.ru/", group: "media" },
     { name: "Банки.ру — новости", url: "https://www.banki.ru/news/lenta/", group: "media" },
-    { name: "Сравни — новости", url: "https://www.sravni.ru/novost/", group: "media" },
     // Personal finance
     { name: "Т—Ж", url: "https://journal.tbank.ru/news/", group: "media" },
     { name: "Финансовая культура (ЦБ)", url: "https://fincult.info/news/", group: "official" },
@@ -741,13 +747,106 @@ export const SEED_SOURCES = {
     { name: "Росстат (Telegram)", url: "https://t.me/s/rosstat_official", group: "creator" },
     { name: "Финансовая культура (Telegram)", url: "https://t.me/s/fincult_info", group: "creator" },
     { name: "Социальный фонд (Telegram)", url: "https://t.me/s/sfr_official", group: "creator" },
-    { name: "Мосбиржа (Telegram)", url: "https://t.me/s/moex_official", group: "creator" },
-    { name: "Сравни (Telegram)", url: "https://t.me/s/sravni_ru", group: "creator" },
-    { name: "Финам (Telegram)", url: "https://t.me/s/finamalert", group: "creator" },
     { name: "Твои деньги (Telegram)", url: "https://t.me/s/tvoidengi", group: "creator" },
     // World — only what moves the rouble and prices
-    { name: "Investing.com — экономика", url: "https://ru.investing.com/news/economy", group: "media" },
-    { name: "Финам — рынки", url: "https://www.finam.ru/publications/section/market/", group: "media" },
-    { name: "Интерфакс — мировые рынки", url: "https://www.interfax.ru/world/", group: "media" }
+    { name: "Интерфакс — мировые рынки", url: "https://www.interfax.ru/world/", group: "media" },
+    { name: "Минтруд России — новости", url: "https://mintrud.gov.ru/press", group: "official" },
+    { name: "Газета.Ru — Бизнес", url: "https://www.gazeta.ru/business/news/", group: "media" },
+    { name: "Финмаркет — новости", url: "https://www.finmarket.ru/news/", group: "media" },
+    { name: "Российская газета — Экономика", url: "https://rg.ru/tema/ekonomika", group: "media" },
+    { name: "Минтруд России (Telegram)", url: "https://t.me/s/mintrudrf", group: "creator" }
   ]
 };
+
+// Seed entries removed from the lists above. A channel seeded earlier still holds them
+// (autoAdded.from === "seed"); the re-seed under a new migration prefix drops exactly these
+// and never touches sources the editor added. See retiredSeedSources().
+export const RETIRED_SEED_URLS = {
+  money: [
+    "https://ru.investing.com/news/economy",
+    "https://www.finam.ru/publications/section/market/",
+    "https://t.me/s/finamalert",
+    "https://www.moex.com/ru/news/",
+    "https://t.me/s/moex_official",
+    "https://www.sravni.ru/novost/",
+    "https://t.me/s/sravni_ru"
+  ],
+  shopping: [
+    "https://t.me/s/ozon_ru",
+    "https://t.me/s/wildberries_ru",
+    "https://t.me/s/yandexmarket",
+    "https://market.yandex.ru/journal",
+    "https://www.wired.com/category/gear/",
+    "https://hightech.fm/",
+    "https://3dnews.ru/news/",
+    "https://www.ixbt.com/news/",
+    "https://www.ferra.ru/news/",
+    "https://www.theverge.com/tech",
+    "https://www.engadget.com/",
+    "https://www.cnews.ru/news",
+    "https://overclockers.ru/",
+    "https://www.iphones.ru/",
+    "https://www.computerra.ru/",
+    "https://www.androidauthority.com/news/",
+    "https://9to5google.com/",
+    "https://t.me/s/rozetked",
+    "https://t.me/s/wylsared",
+    "https://www.banki.ru/news/lenta/"
+  ],
+  stars: [
+    "https://www.starhit.ru/novosti/",
+    "https://t.me/s/starhit",
+    "https://peopletalk.ru/news/",
+    "https://t.me/s/peopletalk",
+    "https://www.super.ru/news",
+    "https://t.me/s/superru",
+    "https://7days.ru/stars/",
+    "https://www.eg.ru/showbusiness/"
+  ],
+  crypto: [
+    "https://ambcrypto.com/",
+    "https://www.newsbtc.com/",
+    "https://bitcoinist.com/",
+    "https://cryptopotato.com/",
+    "https://u.today/",
+    "https://beincrypto.com/news/"
+  ],
+  travel: [
+    "https://www.mid.ru/ru/press_service/"
+  ],
+  world: [
+    "https://lenta.ru/rubrics/life/",
+    "https://metro.co.uk/tag/weird-news/"
+  ],
+  food: [
+    "https://lenta.ru/rubrics/life/",
+    "https://lenta.ru/rubrics/style/",
+    "https://ria.ru/society/",
+    "https://iz.ru/rubric/obshchestvo"
+  ],
+  home: [
+    "https://www.ixbt.com/news/",
+    "https://3dnews.ru/news/",
+    "https://www.ferra.ru/news/",
+    "https://www.inmyroom.ru/posts",
+    "https://www.houzz.ru/magazine",
+    "https://www.apartmenttherapy.com/"
+  ],
+  kino: [
+    "https://t.me/s/okkotv",
+    "https://t.me/s/ivi_ru",
+    "https://t.me/s/kion_ru",
+    "https://t.me/s/wink_rt"
+  ]
+};
+
+// Sources of `channelId` that earlier seed lists added and the current lists retired.
+// Only sources the seeder itself added (autoAdded.from === "seed") are returned:
+// anything the editor added or edited by hand is never touched.
+export function retiredSeedSources(sources, channelId) {
+  const retired = new Set((RETIRED_SEED_URLS[channelId] || []).map(sourceKey).filter(Boolean));
+  if (!retired.size) return [];
+  return (sources || []).filter(function(x) {
+    return x && x.autoAdded && x.autoAdded.from === "seed" && retired.has(sourceKey(x.url));
+  });
+}
