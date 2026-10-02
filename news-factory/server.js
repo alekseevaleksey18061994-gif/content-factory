@@ -2425,8 +2425,9 @@ async function prefilterCandidates(candidates, summary) {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
-        body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 2500 }),
-        signal: AbortSignal.timeout(45000)
+        // 20-40 headlines with reasons need room; a cut answer made the pre-filter fail open.
+        body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 8000, text: { format: { type: "json_object" } } }),
+        signal: AbortSignal.timeout(60000)
       });
       const data = await response.json().catch(function(){ return {}; });
       if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
