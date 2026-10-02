@@ -1036,7 +1036,7 @@ async function refreshStoredCostPricing() {
   for (const [model, rate] of Object.entries(COST_PRICING.anthropic || {})) {
     const result = await db.query(
       `UPDATE cost_events SET
-        cost_usd=((input_tokens*$2)+(cache_read_tokens*$3)+(cache_write_tokens*$4)+(output_tokens*$5))/1000000.0,
+        cost_usd=((input_tokens::numeric*$2::numeric)+(cache_read_tokens::numeric*$3::numeric)+(cache_write_tokens::numeric*$4::numeric)+(output_tokens::numeric*$5::numeric))/1000000.0,
         pricing_known=TRUE, estimated=FALSE
        WHERE provider='anthropic' AND model=$1`,
       [model, Number(rate.input || 0), Number(rate.cacheRead || 0), Number(rate.cacheWrite || 0), Number(rate.output || 0)]
