@@ -6842,6 +6842,101 @@ async function runEditorialV2(sources, options) {
   };
 }
 
+async function retryUnavailableEditorialQueueItems() {
+  if (!editorialV2Active() || !ANTHROPIC_API_KEY) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
+  const probe = await anthropicEditorialProbe(false);
+  if (!probe.ok) return { checked: 0, repaired: 0, held: 0, skipped: 0, error: probe.error || "Anthropic checker unavailable" };
+
+  const marker = "structured-json-v1";
+  const candidates = (state.queue || []).filter(function(item) {
+    if (!item || !item.editorialV2) return false;
+    if (item.editorialV2RetryVersion === marker) return false;
+    const verdict = String(item.editorialV2.verdict || "").toLowerCase();
+    const checkerList = Array.isArray(item.editorialV2.checkers) ? item.editorialV2.checkers : [];
+    const hadAnthropicFailure = checkerList.some(function(x){ return /^anthropic:error$/i.test(String(x || "")); });
+    return verdict === "unavailable" || hadAnthropicFailure;
+  }).slice(0, 6);
+
+  let repaired = 0;
+  let held = 0;
+  let skipped = 0;
+
+  for (const item of candidates) {
+    try {
+      const sourceText = String(item.sourceOriginalText || item.text || "").trim();
+      if (!sourceText) {
+        item.editorialV2RetryVersion = marker;
+        item.editorialV2RetryError = "Нет исходного текста";
+        skipped += 1;
+        continue;
+      }
+
+      const result = await runEditorialV2([{
+        name: String(item.sourceName || "Источник"),
+        url: String(item.sourceUrl || ""),
+        date: String(item.articlePublishedAt || item.createdAt || ""),
+        role: sourceRoleLabel(item.sourceRole || sourceEditorialRole(item)),
+        title: String(item.sourceOriginalTitle || item.title || ""),
+        text: sourceText,
+        photos: [item.enhancedImageUrl, item.imageUrl, item.originalImageUrl]
+          .concat(Array.isArray(item.mediaPackUrls) ? item.mediaPackUrls : [])
+          .filter(Boolean)
+          .slice(0, 5)
+      }], {
+        hasPhoto: Boolean(item.videoUrl || item.enhancedImageUrl || item.imageUrl || item.generatedImageUrl || (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length))
+      });
+
+      item.editorialV2RetryVersion = marker;
+      item.editorialV2RetryAt = new Date().toISOString();
+      item.editorialV2RetryError = "";
+      item.editorialV2 = result.meta;
+
+      if (result.skip) {
+        item.qcStatus = "hold";
+        item.qcIssues = ["Редакция v2 после повторной проверки решила пропустить новость: " + String(result.reason || "skip")];
+        item.decisionSummary = item.qcIssues[0];
+        skipped += 1;
+        continue;
+      }
+
+      const rewrite = result.rewrite || {};
+      const qc = result.qc || {};
+      item.title = rewrite.title || item.title;
+      item.text = rewrite.text || item.text;
+      item.aiScore = Number(rewrite.editorialScore || item.aiScore || 0);
+      item.aiScoreBreakdown = rewrite.scoreBreakdown || item.aiScoreBreakdown || {};
+      item.aiScoreReason = rewrite.scoreReason || item.aiScoreReason || "";
+      item.contentFormat = rewrite.contentFormat || item.contentFormat || "";
+      item.contentFormatLabel = rewrite.contentFormatLabel || item.contentFormatLabel || "";
+      item.qualityScore = Number(qc.qualityScore || item.qualityScore || 0);
+      item.qualityBreakdown = qc.qualityBreakdown || item.qualityBreakdown || {};
+      item.qcStatus = qc.qcStatus || "hold";
+      item.qcIssues = Array.isArray(qc.qcIssues) ? qc.qcIssues : [];
+      item.qcRepaired = Boolean(qc.qcRepaired);
+      item.topicEntities = Array.isArray(qc.topicEntities) ? qc.topicEntities : item.topicEntities || [];
+      item.platformVariants = qc.platformVariants || item.platformVariants || {};
+      item.decisionSummary = qc.decisionSummary || item.decisionSummary || "";
+      item.priorityScore = calculatePriorityScore(item);
+      item.decisionExplanation = buildDecisionExplanation(item);
+
+      if (item.qcStatus === "pass" && result.meta && result.meta.verdict === "pass") repaired += 1;
+      else held += 1;
+    } catch (error) {
+      item.editorialV2RetryError = String(error && error.message || error).slice(0, 500);
+      console.warn("EDITORIAL_V2_RETRY_FAILED " + JSON.stringify({
+        workspace: currentWorkspaceId(),
+        queueId: item.id,
+        error: item.editorialV2RetryError
+      }));
+      held += 1;
+    } finally {
+      saveState();
+    }
+  }
+
+  return { checked: candidates.length, repaired, held, skipped };
+}
+
 function fallbackEditorialQC(payload) {
   const p = payload || {};
   const hasMedia = Boolean(p.videoUrl || p.imageUrl || p.generatedImageUrl || (Array.isArray(p.mediaPackUrls) && p.mediaPackUrls.length));
@@ -9114,4 +9209,43 @@ setTimeout(function() {
 
 server.listen(PORT, "0.0.0.0", function() {
   console.log("News Factory listening on :" + PORT);
+
+  if (EDITORIAL_V2_ENABLED && ANTHROPIC_API_KEY) {
+    setTimeout(async function() {
+      try {
+        const probe = await anthropicEditorialProbe(true);
+        console.log("EDITORIAL_V2_CHECKER_HEALTH " + JSON.stringify({
+          provider: "anthropic",
+          ok: Boolean(probe.ok),
+          model: probe.ok ? probe.model : ANTHROPIC_MODEL,
+          structured: Boolean(probe.structured),
+          error: probe.ok ? "" : String(probe.error || "").slice(0, 180)
+        }));
+
+        if (probe.ok) {
+          for (const ws of workspaceStore.workspaces) {
+            await workspaceContext.run({ workspaceId: ws.id }, async function() {
+              const result = await retryUnavailableEditorialQueueItems();
+              if (result.checked) {
+                console.log("EDITORIAL_V2_RETRY " + JSON.stringify({
+                  workspace: ws.id,
+                  checked: result.checked,
+                  repaired: result.repaired,
+                  held: result.held,
+                  skipped: result.skipped
+                }));
+              }
+            });
+          }
+        }
+      } catch (error) {
+        console.warn("EDITORIAL_V2_CHECKER_HEALTH " + JSON.stringify({
+          provider: "anthropic",
+          ok: false,
+          model: ANTHROPIC_MODEL,
+          error: String(error && error.message || error).slice(0, 180)
+        }));
+      }
+    }, 2500);
+  }
 });
