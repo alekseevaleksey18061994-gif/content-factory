@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { safeFetch } from "./lib/safe-fetch.js";
 import { assertSafeRaster, SAFE_INPUT_PIXELS } from "./lib/image-guard.js";
+import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
@@ -40,6 +41,16 @@ const TELEGRAM_PUBLIC_USERNAME = String(process.env.TELEGRAM_PUBLIC_USERNAME || 
 const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(32).toString("hex");
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
 const ADMIN_UI_PASSWORD_SHA256 = String(process.env.ADMIN_UI_PASSWORD_SHA256 || "").trim().toLowerCase();
+// Optional salted hash ("scrypt$<salt hex>$<hash hex>", see lib/auth-guard.js hashPasswordScrypt). Preferred over SHA-256 / plain when set.
+const ADMIN_UI_PASSWORD_SCRYPT = String(process.env.ADMIN_UI_PASSWORD_SCRYPT || "").trim();
+// Railway puts exactly one proxy in front of the app; XFF entries to the left of it are client-controlled.
+const TRUSTED_PROXY_HOPS = Math.max(0, Math.min(5, Number(process.env.TRUSTED_PROXY_HOPS == null || process.env.TRUSTED_PROXY_HOPS === "" ? 1 : process.env.TRUSTED_PROXY_HOPS) || 0));
+const authFailureLimiter = createFailureLimiter({
+  maxFailures: Math.max(1, Number(process.env.AUTH_MAX_FAILURES || 8) || 8),
+  windowMs: 15 * 60 * 1000,
+  baseLockMs: 30 * 1000,
+  maxLockMs: 15 * 60 * 1000
+});
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
@@ -5732,6 +5743,23 @@ async function readJson(req, maxBytes) {
   return JSON.parse(body);
 }
 
+class BadRequestError extends Error {
+  constructor(message) { super(message); this.name = "BadRequestError"; this.statusCode = 400; }
+}
+
+// JSON body that must be an object: null / arrays / scalars / malformed JSON answer 400 instead of crashing into a 500.
+async function readJsonObject(req, maxBytes) {
+  let body;
+  try { body = await readJson(req, maxBytes); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new BadRequestError("invalid JSON");
+    if (/request too large/.test(String(error && error.message))) { const e = new BadRequestError("request too large"); e.statusCode = 413; throw e; }
+    throw error;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new BadRequestError("JSON object expected");
+  return body;
+}
+
 async function saveWorkspaceAvatar(workspace, dataUrl) {
   if (!workspace) throw new Error("Кабинет не найден");
   const raw = String(dataUrl || "").trim();
@@ -5793,12 +5821,43 @@ function parseCookies(req) {
   return out;
 }
 
+// Session epoch lives next to the other state on the persistent volume. Epoch 0 (nothing stored) keeps the
+// legacy token so cookies issued before this feature stay valid; "logout everywhere" bumps it.
+let sessionEpochStore = null;
+function getSessionEpochStore() {
+  if (!sessionEpochStore) sessionEpochStore = createSessionEpochStore(path.join(DATA_DIR, "session-epoch.json"));
+  return sessionEpochStore;
+}
+
 function sessionToken() {
-  return crypto.createHmac("sha256", ADMIN_KEY).update("news-factory-admin").digest("hex");
+  return sessionTokenFor(ADMIN_KEY, getSessionEpochStore().get());
 }
 
 function isAuthed(req) {
-  return parseCookies(req).nf_session === sessionToken();
+  const provided = parseCookies(req).nf_session;
+  return typeof provided === "string" && provided.length > 0 && safeEqual(provided, sessionToken());
+}
+
+function requestClientIp(req) {
+  return proxyClientIp(req, TRUSTED_PROXY_HOPS);
+}
+
+// x-admin-key check for the machine endpoints: constant-time, and failures count towards the per-IP lockout.
+// Returns true when authorised; otherwise has already answered 401/429 and returns false.
+function requireAdminKey(req, res) {
+  const ip = requestClientIp(req);
+  const gate = authFailureLimiter.check(ip);
+  if (!gate.allowed) {
+    sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(gate.retryAfterSec), "cache-control": "no-store" });
+    return false;
+  }
+  if (!safeEqual(req.headers["x-admin-key"], ADMIN_KEY)) {
+    authFailureLimiter.fail(ip);
+    sendJson(res, 401, { ok: false, error: "unauthorized" });
+    return false;
+  }
+  authFailureLimiter.success(ip);
+  return true;
 }
 
 function requireAuth(req, res) {
@@ -9759,31 +9818,52 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/login") {
-      const body = await readJson(req);
-      const providedPassword = String(body.password || "");
-      const providedHash = crypto.createHash("sha256").update(providedPassword).digest("hex");
-      const hashConfigured = /^[a-f0-9]{64}$/.test(ADMIN_UI_PASSWORD_SHA256);
-      const hashMatches = hashConfigured &&
-        crypto.timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(ADMIN_UI_PASSWORD_SHA256, "hex"));
-      const plainMatches = !hashConfigured && Boolean(ADMIN_UI_PASSWORD) && providedPassword === ADMIN_UI_PASSWORD;
-      if (!hashMatches && !plainMatches) {
+      const loginIp = requestClientIp(req);
+      const loginGate = authFailureLimiter.check(loginIp);
+      if (!loginGate.allowed) {
+        return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(loginGate.retryAfterSec), "cache-control": "no-store" });
+      }
+      const body = await readJsonObject(req);
+      const providedPassword = String(body.password == null ? "" : body.password).slice(0, 1024);
+      let passwordOk = false;
+      if (ADMIN_UI_PASSWORD_SCRYPT) {
+        passwordOk = verifyPasswordScrypt(providedPassword, ADMIN_UI_PASSWORD_SCRYPT);
+      } else if (/^[a-f0-9]{64}$/.test(ADMIN_UI_PASSWORD_SHA256)) {
+        // legacy unsalted SHA-256 stays supported; prefer ADMIN_UI_PASSWORD_SCRYPT
+        const providedHash = crypto.createHash("sha256").update(providedPassword).digest("hex");
+        passwordOk = crypto.timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(ADMIN_UI_PASSWORD_SHA256, "hex"));
+      } else if (ADMIN_UI_PASSWORD) {
+        passwordOk = safeEqual(providedPassword, ADMIN_UI_PASSWORD);
+      }
+      if (!passwordOk) {
+        authFailureLimiter.fail(loginIp);
         return sendJson(res, 401, { ok: false, error: "invalid password" });
       }
+      authFailureLimiter.success(loginIp);
       return sendJson(res, 200, { ok: true }, {
         "set-cookie": "nf_session=" + sessionToken() + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000"
       });
     }
 
     if (req.method === "POST" && p === "/api/logout") {
-      return sendJson(res, 200, { ok: true }, {
+      // {"everywhere": true} (authenticated) rotates the session epoch: every issued cookie stops working.
+      let everywhere = false;
+      if (isAuthed(req)) {
+        try { const b = await readJsonObject(req); everywhere = b.everywhere === true; } catch {}
+      }
+      if (everywhere) getSessionEpochStore().bump();
+      return sendJson(res, 200, { ok: true, everywhere: everywhere }, {
         "set-cookie": "nf_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
       });
     }
 
     if (req.method === "POST" && p === "/internal/vk-preview-test-page") {
-      const smokeAuthorized = req.headers["x-admin-key"] === ADMIN_KEY ||
+      const smokeAuthorized = safeEqual(req.headers["x-admin-key"], ADMIN_KEY) ||
         (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET));
-      if (!smokeAuthorized) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      if (!smokeAuthorized) {
+        authFailureLimiter.fail(requestClientIp(req));
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
         const marker = crypto.randomBytes(4).toString("hex");
         const preview = await createPublicPostPage({
@@ -9798,7 +9878,8 @@ const server = http.createServer(async function(req, res) {
         const preflight = await preflightPublicPostPage(preview);
         return sendJson(res, 200, { ok: true, preview: preview, preflight: preflight }, { "cache-control": "no-store" });
       } catch (error) {
-        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) }, { "cache-control": "no-store" });
+        console.error("vk-preview-test-page failed:", error);
+        return sendJson(res, 500, { ok: false, error: "internal error" }, { "cache-control": "no-store" });
       }
     }
 
@@ -9840,7 +9921,7 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "POST" && p === "/api/vk/oauth/capture") {
       try {
-        const body = await readJson(req);
+        const body = await readJsonObject(req);
         await captureVkOAuthToken(body.accessToken, body.state, body.userId);
         return sendJson(res, 200, { ok: true, verified: true });
       } catch (error) {
@@ -9874,7 +9955,8 @@ const server = http.createServer(async function(req, res) {
       try {
         return redirect(res, buildVkOAuthUrl());
       } catch (error) {
-        return sendJson(res, 500, { ok: false, error: String(error && error.message || error) });
+        console.error("vk oauth start failed:", error);
+        return sendJson(res, 500, { ok: false, error: "VK OAuth is not configured" });
       }
     }
 
@@ -9891,7 +9973,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId(), period), { "cache-control": "no-store" });
     }
     if (req.method === "POST" && p === "/api/costs/budget") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const b = networkCostBudgetState();
       if (Object.prototype.hasOwnProperty.call(body,"monthlyRub")) b.monthlyRub = Math.max(0, Number(body.monthlyRub || 0) || 0);
       if (Object.prototype.hasOwnProperty.call(body,"dailyRub")) b.dailyRub = Math.max(0, Number(body.dailyRub || 0) || 0);
@@ -9900,7 +9982,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res,200,{ok:true,budget:await evaluateCostBudget(true)});
     }
     if (req.method === "POST" && p === "/api/costs/balance") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const provider = String(body && body.provider || "").toLowerCase();
       const stored = networkApiBalances();
       const parsed = normalizeBalanceInput(provider, body, stored[provider], new Date());
@@ -9915,7 +9997,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, registry: loadEditorialRegistry() });
     }
     if ((req.method === "POST" || req.method === "PUT") && p === "/api/editorial/registry") {
-      const body = await readJson(req, 4 * 1024 * 1024);
+      const body = await readJsonObject(req, 4 * 1024 * 1024);
       const current = loadEditorialRegistry();
       const registry = saveEditorialRegistry({
         banned_orgs: body.banned_orgs != null ? body.banned_orgs : current.banned_orgs,
@@ -9951,7 +10033,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, profiles: EDITORIAL_CHANNEL_IDS, workspaces: workspaceStore.workspaces.map(function(ws){ return Object.assign(publicWorkspaceMeta(ws), { summary: workspaceSummary(ws) }); }) });
     }
     if (req.method === "POST" && p === "/api/workspaces") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const name = String(body.name || "").trim().slice(0, 80);
       if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название канала" });
       const tgChannel = normalizeTelegramChannelInput(body.telegramChannel || body.telegramPublicUsername || "");
@@ -9978,7 +10060,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 201, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
     if (req.method === "POST" && p === "/api/workspaces/update") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       if (body.name != null) workspace.name = String(body.name || "").trim().slice(0, 80) || workspace.name;
@@ -9999,7 +10081,7 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
     if (req.method === "POST" && p === "/api/workspaces/avatar") {
-      const body = await readJson(req, 10 * 1024 * 1024);
+      const body = await readJsonObject(req, 10 * 1024 * 1024);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       try {
@@ -10011,7 +10093,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/workspaces/avatar/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
       removeWorkspaceAvatar(workspace);
@@ -10019,7 +10101,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/workspaces/remove") {
-      const body = await readJson(req), id = String(body.id || "");
+      const body = await readJsonObject(req), id = String(body.id || "");
       if (!id || id === workspaceStore.defaultWorkspaceId) return sendJson(res, 400, { ok: false, error: "Основной кабинет удалить нельзя" });
       const deletingWorkspace = getWorkspaceById(id);
       if (!deletingWorkspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
@@ -10031,7 +10113,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/media/enhance-queue") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await backfillQueueImageEnhancements({ force: Boolean(body && body.force) });
       return sendJson(res, 200, { ok: true, result: result });
     }
@@ -10063,7 +10145,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/assign") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || "");
       const time = String(body.time || "");
       const queueId = String(body.queueId || "");
@@ -10094,7 +10176,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || "");
       const time = String(body.time || "");
       const schedule = ensureScheduleShape(state);
@@ -10106,7 +10188,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/calendar/auto") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const day = String(body.date || moscowDateKey(new Date()));
       const time = String(body.time || "");
       const schedule = ensureScheduleShape(state);
@@ -10183,7 +10265,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/ai/rewrite") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await callOpenAIRewrite(body);
       state.stats.rewritten += 1;
       saveState();
@@ -10191,7 +10273,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/mode") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const mode = String(body.mode || "");
       if (!["AUTO", "REVIEW", "PAUSED"].includes(mode)) {
         return sendJson(res, 400, { ok: false, error: "invalid mode" });
@@ -10209,7 +10291,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/topic-settings") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const topicId = String(body.topicId || body.topic_id || "default").trim() || "default";
       if (!state.topicSettings || typeof state.topicSettings !== "object") {
         state.topicSettings = structuredClone(defaultState.topicSettings);
@@ -10255,7 +10337,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Введите текст" });
 
@@ -10330,7 +10412,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const name = String(body.name || "").trim();
       const sourceUrl = String(body.url || "").trim();
       if (!name || !sourceUrl) return sendJson(res, 400, { ok: false, error: "Заполните название и ссылку" });
@@ -10345,13 +10427,13 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, result.ok ? 200 : 409, result);
     }
     if (req.method === "POST" && p === "/api/digest/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const result = await publishDigest(body.kind === "sunday" ? "sunday" : "evening", body.force === true);
       return sendJson(res, result.ok ? 200 : 409, result);
     }
 
     if (req.method === "POST" && p === "/api/sources/target") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const target = Math.max(0, Math.min(200, Math.round(Number(body.target))));
       if (!Number.isFinite(target)) return sendJson(res, 400, { ok: false, error: "Укажите число" });
       state.sourceTarget = target;
@@ -10362,7 +10444,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/media-license") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const src = state.sources.find(function(x){ return x.id === body.id; });
       if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
       const license = normalizeMediaLicense(body.mediaLicense);
@@ -10376,7 +10458,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/toggle") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const src = state.sources.find(function(x){ return x.id === body.id; });
       if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
       src.enabled = !src.enabled;
@@ -10391,7 +10473,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/sources/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const removed = state.sources.find(function(x){ return x.id === body.id; });
       // A source the editor removed is never re-added automatically.
       const removedHost = removed && sourceKey(removed.url);
@@ -10406,7 +10488,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "Нужен текст" });
       state.queue.unshift({
@@ -10430,7 +10512,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/remove") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       state.queue = state.queue.filter(function(x){ return x.id !== body.id; });
       removeQueueIdFromSchedule(state, body.id);
       ensureScheduleAssignments(state);
@@ -10439,7 +10521,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/enhance-media") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const item = (state.queue || []).find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
       if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — улучшать фото не требуется" });
@@ -10522,7 +10604,7 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/queue/publish") {
-      const body = await readJson(req);
+      const body = await readJsonObject(req);
       const item = state.queue.find(function(x){ return x.id === body.id; });
       if (!item) {
         const published = (state.history || []).find(function(h){ return h && h.queueId === body.id; });
@@ -10775,8 +10857,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/publish") {
-      if (req.headers["x-admin-key"] !== ADMIN_KEY) return sendJson(res, 401, { ok: false, error: "unauthorized" });
-      const body = await readJson(req);
+      if (!requireAdminKey(req, res)) return;
+      const body = await readJsonObject(req);
       const text = String(body.text || "").trim();
       if (!text) return sendJson(res, 400, { ok: false, error: "text is required" });
 
@@ -10832,8 +10914,13 @@ const server = http.createServer(async function(req, res) {
 
     return sendJson(res, 404, { ok: false, error: "not found" });
   } catch (error) {
-    console.error(error);
-    if (!res.headersSent) sendJson(res, 500, { ok: false, error: error.message });
+    if (error instanceof BadRequestError) {
+      if (!res.headersSent) sendJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+    // Full detail stays in the server log; the client only gets a generic message (no paths, SQL, upstream bodies).
+    console.error("REQUEST_FAILED " + req.method + " " + String(req.url || "").split("?")[0] + ":", error);
+    if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal error" });
   }
 });
 
