@@ -3712,6 +3712,29 @@ async function localImageFingerprint(mediaUrl) {
   }
 }
 
+// A source that puts the same picture on every article (its logo / default
+// share image) is detected by remembering recent main-photo fingerprints per source.
+function isSourcePlaceholderImage(sourceName, newsId, fp) {
+  if (!fp || !Array.isArray(fp.bits) || !sourceName) return false;
+  state.sourceImagePrints = state.sourceImagePrints && typeof state.sourceImagePrints === "object" ? state.sourceImagePrints : {};
+  const key = String(sourceName);
+  const list = Array.isArray(state.sourceImagePrints[key]) ? state.sourceImagePrints[key] : [];
+  const id = String(newsId || "");
+  const bits = fp.bits.join("");
+  // Near-identical picture (≤ 8% of hash bits differ) on another article of the same source.
+  const repeat = list.some(function(prev){
+    if (!prev || prev.id === id || typeof prev.bits !== "string" || prev.bits.length !== bits.length) return false;
+    let diff = 0;
+    for (let i = 0; i < bits.length; i += 1) if (prev.bits[i] !== bits[i]) diff += 1;
+    return diff <= Math.round(bits.length * 0.08);
+  });
+  if (!list.some(function(prev){ return prev && prev.id === id; })) {
+    list.push({ id: id, bits: bits, at: new Date().toISOString() });
+    state.sourceImagePrints[key] = list.slice(-15);
+  }
+  return repeat;
+}
+
 // Logos, brand cards and flat graphics have very low entropy (~0.5–4); real photos ~6.5–7.8.
 const MEDIA_MIN_PHOTO_ENTROPY = 5;
 function looksLikeGraphic(fp) { return Boolean(fp) && fp.entropy > 0 && fp.entropy < MEDIA_MIN_PHOTO_ENTROPY; }
@@ -3819,6 +3842,12 @@ async function prepareMediaDirector(payload) {
       const cached = String(prepared.imageUrl || "").trim();
       if (!cached) continue;
       const fp = await localImageFingerprint(cached);
+      if (!isExtra && fp && (looksLikeGraphic(fp) || isSourcePlaceholderImage(p.sourceName, p.id, fp))) {
+        // Main photo is a logo / brand card / the source's default share image
+        // (e.g. the VK logo on every VK press release): not a news photo.
+        console.log("MEDIA_PLACEHOLDER_SKIPPED " + JSON.stringify({ source: p.sourceName || "", news: p.id || "", entropy: Number(fp.entropy || 0).toFixed(2), url: key.slice(0, 160) }));
+        continue;
+      }
       if (isExtra) {
         // Extra photos must be large and genuinely different from the ones already chosen.
         if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT || looksLikeGraphic(fp)) continue;
@@ -10104,6 +10133,43 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("Source outcomes bootstrap failed:", error.message); });
 }, 45000);
+
+// One-time replacement of logo / brand-card main photos in the queue with a
+// generated cover (e.g. the VK logo taken from VK press releases).
+setTimeout(function() {
+  (async function(){
+    const migration = "v0.35.1-queue-logo-photos";
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        let replaced = 0, failed = 0;
+        for (const item of (state.queue || [])) {
+          if (!item || item.videoUrl || !item.imageUrl) continue;
+          const fp = await localImageFingerprint(item.imageUrl);
+          if (!fp || !looksLikeGraphic(fp)) continue;
+          try {
+            const generated = await generateNewsCover({ id: item.newsId || item.id, title: item.title, text: item.text, sourceName: item.sourceName || "" });
+            item.originalImageUrl = item.originalImageUrl || item.imageUrl;
+            item.imageUrl = "";
+            item.mediaPackUrls = [];
+            item.generatedImageUrl = generated.url;
+            item.mediaType = "generated";
+            item.mediaStatus = "generated";
+            item.mediaOrigin = "ai_generated";
+            item.generatedBy = generated.model;
+            item.generatedAt = new Date().toISOString();
+            replaced += 1;
+          } catch (error) { failed += 1; console.warn("Queue logo photo replace failed:", error.message); }
+        }
+        state.migrations.push(migration);
+        saveState();
+        console.log("Queue logo photos " + ws.id + ": " + JSON.stringify({ replaced: replaced, failed: failed }));
+      });
+    }
+  })().catch(function(error){ console.warn("Queue logo photos clean-up failed:", error.message); });
+}, 75000);
 
 // One-time clean-up of photo sets already in the queue (duplicates, logos, thumbnails).
 setTimeout(function() {
