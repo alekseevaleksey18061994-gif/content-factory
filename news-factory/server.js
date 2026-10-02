@@ -5,6 +5,8 @@ import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { safeFetch } from "./lib/safe-fetch.js";
+import { assertSafeRaster, SAFE_INPUT_PIXELS } from "./lib/image-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
@@ -3017,17 +3019,18 @@ async function loadPreviewSourceBytes(rawUrl) {
 
   const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
   if (!/^https:\/\//i.test(absolute)) throw new Error("Для preview требуется HTTPS-изображение");
-  const response = await fetch(absolute, {
+  // Third-party URL: SSRF-safe download with a hard size cap, raster formats only (no SVG).
+  const response = await safeFetch(absolute, {
     headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreview/1.0)" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(30000)
+    timeoutMs: 30000,
+    maxBytes: 20 * 1024 * 1024
   });
   if (!response.ok) throw new Error("Не удалось скачать preview-изображение: HTTP " + response.status);
   const type = String(response.headers.get("content-type") || "").toLowerCase();
   if (!type.startsWith("image/")) throw new Error("Preview-источник не является изображением");
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) throw new Error("Preview-изображение пустое");
-  if (bytes.length > 20 * 1024 * 1024) throw new Error("Preview-изображение слишком большое");
+  await assertSafeRaster(bytes);
   return bytes;
 }
 
@@ -3561,23 +3564,22 @@ async function enhanceNewsImage(payload) {
     bytes = fs.readFileSync(localFile);
   } else {
     if (!/^https?:\/\//i.test(imageUrl)) throw new Error("Нет исходного изображения для улучшения");
-    const sourceResponse = await fetch(imageUrl, {
+    const sourceResponse = await safeFetch(imageUrl, {
       headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryMedia/1.0)" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: 25 * 1024 * 1024
     });
     if (!sourceResponse.ok) throw new Error("Не удалось скачать исходное фото: HTTP " + sourceResponse.status);
-    bytes = Buffer.from(await sourceResponse.arrayBuffer());
+    bytes = sourceResponse.body;
   }
   if (!bytes || !bytes.length) throw new Error("Исходное изображение пустое");
   if (bytes.length > 25 * 1024 * 1024) throw new Error("Исходное изображение слишком большое");
 
-  let meta;
-  try { meta = await sharp(bytes).metadata(); } catch { throw new Error("Исходный файл не является изображением"); }
+  const meta = await assertSafeRaster(bytes);
   const width = Number(meta.width || 0);
   if (!width) throw new Error("Не удалось определить размер изображения");
 
-  let pipeline = sharp(bytes, { failOn: "none" }).rotate();
+  let pipeline = sharp(bytes, { failOn: "none", limitInputPixels: SAFE_INPUT_PIXELS }).rotate();
   if (width < ENHANCE_TARGET_WIDTH) {
     // Upscale at most 2x: beyond that interpolation only adds blur.
     pipeline = pipeline.resize({ width: Math.min(ENHANCE_TARGET_WIDTH, width * 2), kernel: "lanczos3", withoutEnlargement: false });
@@ -3607,28 +3609,29 @@ async function cacheSourceImage(imageUrl, id) {
   if (!sourceUrl) return "";
   if (isLocalMediaUrl(sourceUrl)) return sourceUrl;
 
-  const response = await fetch(sourceUrl, {
-    redirect: "follow",
+  const response = await safeFetch(sourceUrl, {
     headers: {
       "user-agent": "Mozilla/5.0 (compatible; NewsFactory/1.0; +https://news-factory-api-production.up.railway.app)",
-      "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      "accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
     },
-    signal: AbortSignal.timeout(30000)
+    timeoutMs: 30000,
+    maxBytes: 20 * 1024 * 1024
   });
   if (!response.ok) throw new Error("Фото источника HTTP " + response.status);
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
   if (!contentType.startsWith("image/")) throw new Error("Источник вернул не изображение");
 
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) throw new Error("Фото источника пустое");
   if (bytes.length > 20 * 1024 * 1024) throw new Error("Фото источника больше 20 МБ");
+  await assertSafeRaster(bytes); // jpeg/png/webp/gif/avif only: SVG is never rasterised
 
   ensureDataDir();
   const safeId = String(id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 70);
   const fileName = "source_" + safeId + "_" + Date.now() + ".webp";
   const filePath = path.join(MEDIA_DIR, fileName);
 
-  await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+  await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
     .rotate()
     .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
     .webp({ quality: 90 })
@@ -4362,12 +4365,13 @@ function extractArticleLinks(html, sourceUrl) {
 }
 
 async function fetchText(url, timeoutMs) {
-  const response = await fetch(url, {
+  // Source pages are third-party: SSRF-safe client (public IPs only, re-validated redirects, size cap).
+  const response = await safeFetch(url, {
     headers: {
       "user-agent": "Mozilla/5.0 (compatible; NewsFactoryBot/0.6; +https://news-factory-api-production.up.railway.app)"
     },
-    redirect: "follow",
-    signal: AbortSignal.timeout(timeoutMs || 15000)
+    timeoutMs: timeoutMs || 15000,
+    maxBytes: 5 * 1024 * 1024
   });
   if (!response.ok) throw new Error("HTTP " + response.status + " " + url);
   const type = response.headers.get("content-type") || "";
@@ -5992,17 +5996,18 @@ async function loadTelegramUpload(rawUrl, kind) {
     bytes = fs.readFileSync(localPath);
   } else {
     const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
-    const response = await fetch(absolute, {
+    const response = await safeFetch(absolute, {
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegram/1.0)",
-        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
       },
-      redirect: "follow",
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: kind === "video" ? 50 * 1024 * 1024 : 20 * 1024 * 1024
     });
     if (!response.ok) throw new Error("Telegram media download HTTP " + response.status);
     mime = String(response.headers.get("content-type") || mime).split(";")[0].trim() || mime;
-    bytes = Buffer.from(await response.arrayBuffer());
+    bytes = response.body;
+    if (kind !== "video" && bytes.length) await assertSafeRaster(bytes); // no SVG / non-raster payloads
   }
 
   if (!bytes || !bytes.length) throw new Error("Telegram media is empty");
@@ -6010,7 +6015,7 @@ async function loadTelegramUpload(rawUrl, kind) {
     if (bytes.length > 49 * 1024 * 1024) throw new Error("Видео больше лимита Telegram Bot API");
   } else {
     if (bytes.length > 9 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/i.test(mime)) {
-      bytes = await sharp(bytes, { limitInputPixels: 80 * 1000 * 1000 })
+      bytes = await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
         .rotate()
         .resize(1800, 1800, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality: 88, mozjpeg: true })
@@ -6573,11 +6578,24 @@ async function downloadVkImage(imageUrl, context) {
   if (!sourceUrl) throw createVkError("image.download", "no_image", "No image URL for VK publication", context);
   if (sourceUrl.startsWith("/")) sourceUrl = PUBLIC_BASE_URL + sourceUrl;
 
+  // Our own cached media is read from disk (no self-HTTP round trip, no SSRF surface).
+  const localVkPath = localMediaPathFromUrl(sourceUrl);
+  if (localVkPath) {
+    let localBytes = null;
+    try { localBytes = fs.readFileSync(localVkPath); } catch {}
+    if (localBytes && localBytes.length) {
+      const localExt = path.extname(localVkPath).replace(/^\./, "").toLowerCase();
+      const localMime = localExt === "png" ? "image/png" : localExt === "webp" ? "image/webp" : "image/jpeg";
+      return { bytes: localBytes, mime: localMime, ext: localExt === "png" ? "png" : localExt === "webp" ? "webp" : "jpg" };
+    }
+  }
+
   let response;
   try {
-    response = await fetch(sourceUrl, {
+    response = await safeFetch(sourceUrl, {
       headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryVK/1.0)" },
-      signal: AbortSignal.timeout(30000)
+      timeoutMs: 30000,
+      maxBytes: 20 * 1024 * 1024
     });
   } catch (error) {
     logVkError("image.download", "network", error && error.message || error, context);
@@ -6589,10 +6607,16 @@ async function downloadVkImage(imageUrl, context) {
     throw createVkError("image.download", response.status, "Image HTTP " + response.status, context);
   }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = response.body;
   if (!bytes.length) {
     logVkError("image.download", "empty", "Downloaded image is empty", context);
     throw createVkError("image.download", "empty", "Downloaded image is empty", context);
+  }
+  try {
+    await assertSafeRaster(bytes);
+  } catch (error) {
+    logVkError("image.download", "not_raster", error && error.message || error, context);
+    throw createVkError("image.download", "not_raster", error && error.message || error, context);
   }
 
   const mime = String(response.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
