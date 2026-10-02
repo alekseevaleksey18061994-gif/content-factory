@@ -14,10 +14,13 @@ import {
   createModelClients,
   resolveChannelId,
   timeSlotFor,
+  moscowIso,
   legacyScores,
   loadPrompt as loadEditorialPrompt,
   CHANNEL_IDS as EDITORIAL_CHANNEL_IDS
 } from "./lib/editorial-v2.js";
+import { matchRegistry as matchEditorialRegistry } from "./lib/editorial-registry.js";
+import { CAPTION_VISIBLE_LIMIT, TELEGRAM_CAPTION_HARD_LIMIT, visibleLength, trimPostPreservingTail, missingProtected } from "./lib/telegram-caption.js";
 import {
   COST_STATE_MIGRATION_ID,
   collectLegacyCostRows,
@@ -5870,34 +5873,25 @@ function formatTelegramPost(post) {
   return html.trim();
 }
 
+// Telegram counts VISIBLE characters (tags and link URLs are free); see lib/telegram-caption.js.
+// The body is shortened, legal marks / hashtags / signature are always kept.
+function telegramCaptionFits(html) { return visibleLength(html) <= TELEGRAM_CAPTION_HARD_LIMIT; }
+
 function trimPostToCaptionLimit(post, limit) {
-  const max = Number(limit || 900);
-  const out = Object.assign({}, post);
-  let text = String(out.text || "").trim();
-  let html = formatTelegramPost(out);
-  while (html.length > max && text.length > 140) {
-    const over = html.length - max;
-    let target = Math.max(140, text.length - over - 40);
-    let cut = text.slice(0, target).trim();
-    const punct = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf("\n"));
-    if (punct > Math.floor(target * 0.55)) cut = cut.slice(0, punct + 1).trim();
-    text = cut.replace(/[\s,;:–—-]+$/g, "") + "…";
-    out.text = text;
-    html = formatTelegramPost(out);
-  }
-  return out;
+  return trimPostPreservingTail(post, limit || CAPTION_VISIBLE_LIMIT, formatTelegramPost);
 }
 
 async function preparePostForSingleTelegramCaption(post) {
   const original = Object.assign({}, post);
   const channelName = String(currentWorkspace().name || "News Factory");
-  if (formatTelegramPost(original).length <= 900) return original;
+  if (visibleLength(formatTelegramPost(original)) <= CAPTION_VISIBLE_LIMIT) return original;
 
   if (OPENAI_API_KEY) {
     const prompt = [
       "Сожми готовый новостной пост канала «" + channelName + "» так, чтобы он целиком поместился в подпись к одному фото/видео Telegram.",
       "Сохрани только факты из исходного готового поста. Ничего не добавляй и не меняй цифры, имена, компании, даты и смысл.",
       "Заголовок до 90 знаков. Текст 430–620 знаков. 3–5 коротких абзацев.",
+      "Обязательно сохрани дословно: юридические пометки в скобках (иноагент, запрещённая организация), строку с хэштегами и подпись канала (@имя) в самом конце, строку «👉 Больше про…», если она есть.",
       "Можно сохранить 1–2 выделения **жирным** и максимум одну строку > для важного факта.",
       "Не добавляй слово «Источник» — ссылку добавит система.",
       "Верни строго JSON: {\"title\":\"...\",\"text\":\"...\"}.",
@@ -5928,15 +5922,22 @@ async function preparePostForSingleTelegramCaption(post) {
           title: String(parsed.title || original.title || "").trim(),
           text: String(parsed.text || "").trim()
         });
-        if (compact.text && formatTelegramPost(compact).length <= 900) return compact;
-        return trimPostToCaptionLimit(compact, 900);
+        // The rewrite runs after the fact-check: never accept one that lost legal marks,
+        // hashtags or the signature; fall back to the deterministic trim of the checked text.
+        const lost = missingProtected(original.text, compact.text);
+        if (lost.length) {
+          console.warn("TELEGRAM_CAPTION_COMPACT_REJECTED " + JSON.stringify({ lost: lost.slice(0, 5) }));
+          break;
+        }
+        if (compact.text && visibleLength(formatTelegramPost(compact)) <= CAPTION_VISIBLE_LIMIT) return compact;
+        return trimPostToCaptionLimit(compact, CAPTION_VISIBLE_LIMIT);
       } catch (error) {
         console.warn("Telegram caption compact failed:", error.message);
       }
     }
   }
 
-  return trimPostToCaptionLimit(original, 900);
+  return trimPostToCaptionLimit(original, CAPTION_VISIBLE_LIMIT);
 }
 
 function normalizePublishTargets(value) {
@@ -6108,7 +6109,7 @@ async function sendTelegramPost(post) {
     try {
       return await telegramMediaApi("sendVideo", {
         chat_id: telegramChannel,
-        caption: html.length <= 1000 ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
+        caption: telegramCaptionFits(html) ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
         parse_mode: "HTML",
         supports_streaming: true
       }, "video", videoUrl, "video");
@@ -6134,7 +6135,7 @@ async function sendTelegramPost(post) {
 
   imageUrl = String(post.imageUrl || post.generatedImageUrl || "").trim();
 
-  if (imageUrl && html.length <= 950) {
+  if (imageUrl && telegramCaptionFits(html)) {
     try {
       return await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
@@ -6193,7 +6194,7 @@ async function sendTelegramPost(post) {
         parse_mode: "HTML"
       }, "photo", imageUrl, "image");
     }
-    if (html && html.length > 950) {
+    if (html && !telegramCaptionFits(html)) {
       await telegramApi("sendMessage", {
         chat_id: telegramChannel,
         text: html,
@@ -7877,7 +7878,7 @@ const EDITORIAL_REGISTRY_FILE = path.join(DATA_DIR, "editorial-registry.json");
 const DEFAULT_EDITORIAL_REGISTRY = {
   // Organisations designated as extremist and banned in RF; journalists must mark them.
   banned_orgs: ["Meta Platforms", "Instagram", "Facebook"],
-  // Fill from the official Ministry of Justice register via the admin API.
+  // Not filled automatically: load from the official Ministry of Justice register via the admin API (POST /api/editorial/registry).
   foreign_agents: [],
   updatedAt: ""
 };
@@ -7915,17 +7916,11 @@ function saveEditorialRegistry(raw) {
 
 // Only names that actually occur in the sources are sent to the model: the full
 // register can be thousands of lines and must not bloat every request.
+// Matching is word-based with Russian stems and aliases (lib/editorial-registry.js);
+// a built-in list of banned organisations (Meta/Facebook/Instagram, ...) is always checked
+// in addition to the administrator's lists.
 function editorialRegistryForSources(sourceText) {
-  const registry = loadEditorialRegistry();
-  const hay = String(sourceText || "").toLowerCase();
-  const hit = function(name) {
-    const n = String(name || "").toLowerCase();
-    return n.length >= 3 && hay.includes(n);
-  };
-  return {
-    banned_orgs: registry.banned_orgs.filter(hit),
-    foreign_agents: registry.foreign_agents.filter(hit)
-  };
+  return matchEditorialRegistry(loadEditorialRegistry(), sourceText);
 }
 
 let editorialPipelineInstance = null;
@@ -7981,6 +7976,7 @@ function editorialRecentPosts(limit) {
       return {
         date: item.publishedAt,
         title: String(item.title || "").slice(0, 160),
+        text: stripHtml(String(item.text || "")).replace(/\s+/g, " ").trim().slice(0, 300),
         format: v2.format || item.contentFormatLabel || item.contentFormat || "",
         hook_type: v2.hookType || "",
         ending_type: v2.endingType || "",
@@ -8052,10 +8048,11 @@ async function runEditorialV2(sources, options) {
   const publishAt = new Date(Date.now() + 60 * 60 * 1000);
   const sourceText = sources.map(function(s){ return String(s.title || "") + "\n" + String(s.text || ""); }).join("\n\n");
   const request = {
-    now: new Date().toISOString(),
+    now: moscowIso(new Date()),
     news_id: String(opts.newsId || opts.news_id || ""),
     mode: opts.mode === "digest" ? "digest" : "post",
     time_slot: opts.timeSlot || timeSlotFor(publishAt),
+    vk_enabled: VK_PUBLISH_ENABLED && workspaceVkPublishingAllowed(currentWorkspace()),
     signature: editorialSignature(),
     posts_today: editorialPostsToday(),
     daily_limit: editorialDailyLimit(),
