@@ -598,6 +598,7 @@ button,.quick button,.quick a{
 }
 .news-refresh-btn:disabled{opacity:.65;cursor:wait}
 .news-badges{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}
+.card-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:0 0 auto;max-width:48%}.rating-mini{width:158px;max-width:100%;border:1px solid rgba(111,147,255,.28);background:rgba(111,147,255,.06);border-radius:12px;padding:7px 9px;cursor:pointer;font-size:10px;line-height:1.25}.rating-mini-top{display:flex;align-items:baseline;gap:2px;margin-bottom:4px}.rating-mini-top b{font-size:18px;font-weight:900}.rating-mini-top small{font-size:10px;opacity:.6;font-weight:700}.rating-mini-top .rating-grade{margin-left:auto;font-size:9px;padding:2px 6px}.rating-mini-row{display:grid;grid-template-columns:1fr auto;gap:1px 6px;margin-top:3px}.rating-mini-row span{font-weight:700}.rating-mini-row em{font-style:normal;font-weight:800}.rating-mini-row i{grid-column:1 / -1;height:3px;border-radius:9px;background:rgba(128,140,160,.2);overflow:hidden}.rating-mini-row u{display:block;height:100%;background:linear-gradient(90deg,#20c7ff,#625bff)}.rating-mini-note{display:none;grid-column:1 / -1;opacity:.7;margin-top:1px}.rating-mini.open .rating-mini-note{display:block}.rating-mini-hint{margin-top:5px;opacity:.55;text-align:right}.rating-mini.open .rating-mini-hint{display:none}.rating-mini.open{width:200px}
 .rating-box{margin-top:10px;border:1px solid rgba(111,147,255,.28);background:rgba(111,147,255,.06);border-radius:14px;padding:10px 12px}.rating-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}.rating-total{font-size:22px;font-weight:900;letter-spacing:-.01em}.rating-total small{font-size:12px;font-weight:700;opacity:.65;margin-left:3px}.rating-grade{font-size:11px;font-weight:800;border-radius:999px;padding:3px 9px;border:1px solid currentColor}.rating-grade.g1{color:#1a9a5b}.rating-grade.g2{color:#2f6fe0}.rating-grade.g3{color:#c98a12}.rating-grade.g4{color:#c0392b}.rating-rows{display:grid;gap:6px;margin-top:8px}.rating-row{display:grid;grid-template-columns:minmax(0,1fr) 54px;gap:2px 10px;align-items:center;font-size:11px}.rating-row-label{font-weight:700}.rating-row-pts{text-align:right;font-weight:800;white-space:nowrap}.rating-row-bar{grid-column:1 / -1;height:5px;border-radius:99px;background:rgba(128,140,160,.2);overflow:hidden}.rating-row-bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#20c7ff,#625bff)}.rating-row-note{grid-column:1 / -1;opacity:.7;line-height:1.35}
 .feed-why{margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.45;background:rgba(138,148,166,.12);border:1px solid rgba(138,148,166,.3)}.feed-why b{font-weight:800}.feed-why.bad{background:rgba(255,107,115,.08);border-color:rgba(255,107,115,.3);color:#c0392b}
 .news-score-badge{color:#c9d6ff;border-color:rgba(111,147,255,.32);background:rgba(111,147,255,.07)}
@@ -2568,7 +2569,7 @@ function postRating(x){
   if(v2.importance!=null&&Number.isFinite(imp)){impPts=Math.round(Math.max(0,Math.min(10,imp))*4);impNote='Редакция оценила важность на '+imp+' из 10';}
   else if(Number.isFinite(Number(x.aiScore))&&x.aiScore!==''&&x.aiScore!=null){impPts=Math.round(Math.max(0,Math.min(100,Number(x.aiScore)))*0.4);impNote='Оценка AI '+Math.round(Number(x.aiScore))+' из 100';}
   else{impPts=0;impNote='Важность не оценена';}
-  parts.push({label:'Важность для читателя',got:impPts,max:40,note:impNote});
+  parts.push({label:'Важность для читателя',short:'Важность',got:impPts,max:40,note:impNote});
 
   var rounds=Number(v2.rounds)||0,verdict=String(v2.verdict||''),st=String(v2.status||'');
   var chk,chkNote;
@@ -2581,7 +2582,7 @@ function postRating(x){
   else if(x.qcStatus==='pass'){chk=18;chkNote='Пройдена старая проверка качества';}
   else if(x.qcStatus==='hold'){chk=8;chkNote='Ждёт ручной проверки';}
   else{chk=10;chkNote='Двойная проверка не проводилась';}
-  parts.push({label:'Проверка фактов',got:chk,max:25,note:chkNote});
+  parts.push({label:'Проверка фактов',short:'Факты',got:chk,max:25,note:chkNote});
 
   var pub=new Date(x.articlePublishedAt||0).getTime(),found=new Date(x.foundAt||0).getTime(),fr,frNote;
   if(pub>0&&found>0&&found>=pub-5*60000){
@@ -2589,11 +2590,11 @@ function postRating(x){
     fr=h<=2?15:h<=6?12:h<=12?9:h<=24?5:2;
     frNote='Взяли через '+(h<1?Math.max(1,Math.round(h*60))+' мин':Math.round(h)+' ч')+' после выхода';
   }else{fr=10;frNote='Время выхода источника неизвестно';}
-  parts.push({label:'Свежесть',got:fr,max:15,note:frNote});
+  parts.push({label:'Свежесть',short:'Свежесть',got:fr,max:15,note:frNote});
 
   var md=x.mediaKind||'none';
   var mPts={video:10,photo:8,generated:5,none:0}[md];if(mPts==null)mPts=0;
-  parts.push({label:'Медиа',got:mPts,max:10,note:{video:'Видео',photo:'Фото источника',generated:'AI-обложка',none:'Нет медиа'}[md]||'Нет медиа'});
+  parts.push({label:'Медиа',short:'Медиа',got:mPts,max:10,note:{video:'Видео',photo:'Фото источника',generated:'AI-обложка',none:'Нет медиа'}[md]||'Нет медиа'});
 
   var sc=Number(x.sourceCount)||0,role=String(x.sourceRole||''),sPts,sNote;
   if(sc>1){sPts=10;sNote='Подтверждено '+sc+' источниками';}
@@ -2601,11 +2602,21 @@ function postRating(x){
   else if(role==='media_context'){sPts=7;sNote='СМИ';}
   else if(role==='author_opinion'){sPts=5;sNote='Блогер / мнение автора';}
   else{sPts=6;sNote='Один источник';}
-  parts.push({label:'Источник',got:sPts,max:10,note:sNote});
+  parts.push({label:'Источник',short:'Источник',got:sPts,max:10,note:sNote});
 
   var total=parts.reduce(function(a,p){return a+p.got},0);
   var grade=total>=80?{label:'Отлично',cls:'g1'}:total>=65?{label:'Хорошо',cls:'g2'}:total>=50?{label:'Средне',cls:'g3'}:{label:'Слабо',cls:'g4'};
   return {total:total,grade:grade,parts:parts};
+}
+// Compact rating under the status badge; tap to see the reasons.
+function ratingMiniHtml(r){
+  return '<div class="rating-mini" onclick="event.stopPropagation();this.classList.toggle(\'open\')" title="Нажмите, чтобы увидеть, из чего сложился рейтинг">'+
+    '<div class="rating-mini-top"><b>'+r.total+'</b><small>/100</small><span class="rating-grade '+r.grade.cls+'">'+esc(r.grade.label)+'</span></div>'+
+    r.parts.map(function(p){
+      return '<div class="rating-mini-row"><span>'+esc(p.short||p.label)+'</span><em>'+p.got+'/'+p.max+'</em><i><u style="width:'+Math.round(p.got/p.max*100)+'%"></u></i>'+
+        (p.note?'<small class="rating-mini-note">'+esc(p.note)+'</small>':'')+'</div>';
+    }).join('')+
+    '<div class="rating-mini-hint">Подробнее ▾</div></div>';
 }
 function ratingBoxHtml(r){
   return '<div class="rating-box"><div class="rating-top"><div class="rating-total">'+r.total+'<small>из 100</small></div><span class="rating-grade '+r.grade.cls+'">'+esc(r.grade.label)+'</span></div>'+
@@ -3024,11 +3035,12 @@ function render(){
     var v2=q.editorialV2||{};
     var importance=Number.isFinite(Number(v2.importance))&&v2.importance!==null?Number(v2.importance):(Number.isFinite(aiScore)?Math.round(aiScore/10):null);
     var decision=queueDecision(q);
+    var queueRating=postRating({editorialV2:v2,aiScore:q.aiScore,qcStatus:q.qcStatus,status:q.status,articlePublishedAt:q.articlePublishedAt,foundAt:q.createdAt,mediaKind:q.videoUrl?'video':(sourceImage?'photo':(q.generatedImageUrl?'generated':'none')),sourceRole:q.sourceRole,sourceCount:storyCount});
     var mediaChip=q.videoUrl?{label:'Видео',cls:'found'}:(sourceImage?{label:'Фото источника',cls:'found'}:(q.generatedImageUrl?{label:'AI-обложка',cls:'generated'}:{label:'Нет медиа',cls:'bad'}));
     return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+
         '<div class="queue-copy">'+
-          '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status '+esc(decision.cls)+'">'+esc(decision.label)+'</span></div>'+
+          '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><div class="card-side"><span class="news-status '+esc(decision.cls)+'">'+esc(decision.label)+'</span>'+ratingMiniHtml(queueRating)+'</div></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
           (decision.reason?'<div class="queue-decision-reason '+esc(decision.cls)+'">'+esc(decision.reason)+'</div>':'')+
           '<div class="queue-chips">'+
@@ -3037,7 +3049,6 @@ function render(){
             (q.storyUpdateOf?'<span class="media-badge update-badge">Обновление сюжета</span>':'')+
           '</div>'+
           (storyNames?'<div class="story-source-line">Источники: '+esc(storyNames)+'</div>':'')+
-          ratingBoxHtml(postRating({editorialV2:v2,aiScore:q.aiScore,qcStatus:q.qcStatus,status:q.status,articlePublishedAt:q.articlePublishedAt,foundAt:q.createdAt,mediaKind:q.videoUrl?'video':(sourceImage?'photo':(q.generatedImageUrl?'generated':'none')),sourceRole:q.sourceRole,sourceCount:storyCount}))+
           (q.status==='media_failed'?'<div class="queue-meta" style="color:#ff8d94">VK media_failed · '+esc(q.vkMediaAttempts||0)+' попытки'+(q.vkError?' · '+esc(q.vkError):'')+'</div>':'')+
           '<div class="queue-text">'+esc(stripEditorialMarks(parts.text||''))+'</div>'+
           '<div class="card-click-note">Нажмите на карточку, чтобы посмотреть пост полностью</div>'+
@@ -3761,7 +3772,7 @@ async function loadNews(){
       var scheduleMeta=n.scheduledSlot?'<div class="news-runtime-meta">Слот: '+esc(n.scheduledSlot)+'</div>':'';
       var why=feedStatusReason(n,status);
       var scoreReason=why?'<div class="feed-why '+esc(why.cls)+'"><b>'+esc(why.title)+'</b> '+esc(why.text)+'</div>':(n.aiScoreReason?'<div class="news-score-reason">AI: '+esc(n.aiScoreReason)+'</div>':'');
-      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><div class="news-badges"><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div>'+scheduleMeta+'</div><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span></div>'+scoreReason+ratingBoxHtml(rating)+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
+      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><div class="news-badges"><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div>'+scheduleMeta+'</div><div class="card-side"><span class="news-status '+esc(status)+'">'+esc(statusRu(status))+'</span>'+ratingMiniHtml(rating)+'</div></div>'+scoreReason+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
       return '<article class="news-card" onclick="openNewsPreview(\''+n.id+'\')"><div class="news-card-body">'+media+main+'</div></article>';
     }).join(''):'<div class="empty">Пока ничего не найдено. Нажмите «Собрать сейчас».</div>';
   }catch(e){el('newsList').innerHTML='<div class="empty">Ошибка: '+esc(e.message)+'</div>'}
