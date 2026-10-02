@@ -2314,7 +2314,7 @@ button{line-height:1.2!important}
           <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>
           </button>
-          <div class="brand"><button class="mark network-dashboard-button" id="networkDashboardButton" type="button" onclick="goPage(\'networkPage\')" title="Общий дашборд" aria-label="Открыть общий дашборд">NF</button><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
+          <div class="brand"><button class="mark network-dashboard-button" id="networkDashboardButton" type="button" title="Общий дашборд" aria-label="Открыть общий дашборд">NF</button><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
         </div>
         <div class="top-actions">
           <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
@@ -3406,6 +3406,13 @@ function openRouteFromHash(){
   goPage(routePages[route]||'homePage',{fromHash:true,instant:true});
 }
 window.goPage=goPage;
+var networkDashboardButton=el('networkDashboardButton');
+if(networkDashboardButton){
+  networkDashboardButton.addEventListener('click',function(e){
+    e.preventDefault();
+    goPage('networkPage');
+  });
+}
 window.addEventListener('hashchange',openRouteFromHash);
 el('menuToggle').addEventListener('click',function(){setDrawer(true)});
 el('drawerClose').addEventListener('click',function(){setDrawer(false)});
