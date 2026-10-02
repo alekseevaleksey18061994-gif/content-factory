@@ -10,6 +10,8 @@ function has(re, message) { assert.match(src, re, message); }
 has(/MEDIA_DEFER_EXPENSIVE[\s\S]{0,160}"true"/, "deferred media must default on");
 has(/MEDIA_QUALITY_MIN_SCORE[\s\S]{0,120}62/, "media quality threshold must have a sane default");
 has(/EDITORIAL_QUEUE_TARGET[\s\S]{0,120}4/, "capacity gate target must default to four");
+has(/function editorialQueueReadyDepth\(/, "capacity depth must be synchronous");
+assert.doesNotMatch(src, /async function editorialQueueReadyDepth\(/, "capacity depth must not return a Promise");
 has(/function capacityGateDecision\(/, "capacity gate helper missing");
 has(/EDITORIAL_CAPACITY_DEFERRED/, "capacity gate must be observable");
 has(/prefilterScore\s*=\s*Math\.max/, "prefilter score must reach the capacity gate");
@@ -19,6 +21,7 @@ has(/function assessMediaQuality\(/, "media quality scorer missing");
 has(/MEDIA_QUALITY_REJECTED/, "bad media rejection must be logged");
 has(/async function sanitizeMediaPack[\s\S]{0,1800}assessMediaQuality/, "final sanitizer must reject a bad singleton too");
 has(/social_screenshot/, "social screenshots must be penalized");
+has(/hardReject = explicitLogoOrFlag \|\| looksLikeScreenshot\(fp\)/, "screenshots and explicit logo/flag media must be hard rejected");
 has(/logo_or_flag/, "logos and flags must be penalized");
 has(/mediaGoodRate/, "source media-quality feedback missing");
 
