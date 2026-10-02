@@ -98,6 +98,24 @@ test("F2 breaker: open for the cooldown, one retry after it, recovery reported o
   assert.deepEqual(b.snapshot(), {});
 });
 
+
+test("F2b breaker: billing/auth cool down longer than a transient outage", async () => {
+  let t = 1000;
+  const b = createProviderBreaker({
+    cooldownMs: 10000,
+    cooldownByKind: { billing: 60000, auth: 120000, outage: 5000 },
+    now: () => t
+  });
+  b.trip("openai", "no money", "billing");
+  t += 59000; assert.equal(b.isOpen("openai"), true);
+  t += 2000; assert.equal(b.isOpen("openai"), false);
+  b.trip("openai", "temporary outage", "outage");
+  t += 6000; assert.equal(b.isOpen("openai"), false);
+  b.trip("anthropic", "bad key", "auth");
+  t += 119000; assert.equal(b.isOpen("anthropic"), true);
+  t += 2000; assert.equal(b.isOpen("anthropic"), false);
+});
+
 test("F3 Responses request -> Claude request", async () => {
   assert.deepEqual(responsesRequestToClaude({ model: "m", input: "привет", max_output_tokens: 900 }), { system: "", messages: [{ role: "user", content: "привет" }], maxTokens: 900, temperature: undefined, expectsJson: false });
   const j = responsesRequestToClaude({ input: "дай json", max_output_tokens: 8000, text: { format: { type: "json_object" } } });

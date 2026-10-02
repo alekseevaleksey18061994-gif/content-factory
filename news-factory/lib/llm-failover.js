@@ -40,14 +40,21 @@ export function tripsBreaker(kind) { return kind === "billing" || kind === "auth
 export function createProviderBreaker(options) {
   const opt = options || {};
   const cooldownMs = Math.max(1000, Number(opt.cooldownMs || 10 * 60 * 1000));
+  const cooldownByKind = opt.cooldownByKind && typeof opt.cooldownByKind === "object" ? opt.cooldownByKind : {};
+  const cooldownFor = function(kind) {
+    const value = Number(cooldownByKind[String(kind || "")]);
+    return Number.isFinite(value) && value >= 1000 ? value : cooldownMs;
+  };
   const now = typeof opt.now === "function" ? opt.now : function() { return Date.now(); };
   const state = new Map();
   return {
     cooldownMs: cooldownMs,
+    cooldownFor: cooldownFor,
     trip: function(provider, reason, kind) {
       const prev = state.get(provider);
       const wasOpen = Boolean(prev && prev.until > now());
-      state.set(provider, { until: now() + cooldownMs, reason: String(reason || ""), kind: kind || "billing", since: wasOpen ? prev.since : now() });
+      const currentKind = kind || "billing";
+      state.set(provider, { until: now() + cooldownFor(currentKind), reason: String(reason || ""), kind: currentKind, since: wasOpen ? prev.since : now() });
       if (!wasOpen && typeof opt.onTrip === "function") { try { opt.onTrip(provider, String(reason || ""), kind || "billing"); } catch {} }
     },
     isOpen: function(provider) { const s = state.get(provider); return Boolean(s && s.until > now()); },

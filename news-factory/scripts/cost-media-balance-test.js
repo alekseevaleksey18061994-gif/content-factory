@@ -17,6 +17,7 @@ has(/prefilterScore\s*=\s*Math\.max/, "prefilter score must reach the capacity g
 has(/function looksLikeScreenshot\(/, "screenshot detector missing");
 has(/function assessMediaQuality\(/, "media quality scorer missing");
 has(/MEDIA_QUALITY_REJECTED/, "bad media rejection must be logged");
+has(/async function sanitizeMediaPack[\s\S]{0,1800}assessMediaQuality/, "final sanitizer must reject a bad singleton too");
 has(/social_screenshot/, "social screenshots must be penalized");
 has(/logo_or_flag/, "logos and flags must be penalized");
 has(/mediaGoodRate/, "source media-quality feedback missing");
@@ -31,6 +32,8 @@ const finalMedia = src.indexOf("const finalMedia = await finalizeApprovedMedia",
 assert.ok(qc >= 0 && finalMedia > qc, "expensive/final media work must happen only after QC");
 
 has(/Promise\.allSettled\(\[tgJob, vkJob\]\)/, "Telegram and VK must be attempted independently");
+has(/ANTHROPIC_HEALTH_CACHE_MIN[\s\S]{0,120}120/, "Claude health probe should default to a two-hour cache");
+has(/cooldownByKind[\s\S]{0,220}billing[\s\S]{0,220}auth[\s\S]{0,220}outage/, "provider breaker needs failure-specific cooldowns");
 has(/if \(\(selected\.telegram \|\| selected\.vk\) && !result\.telegramPublished && !result\.vkPublished\)/,
   "retry error should happen only when neither network published");
 

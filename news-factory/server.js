@@ -108,6 +108,7 @@ const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.E
 const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+const ANTHROPIC_HEALTH_CACHE_MIN = Math.max(10, Math.min(360, Number(process.env.ANTHROPIC_HEALTH_CACHE_MIN || 120) || 120));
 // Provider failover: OpenAI or Claude out of money (or down) -> the other one writes and checks, publishing goes on.
 const PROVIDER_FAILOVER_ENABLED = String(process.env.EDITORIAL_V2_PROVIDER_FAILOVER || "true").toLowerCase() !== "false";
 const ANTHROPIC_FALLBACK_WRITER_MODEL = String(process.env.ANTHROPIC_FALLBACK_WRITER_MODEL || "claude-sonnet-5-5").trim();
@@ -1729,6 +1730,11 @@ function maybeBillingAlert(text, forcedProvider) {
 // minutes (then retried once), so every post does not pay for a request that is certain to fail.
 const providerBreaker = createProviderBreaker({
   cooldownMs: PROVIDER_BREAKER_COOLDOWN_MIN * 60000,
+  cooldownByKind: {
+    billing: Math.max(PROVIDER_BREAKER_COOLDOWN_MIN, 60) * 60000,
+    auth: Math.max(PROVIDER_BREAKER_COOLDOWN_MIN, 240) * 60000,
+    outage: Math.min(PROVIDER_BREAKER_COOLDOWN_MIN, 5) * 60000
+  },
   onTrip: function(provider, reason, kind) {
     console.warn("PROVIDER_SWITCHED_OFF " + JSON.stringify({ provider: provider, kind: kind, failover: PROVIDER_FAILOVER_ENABLED, reason: String(reason || "").slice(0, 200) }));
     maybeBillingAlert(reason, provider);
@@ -4596,19 +4602,16 @@ function assessMediaQuality(fp, candidate) {
 async function sanitizeMediaPack(urls, maxCount) {
   const limit = Math.max(1, Number(maxCount || MEDIA_DIRECTOR_MAX_IMAGES));
   const list = Array.from(new Set((Array.isArray(urls) ? urls : []).map(function(u){ return String(u || "").trim(); }).filter(Boolean)));
-  if (list.length <= 1) return list;
+  if (!list.length) return [];
   const entries = [];
   for (const url of list) entries.push({ url: url, fp: await localImageFingerprint(url) });
-  if (looksLikeGraphic(entries[0].fp)) {
-    const photoIndex = entries.findIndex(function(e, i){ return i > 0 && e.fp && !looksLikeGraphic(e.fp) && e.fp.width >= MEDIA_EXTRA_MIN_WIDTH && !isLikelyThumbnailUrl(e.url); });
-    if (photoIndex > 0) entries.unshift(entries.splice(photoIndex, 1)[0]);
-  }
-  const kept = [entries[0]];
-  for (const e of entries.slice(1)) {
+  const kept = [];
+  for (const e of entries) {
     if (kept.length >= limit) break;
     if (!e.fp || isLikelyThumbnailUrl(e.url)) continue;
-    if (e.fp.width < MEDIA_EXTRA_MIN_WIDTH || e.fp.height < MEDIA_EXTRA_MIN_HEIGHT) continue;
-    if (looksLikeGraphic(e.fp)) continue;
+    const quality = assessMediaQuality(e.fp, { url: e.url, score: kept.length ? 55 : 80, reason: "sanitizer" });
+    if (!quality.pass) continue;
+    if (kept.length > 0 && (e.fp.width < MEDIA_EXTRA_MIN_WIDTH || e.fp.height < MEDIA_EXTRA_MIN_HEIGHT)) continue;
     if (kept.some(function(k){ return imageFingerprintsSimilar(k.fp, e.fp); })) continue;
     kept.push(e);
   }
@@ -9312,8 +9315,11 @@ async function openAIModelProbe() {
 
 async function anthropicEditorialProbe(force) {
   if (!ANTHROPIC_API_KEY) return { ok: false, error: "ANTHROPIC_API_KEY не задан" };
+  if (!force && providerBreaker.isOpen("anthropic")) {
+    return { ok: false, error: providerBreaker.reason("anthropic") || "Anthropic временно отключён circuit breaker", breaker: true };
+  }
   const now = Date.now();
-  if (!force && anthropicProbeCache.value && now - anthropicProbeCache.at < 10 * 60 * 1000) {
+  if (!force && anthropicProbeCache.value && now - anthropicProbeCache.at < ANTHROPIC_HEALTH_CACHE_MIN * 60 * 1000) {
     return anthropicProbeCache.value;
   }
   try {
