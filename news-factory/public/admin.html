@@ -2151,6 +2151,118 @@ button{line-height:1.2!important}
 .cg-title{align-items:flex-start!important;text-align:left!important}.cg-title b,.cg-title small{text-align:left!important;display:block}
 .account-avatar-upload-copy{min-width:0!important}.account-avatar-upload-actions button{min-width:0!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sc-m span{white-space:normal!important;line-height:1.15;font-size:9.5px!important}
+
+/* v0.42.4 — network dashboard + clickable NF */
+.network-dashboard-button{
+  appearance:none;
+  -webkit-appearance:none;
+  width:48px;
+  height:48px;
+  min-height:48px;
+  padding:0;
+  border-radius:15px;
+  display:grid;
+  place-items:center;
+  flex:0 0 48px;
+  color:#fff;
+  font-size:20px;
+  font-weight:900;
+  line-height:1;
+  border:1px solid rgba(255,255,255,.58);
+  background:linear-gradient(135deg,#27ddd9 0%,#159bff 62%,#655cff 100%);
+  box-shadow:0 10px 28px rgba(22,140,255,.22),0 3px 10px rgba(32,212,220,.17);
+  cursor:pointer;
+  transition:transform .16s ease,box-shadow .16s ease,filter .16s ease;
+}
+.network-dashboard-button:hover{
+  transform:translateY(-2px) scale(1.025);
+  filter:saturate(1.08);
+  box-shadow:0 14px 32px rgba(22,140,255,.28),0 4px 12px rgba(32,212,220,.20);
+}
+.network-dashboard-button:active{transform:scale(.97)}
+.network-dashboard-button:focus-visible{outline:3px solid rgba(22,140,255,.24);outline-offset:3px}
+#networkPage{
+  border-radius:28px;
+  padding:20px!important;
+  background:
+    radial-gradient(circle at 90% 9%,rgba(32,212,220,.12),transparent 31%),
+    radial-gradient(circle at 12% 86%,rgba(22,140,255,.08),transparent 33%),
+    linear-gradient(145deg,rgba(218,246,255,.88),rgba(225,241,255,.78));
+  border:1px solid rgba(76,151,198,.10);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.66);
+}
+.network-page-head{padding:4px 4px 8px}
+.network-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.network-layout{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(300px,.75fr);gap:18px}
+.network-account-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.network-account{
+  width:100%;
+  min-height:0;
+  padding:15px;
+  text-align:left;
+  border-radius:18px;
+  border:1px solid rgba(67,129,185,.16);
+  background:linear-gradient(150deg,rgba(255,255,255,.98),rgba(245,251,255,.92));
+  box-shadow:0 7px 20px rgba(45,98,144,.06),inset 0 1px 0 rgba(255,255,255,.98);
+  color:#081735;
+}
+.network-account:hover{
+  border-color:rgba(22,140,255,.30);
+  background:linear-gradient(150deg,#fff,rgba(239,249,255,.98));
+}
+.network-account-head{display:flex;align-items:center;gap:10px;min-width:0}
+.network-account .account-avatar{width:42px;height:42px;flex:0 0 42px;border-radius:13px}
+.network-account-copy{display:block;min-width:0;flex:1}
+.network-account-copy b{display:block;font-size:13px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.network-account-copy small{display:block;color:#667797;font-size:10.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.network-state{flex:0 0 auto;border-radius:999px;padding:5px 8px;font-size:9.5px;font-weight:800;border:1px solid rgba(79,117,154,.18);background:#f8fbff}
+.network-state.good{color:#12865c;border-color:rgba(24,182,123,.22);background:rgba(24,182,123,.08)}
+.network-state.warn{color:#a86b12;border-color:rgba(231,154,39,.25);background:rgba(231,154,39,.08)}
+.network-state.bad{color:#bd4450;border-color:rgba(239,94,105,.24);background:rgba(239,94,105,.08)}
+.network-account-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:12px}
+.network-account-metrics>span{display:block;border:1px solid rgba(75,137,193,.12);background:rgba(244,250,255,.74);border-radius:12px;padding:8px 9px}
+.network-account-metrics b{display:block;font-size:16px;line-height:1}
+.network-account-metrics small{display:block;color:#6a7d9a;font-size:9.5px;margin-top:4px}
+.network-account-warning,.network-account-ok{display:block;margin-top:10px;font-size:10.5px;line-height:1.35}
+.network-account-warning{color:#a86b12}
+.network-account-ok{color:#16865e}
+.network-attention-row{
+  width:100%;
+  min-height:0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  text-align:left;
+  padding:12px 2px;
+  border:0;
+  border-top:1px solid rgba(67,129,185,.14);
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+  color:#081735;
+}
+.network-attention-row:first-child{border-top:0}
+.network-attention-row:hover{transform:none;background:rgba(234,247,255,.54)}
+.network-attention-row b{display:block;font-size:12.5px}
+.network-attention-row small{display:block;color:#7a6a55;font-size:10.5px;line-height:1.35;margin-top:3px}
+.network-all-good{padding:16px;border-radius:16px;background:rgba(24,182,123,.07);border:1px solid rgba(24,182,123,.14)}
+.network-all-good b{display:block;color:#137b56;font-size:13px}
+.network-all-good small{display:block;color:#567b6e;font-size:10.5px;margin-top:4px}
+@media(max-width:1180px){
+  .network-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .network-layout{grid-template-columns:1fr}
+}
+@media(max-width:760px){
+  #networkPage{padding:14px!important;border-radius:22px}
+  .network-account-grid{grid-template-columns:1fr}
+  .network-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+}
+@media(max-width:560px){
+  .network-dashboard-button{width:52px;height:52px;min-height:52px;flex-basis:52px;border-radius:17px}
+  .network-kpis{grid-template-columns:1fr 1fr}
+}
+
 </style>
 </head>
 <body>
@@ -2202,7 +2314,7 @@ button{line-height:1.2!important}
           <button class="menu-toggle" id="menuToggle" type="button" aria-label="Открыть меню">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>
           </button>
-          <div class="brand"><div class="mark">NF</div><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
+          <div class="brand"><button class="mark network-dashboard-button" id="networkDashboardButton" type="button" title="Общий дашборд" aria-label="Открыть общий дашборд">NF</button><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
         </div>
         <div class="top-actions">
           <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
@@ -2221,6 +2333,42 @@ button{line-height:1.2!important}
           </div>
         </div>
       </div>
+
+      <section class="page" id="networkPage">
+        <div class="page-head network-page-head">
+          <div>
+            <h2>Общий дашборд</h2>
+            <p>Все каналы News Factory в одном месте: состояние, очередь, источники и публикации.</p>
+          </div>
+          <button type="button" onclick="renderNetworkDashboard()">Обновить</button>
+        </div>
+
+        <div class="network-kpis">
+          <div class="kpi"><b id="networkChannels">—</b><span>Каналов</span><small>Все аккаунты сети</small></div>
+          <div class="kpi"><b id="networkAuto">—</b><span>Автопубликация</span><small>Работают автоматически</small></div>
+          <div class="kpi"><b id="networkQueue">—</b><span>В очереди</span><small>По всем каналам</small></div>
+          <div class="kpi"><b id="networkSources">—</b><span>Источников</span><small>Активны сейчас</small></div>
+          <div class="kpi"><b id="networkPublished">—</b><span>Опубликовано</span><small>Суммарный счётчик</small></div>
+          <div class="kpi"><b id="networkIssues">—</b><span>Требует внимания</span><small>Каналы с настройками</small></div>
+        </div>
+
+        <div class="network-layout">
+          <div class="card network-accounts-card">
+            <div class="panel-title">
+              <div><h3>Все аккаунты</h3><p>Нажмите на канал, чтобы перейти в его кабинет.</p></div>
+              <span class="chip" id="networkAccountCount">—</span>
+            </div>
+            <div class="network-account-grid" id="networkAccounts"><div class="empty">Загрузка каналов…</div></div>
+          </div>
+
+          <div class="card network-attention-card">
+            <div class="panel-title">
+              <div><h3>Требует внимания</h3><p>Настройки, которые мешают полноценной автоматической работе.</p></div>
+            </div>
+            <div id="networkAttention"><div class="empty">Проверяю состояние…</div></div>
+          </div>
+        </div>
+      </section>
 
       <section class="page active" id="homePage">
         <div class="hero home-hero">
@@ -2975,7 +3123,7 @@ function renderWorkspaceChrome(){
   renderWorkspaceList();
 
   var currentRoute=(location.hash||'#home').slice(1);
-  if(el('topSubtitleText')&&currentRoute!=='system'&&currentRoute!=='connections'){
+  if(el('topSubtitleText')&&currentRoute!=='system'&&currentRoute!=='connections'&&currentRoute!=='network'){
     el('topSubtitleText').textContent=currentRoute==='account'?'Кабинет · '+(ws.name||'News Factory')+' · ':(ws.name||'News Factory')+' · ';
   }
 }
@@ -2995,6 +3143,71 @@ function wsDot(item){
   var title=wsCriticalMissing(item).length?'Не заполнено: '+wsCriticalMissing(item).map(function(k){return WS_MISSING_LABELS[k]}).join(', '):(s.autoPublish?'Автопубликация включена':'Автопубликация выключена');
   return '<i class="ws-dot '+cls+'" title="'+esc(title)+'"></i>';
 }
+function networkMissingLabels(item){
+  var missing=wsMissing(item);
+  return missing.map(function(k){return WS_MISSING_LABELS[k]||k});
+}
+function openWorkspaceFromNetwork(id){
+  if(!id)return;
+  activeWorkspaceId=id;
+  localStorage.setItem('nf_workspace',id);
+  location.hash='#home';
+  location.reload();
+}
+function renderNetworkDashboard(){
+  if(!Array.isArray(workspaces))return;
+  var total=workspaces.length;
+  var autoCount=0,queue=0,sources=0,published=0,issues=0;
+  workspaces.forEach(function(item){
+    var s=item.summary||{};
+    if(s.autoPublish)autoCount+=1;
+    queue+=Number(s.queue||0);
+    sources+=Number(s.sources||0);
+    published+=Number(s.published||0);
+    if(wsMissing(item).length)issues+=1;
+  });
+  if(el('networkChannels'))el('networkChannels').textContent=total;
+  if(el('networkAuto'))el('networkAuto').textContent=autoCount;
+  if(el('networkQueue'))el('networkQueue').textContent=queue;
+  if(el('networkSources'))el('networkSources').textContent=sources;
+  if(el('networkPublished'))el('networkPublished').textContent=published;
+  if(el('networkIssues'))el('networkIssues').textContent=issues;
+  if(el('networkAccountCount'))el('networkAccountCount').textContent=total+' '+(total===1?'канал':'каналов');
+
+  var accounts=el('networkAccounts');
+  if(accounts){
+    accounts.innerHTML=total?workspaces.map(function(item){
+      var s=item.summary||{};
+      var missing=networkMissingLabels(item);
+      var status=s.autoPublish?'Авто':(String(s.mode||'').toUpperCase()==='PAUSED'?'Пауза':'Контроль');
+      var statusClass=s.autoPublish?'good':(String(s.mode||'').toUpperCase()==='PAUSED'?'bad':'warn');
+      return '<button class="network-account" type="button" onclick="openWorkspaceFromNetwork(\''+esc(item.id)+'\')">'+
+        '<span class="network-account-head"><span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
+        '<span class="network-account-copy"><b>'+esc(item.name||'Канал')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
+        '<span class="network-state '+statusClass+'">'+esc(status)+'</span></span>'+
+        '<span class="network-account-metrics">'+
+          '<span><b>'+Number(s.queue||0)+'</b><small>очередь</small></span>'+
+          '<span><b>'+Number(s.sources||0)+'</b><small>источники</small></span>'+
+          '<span><b>'+Number(s.published||0)+'</b><small>вышло</small></span>'+
+        '</span>'+
+        (missing.length?'<span class="network-account-warning">Нужно настроить: '+esc(missing.slice(0,3).join(', '))+(missing.length>3?'…':'')+'</span>':'<span class="network-account-ok">Готов к работе</span>')+
+      '</button>';
+    }).join(''):'<div class="empty">Каналы ещё не созданы</div>';
+  }
+
+  var attention=el('networkAttention');
+  if(attention){
+    var problemItems=workspaces.filter(function(item){return wsMissing(item).length});
+    attention.innerHTML=problemItems.length?problemItems.map(function(item){
+      var labels=networkMissingLabels(item);
+      return '<button class="network-attention-row" type="button" onclick="openWorkspaceFromNetwork(\''+esc(item.id)+'\')">'+
+        '<span><b>'+esc(item.name||'Канал')+'</b><small>'+esc(labels.join(' · '))+'</small></span><span>→</span>'+
+      '</button>';
+    }).join(''):'<div class="network-all-good"><b>Все основные настройки заполнены</b><small>Критичных проблем по аккаунтам не найдено.</small></div>';
+  }
+}
+window.openWorkspaceFromNetwork=openWorkspaceFromNetwork;
+
 function renderWorkspaceMenu(){
   var menu=el('accountWorkspaceMenu');if(!menu)return;
   var search=el('accountMenuSearch');
@@ -3160,6 +3373,7 @@ async function removeWorkspace(id){
 
 function setDrawer(open){el('appSidebar').classList.toggle('mobile-open',!!open);el('drawerBackdrop').classList.toggle('open',!!open);document.body.classList.toggle('drawer-open',!!open)}
 var pageRoutes={
+  networkPage:'network',
   homePage:'home',
   sourcesPage:'sources',
   newsPage:'news',
@@ -3182,10 +3396,10 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',costsPage:'Расходы',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
+  var titles={networkPage:'Общий дашборд',homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',costsPage:'Расходы',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var workspaceName=currentWorkspaceMeta.name||'News Factory';
-  if(el('topSubtitleText'))el('topSubtitleText').textContent=id==='connectionsPage'?'Состояние News Factory, интеграции и хранение данных.':(id==='accountPage'?'Кабинет · '+workspaceName+' · ':workspaceName+' · ');
+  if(el('topSubtitleText'))el('topSubtitleText').textContent=id==='networkPage'?'Вся сеть каналов · ':id==='connectionsPage'?'Состояние News Factory, интеграции и хранение данных.':(id==='accountPage'?'Кабинет · '+workspaceName+' · ':workspaceName+' · ');
   if(el('topVersion'))el('topVersion').style.display=id==='connectionsPage'?'none':'inline';
   var hash='#'+pageRoutes[id];
   if(!options.fromHash&&location.hash!==hash)history.pushState(null,'',hash);
@@ -3194,6 +3408,7 @@ function goPage(id,options){
   if(id==='statsPage'){loadAnalytics(false);}
   if(id==='costsPage'){loadCosts(false);}
   if(id==='accountPage'){renderWorkspaceChrome();}
+  if(id==='networkPage'){renderNetworkDashboard();}
 }
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
@@ -3202,6 +3417,13 @@ function openRouteFromHash(){
   goPage(routePages[route]||'homePage',{fromHash:true,instant:true});
 }
 window.goPage=goPage;
+var networkDashboardButton=el('networkDashboardButton');
+if(networkDashboardButton){
+  networkDashboardButton.addEventListener('click',function(e){
+    e.preventDefault();
+    goPage('networkPage');
+  });
+}
 window.addEventListener('hashchange',openRouteFromHash);
 el('menuToggle').addEventListener('click',function(){setDrawer(true)});
 el('drawerClose').addEventListener('click',function(){setDrawer(false)});
@@ -3211,7 +3433,7 @@ document.addEventListener('click',function(e){var sw=el('accountSwitcher');if(sw
 document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListener('click',function(){goPage(btn.dataset.page)})});
 
 async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});if(activeWorkspaceId)opt.headers['x-workspace-id']=activeWorkspaceId;var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
-async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderConnections(false).catch(function(e){toast(e.message)})}
+async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderNetworkDashboard();renderConnections(false).catch(function(e){toast(e.message)})}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode('+ja(m)+')">'+labels[m]+'</button>'}).join('');
