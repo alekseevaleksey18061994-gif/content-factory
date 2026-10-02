@@ -13,6 +13,7 @@ import {
   createEditorialPipeline,
   createModelClients,
   resolveChannelId,
+  channelFreshnessHours,
   timeSlotFor,
   legacyScores,
   loadPrompt as loadEditorialPrompt,
@@ -141,6 +142,15 @@ const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
 const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
+// Articles whose page carries no publication date are judged by fetch time, but only for this long.
+const UNDATED_ARTICLE_MAX_AGE_HOURS = Math.max(2, Math.min(48, Number(process.env.UNDATED_ARTICLE_MAX_AGE_HOURS || 12)));
+// A link that fails transiently (download, writer outage, DB write) is retried this many times in total, then recorded as seen.
+const SKIP_RETRY_MAX = Math.max(1, Math.min(6, Number(process.env.SKIP_RETRY_MAX || 3)));
+// After a skipped link (stale, too short, unreachable) the collector opens up to this many further unseen links of the same source in the same run.
+const EXTRA_LINKS_PER_SOURCE = Math.max(0, Math.min(8, Number(process.env.EXTRA_LINKS_PER_SOURCE || 3)));
+// The same article (normalized URL or content hash) queued/published by another channel is skipped for this long.
+const CROSS_CHANNEL_DEDUPE_ENABLED = String(process.env.CROSS_CHANNEL_DEDUPE_ENABLED || "true").toLowerCase() !== "false";
+const CROSS_CHANNEL_DEDUPE_HOURS = Math.max(1, Math.min(168, Number(process.env.CROSS_CHANNEL_DEDUPE_HOURS || 48)));
 const AI_STRONG_NEWS_SCORE_RAW = Number(process.env.AI_STRONG_NEWS_SCORE || 75);
 const AI_STRONG_NEWS_SCORE = Math.max(60, Math.min(95, Number.isFinite(AI_STRONG_NEWS_SCORE_RAW) ? AI_STRONG_NEWS_SCORE_RAW : 75));
 const AI_TOP_NEWS_SCORE_RAW = Number(process.env.AI_TOP_NEWS_SCORE || 88);
@@ -345,12 +355,36 @@ function ensureDataDir() {
   try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
 }
 
-function normalizeDate(value) {
+// options.assumeMoscow: a timestamp without a zone ("2026-10-01T11:30:00") comes from a Russian site and means
+// Moscow time (+03:00); read as UTC it would look 3 hours newer than it is.
+function normalizeDate(value, options) {
   if (!value) return "";
-  const d = new Date(String(value).trim());
+  const raw = String(value).trim();
+  let d;
+  const naive = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/.exec(raw);
+  if (naive && options && options.assumeMoscow) d = new Date(naive[1] + "T" + naive[2] + "+03:00");
+  else d = new Date(raw);
   if (!Number.isFinite(d.getTime())) return "";
   if (d.getTime() > Date.now() + 24 * 60 * 60 * 1000) return "";
   return d.toISOString();
+}
+
+// Per-channel freshness (prompts/chto-tam.md section 2): the base limits (ARTICLE_MAX_AGE_HOURS, DYNAMIC_SLOT_MAX_AGE_HOURS,
+// QUEUE_MAX_AGE_HOURS) are for 24-hour channels and are scaled up for the 72-hour ones (science, world, home, food).
+function channelFreshnessFactor(ws) {
+  try {
+    const target = ws || currentWorkspace();
+    return channelFreshnessHours(resolveChannelId(target), 24) / 24;
+  } catch { return 1; }
+}
+function articleMaxAgeMs(ws) { return ARTICLE_MAX_AGE_HOURS * 3600000 * channelFreshnessFactor(ws); }
+function dynamicSlotMaxAgeMs(ws) { return DYNAMIC_SLOT_MAX_AGE_HOURS * 3600000 * channelFreshnessFactor(ws); }
+function queueMaxAgeHoursFor(ws) { return Math.min(96, QUEUE_MAX_AGE_HOURS * channelFreshnessFactor(ws)); }
+// A queue item whose article carried no date lives shorter: its age is only known from the fetch time.
+function dynamicItemMaxAgeMs(item) {
+  const base = dynamicSlotMaxAgeMs();
+  const undated = item && item.newsId && !item.articlePublishedAt;
+  return undated ? Math.min(base, UNDATED_ARTICLE_MAX_AGE_HOURS * 3600000) : base;
 }
 
 function moscowDateKey(date) {
@@ -430,9 +464,16 @@ function removeQueueIdFromSchedule(targetState, queueId) {
 }
 
 
-function pruneQueueItems(targetState) {
+function pruneQueueItems(targetState, options) {
   if (!targetState || !Array.isArray(targetState.queue)) return { removed: 0, expired: 0, overflow: 0 };
-  const cutoff = Date.now() - QUEUE_MAX_AGE_HOURS * 60 * 60 * 1000;
+  let factor = options && Number(options.factor) > 0 ? Number(options.factor) : 1;
+  if (!(options && options.factor)) {
+    try {
+      const owner = targetState === state ? currentWorkspace() : workspaceStore.workspaces.find(function(w){ return w && w.state === targetState; });
+      if (owner) factor = channelFreshnessFactor(owner);
+    } catch {}
+  }
+  const cutoff = Date.now() - QUEUE_MAX_AGE_HOURS * factor * 60 * 60 * 1000;
   let expired = 0;
   let overflow = 0;
   const manual = [];
@@ -451,7 +492,23 @@ function pruneQueueItems(targetState) {
     automatic.push(item);
   }
 
+  // Overflow drops the tail of this order, so it has to put the posts that can actually go out first:
+  // 0 = already assigned to a slot, 1 = approved and inside its publish window, 2 = approved but past it,
+  // 3 = on hold / rejected. Inside a tier the AI score decides (it used to decide alone, so a held post
+  // with a high score could push an approved, ready one out of the queue).
+  const assignedIds = new Set();
+  try {
+    const schedule = ensureScheduleShape(targetState);
+    Object.keys(schedule.assignments || {}).forEach(function(day){ Object.values(schedule.assignments[day] || {}).forEach(function(id){ if (id) assignedIds.add(id); }); });
+  } catch {}
+  const pruneTier = function(item) {
+    if (assignedIds.has(item.id)) return 0;
+    if (!isApprovedQueueItem(item)) return 3;
+    return dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item) ? 1 : 2;
+  };
   automatic.sort(function(a, b) {
+    const aTier = pruneTier(a), bTier = pruneTier(b);
+    if (aTier !== bTier) return aTier - bTier;
     const aAi = Number(a && a.aiScore);
     const bAi = Number(b && b.aiScore);
     const aScore = Number.isFinite(aAi) ? aAi : 0;
@@ -477,8 +534,8 @@ function pruneQueueItems(targetState) {
     targetState.stats.expired = Number(targetState.stats.expired || 0) + removed;
   }
   targetState.queuePolicy = {
-    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS,
-    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS,
+    articleMaxAgeHours: ARTICLE_MAX_AGE_HOURS * factor,
+    queueMaxAgeHours: QUEUE_MAX_AGE_HOURS * factor,
     queueMaxAutoItems: QUEUE_MAX_AUTO_ITEMS
   };
   cleanupScheduleAssignments(targetState);
@@ -601,7 +658,7 @@ function loadLegacyState() {
   }
 }
 
-function normalizeWorkspaceState(saved) {
+function normalizeWorkspaceState(saved, freshnessFactor) {
   const source = saved && typeof saved === "object" ? saved : {};
   const loaded = Object.assign({}, structuredClone(defaultState), source);
   loaded.sources = Array.isArray(source.sources) ? source.sources : structuredClone(defaultState.sources);
@@ -620,7 +677,7 @@ function normalizeWorkspaceState(saved) {
   loaded.publicationSchedule = Object.assign(structuredClone(defaultState.publicationSchedule), loaded.publicationSchedule || {});
   loaded.dynamicScheduler = Object.assign(structuredClone(defaultState.dynamicScheduler), loaded.dynamicScheduler || {});
   ensureScheduleShape(loaded);
-  pruneQueueItems(loaded);
+  pruneQueueItems(loaded, { factor: freshnessFactor });
   return loaded;
 }
 function freshWorkspaceState() {
@@ -658,7 +715,7 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const avatarFile = String(raw && raw.avatarFile || "").trim();
   const channelIdRaw = String(raw && raw.channelId || "").trim().toLowerCase();
   const channelId = EDITORIAL_CHANNEL_IDS.includes(channelIdRaw) ? channelIdRaw : "";
-  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
+  return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state, channelFreshnessFactor({ id, name, slug, telegramPublicUsername, channelId })) };
 }
 function isUsableWorkspaceStoreFile(parsed) {
   return Boolean(parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0);
@@ -2153,6 +2210,8 @@ function findStoryClusterCandidate(newItem) {
   let bestScore = 0;
   for (const item of (state.queue || [])) {
     if (!item || item.telegramPublished || item.vkPublished) continue;
+    // Only an approved post may absorb another source; a held / rejected one is about to be removed.
+    if (!isApprovedQueueItem(item)) continue;
     if (storySourceSnapshot(item).length >= STORY_CLUSTER_MAX_SOURCES) continue;
     const age = Math.abs(now - (queueItemTimeMs(item) || now));
     if (age > STORY_CLUSTER_WINDOW_HOURS * 60 * 60 * 1000) continue;
@@ -2908,8 +2967,10 @@ function extractTitle(html) {
   return m ? stripHtml(m[1]).slice(0, 300) : "";
 }
 
-function extractPublishedAt(html) {
+function extractPublishedAt(html, hint) {
   const source = String(html || "");
+  let assumeMoscow = false;
+  try { assumeMoscow = /(\.ru|\.su|\.рф|\.xn--p1ai)$/i.test(new URL(String(hint && hint.url || "")).hostname); } catch {}
   const patterns = [
     /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
     /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
@@ -2921,7 +2982,7 @@ function extractPublishedAt(html) {
   for (const re of patterns) {
     const m = source.match(re);
     if (!m || !m[1]) continue;
-    const normalized = normalizeDate(htmlDecode(m[1]));
+    const normalized = normalizeDate(htmlDecode(m[1]), { assumeMoscow: assumeMoscow });
     if (normalized) return normalized;
   }
   return "";
@@ -4485,7 +4546,45 @@ async function fetchText(url, timeoutMs) {
   return await response.text();
 }
 
+// Per-URL counter of transient failures (download, writer outage, DB write). Kept in the workspace
+// state so it survives restarts; after SKIP_RETRY_MAX attempts the link counts as seen.
+function bumpSkipAttempt(url, kind) {
+  state.skipAttempts = state.skipAttempts && typeof state.skipAttempts === "object" ? state.skipAttempts : {};
+  const entry = state.skipAttempts[url] || { n: 0 };
+  entry.n = Number(entry.n || 0) + 1;
+  entry.kind = String(kind || "");
+  entry.at = new Date().toISOString();
+  state.skipAttempts[url] = entry;
+  const keys = Object.keys(state.skipAttempts);
+  if (keys.length > 300) {
+    keys.sort(function(a, b){ return String(state.skipAttempts[a].at || "").localeCompare(String(state.skipAttempts[b].at || "")); })
+      .slice(0, keys.length - 300).forEach(function(k){ delete state.skipAttempts[k]; });
+  }
+  return entry.n;
+}
+
+// Records a link that will never be worth opening again (stale, too short, unreachable, published by another
+// channel) so it stops being "the first unseen link" of its source. Shown nowhere in the feed (prefilter_skip) unless a status is given.
+async function recordSeenSkip(source, link, reason, text, extra) {
+  const url = String(link && link.url || "");
+  try {
+    await saveNewsItem({
+      id: "news_" + crypto.createHash("sha256").update("prefilter\n" + currentWorkspaceId() + "\n" + url).digest("hex").slice(0, 20),
+      sourceId: source && source.id, sourceName: source && source.name, sourceUrl: source && source.url,
+      originalUrl: url, originalTitle: String(link && link.title || ""), originalText: "",
+      contentHash: "", status: extra && extra.status || "prefilter_skip",
+      metadata: Object.assign({ skipReason: reason, prefilterReason: text || reason, articlePublishedAt: link && link.publishedAt || "" }, extra && extra.metadata || {})
+    });
+  } catch (error) {
+    console.warn("SEEN_SKIP_SAVE_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
+    // Keep the in-memory guard so a failing DB cannot make the same link loop.
+    state.skipAttempts = state.skipAttempts && typeof state.skipAttempts === "object" ? state.skipAttempts : {};
+    state.skipAttempts[url] = { n: SKIP_RETRY_MAX, kind: reason, at: new Date().toISOString() };
+  }
+}
+
 async function seenOriginalUrl(url) {
+  if (state.skipAttempts && state.skipAttempts[url] && Number(state.skipAttempts[url].n) >= SKIP_RETRY_MAX) return true;
   if (db && dbReady) {
     const r = await db.query("SELECT 1 FROM news_items WHERE workspace_id=$1 AND original_url=$2 LIMIT 1", [currentWorkspaceId(), url]);
     return r.rowCount > 0;
@@ -4694,15 +4793,26 @@ async function collectOnce(trigger) {
           ? extractTelegramSourcePosts(html, source.url)
           : extractArticleLinks(html, source.url)
         ).slice(0, isTelegramCreator ? 18 : 12);
+        const crossIndex = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex() : null;
         for (const link of links) {
           if (selectedUrls.has(link.url)) continue;
+          // Same article already queued / published by another channel: leave it, look at the next link.
+          // Not recorded as seen, so the link is free again when the other channel's post is dropped.
+          const linkConflict = crossIndex && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() }, { index: crossIndex });
+          if (linkConflict) {
+            summary.skipped += 1;
+            if (linkConflict.where === "published" && !(await seenOriginalUrl(link.url))) {
+              await recordSeenSkip(source, link, "cross_channel_duplicate", "Уже опубликовано в канале " + linkConflict.channel, { status: "duplicate_story", metadata: { autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: linkConflict.workspace, channel: linkConflict.channel, by: linkConflict.by, where: linkConflict.where } } });
+            }
+            continue;
+          }
           if (await seenOriginalUrl(link.url)) {
             summary.skipped += 1;
             continue;
           }
           selectedUrls.add(link.url);
           noteSourceEvent(source, "candidate");
-          return { source: source, link: link };
+          return { source: source, link: link, rest: links.slice(links.indexOf(link) + 1), extra: 0 };
         }
         return null;
       } catch (error) {
@@ -4725,20 +4835,68 @@ async function collectOnce(trigger) {
       saveState();
     }
 
+    // When a link turns out to be unusable (stale, too short, unreachable, taken by another channel) the next
+    // unseen link of the same source is opened in the same run, so one bad link cannot shadow the fresh ones
+    // behind it. Bounded by EXTRA_LINKS_PER_SOURCE.
+    const advanceSource = async function(from) {
+      let current = from;
+      while (current && Array.isArray(current.rest) && current.rest.length && Number(current.extra || 0) < EXTRA_LINKS_PER_SOURCE) {
+        const link = current.rest.shift();
+        if (selectedUrls.has(link.url)) continue;
+        if (CROSS_CHANNEL_DEDUPE_ENABLED && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() })) continue;
+        if (await seenOriginalUrl(link.url)) continue;
+        selectedUrls.add(link.url);
+        noteSourceEvent(current.source, "candidate");
+        const next = { source: current.source, link: link, rest: current.rest, extra: Number(current.extra || 0) + 1 };
+        const kept = await prefilterCandidates([next], summary);
+        if (kept.length) { ordered.push(next); return; }
+        current = next;
+      }
+    };
+
     for (const candidate of ordered) {
       if (summary.found >= MAX_ITEMS_PER_RUN) break;
       const source = candidate.source;
       const url = candidate.link.url;
 
+      let baseSaved = false;
+      let claimed = [];
       try {
-        const articleHtml = await fetchText(url, 15000);
+        let articleHtml;
+        try {
+          articleHtml = await fetchText(url, 15000);
+        } catch (fetchError) {
+          // A removed / forbidden page is final; a timeout or 5xx is retried a few times and then recorded as
+          // seen. Before this the same dead link stayed the first unseen link of its source forever.
+          noteSourceEvent(source, "error");
+          summary.errors.push(url + ": " + fetchError.message);
+          const permanent = /HTTP (401|403|404|410|451)\b|Unsupported content type/.test(String(fetchError.message || ""));
+          if (permanent || bumpSkipAttempt(url, "fetch_failed") >= SKIP_RETRY_MAX) {
+            await recordSeenSkip(source, candidate.link, "fetch_failed", "Страница недоступна: " + String(fetchError.message || "").slice(0, 120));
+          }
+          await advanceSource(candidate);
+          continue;
+        }
         const isBlogger = source.group === "blogger" || source.group === "creator";
         const originalTitle = isBlogger
           ? (candidate.link.title || extractTitle(articleHtml) || source.name)
           : (extractTitle(articleHtml) || candidate.link.title);
-        const articlePublishedAt = candidate.link.publishedAt || extractPublishedAt(articleHtml);
-        if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > ARTICLE_MAX_AGE_HOURS * 60 * 60 * 1000) {
+        const articlePublishedAt = candidate.link.publishedAt || extractPublishedAt(articleHtml, { url: url });
+        const windowMs = articleMaxAgeMs();
+        if (articlePublishedAt && (Date.now() - new Date(articlePublishedAt).getTime()) > windowMs) {
           summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle, publishedAt: articlePublishedAt }), "stale_article", "Старше " + Math.round(windowMs / 3600000) + " ч: " + articlePublishedAt);
+          await advanceSource(candidate);
+          continue;
+        }
+        // No date on the page: freshness is unknown. A past year in the title (an old press release) is dropped;
+        // anything else goes on with extra care (the writer is told the date is unknown, and the queue item gets a
+        // shorter life, see dynamicItemMaxAgeMs).
+        const dateUnknown = !articlePublishedAt;
+        if (dateUnknown && !isBlogger && staleYearInTitle(originalTitle, false, new Date())) {
+          summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle }), "stale_year_in_title", "Без даты, в заголовке прошлый год");
+          await advanceSource(candidate);
           continue;
         }
         const mediaCandidates = extractArticleMediaCandidates(articleHtml, url);
@@ -4748,10 +4906,38 @@ async function collectOnce(trigger) {
         const originalText = (isBlogger && candidate.link.text ? String(candidate.link.text) : raw).slice(0, 14000);
         if (originalText.length < (isBlogger ? 40 : 250)) {
           summary.skipped += 1;
+          await recordSeenSkip(source, Object.assign({}, candidate.link, { title: originalTitle, publishedAt: articlePublishedAt || "" }), "too_short", "Слишком короткая страница (" + originalText.length + " зн.)");
+          await advanceSource(candidate);
           continue;
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
-        const id = "news_" + contentHash.slice(0, 20);
+        // The id is scoped to the workspace and the URL: the same article collected by two channels (or the
+        // same text under two URLs) used to collide on news_items_pkey, and the loser's post stayed queued
+        // without a DB row, so it was re-collected every tick. Rows written before this change keep their ids;
+        // all lookups go by (workspace_id, original_url).
+        // Exact cross-channel check (URL or content hash) and an in-flight claim: all workspaces tick in
+        // parallel, so two channels can be writing the same article at the same moment.
+        if (CROSS_CHANNEL_DEDUPE_ENABLED) {
+          const articleKeys = itemArticleKeys({ originalUrl: url, contentHash: contentHash });
+          const conflict = crossChannelConflict(articleKeys);
+          if (conflict) {
+            console.log("CROSS_CHANNEL_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, by: conflict.by, otherWorkspace: conflict.workspace, otherChannel: conflict.channel, where: conflict.where, windowHours: CROSS_CHANNEL_DEDUPE_HOURS }));
+            summary.skipped += 1;
+            if (conflict.where === "published") {
+              // Published elsewhere: final. Queued / in flight elsewhere: not recorded, retried while the other post is still undecided.
+              await saveNewsItem({
+                id: "news_" + crypto.createHash("sha256").update("crosschannel\n" + currentWorkspaceId() + "\n" + url).digest("hex").slice(0, 20),
+                sourceId: source.id, sourceName: source.name, sourceUrl: source.url, originalUrl: url, originalTitle: originalTitle,
+                originalText: originalText.slice(0, 2000), contentHash: contentHash, status: "duplicate_story",
+                metadata: { trigger: trigger || "scheduler", articlePublishedAt: articlePublishedAt || "", autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: conflict.workspace, channel: conflict.channel, by: conflict.by, where: conflict.where } }
+              });
+            }
+            await advanceSource(candidate);
+            continue;
+          }
+          claimed = crossChannelClaim(articleKeys);
+        }
+        const id = "news_" + crypto.createHash("sha256").update(currentWorkspaceId() + "\n" + contentHash + "\n" + url).digest("hex").slice(0, 20);
         // Cheap duplicate check on the source text BEFORE media preparation and the
         // writer/checker calls: an obvious repeat of a recently published post costs
         // one short classifier call instead of media + 3-6 LLM calls.
@@ -4763,7 +4949,10 @@ async function collectOnce(trigger) {
             console.warn("STORY_PRECHECK_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
             storyPrecheck = null;
           }
-          if (storyPrecheck && storyPrecheck.relation === "duplicate") {
+          // A queued post's "update" is reported as "duplicate" (queued: true) so that it is merged into the queued
+          // post instead of published twice; that merge needs the full pipeline, so only a genuine duplicate
+          // (the model said "duplicate", not "update") is dropped here.
+          if (storyPrecheck && storyPrecheck.relation === "duplicate" && !(storyPrecheck.queued && storyPrecheck.judgedRelation === "update")) {
             console.log("STORY_PRECHECK_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, similarity: Number(storyPrecheck.similarity || 0).toFixed(2), publishedId: storyPrecheck.candidate && (storyPrecheck.candidate.id || storyPrecheck.candidate.queueId) || "" }));
             await saveNewsItem({
               id: id,
@@ -4811,6 +5000,7 @@ async function collectOnce(trigger) {
           metadata: {
             trigger: trigger || "scheduler",
             articlePublishedAt: articlePublishedAt || "",
+            articleDateUnknown: dateUnknown || undefined,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || imageUrl || "",
             originalVideoUrl: media.originalVideoUrl || videoUrl || "",
@@ -4873,10 +5063,13 @@ async function collectOnce(trigger) {
             });
             state.stats.rewritten += 1;
           } catch (error) {
+            summary.errors.push(originalTitle + ": " + error.message);
+            // A transient model error (429, timeout) must not lose the article: retried on the next ticks,
+            // recorded as rewrite_error (and so seen) only after SKIP_RETRY_MAX attempts.
+            if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
             baseItem.status = "rewrite_error";
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
-            summary.errors.push(originalTitle + ": " + error.message);
             continue;
           }
           baseItem.metadata.editorialV2 = v2.meta;
@@ -4910,10 +5103,11 @@ async function collectOnce(trigger) {
             rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "", newsId: id });
             state.stats.rewritten += 1;
           } catch (error) {
+            summary.errors.push(originalTitle + ": " + error.message);
+            if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
             baseItem.status = "rewrite_error";
             baseItem.metadata.rewriteError = error.message;
             await saveNewsItem(baseItem);
-            summary.errors.push(originalTitle + ": " + error.message);
             continue;
           }
         }
@@ -5024,6 +5218,7 @@ async function collectOnce(trigger) {
             sourceId: source.id,
             sourceName: source.name,
             sourceUrl: url,
+            contentHash: contentHash,
             imageUrl: media.imageUrl || "",
             originalImageUrl: media.originalImageUrl || media.imageUrl || "",
             generatedImageUrl: media.generatedImageUrl || "",
@@ -5067,6 +5262,7 @@ async function collectOnce(trigger) {
             sourceOriginalText: originalText.slice(0, 7000),
             createdAt: new Date().toISOString(),
             articlePublishedAt: articlePublishedAt || "",
+            articleDateUnknown: dateUnknown || undefined,
             sourceId: source.id,
             sourceGroup: source.group || "",
             sourceUrl: url,
@@ -5093,6 +5289,7 @@ async function collectOnce(trigger) {
             canEnhance: Boolean(media.canEnhance),
             sourceName: source.name,
             newsId: id,
+            contentHash: contentHash,
             aiScore: rewrite.editorialScore,
             aiScoreBreakdown: rewrite.scoreBreakdown,
             aiScoreReason: rewrite.scoreReason,
@@ -5154,29 +5351,37 @@ async function collectOnce(trigger) {
             saveState();
             continue;
           }
-          if (mergedStory) {
-            baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
-            baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
-            baseItem.metadata.storySourceCount = mergedStory.storySources && mergedStory.storySources.length || 0;
-          } else {
-            state.queue.unshift(queueItem);
-          }
           baseItem.metadata.storyRelation = {
             relation: storyRelation.relation,
             updateOf: queueItem.storyUpdateOf || "",
             updateTitle: queueItem.storyUpdateTitle || "",
             reason: storyRelation.reason || ""
           };
+          if (mergedStory) {
+            baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
+            baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
+            baseItem.metadata.storySourceCount = mergedStory.storySources && mergedStory.storySources.length || 0;
+          } else {
+            // DB row first: when the write fails (throws into the catch below) nothing is queued, so a post
+            // can never sit in the queue without a news_items row and be re-collected on every tick.
+            await saveNewsItem(baseItem);
+            baseSaved = true;
+            state.queue.unshift(queueItem);
+          }
           pruneQueueItems(state);
           summary.queued += 1;
           noteSourceEvent(source, "useful");
         }
 
-        await saveNewsItem(baseItem);
+        if (!baseSaved) await saveNewsItem(baseItem);
         saveState();
       } catch (error) {
         noteSourceEvent(source, "error");
         summary.errors.push(url + ": " + error.message);
+        // Bounded retry: after SKIP_RETRY_MAX failures the link counts as seen (see seenOriginalUrl).
+        bumpSkipAttempt(url, "error");
+      } finally {
+        crossChannelRelease(claimed);
       }
     }
 
@@ -5335,12 +5540,14 @@ function dynamicBestQueueItem(kind) {
 
 function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const used = dynamicUsedQueueIds();
-  const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
+  // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
+  const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
   return (state.queue || [])
     .filter(function(item) {
-      if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
+      if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
+      if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item);
@@ -5524,7 +5731,7 @@ async function publishDynamicSlot(kind) {
     return { ok: true, skipped: "missing_item" };
   }
 
-  if (dynamicItemAgeMs(item) > DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000) {
+  if (dynamicItemAgeMs(item) > dynamicItemMaxAgeMs(item)) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
     schedulerState.lastPublishedSlot = slotKey;
@@ -5534,6 +5741,23 @@ async function publishDynamicSlot(kind) {
 
   if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) {
     return { ok: true, skipped: "auto_disabled", prepared: queueId };
+  }
+
+  // Last look before publishing: another channel may have published this article since it was queued.
+  const publishConflict = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelConflict(item, { publishedOnly: true }) : null;
+  if (publishConflict) {
+    console.log("CROSS_CHANNEL_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), stage: "publish", queueId: queueId, by: publishConflict.by, otherWorkspace: publishConflict.workspace, otherChannel: publishConflict.channel, windowHours: CROSS_CHANNEL_DEDUPE_HOURS }));
+    delete schedule.assignments[day][time];
+    state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
+    saveState();
+    if (db && dbReady && item.newsId) {
+      try {
+        await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
+          [item.newsId, JSON.stringify({ autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: publishConflict.workspace, channel: publishConflict.channel, by: publishConflict.by } }), currentWorkspaceId()]);
+      } catch (error) { console.warn("Cross-channel duplicate status update failed:", error.message); }
+    }
+    // The slot stays open: the next scheduler tick picks the next best post.
+    return { ok: true, skipped: "cross_channel_duplicate", prepared: queueId };
   }
 
   const autoTargets = autoPublishTargetsForPost(item);
@@ -5597,6 +5821,7 @@ async function publishDynamicSlot(kind) {
       sourceId: item.sourceId || "",
       sourceName: item.sourceName || "",
       sourceUrl: item.sourceUrl || "",
+      contentHash: item.contentHash || "",
       sourceUrls: Array.isArray(item.sourceUrls) ? item.sourceUrls : [],
       sources: Array.isArray(item.sources) ? item.sources : [],
       storySources: Array.isArray(item.storySources) ? item.storySources : [],
@@ -8102,6 +8327,23 @@ function editorialRecentPosts(limit) {
     });
 }
 
+// A queue item that the editorial pipeline approved (not on hold / rejected / skipped on re-check).
+// Only such items count as "the same story is already covered" and may be merged into.
+function isApprovedQueueItem(item) {
+  if (!item || !item.newsId) return false;
+  if (item.qcStatus === "hold") return false;
+  const v2 = item.editorialV2;
+  if (v2 && v2.status && v2.status !== "approved") return false;
+  return true;
+}
+
+const NETWORK_RECENT_PUBLISHED_PER_CHANNEL = 4;
+const NETWORK_RECENT_QUEUED_PER_CHANNEL = 3;
+const NETWORK_RECENT_MAX = 120;
+
+// Titles the writer sees to avoid duplicates across the network: for every OTHER channel its latest published
+// posts of the last 24 hours plus its approved queue (about to go out). The cap is per channel, so channels late in
+// the workspace list are as visible as early ones (a single global cap of 60 hid most of the network).
 function editorialNetworkRecent() {
   const me = currentWorkspaceId();
   const since = Date.now() - 24 * 60 * 60 * 1000;
@@ -8109,15 +8351,124 @@ function editorialNetworkRecent() {
   for (const ws of workspaceStore.workspaces) {
     if (!ws || ws.id === me || !ws.state) continue;
     const channelId = resolveChannelId(ws);
+    const mine = [];
+    for (const item of (ws.state.queue || [])) {
+      if (!isApprovedQueueItem(item)) continue;
+      if (item.telegramPublished || item.vkPublished) continue;
+      mine.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.createdAt || "", status: "queued", t: new Date(item.createdAt || 0).getTime() || 0 });
+    }
+    mine.sort(function(a, b){ return b.t - a.t; });
+    mine.length = Math.min(mine.length, NETWORK_RECENT_QUEUED_PER_CHANNEL);
+    let published = 0;
     for (const item of (ws.state.history || [])) {
       if (!item || !item.publishedAt) continue;
       const t = new Date(item.publishedAt).getTime();
       if (!Number.isFinite(t) || t < since) break;
-      out.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.publishedAt });
-      if (out.length >= 60) return out;
+      mine.push({ channel_id: channelId || ws.id, title: String(item.title || "").slice(0, 160), date: item.publishedAt, status: "published" });
+      published += 1;
+      if (published >= NETWORK_RECENT_PUBLISHED_PER_CHANNEL) break;
     }
+    for (const x of mine) { delete x.t; out.push(x); }
+    if (out.length >= NETWORK_RECENT_MAX) break;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic cross-channel dedupe: the same article (normalized URL or content hash) that another channel
+// has queued, is processing, or published within CROSS_CHANNEL_DEDUPE_HOURS is not used a second time.
+// The model-based network_recent check above is only a hint; this one is exact.
+const crossChannelClaims = new Map();
+
+function normalizeArticleUrl(raw) {
+  try {
+    const u = new URL(String(raw || "").trim());
+    if (!/^https?:$/.test(u.protocol)) return "";
+    const drop = /^(utm_|fbclid$|gclid$|yclid$|ysclid$|_openstat$|mc_cid$|mc_eid$|cmpid$|from$|ref$|ref_src$|source$)/i;
+    const params = Array.from(u.searchParams.entries()).filter(function(kv){ return !drop.test(kv[0]); }).sort(function(a, b){ return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+    const search = params.length ? "?" + params.map(function(kv){ return kv[0] + "=" + kv[1]; }).join("&") : "";
+    const path = u.pathname.replace(/\/index\.(html?|php)$/i, "/").replace(/\/+$/, "");
+    return (u.hostname.toLowerCase().replace(/^www\./, "") + path + search).toLowerCase();
+  } catch { return ""; }
+}
+
+// URLs and content hashes that identify the article(s) behind a queue / history item.
+function itemArticleKeys(item) {
+  const urls = new Set();
+  const hashes = new Set();
+  if (!item) return { urls: urls, hashes: hashes };
+  const addUrl = function(value){ const n = normalizeArticleUrl(value); if (n) urls.add(n); };
+  const addHash = function(value){ const h = String(value || "").trim(); if (h.length >= 16) hashes.add(h); };
+  addUrl(item.originalUrl); addUrl(item.sourceUrl);
+  (Array.isArray(item.sourceUrls) ? item.sourceUrls : []).forEach(addUrl);
+  (Array.isArray(item.sources) ? item.sources : []).forEach(function(x){ addUrl(x && x.url); });
+  (Array.isArray(item.storySources) ? item.storySources : []).forEach(function(x){ addUrl(x && x.url); addHash(x && x.contentHash); });
+  addHash(item.contentHash);
+  if (item.sourceOriginalTitle && item.sourceOriginalText) {
+    addHash(crypto.createHash("sha256").update(String(item.sourceOriginalTitle) + "\n" + String(item.sourceOriginalText).slice(0, 6000)).digest("hex"));
+  }
+  return { urls: urls, hashes: hashes };
+}
+
+// Index of everything other channels hold: key -> { workspace, channel, where }. publishedOnly skips queues and in-flight claims.
+function crossChannelIndex(options) {
+  const me = currentWorkspaceId();
+  const publishedOnly = Boolean(options && options.publishedOnly);
+  const cutoff = Date.now() - CROSS_CHANNEL_DEDUPE_HOURS * 60 * 60 * 1000;
+  const index = new Map();
+  const put = function(keys, ws, where) {
+    const info = { workspace: ws.id, channel: resolveChannelId(ws) || ws.id, where: where };
+    keys.urls.forEach(function(k){ if (!index.has("u:" + k) || where === "published") index.set("u:" + k, info); });
+    keys.hashes.forEach(function(k){ if (!index.has("h:" + k) || where === "published") index.set("h:" + k, info); });
+  };
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || ws.id === me || !ws.state) continue;
+    for (const item of (ws.state.history || [])) {
+      if (!item || !item.publishedAt) continue;
+      const t = new Date(item.publishedAt).getTime();
+      if (!Number.isFinite(t)) continue;
+      if (t < cutoff) break;
+      put(itemArticleKeys(item), ws, "published");
+    }
+    if (publishedOnly) continue;
+    for (const item of (ws.state.queue || [])) {
+      if (!item || !item.newsId) continue;
+      const t = new Date(item.createdAt || 0).getTime();
+      if (Number.isFinite(t) && t && t < cutoff) continue;
+      put(itemArticleKeys(item), ws, item.telegramPublished || item.vkPublished ? "published" : "queued");
+    }
+  }
+  if (!publishedOnly) {
+    crossChannelClaims.forEach(function(wsId, key) {
+      if (wsId === me) return;
+      const ws = getWorkspaceById(wsId);
+      if (ws && !index.has(key)) index.set(key, { workspace: wsId, channel: ws && resolveChannelId(ws) || wsId, where: "inflight" });
+    });
+  }
+  return index;
+}
+
+// keys: { urls:Set, hashes:Set } (or an item). Returns null or { workspace, channel, where, by }.
+function crossChannelConflict(keysOrItem, options) {
+  if (!CROSS_CHANNEL_DEDUPE_ENABLED) return null;
+  const keys = keysOrItem && keysOrItem.urls instanceof Set ? keysOrItem : itemArticleKeys(keysOrItem);
+  const index = options && options.index || crossChannelIndex(options);
+  for (const u of keys.urls) { const hit = index.get("u:" + u); if (hit) return Object.assign({ by: "url" }, hit); }
+  for (const h of keys.hashes) { const hit = index.get("h:" + h); if (hit) return Object.assign({ by: "content_hash" }, hit); }
+  return null;
+}
+
+function crossChannelClaim(keys) {
+  const me = currentWorkspaceId();
+  const claimed = [];
+  keys.urls.forEach(function(k){ claimed.push("u:" + k); });
+  keys.hashes.forEach(function(k){ claimed.push("h:" + k); });
+  claimed.forEach(function(k){ crossChannelClaims.set(k, me); });
+  return claimed;
+}
+function crossChannelRelease(claimed) {
+  const me = currentWorkspaceId();
+  (claimed || []).forEach(function(k){ if (crossChannelClaims.get(k) === me) crossChannelClaims.delete(k); });
 }
 
 function editorialNetworkChannels() {
@@ -8931,85 +9282,114 @@ async function dedupeQueueOnce() {
   return removed;
 }
 
+const STORY_CLASSIFIER_CANDIDATES = 3;
+
 async function classifyPublishedStoryRelationship(item, options) {
   const queueItems = options && Array.isArray(options.queueItems) ? options.queueItems : (state.queue || []);
   if (!item) return { relation: "new_story", candidate: null, reason: "" };
   const cutoff = Date.now() - STORY_UPDATE_WINDOW_HOURS * 60 * 60 * 1000;
-  let best = null;
-  let bestScore = 0;
 
   const ownIds = new Set([item && item.id, item && item.queueId, item && item.newsId].filter(Boolean).map(String));
+  // The new item may carry its own source text (original language); candidates are compared both ways, so a foreign
+  // source is no longer measured only against the Russian text of a published post.
+  const newAsText = Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") });
+  const newAsSource = item.sourceOriginalText || item.sourceOriginalTitle
+    ? Object.assign({}, item, { title: item.sourceOriginalTitle || item.title, text: item.sourceOriginalText || item.text, sourceId: "new:" + String(item.sourceId || item.sourceName || "") })
+    : null;
+  const scoreAgainst = function(candidate, prefix) {
+    const cand = Object.assign({}, candidate, { sourceId: prefix + String(candidate.sourceId || candidate.sourceName || "") });
+    let score = storySimilarity(newAsText, cand);
+    const candSource = candidate.sourceOriginalText || candidate.sourceOriginalTitle
+      ? Object.assign({}, cand, { title: candidate.sourceOriginalTitle || candidate.title, text: candidate.sourceOriginalText || candidate.text })
+      : null;
+    if (newAsSource) score = Math.max(score, storySimilarity(newAsSource, cand));
+    if (candSource) {
+      score = Math.max(score, storySimilarity(newAsText, candSource));
+      if (newAsSource) score = Math.max(score, storySimilarity(newAsSource, candSource));
+    }
+    return score;
+  };
+
+  const ranked = [];
   for (const h of (state.history || [])) {
     if (!h || !h.publishedAt || new Date(h.publishedAt).getTime() < cutoff) continue;
     // A queued post that is already partly published (Telegram yes, VK pending)
     // must not be compared with its own history entry.
     if (ownIds.has(String(h.queueId || "")) || ownIds.has(String(h.newsId || "")) || ownIds.has(String(h.id || ""))) continue;
-    const score = storySimilarity(
-      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
-      Object.assign({}, h, { sourceId: "published:" + String(h.sourceId || h.sourceName || "") })
-    );
-    if (score > bestScore) { bestScore = score; best = h; }
+    ranked.push({ score: scoreAgainst(h, "published:"), candidate: h });
   }
-  // Posts already waiting in the queue count too: the same story from two
-  // sources must not be published twice.
+  // Posts already waiting in the queue count too: the same story from two sources must not be published twice.
+  // Only approved posts: a held / rejected twin is removed by the auto-resolver and must not swallow a good article.
   const selfIds = new Set([item.id, item.queueId, item.newsId].filter(Boolean).map(String));
   for (const q of queueItems) {
     if (!q || !q.newsId || selfIds.has(String(q.id)) || selfIds.has(String(q.newsId))) continue;
-    const score = storySimilarity(
-      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
-      Object.assign({}, q, { sourceId: "queued:" + String(q.sourceId || q.sourceName || "") })
-    );
-    if (score > bestScore) { bestScore = score; best = Object.assign({}, q, { __queued: true }); }
+    if (!isApprovedQueueItem(q)) continue;
+    ranked.push({ score: scoreAgainst(q, "queued:"), candidate: Object.assign({}, q, { __queued: true }) });
   }
-  if (!best || bestScore < 0.16) return { relation: "new_story", candidate: null, reason: "" };
+  ranked.sort(function(a, b){ return b.score - a.score; });
+  const candidates = ranked.filter(function(r){ return r.score >= 0.16; }).slice(0, STORY_CLASSIFIER_CANDIDATES);
+  const bestScore = candidates.length ? candidates[0].score : 0;
+  if (!candidates.length) return { relation: "new_story", candidate: null, reason: "" };
 
   if (!OPENAI_API_KEY) {
-    return bestScore >= 0.55
-      ? { relation: "possible_update", candidate: best, similarity: bestScore, reason: "Похож на недавно опубликованный сюжет" }
-      : { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+    const top = candidates[0];
+    return top.score >= 0.55
+      ? { relation: "possible_update", candidate: top.candidate, similarity: top.score, reason: "Похож на недавно опубликованный сюжет" }
+      : { relation: "new_story", candidate: null, similarity: top.score, reason: "" };
   }
 
-  const prompt = [
-    "Сравни новую новость с уже опубликованным постом.",
-    "Определи одно из трёх:",
-    "duplicate — по сути те же факты, существенного нового нет;",
-    "update — это развитие того же сюжета и есть новый важный факт/цифра/решение/дата;",
-    "new_story — отдельное событие, даже если компания/тема та же.",
-    "Не путай новости одной компании с одним событием.",
-    "Верни строго JSON: {\"relation\":\"duplicate|update|new_story\",\"new_fact\":\"что именно новое\",\"reason\":\"коротко\"}.",
-    "NEW: " + JSON.stringify({ title: item.title, text: String(item.text || "").slice(0, 2600), entities: item.topicEntities || [] }),
-    "PUBLISHED: " + JSON.stringify({ title: best.title, text: String(best.text || "").slice(0, 2600), entities: best.topicEntities || [] })
-  ].join("\n");
+  let answered = 0;
+  for (const entry of candidates) {
+    const best = entry.candidate;
+    const prompt = [
+      "Сравни новую новость с уже опубликованным постом.",
+      "Определи одно из трёх:",
+      "duplicate — по сути те же факты, существенного нового нет;",
+      "update — это развитие того же сюжета и есть новый важный факт/цифра/решение/дата;",
+      "new_story — отдельное событие, даже если компания/тема та же.",
+      "Не путай новости одной компании с одним событием.",
+      "Верни строго JSON: {\"relation\":\"duplicate|update|new_story\",\"new_fact\":\"что именно новое\",\"reason\":\"коротко\"}.",
+      "NEW: " + JSON.stringify({ title: item.title, text: String(item.text || "").slice(0, 2600), entities: item.topicEntities || [] }),
+      "PUBLISHED: " + JSON.stringify({ title: best.title, text: String(best.text || "").slice(0, 2600), entities: best.topicEntities || [] })
+    ].join("\n");
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
-      body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
-      signal: AbortSignal.timeout(30000)
-    });
-    const data = await response.json().catch(function(){ return {}; });
-    if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
-    recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
-    const output = extractOpenAIText(data);
-    const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
-    let relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
-    // An "update" of a post that has not been published yet is the same story:
-    // the queued post goes out, the new one is dropped.
-    if (best.__queued && relation === "update") relation = "duplicate";
-    return {
-      relation: relation,
-      candidate: relation === "new_story" ? null : best,
-      queued: Boolean(best.__queued),
-      similarity: bestScore,
-      judged: true,
-      newFact: String(parsed.new_fact || "").trim(),
-      reason: String(parsed.reason || "").trim()
-    };
-  } catch (error) {
-    console.warn("Story update classifier fallback:", error.message);
-    return { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
+        signal: AbortSignal.timeout(30000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+      recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
+      const output = extractOpenAIText(data);
+      const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
+      answered += 1;
+      const judgedRelation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
+      let relation = judgedRelation;
+      // An "update" of a post that has not been published yet is the same story:
+      // the queued post goes out, the new one is dropped (or merged into it).
+      if (best.__queued && relation === "update") relation = "duplicate";
+      if (relation === "new_story") continue;
+      return {
+        relation: relation,
+        judgedRelation: judgedRelation,
+        candidate: best,
+        queued: Boolean(best.__queued),
+        similarity: entry.score,
+        judged: true,
+        newFact: String(parsed.new_fact || "").trim(),
+        reason: String(parsed.reason || "").trim()
+      };
+    } catch (error) {
+      console.warn("Story update classifier fallback:", error.message);
+    }
   }
+  if (answered === candidates.length) return { relation: "new_story", candidate: null, similarity: bestScore, judged: true, reason: "" };
+  // Fail open (the post is treated as new) but leave a trace: some comparisons never got an answer.
+  console.warn("STORY_CLASSIFIER_FAIL_OPEN " + JSON.stringify({ workspace: currentWorkspaceId(), candidates: candidates.length, answered: answered, similarity: Number(bestScore.toFixed(2)), title: String(item.title || "").slice(0, 80) }));
+  return { relation: "new_story", candidate: null, similarity: bestScore, reason: "" };
 }
 
 async function callOpenAIStoryComposer(storySources, existingItem, incomingItem) {
@@ -9176,18 +9556,12 @@ async function tryMergeStoryQueueItem(newItem) {
       return null;
     }
     if (storyV2.skip) {
-      if (storyV2.reason === "different_story") return null;
-      // Same event, but the writer saw nothing worth rewriting: absorb the new source
-      // into the existing story (no duplicate post), keep the already checked text.
-      const refs = sources.map(function(source){ return { name: source.sourceName || "Источник", url: source.url || "" }; }).filter(function(x){ return x.url; });
-      Object.assign(target, {
-        sources: refs,
-        sourceUrls: refs.map(function(x){ return x.url; }),
-        storySources: sources,
-        storyNewsIds: Array.from(new Set(sources.map(function(source){ return source.newsId; }).filter(Boolean))),
-        updatedAt: new Date().toISOString()
-      });
-      return target;
+      // The merge contract: only a post the writer actually produced (status ok) merges sources. Any skip is
+      // "keep these as separate items": "different_story" is the documented reason, but the skip reason is free
+      // Russian text (low importance, advertising, network duplicate...), so it cannot be matched by equality, and
+      // absorbing the new source into the approved post on any other skip attached ad sources to it.
+      console.log("STORY_MERGE_SKIPPED " + JSON.stringify({ workspace: currentWorkspaceId(), target: target.id, reason: String(storyV2.reason || "").slice(0, 120) }));
+      return null;
     }
     composed = {
       sameStory: true,
@@ -9211,6 +9585,11 @@ async function tryMergeStoryQueueItem(newItem) {
   }
 
   if (!composed || composed.sameStory === false) return null;
+
+  // Everything below mutates the queued post. If the merged text then fails the checkers, the post must come
+  // back exactly as it was: overwriting an approved post with a hold/reject version got it auto-removed together
+  // with the incoming article, and the story was lost.
+  const targetBefore = Object.assign({}, target);
 
   // One media for the merged story with the usual priority: video → real photo → one
   // generated cover (no generated multi-image packs).
@@ -9318,6 +9697,16 @@ async function tryMergeStoryQueueItem(newItem) {
   target.mediaStatus = target.mediaPackUrls.length > 1 ? "photo_found" : target.mediaStatus;
   target.copyrightSafe = COPYRIGHT_SAFE_MODE;
   target.copyrightPolicyVersion = "v2";
+
+  const mergedApproved = storyV2
+    ? (storyV2.meta && storyV2.meta.status === "approved")
+    : (qc.qcStatus !== "hold");
+  if (!mergedApproved) {
+    Object.keys(target).forEach(function(key){ if (!(key in targetBefore)) delete target[key]; });
+    Object.assign(target, targetBefore);
+    console.warn("STORY_MERGE_REJECTED " + JSON.stringify({ workspace: currentWorkspaceId(), target: target.id, verdict: storyV2 && storyV2.meta && storyV2.meta.verdict || qc.qcStatus }));
+    return null;
+  }
 
   return target;
 }
