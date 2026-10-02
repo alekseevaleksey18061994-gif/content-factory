@@ -1242,7 +1242,8 @@ function operationLabel(value) {
     story_composer: "Объединение нескольких источников",
     title_translation: "Перевод заголовков",
     editorial_score_batch: "Пакетный рейтинг новостей",
-    image_generation: "AI-обложка / fallback"
+    image_generation: "AI-обложка / fallback",
+    promotion_creative: "Продвижение · рекламный креатив"
   };
   return labels[String(value || "")] || String(value || "Другое");
 }
@@ -7494,6 +7495,372 @@ async function buildPlatformAnalytics(force) {
 }
 
 
+async function fetchTelegramSubscriberCountLight(workspace) {
+  const ws = workspace || currentWorkspace();
+  const chatId = String(ws && ws.telegramChannel || "").trim();
+  if (!chatId) return { available: false, subscribers: null, error: "Telegram-канал не настроен" };
+
+  const probe = await telegramProbe("getChatMemberCount", { chat_id: chatId });
+  if (probe.ok && Number.isFinite(Number(probe.result))) {
+    return { available: true, subscribers: Number(probe.result), source: "bot_api", error: "" };
+  }
+
+  const username = String(ws && (ws.telegramPublicUsername || ws.slug) || "").replace(/^@/, "").trim();
+  if (!username) return { available: false, subscribers: null, error: probe.error || "Публичный username не настроен" };
+  try {
+    const response = await fetch("https://t.me/s/" + encodeURIComponent(username), {
+      headers: {
+        "user-agent": "Mozilla/5.0 (compatible; NewsFactoryGrowth/1.0; +https://t.me/" + username + ")",
+        "accept-language": "ru,en;q=0.8"
+      },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error("Telegram HTTP " + response.status);
+    const parsed = parseTelegramPreview(await response.text());
+    if (parsed.subscribers != null && Number.isFinite(Number(parsed.subscribers))) {
+      return { available: true, subscribers: Number(parsed.subscribers), source: "public_web_preview", error: "" };
+    }
+    return { available: false, subscribers: null, error: probe.error || "Telegram не вернул число подписчиков" };
+  } catch (error) {
+    return { available: false, subscribers: null, error: probe.error || String(error && error.message || error) };
+  }
+}
+
+async function recordPromotionSnapshot(workspaceId, platform, totals) {
+  if (!db || !dbReady || !workspaceId || !platform) return false;
+  const t = totals || {};
+  const subscribers = Number(t.subscribers);
+  if (!Number.isFinite(subscribers) || subscribers < 0) return false;
+  try {
+    const recent = await db.query(
+      "SELECT subscribers, recorded_at FROM promotion_snapshots WHERE workspace_id=$1 AND platform=$2 ORDER BY recorded_at DESC LIMIT 1",
+      [workspaceId, platform]
+    );
+    const last = recent.rows[0];
+    if (last) {
+      const age = Date.now() - new Date(last.recorded_at).getTime();
+      if (age < 45 * 60 * 1000 && Number(last.subscribers) === subscribers) return false;
+    }
+    await db.query(
+      "INSERT INTO promotion_snapshots(workspace_id,platform,subscribers,views,engagement_rate) VALUES($1,$2,$3,$4,$5)",
+      [
+        workspaceId,
+        platform,
+        subscribers,
+        Math.max(0, Number(t.views || 0) || 0),
+        Number.isFinite(Number(t.engagementRate)) ? Number(t.engagementRate) : null
+      ]
+    );
+    return true;
+  } catch (error) {
+    console.warn("Promotion snapshot failed " + workspaceId + "/" + platform + ":", error.message);
+    return false;
+  }
+}
+
+async function promotionBaselineMaps(workspaceIds) {
+  const ids = (workspaceIds || []).filter(Boolean);
+  const out = { day: new Map(), week: new Map(), month: new Map() };
+  if (!db || !dbReady || !ids.length) return out;
+
+  for (const entry of [["day",1],["week",7],["month",30]]) {
+    const key = entry[0], days = entry[1];
+    try {
+      const r = await db.query(
+        "SELECT DISTINCT ON (workspace_id, platform) workspace_id, platform, subscribers, recorded_at " +
+        "FROM promotion_snapshots WHERE workspace_id = ANY($1::text[]) " +
+        "AND recorded_at <= NOW() - ($2::int * INTERVAL '1 day') " +
+        "ORDER BY workspace_id, platform, recorded_at DESC",
+        [ids, days]
+      );
+      for (const row of r.rows) out[key].set(row.workspace_id + ":" + row.platform, { subscribers: Number(row.subscribers), recordedAt: row.recorded_at });
+    } catch (error) {
+      console.warn("Promotion baseline " + key + " failed:", error.message);
+    }
+  }
+  return out;
+}
+
+function promotionDelta(current, baseline) {
+  const now = Number(current);
+  if (!Number.isFinite(now) || !baseline || !Number.isFinite(Number(baseline.subscribers))) return null;
+  return now - Number(baseline.subscribers);
+}
+
+async function promotionCampaignReport(workspaceId) {
+  const empty = { spendRub: 0, attributedSubscribers: 0, clicks: 0, costPerSubscriber: null, active: 0, campaigns: [] };
+  if (!db || !dbReady) return empty;
+  try {
+    const [summary, list] = await Promise.all([
+      db.query(
+        "SELECT COALESCE(SUM(spend_rub),0)::float8 AS spend_rub, COALESCE(SUM(attributed_subscribers),0)::int AS subscribers, " +
+        "COALESCE(SUM(clicks),0)::int AS clicks, COUNT(*) FILTER (WHERE status='active')::int AS active " +
+        "FROM promotion_campaigns WHERE workspace_id=$1",
+        [workspaceId]
+      ),
+      db.query(
+        "SELECT id,name,platform,source_type,source_name,spend_rub::float8 AS spend_rub,clicks,attributed_subscribers,status,started_at,ended_at " +
+        "FROM promotion_campaigns WHERE workspace_id=$1 ORDER BY started_at DESC LIMIT 30",
+        [workspaceId]
+      )
+    ]);
+    const s = summary.rows[0] || {};
+    const spendRub = Number(s.spend_rub || 0);
+    const subscribers = Number(s.subscribers || 0);
+    return {
+      spendRub: spendRub,
+      attributedSubscribers: subscribers,
+      clicks: Number(s.clicks || 0),
+      costPerSubscriber: subscribers > 0 ? Number((spendRub / subscribers).toFixed(2)) : null,
+      active: Number(s.active || 0),
+      campaigns: list.rows.map(function(row){
+        return {
+          id: row.id,
+          name: row.name,
+          platform: row.platform,
+          sourceType: row.source_type,
+          sourceName: row.source_name,
+          spendRub: Number(row.spend_rub || 0),
+          clicks: Number(row.clicks || 0),
+          attributedSubscribers: Number(row.attributed_subscribers || 0),
+          status: row.status,
+          startedAt: row.started_at,
+          endedAt: row.ended_at
+        };
+      })
+    };
+  } catch (error) {
+    console.warn("Promotion campaigns report failed:", error.message);
+    return empty;
+  }
+}
+
+function promotionTopPosts(analytics) {
+  const rows = [];
+  const tg = analytics && analytics.telegram || {};
+  for (const p of (tg.posts || [])) {
+    const views = Number(p.views || 0);
+    const interactions = Number(p.reactions || 0) + Number(p.comments || 0);
+    rows.push({
+      platform: "telegram",
+      title: p.title || ("Telegram #" + (p.messageId || "")),
+      url: p.url || "",
+      views: views,
+      interactions: interactions,
+      engagementRate: views > 0 ? Number(((interactions / views) * 100).toFixed(2)) : 0,
+      publishedAt: p.publishedAt || ""
+    });
+  }
+  const vk = analytics && analytics.vk || {};
+  for (const p of (vk.posts || [])) {
+    const views = Number(p.views || 0);
+    const interactions = Number(p.likes || 0) + Number(p.comments || 0) + Number(p.reposts || 0);
+    rows.push({
+      platform: "vk",
+      title: p.title || ("VK #" + (p.postId || "")),
+      url: p.url || "",
+      views: views,
+      interactions: interactions,
+      engagementRate: views > 0 ? Number(((interactions / views) * 100).toFixed(2)) : 0,
+      publishedAt: p.publishedAt || ""
+    });
+  }
+  rows.sort(function(a,b){
+    if (b.views !== a.views) return b.views - a.views;
+    return b.engagementRate - a.engagementRate;
+  });
+  return rows.slice(0, 8);
+}
+
+async function buildPromotionReport(force) {
+  const selectedWorkspaceId = currentWorkspaceId();
+  const allWorkspaces = workspaceStore.workspaces.slice();
+  const rows = await Promise.all(allWorkspaces.map(function(ws){
+    return workspaceContext.run({ workspaceId: ws.id }, async function(){
+      const tg = await fetchTelegramSubscriberCountLight(ws);
+      let vkSubscribers = null;
+      let vkAvailable = false;
+      if (workspaceVkPublishingAllowed(ws)) {
+        try {
+          const vk = await fetchVkAnalytics();
+          if (vk && vk.totals && Number.isFinite(Number(vk.totals.subscribers))) {
+            vkSubscribers = Number(vk.totals.subscribers);
+            vkAvailable = true;
+            await recordPromotionSnapshot(ws.id, "vk", vk.totals);
+          }
+        } catch {}
+      }
+      if (tg.available) await recordPromotionSnapshot(ws.id, "telegram", { subscribers: tg.subscribers });
+      return {
+        id: ws.id,
+        name: ws.name,
+        handle: ws.telegramPublicUsername ? ("@" + String(ws.telegramPublicUsername).replace(/^@/,"")) : String(ws.telegramChannel || ""),
+        avatarUrl: ws.avatarUrl || "",
+        telegramSubscribers: tg.available ? tg.subscribers : null,
+        telegramAvailable: Boolean(tg.available),
+        telegramError: tg.error || "",
+        vkSubscribers: vkSubscribers,
+        vkAvailable: vkAvailable,
+        published: Number(ws.state && ws.state.stats && ws.state.stats.published || 0)
+      };
+    });
+  }));
+
+  const baselines = await promotionBaselineMaps(allWorkspaces.map(function(ws){ return ws.id; }));
+  rows.forEach(function(row){
+    const key = row.id + ":telegram";
+    row.growth = {
+      day: promotionDelta(row.telegramSubscribers, baselines.day.get(key)),
+      week: promotionDelta(row.telegramSubscribers, baselines.week.get(key)),
+      month: promotionDelta(row.telegramSubscribers, baselines.month.get(key))
+    };
+    row.totalSubscribers = (Number.isFinite(Number(row.telegramSubscribers)) ? Number(row.telegramSubscribers) : 0) +
+      (Number.isFinite(Number(row.vkSubscribers)) ? Number(row.vkSubscribers) : 0);
+  });
+
+  let details = { analytics: { telegram: {}, vk: {} }, topPosts: [] };
+  await workspaceContext.run({ workspaceId: selectedWorkspaceId }, async function(){
+    const analytics = await buildPlatformAnalytics(Boolean(force));
+    details.analytics = analytics;
+    details.topPosts = promotionTopPosts(analytics);
+    if (analytics.telegram && analytics.telegram.totals) await recordPromotionSnapshot(selectedWorkspaceId, "telegram", analytics.telegram.totals);
+    if (analytics.vk && analytics.vk.totals && Number.isFinite(Number(analytics.vk.totals.subscribers))) {
+      await recordPromotionSnapshot(selectedWorkspaceId, "vk", analytics.vk.totals);
+    }
+  });
+
+  const refreshedBaselines = await promotionBaselineMaps([selectedWorkspaceId]);
+  const currentRow = rows.find(function(row){ return row.id === selectedWorkspaceId; }) || rows[0] || {};
+  const currentTg = Number.isFinite(Number(currentRow.telegramSubscribers)) ? Number(currentRow.telegramSubscribers) : null;
+  const currentVk = Number.isFinite(Number(currentRow.vkSubscribers)) ? Number(currentRow.vkSubscribers) : null;
+  const sumGrowth = function(period) {
+    let found = false, total = 0;
+    const tgBase = refreshedBaselines[period].get(selectedWorkspaceId + ":telegram");
+    const vkBase = refreshedBaselines[period].get(selectedWorkspaceId + ":vk");
+    if (currentTg != null && tgBase) { total += currentTg - Number(tgBase.subscribers); found = true; }
+    if (currentVk != null && vkBase) { total += currentVk - Number(vkBase.subscribers); found = true; }
+    return found ? total : null;
+  };
+
+  const campaigns = await promotionCampaignReport(selectedWorkspaceId);
+  const networkTotalSubscribers = rows.reduce(function(sum,row){ return sum + Number(row.totalSubscribers || 0); }, 0);
+  const networkWeekGrowthValues = rows.map(function(row){ return row.growth && row.growth.week; }).filter(function(v){ return v != null; });
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    tracking: {
+      dbReady: dbReady,
+      note: "Рост считается по автоматическим снимкам аудитории. Первые дельты появятся после накопления истории."
+    },
+    current: {
+      id: currentRow.id || selectedWorkspaceId,
+      name: currentRow.name || (currentWorkspace() && currentWorkspace().name) || "Канал",
+      handle: currentRow.handle || "",
+      telegramSubscribers: currentTg,
+      vkSubscribers: currentVk,
+      totalSubscribers: Number(currentRow.totalSubscribers || 0),
+      growth: { day: sumGrowth("day"), week: sumGrowth("week"), month: sumGrowth("month") },
+      campaignSummary: campaigns,
+      topPosts: details.topPosts,
+      analytics: details.analytics
+    },
+    network: {
+      channels: rows,
+      totalSubscribers: networkTotalSubscribers,
+      weekGrowth: networkWeekGrowthValues.length ? networkWeekGrowthValues.reduce(function(a,b){ return a + b; }, 0) : null,
+      trackedChannels: rows.filter(function(row){ return row.telegramAvailable || row.vkAvailable; }).length
+    }
+  };
+}
+
+async function generatePromotionCreative() {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY не настроен");
+  const ws = currentWorkspace();
+  const recent = (state.history || []).slice(0, 12).map(function(h){
+    return {
+      title: String(h && h.title || "").slice(0, 180),
+      text: String(h && h.text || "").replace(/\s+/g," ").slice(0, 450),
+      views: Number(h && h.views || 0)
+    };
+  }).filter(function(x){ return x.title || x.text; });
+  const prompt = [
+    "Ты growth-редактор News Factory.",
+    "Нужно подготовить рекламный креатив для привлечения живых подписчиков в Telegram-канал «" + String(ws.name || "News Factory") + "».",
+    "Не выдумывай цифры, достижения, эксклюзивность или факты, которых нет во входных данных.",
+    "Пиши по-русски, живо и коротко, без канцелярита.",
+    "Нужны четыре поля:",
+    "headline — короткий рекламный заголовок;",
+    "telegram_ad — рекламный пост на 350–550 знаков;",
+    "short_video_hook — хук для Reels/Shorts на 1–2 предложения;",
+    "cta — короткий призыв подписаться.",
+    "Верни строго JSON без markdown: {"headline":"...","telegram_ad":"...","short_video_hook":"...","cta":"..."}.",
+    "",
+    "Недавние темы канала:",
+    JSON.stringify(recent.slice(0, 6))
+  ].join("\n");
+
+  const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 900, text: { format: { type: "json_object" } } }),
+        signal: AbortSignal.timeout(45000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) { lastError = data && data.error && data.error.message || ("HTTP " + response.status); continue; }
+      recordOpenAIResponseUsage(model, "promotion_creative", data, "responses", {});
+      const raw = extractOpenAIText(data).replace(/^\s*```json\s*/i,"").replace(/\s*```\s*$/,"").trim();
+      const parsed = JSON.parse(raw);
+      return {
+        model: model,
+        headline: String(parsed.headline || "").trim(),
+        telegramAd: String(parsed.telegram_ad || "").trim(),
+        shortVideoHook: String(parsed.short_video_hook || "").trim(),
+        cta: String(parsed.cta || "").trim()
+      };
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+  throw new Error(lastError || "Не удалось создать рекламный креатив");
+}
+
+let promotionSnapshotTimer = null;
+async function refreshPromotionSnapshotsAllWorkspaces() {
+  if (!db || !dbReady) return { ok: false, skipped: "db_unavailable" };
+  let recorded = 0;
+  for (const ws of workspaceStore.workspaces) {
+    await workspaceContext.run({ workspaceId: ws.id }, async function(){
+      const tg = await fetchTelegramSubscriberCountLight(ws);
+      if (tg.available && await recordPromotionSnapshot(ws.id, "telegram", { subscribers: tg.subscribers })) recorded += 1;
+      if (workspaceVkPublishingAllowed(ws)) {
+        try {
+          const vk = await fetchVkAnalytics();
+          if (vk && vk.totals && Number.isFinite(Number(vk.totals.subscribers))) {
+            if (await recordPromotionSnapshot(ws.id, "vk", vk.totals)) recorded += 1;
+          }
+        } catch {}
+      }
+    });
+  }
+  return { ok: true, recorded: recorded };
+}
+
+function startPromotionSnapshotMonitor() {
+  if (promotionSnapshotTimer) return;
+  setTimeout(function(){
+    refreshPromotionSnapshotsAllWorkspaces().catch(function(error){ console.warn("Promotion snapshot startup failed:", error.message); });
+  }, 12000);
+  promotionSnapshotTimer = setInterval(function(){
+    refreshPromotionSnapshotsAllWorkspaces().catch(function(error){ console.warn("Promotion snapshot refresh failed:", error.message); });
+  }, 60 * 60 * 1000);
+}
+
+
 
 function addLearningSample(map, key, value) {
   const k = String(key || "").trim().toLowerCase();
@@ -10103,6 +10470,37 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, analytics);
     }
 
+    if (req.method === "GET" && p === "/api/promotion") {
+      const force = url.searchParams.get("refresh") === "1";
+      const report = await buildPromotionReport(force);
+      return sendJson(res, 200, report, { "cache-control": "no-store" });
+    }
+
+    if (req.method === "POST" && p === "/api/promotion/campaigns") {
+      if (!db || !dbReady) return sendJson(res, 503, { ok: false, error: "PostgreSQL временно недоступен" });
+      const body = await readJson(req);
+      const name = String(body.name || "").trim().slice(0, 120);
+      if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название кампании" });
+      const platform = ["telegram","vk","cross"].includes(String(body.platform || "").toLowerCase()) ? String(body.platform).toLowerCase() : "telegram";
+      const sourceType = ["seeding","reels","shorts","vk","crosspromo","blogger","other"].includes(String(body.sourceType || "").toLowerCase()) ? String(body.sourceType).toLowerCase() : "other";
+      const sourceName = String(body.sourceName || "").trim().slice(0, 160);
+      const spendRub = Math.max(0, Math.min(100000000, Number(body.spendRub || 0) || 0));
+      const clicks = Math.max(0, Math.min(100000000, Math.round(Number(body.clicks || 0) || 0)));
+      const attributedSubscribers = Math.max(0, Math.min(100000000, Math.round(Number(body.attributedSubscribers || 0) || 0)));
+      const id = newId("promo");
+      await db.query(
+        "INSERT INTO promotion_campaigns(id,workspace_id,name,platform,source_type,source_name,spend_rub,clicks,attributed_subscribers,status) " +
+        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')",
+        [id,currentWorkspaceId(),name,platform,sourceType,sourceName,spendRub,clicks,attributedSubscribers]
+      );
+      return sendJson(res, 201, { ok: true, id: id });
+    }
+
+    if (req.method === "POST" && p === "/api/promotion/creative") {
+      const creative = await generatePromotionCreative();
+      return sendJson(res, 200, { ok: true, creative: creative });
+    }
+
     if (req.method === "GET" && p === "/api/status") {
       const force = url.searchParams.get("refresh") === "1";
       const status = await buildSystemStatus(force);
@@ -10816,6 +11214,7 @@ const server = http.createServer(async function(req, res) {
 });
 
 await initDb();
+startPromotionSnapshotMonitor();
 for (const ws of workspaceStore.workspaces) {
   await workspaceContext.run({ workspaceId: ws.id }, async function(){
     const startupCleanup = pruneQueueItems(state);
