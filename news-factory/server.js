@@ -31,6 +31,18 @@ import {
   normalizeBalanceInput,
   computeApiBalance
 } from "./lib/costs.js";
+import {
+  atomicWriteFileSync,
+  loadJsonStoreWithRecovery,
+  createAtomicStoreWriter,
+  createKeyedDebouncer,
+  retryWithBackoff,
+  withAdvisoryLock,
+  parseCbrUsdRate,
+  resolveUsdRubFallback,
+  dispatchBudgetAlerts,
+  DEFAULT_USD_RUB_RATE
+} from "./lib/data-safety.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -158,6 +170,7 @@ const COST_PRICING_CONFIG = resolveCostPricing(process.env.COST_PRICING_JSON || 
 const COST_PRICING_UPDATED_AT = COST_PRICING_CONFIG.updatedAt;
 const COST_PRICING = COST_PRICING_CONFIG.pricing;
 if (COST_PRICING_CONFIG.error) console.warn("COST_PRICING_JSON ignored:", COST_PRICING_CONFIG.error);
+for (const warning of (COST_PRICING_CONFIG.warnings || [])) console.warn("COST_PRICING_JSON:", warning);
 
 const CURATED_SOURCES = [
   { id: "openai", name: "OpenAI News", type: "web", group: "official", priority: 1, url: "https://openai.com/news/", enabled: true },
@@ -647,22 +660,36 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const channelId = EDITORIAL_CHANNEL_IDS.includes(channelIdRaw) ? channelIdRaw : "";
   return { id, name, slug, initials, telegramChannel, telegramPublicUsername, avatarUrl, avatarFile, channelId, createdAt: String(raw && raw.createdAt || new Date().toISOString()), updatedAt: String(raw && raw.updatedAt || new Date().toISOString()), state: normalizeWorkspaceState(raw && raw.state) };
 }
+function isUsableWorkspaceStoreFile(parsed) {
+  return Boolean(parsed && typeof parsed === "object" && Array.isArray(parsed.workspaces) && parsed.workspaces.length > 0);
+}
+const WORKSPACES_BAK_FILE = WORKSPACES_FILE + ".bak";
+const workspaceStoreWriter = createAtomicStoreWriter({
+  file: WORKSPACES_FILE,
+  bakFile: WORKSPACES_BAK_FILE,
+  validate: isUsableWorkspaceStoreFile,
+  backupIntervalMs: Math.max(0, Number(process.env.WORKSPACES_BACKUP_INTERVAL_MS || 60000))
+});
 function loadWorkspaceStore() {
   ensureDataDir();
-  try {
-    const parsed = JSON.parse(fs.readFileSync(WORKSPACES_FILE, "utf8"));
-    const rawWorkspaces = Array.isArray(parsed && parsed.workspaces) ? parsed.workspaces : [];
-    if (rawWorkspaces.length) {
-      const workspaces = rawWorkspaces.map(function(ws, index){ return normalizeWorkspaceMeta(ws, index === 0 ? DEFAULT_WORKSPACE_ID : "workspace-" + (index + 1)); });
-      const requestedDefault = String(parsed.defaultWorkspaceId || "");
-      const defaultWorkspaceId = workspaces.some(function(ws){ return ws.id === requestedDefault; }) ? requestedDefault : workspaces[0].id;
-      return { version: 1, defaultWorkspaceId, workspaces };
-    }
-  } catch {}
+  // A damaged workspaces.json is NEVER replaced by a fresh one-channel store: it is moved
+  // to workspaces.json.corrupt-<ts>, the last good .bak is used, and if that is unusable too
+  // loadJsonStoreWithRecovery throws so the process refuses to start (and overwrite data).
+  const loaded = loadJsonStoreWithRecovery({ file: WORKSPACES_FILE, bakFile: WORKSPACES_BAK_FILE, validate: isUsableWorkspaceStoreFile });
+  if (loaded.status !== "missing") {
+    if (loaded.status === "ok") workspaceStoreWriter.backupNow(); // a known-good copy exists from the very first boot after this change
+    const parsed = loaded.data;
+    const workspaces = parsed.workspaces.map(function(ws, index){ return normalizeWorkspaceMeta(ws, index === 0 ? DEFAULT_WORKSPACE_ID : "workspace-" + (index + 1)); });
+    const requestedDefault = String(parsed.defaultWorkspaceId || "");
+    const defaultWorkspaceId = workspaces.some(function(ws){ return ws.id === requestedDefault; }) ? requestedDefault : workspaces[0].id;
+    return { version: 1, defaultWorkspaceId, workspaces };
+  }
+  // First start only: neither workspaces.json nor its backup exists.
   const legacyState = loadLegacyState();
   const first = normalizeWorkspaceMeta({ id: DEFAULT_WORKSPACE_ID, name: "Что там у ИИ?", slug: TELEGRAM_PUBLIC_USERNAME || "chtotamai", initials: "AI", telegramChannel: CHANNEL, telegramPublicUsername: TELEGRAM_PUBLIC_USERNAME, state: legacyState }, DEFAULT_WORKSPACE_ID);
   const created = { version: 1, defaultWorkspaceId: first.id, workspaces: [first] };
-  try { fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(created, null, 2), "utf8"); } catch {}
+  if (fs.existsSync(WORKSPACES_FILE)) throw new Error("workspaces.json appeared during startup; refusing to overwrite it");
+  try { workspaceStoreWriter.write(JSON.stringify(created, null, 2)); } catch (error) { console.error("Cannot write initial workspaces.json:", error.message); }
   return created;
 }
 const workspaceContext = new AsyncLocalStorage();
@@ -715,9 +742,13 @@ function workspaceSummary(ws) {
 }
 function persistWorkspaceStore() {
   ensureDataDir();
-  fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
+  if (!workspaceStore || !Array.isArray(workspaceStore.workspaces) || !workspaceStore.workspaces.length) {
+    throw new Error("refusing to persist an empty workspace store");
+  }
+  // temp file + fsync + rename; the previous good copy is rotated to workspaces.json.bak
+  workspaceStoreWriter.write(JSON.stringify(workspaceStore, null, 2));
   const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
-  if (defaultWorkspace && defaultWorkspace.state) fs.writeFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2), "utf8");
+  if (defaultWorkspace && defaultWorkspace.state) atomicWriteFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2));
 }
 
 function ensureConfiguredWorkspaces() {
@@ -793,6 +824,10 @@ function ensureConfiguredWorkspaces() {
     }
   }
 
+  // NOTE (audit): this block recreates the "chtotamtachki" workspace on every start, so an
+  // intentionally deleted channel comes back. Everything below dereferences `cars.state`, and
+  // a tombstone list would have to be persisted in workspaces.json and honoured by the delete
+  // endpoint, so this is deliberately left unchanged (risky for existing deployments).
   let cars = workspaceStore.workspaces.find(function(ws){
     const slug = String(ws.slug || ws.telegramPublicUsername || ws.telegramChannel || "").replace(/^@/, "").toLowerCase();
     return slug === "chtotamtachki" || String(ws.name || "").trim().toLowerCase() === "что там у тачек?";
@@ -1251,30 +1286,55 @@ function providerLabel(value) {
   return map[String(value || "")] || String(value || "Другое");
 }
 
+// USD/RUB: CBR (cached 6 h) -> last known good CBR value (persisted in the network cost-budget
+// state, survives restarts) -> COST_USD_RUB_RATE -> built-in constant. It never returns 0/null:
+// a missing rate used to make budgets compute as 0 RUB and silently switch economy mode off.
+let usdRubFailedAt = 0;
+let usdRubFallbackLogged = "";
+let lastUsdRubInfo = { source: "none", at: 0 };
 async function getUsdRubRate() {
   const now = Date.now();
   if (cbrUsdRubCache.value && now - cbrUsdRubCache.at < 6 * 60 * 60 * 1000) return cbrUsdRubCache.value;
-  try {
-    const response = await fetch("https://www.cbr.ru/scripts/XML_daily.asp", {
-      headers: { "user-agent": "NewsFactory/1.0" },
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!response.ok) throw new Error("CBR HTTP " + response.status);
-    const xml = await response.text();
-    const block = xml.match(/<Valute[^>]*>[\s\S]*?<CharCode>USD<\/CharCode>[\s\S]*?<\/Valute>/i);
-    if (!block) throw new Error("USD not found");
-    const nominalMatch = block[0].match(/<Nominal>([^<]+)<\/Nominal>/i);
-    const valueMatch = block[0].match(/<Value>([^<]+)<\/Value>/i);
-    const nominal = Number(String(nominalMatch && nominalMatch[1] || "1").replace(",", "."));
-    const value = Number(String(valueMatch && valueMatch[1] || "").replace(",", "."));
-    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(nominal) || nominal <= 0) throw new Error("bad CBR rate");
-    const rate = value / nominal;
-    cbrUsdRubCache = { at: now, value: rate };
-    return rate;
-  } catch {
-    const fallback = Number(process.env.COST_USD_RUB_RATE || 0);
-    return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+  const retryAfterFailureMs = 5 * 60 * 1000;
+  if (!(usdRubFailedAt && now - usdRubFailedAt < retryAfterFailureMs)) {
+    try {
+      const response = await fetch("https://www.cbr.ru/scripts/XML_daily.asp", {
+        headers: { "user-agent": "NewsFactory/1.0" },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!response.ok) throw new Error("CBR HTTP " + response.status);
+      const rate = parseCbrUsdRate(await response.text());
+      cbrUsdRubCache = { at: now, value: rate };
+      usdRubFailedAt = 0;
+      usdRubFallbackLogged = "";
+      lastUsdRubInfo = { source: "cbr", at: now };
+      try {
+        const budget = networkCostBudgetState();
+        const stored = Number(budget.lastUsdRub && budget.lastUsdRub.value);
+        if (!(Math.abs(stored - rate) < 0.00001)) {
+          budget.lastUsdRub = { value: rate, at: new Date(now).toISOString() };
+          persistWorkspaceStore();
+        }
+      } catch (error) { console.warn("Cannot persist last known USD/RUB rate:", error.message); }
+      return rate;
+    } catch (error) {
+      usdRubFailedAt = now;
+      console.warn("CBR USD/RUB rate unavailable:", error && error.message || error);
+    }
   }
+  let stored = null;
+  try {
+    const saved = networkCostBudgetState().lastUsdRub;
+    if (saved && Number(saved.value) > 0) stored = { value: Number(saved.value), at: Date.parse(saved.at) || 0 };
+  } catch {}
+  const lastGood = cbrUsdRubCache.value ? { value: cbrUsdRubCache.value, at: cbrUsdRubCache.at } : stored;
+  const fb = resolveUsdRubFallback({ lastGood: lastGood, configured: process.env.COST_USD_RUB_RATE, defaultRate: DEFAULT_USD_RUB_RATE });
+  lastUsdRubInfo = { source: fb.source, at: fb.at };
+  if (usdRubFallbackLogged !== fb.source) {
+    usdRubFallbackLogged = fb.source; // log once per outage / source change
+    console.warn("USD/RUB: CBR unavailable, using " + fb.source + " rate " + fb.rate + " for cost budgets and economy mode");
+  }
+  return fb.rate;
 }
 
 function directoryBytes(dir) {
@@ -1376,7 +1436,8 @@ async function costBudgetSnapshot(knownRate) {
     dailyRatio: b.dailyRub ? todayRub / b.dailyRub : 0,
     economyMode: Boolean(b.economyMode),
     economyReason: String(b.economyReason || ""),
-    fxAvailable: Boolean(rate)
+    fxAvailable: Boolean(rate),
+    fxSource: lastUsdRubInfo.source
   };
 }
 
@@ -1457,6 +1518,11 @@ async function sendCostBudgetAlert(snapshot, threshold) {
 async function evaluateCostBudget(notify) {
   const b = networkCostBudgetState();
   const snap = await costBudgetSnapshot();
+  if (!snap.fxAvailable) {
+    // Defensive: with no rate every RUB figure is 0 and the ratios would switch economy mode off.
+    // Keep the previous decision instead.
+    return Object.assign({}, snap, { economyMode: Boolean(b.economyMode), economyReason: String(b.economyReason || "") });
+  }
   const dailyOver = snap.dailyBudgetRub > 0 && snap.dailyRatio >= 1;
   const monthlyOver = snap.monthlyBudgetRub > 0 && snap.monthlyRatio >= 1;
   const economy = Boolean(dailyOver || monthlyOver);
@@ -1468,20 +1534,17 @@ async function evaluateCostBudget(notify) {
 
   if (notify && snap.configured && snap.fxAvailable) {
     const mskDay = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0,10);
-    for (const threshold of [80,100]) {
-      const reached = (snap.dailyBudgetRub && snap.dailyRatio >= threshold/100) || (snap.monthlyBudgetRub && snap.monthlyRatio >= threshold/100);
-      const key = "last" + threshold + "Day";
-      if (reached && b.alerts[key] !== mskDay) {
-        try {
-          if (await sendCostBudgetAlert(snap, threshold)) {
-            b.alerts[key] = mskDay;
-            dirty = true;
-          }
-        } catch (error) {
-          console.warn("Cost budget Telegram alert failed:", error.message);
-        }
-      }
-    }
+    // The dedupe key is claimed BEFORE the Telegram await (concurrent evaluations and a failing
+    // 403/slow Telegram used to produce 6-8 identical sends); failures back off for 30 minutes.
+    const alertsDirty = await dispatchBudgetAlerts({
+      alerts: b.alerts,
+      day: mskDay,
+      thresholds: [80, 100],
+      reached: function(threshold) { return Boolean((snap.dailyBudgetRub && snap.dailyRatio >= threshold/100) || (snap.monthlyBudgetRub && snap.monthlyRatio >= threshold/100)); },
+      send: function(threshold) { return sendCostBudgetAlert(snap, threshold); },
+      onError: function(error) { console.warn("Cost budget Telegram alert failed:", error.message); }
+    });
+    if (alertsDirty) dirty = true;
   }
   if (dirty) persistWorkspaceStore();
   return Object.assign({}, snap, { economyMode: economy, economyReason: reason });
@@ -2612,7 +2675,14 @@ function buildSourceRankings() {
   return rows;
 }
 
-const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000 }) : null;
+const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000, connectionTimeoutMillis: 15000 }) : null;
+if (db) {
+  // Without an 'error' listener a dropped idle connection (DB restart, network blip) is an
+  // unhandled 'error' event and kills the process. Only the message is logged (never the URL).
+  db.on("error", function(error) {
+    console.error("PostgreSQL pool error (idle client):", error && error.message || error);
+  });
+}
 let dbReady = false;
 // Collector lock is per workspace: one channel's slow collection must not block
 // slot preparation of the other channels in the network.
@@ -2621,7 +2691,6 @@ function isCollectorRunning(workspaceId) { return collectorRunningWorkspaces.has
 const schedulerTickRunning = new Set();
 let collectorTimer = null;
 const lastCollectorRuns = new Map();
-let snapshotTimer = null;
 function saveState() {
   pruneQueueItems(state);
   state.updatedAt = new Date().toISOString();
@@ -2646,7 +2715,10 @@ async function runMigrations() {
       .filter(function(name){ return /\.sql$/i.test(name); })
       .sort();
   } catch (error) {
-    if (error && error.code === "ENOENT") return;
+    if (error && error.code === "ENOENT") {
+      console.error("DB migrations directory not found, no migrations were applied: " + migrationsDir);
+      return;
+    }
     throw error;
   }
 
@@ -2672,9 +2744,11 @@ async function runMigrations() {
   }
 }
 
-async function initDb() {
-  if (!db) return false;
-  try {
+// Serialises schema bootstrap + migrations between concurrently starting instances
+// (rolling deploys): the session-level advisory lock is held on a dedicated connection.
+const DB_INIT_ADVISORY_LOCK_KEY = 7242001;
+async function initDbAttempt() {
+  await withAdvisoryLock(db, DB_INIT_ADVISORY_LOCK_KEY, async function() {
     await db.query(`
       CREATE TABLE IF NOT EXISTS news_items (
         id TEXT PRIMARY KEY,
@@ -2721,6 +2795,8 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS app_snapshots_created_idx ON app_snapshots(created_at DESC);
     `);
     await runMigrations();
+  });
+  {
     dbReady = true;
     await migrateLegacyCostEventsToPostgres();
     await refreshStoredCostPricing();
@@ -2732,10 +2808,39 @@ async function initDb() {
     await saveStateSnapshot();
     console.log("PostgreSQL ready");
     return true;
+  }
+}
+
+// Bounded retry with exponential backoff (DB_INIT_MAX_ATTEMPTS, DB_INIT_RETRY_BASE_MS). If every
+// attempt fails the app keeps running without the DB, but a background retry round is scheduled
+// every DB_INIT_RECOVERY_MS so dbReady does not stay false forever after one outage.
+let dbInitRunning = false;
+let dbInitRecoveryTimer = null;
+async function initDb() {
+  if (!db) return false;
+  if (dbInitRunning) return dbReady;
+  dbInitRunning = true;
+  try {
+    await retryWithBackoff(initDbAttempt, {
+      attempts: Math.max(1, Math.min(10, Number(process.env.DB_INIT_MAX_ATTEMPTS || 5))),
+      baseMs: Math.max(0, Number(process.env.DB_INIT_RETRY_BASE_MS || 1000)),
+      maxMs: 15000,
+      onRetry: function(error, attempt, delay) {
+        dbReady = false;
+        console.warn("PostgreSQL init attempt " + attempt + " failed: " + (error && error.message || error) + "; retrying in " + delay + " ms");
+      }
+    });
+    return true;
   } catch (error) {
     dbReady = false;
-    console.error("PostgreSQL init failed:", error.message);
+    console.error("PostgreSQL init failed:", error && error.message || error);
+    const recoveryMs = Math.max(1000, Number(process.env.DB_INIT_RECOVERY_MS || 30000));
+    if (dbInitRecoveryTimer) clearTimeout(dbInitRecoveryTimer);
+    dbInitRecoveryTimer = setTimeout(function() { dbInitRecoveryTimer = null; initDb().catch(function(){}); }, recoveryMs);
+    if (dbInitRecoveryTimer.unref) dbInitRecoveryTimer.unref();
     return false;
+  } finally {
+    dbInitRunning = false;
   }
 }
 
@@ -2750,10 +2855,15 @@ async function saveStateSnapshot() {
   }
 }
 
+// One debounce timer per workspace: a single global timer made a save in workspace B
+// cancel the pending snapshot of workspace A. The callback re-enters the workspace context.
+const snapshotDebouncer = createKeyedDebouncer(1500, function(workspaceId) {
+  if (!getWorkspaceById(workspaceId)) return;
+  return workspaceContext.run({ workspaceId: workspaceId }, function(){ return saveStateSnapshot(); });
+});
 function scheduleStateSnapshot() {
   if (!db || !dbReady) return;
-  clearTimeout(snapshotTimer);
-  snapshotTimer = setTimeout(function(){ saveStateSnapshot(); }, 1500);
+  snapshotDebouncer.schedule(currentWorkspaceId());
 }
 
 function canonicalizeUrl(raw, base) {
@@ -10217,7 +10327,7 @@ const server = http.createServer(async function(req, res) {
       const marker = crypto.randomBytes(3).toString("hex");
       const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «" + String(currentWorkspace().name || "текущий канал") + "» работает.\nТест: " + marker);
       state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString(), publicationOrigin: "test" });
-      state.history = state.history.slice(0, 100);
+      state.history = state.history.slice(0, 300);
       state.stats.published += 1;
       saveState();
       return sendJson(res, 200, {
@@ -10287,7 +10397,7 @@ const server = http.createServer(async function(req, res) {
         publicationOrigin: "manual"
       };
       state.history.unshift(historyItem);
-      state.history = state.history.slice(0, 100);
+      state.history = state.history.slice(0, 300);
       if (result.telegramPublished || result.vkPublished) state.stats.published += 1;
       saveState();
 
@@ -10666,7 +10776,7 @@ const server = http.createServer(async function(req, res) {
           manualPublishedFromSchedule: item.preparedFor || ""
         };
         state.history.unshift(historyItem);
-        state.history = state.history.slice(0, 100);
+        state.history = state.history.slice(0, 300);
         item.historyId = historyItem.id;
         state.stats.published += 1;
       } else if (historyItem) {
