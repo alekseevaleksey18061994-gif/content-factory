@@ -2770,6 +2770,20 @@ function extractMetaImage(html, pageUrl) {
   return "";
 }
 
+// Telegram sendVideo only plays MPEG-4: a .webm is delivered as a plain "logo.webm" file
+// attachment. Short decorative clips (animated logos, backgrounds, hero loops) found on
+// article pages are not news video either, so neither is accepted as a post video.
+function isUsableNewsVideoUrl(rawUrl) {
+  const value = String(rawUrl || "").trim();
+  if (!value) return false;
+  let pathname = value;
+  try { pathname = new URL(value, PUBLIC_BASE_URL).pathname; } catch {}
+  if (!/\.(mp4|m4v|mov)$/i.test(pathname)) return false;
+  const base = decodeURIComponent(pathname.split("/").pop() || "");
+  if (/(^|[-_.\s])(logo|logotype|loop|intro|outro|bg|background|header|hero|banner|favicon|icon|sprite|placeholder|ambient|teaser-loop)([-_.\s\d]|$)/i.test(base)) return false;
+  return true;
+}
+
 function extractMetaVideo(html, pageUrl) {
   const source = String(html || "");
   const patterns = [
@@ -2782,7 +2796,7 @@ function extractMetaVideo(html, pageUrl) {
     const m = source.match(re);
     if (!m || !m[1]) continue;
     const url = canonicalizeUrl(htmlDecode(m[1]), pageUrl);
-    if (url && /^https?:\/\//i.test(url) && /\.(mp4|mov|m4v|webm)(\?|$)/i.test(url)) return url;
+    if (url && /^https?:\/\//i.test(url) && /\.(mp4|mov|m4v|webm)(\?|$)/i.test(url) && isUsableNewsVideoUrl(url)) return url;
   }
   return "";
 }
@@ -2810,6 +2824,7 @@ function extractArticleMediaCandidates(html, pageUrl) {
     const url = canonicalizeUrl(htmlDecode(raw || ""), pageUrl);
     if (!url || !/^https?:\/\//i.test(url) || videoSeen.has(url)) return;
     if (!/\.(mp4|mov|m4v|webm)(\?|$)/i.test(url)) return;
+    if (!isUsableNewsVideoUrl(url)) return;
     videoSeen.add(url);
     videos.push({ url: url, score: score, reason: reason || "page_video" });
   }
@@ -5960,7 +5975,20 @@ async function sendTelegramPost(post) {
     .map(function(url){ return String(url || "").trim(); })
     .filter(function(url){ return /^https?:\/\//i.test(url); }))).slice(0, 10);
   let imageUrl = String(post.imageUrl || post.generatedImageUrl || mediaPackUrls[0] || "").trim();
-  const videoUrl = String(post.videoUrl || "").trim();
+  const rawVideoUrl = String(post.videoUrl || "").trim();
+  const videoUrl = isUsableNewsVideoUrl(rawVideoUrl) ? rawVideoUrl : "";
+  if (rawVideoUrl && !videoUrl) {
+    console.warn("TELEGRAM_VIDEO_SKIPPED " + JSON.stringify({ post_id: String(post.id || post.postId || "unknown"), url: rawVideoUrl.slice(0, 200), reason: "not a playable news video (webm / logo / decorative loop)" }));
+    if (!String(post.imageUrl || post.generatedImageUrl || "").trim() && !mediaPackUrls.length && GENERATE_COVER_IF_MISSING) {
+      const cover = await generateNewsCover({
+        id: post.id || newId("video_skipped"),
+        title: post.title || currentWorkspace().name || "News Factory",
+        text: post.text || "",
+        sourceName: post.sourceName || "Telegram"
+      });
+      post.generatedImageUrl = cover.url;
+    }
+  }
 
   if (mediaPackUrls.length > 1 && !videoUrl) {
     try {
