@@ -10828,6 +10828,7 @@ async function seedChannelSources(ws) {
 // New network channels: seed sources and switch on auto-publishing. Runs at
 // start and every 15 minutes, so a channel created in the admin is picked up
 // without a restart.
+const SEED_LISTS_V0413 = new Set(["kino", "science", "sport"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -10837,15 +10838,22 @@ function setupNewChannels() {
       if (!ws || !ws.state) continue;
       const channelId = resolveChannelId(ws);
       if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
-      const migration = "v0.40.1-seed-" + channelId; // re-run: Telegram channels were merged into one key
+      // kino/science/sport got hand-made lists in v0.41.3 (their first run relied
+      // on AI discovery, which hit the OpenAI rate limit) — seed them again.
+      const migration = (SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         if (!state.migrations.includes(migration)) {
           const result = await seedChannelSources(ws);
-          state.migrations.push(migration);
+          // Too few working sources (discovery failed, sites down): retry on the
+          // next run, up to 4 attempts, instead of marking the seed as done.
+          state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+          state.seedAttempts[migration] = Number(state.seedAttempts[migration] || 0) + 1;
+          const done = !result || result.active >= 15 || state.seedAttempts[migration] >= 4;
+          if (done) state.migrations.push(migration);
           saveState();
           persistWorkspaceStore();
-          console.log("SOURCE_SEED " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+          console.log("SOURCE_SEED " + JSON.stringify(Object.assign({ workspace: ws.id, attempt: state.seedAttempts[migration], done: done }, result)));
         }
         // New network channel: switch on automatic publishing once all checks pass.
         const autoMigration = "v0.40.3-auto-publish";
