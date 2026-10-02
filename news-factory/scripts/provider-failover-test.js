@@ -98,6 +98,24 @@ test("F2 breaker: open for the cooldown, one retry after it, recovery reported o
   assert.deepEqual(b.snapshot(), {});
 });
 
+
+test("F2b breaker: billing/auth cool down longer than a transient outage", async () => {
+  let t = 1000;
+  const b = createProviderBreaker({
+    cooldownMs: 10000,
+    cooldownByKind: { billing: 60000, auth: 120000, outage: 5000 },
+    now: () => t
+  });
+  b.trip("openai", "no money", "billing");
+  t += 59000; assert.equal(b.isOpen("openai"), true);
+  t += 2000; assert.equal(b.isOpen("openai"), false);
+  b.trip("openai", "temporary outage", "outage");
+  t += 6000; assert.equal(b.isOpen("openai"), false);
+  b.trip("anthropic", "bad key", "auth");
+  t += 119000; assert.equal(b.isOpen("anthropic"), true);
+  t += 2000; assert.equal(b.isOpen("anthropic"), false);
+});
+
 test("F3 Responses request -> Claude request", async () => {
   assert.deepEqual(responsesRequestToClaude({ model: "m", input: "привет", max_output_tokens: 900 }), { system: "", messages: [{ role: "user", content: "привет" }], maxTokens: 900, temperature: undefined, expectsJson: false });
   const j = responsesRequestToClaude({ input: "дай json", max_output_tokens: 8000, text: { format: { type: "json_object" } } });
@@ -389,10 +407,10 @@ test("S2 server: no money for covers -> local text card instead of a failed cove
   const t = await loadServer({ channels: twoCh, env: { GENERATE_COVER_IF_MISSING: "true" } });
   const calls = installNet({ responses: () => json(200, {}), images: () => json(429, OPENAI_NO_MONEY), anthropic: () => claudeOk("{}") });
   const cover = await t.generateNewsCover({ id: "x1", title: "Hongqi H5 подорожал на 200 000 ₽", text: "текст" });
-  assert.equal(cover.model, "local-budget-card"); assert.ok(cover.url);
+  assert.equal(cover.model, "local-branded-card-v2"); assert.ok(cover.url);
   assert.equal(calls.openaiImages.length, 1, "one failed attempt, no retry with the second image model");
   const again = await t.generateNewsCover({ id: "x2", title: "Другая новость", text: "текст" });
-  assert.equal(again.model, "local-budget-card"); assert.equal(calls.openaiImages.length, 1, "OpenAI is not asked again while switched off");
+  assert.equal(again.model, "local-branded-card-v2"); assert.equal(calls.openaiImages.length, 1, "OpenAI is not asked again while switched off");
 });
 
 test("S3 server: cover fallback can be switched off (error as before)", async () => {
@@ -456,7 +474,7 @@ test("S8 server: Claude-answered helper call leaves no phantom OpenAI cost row; 
   const sharp = (await import("sharp")).default;
   const meta = await sharp(t.dir + "/media/" + names[0]).metadata();
   assert.equal(meta.width, 1536);
-  assert.equal(cover.model, "local-budget-card");
+  assert.equal(cover.model, "local-branded-card-v2");
 });
 
 test("S9 server: failover flag off -> no cover card, no Claude, errors as before", async () => {

@@ -82,6 +82,12 @@ const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase(
 const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
 const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_ENHANCE_SOURCE_IMAGES = String(process.env.AUTO_ENHANCE_SOURCE_IMAGES || "true").toLowerCase() !== "false";
+// Golden-mean pipeline: cheap validation first; expensive/generated media only after editorial approval.
+const MEDIA_DEFER_EXPENSIVE = String(process.env.MEDIA_DEFER_EXPENSIVE || "true").toLowerCase() !== "false";
+const MEDIA_QUALITY_MIN_SCORE = Math.max(35, Math.min(90, Number(process.env.MEDIA_QUALITY_MIN_SCORE || 62) || 62));
+const EDITORIAL_QUEUE_TARGET = Math.max(1, Math.min(12, Number(process.env.EDITORIAL_QUEUE_TARGET || 4) || 4));
+const EDITORIAL_CAPACITY_BYPASS_SCORE = Math.max(7, Math.min(10, Number(process.env.EDITORIAL_CAPACITY_BYPASS_SCORE || 9) || 9));
+const MEDIA_AI_COVER_MIN_IMPORTANCE = Math.max(6, Math.min(10, Number(process.env.MEDIA_AI_COVER_MIN_IMPORTANCE || 8) || 8));
 const COPYRIGHT_MEDIA_MODE = String(process.env.COPYRIGHT_MEDIA_MODE || "balanced").trim().toLowerCase();
 const COPYRIGHT_SAFE_MODE = COPYRIGHT_MEDIA_MODE === "strict";
 const COPYRIGHT_MAX_VERBATIM_WORDS = Math.max(8, Number(process.env.COPYRIGHT_MAX_VERBATIM_WORDS || 12));
@@ -102,6 +108,7 @@ const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.E
 const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+const ANTHROPIC_HEALTH_CACHE_MIN = Math.max(10, Math.min(360, Number(process.env.ANTHROPIC_HEALTH_CACHE_MIN || 120) || 120));
 // Provider failover: OpenAI or Claude out of money (or down) -> the other one writes and checks, publishing goes on.
 const PROVIDER_FAILOVER_ENABLED = String(process.env.EDITORIAL_V2_PROVIDER_FAILOVER || "true").toLowerCase() !== "false";
 const ANTHROPIC_FALLBACK_WRITER_MODEL = String(process.env.ANTHROPIC_FALLBACK_WRITER_MODEL || "claude-sonnet-5-5").trim();
@@ -1723,6 +1730,11 @@ function maybeBillingAlert(text, forcedProvider) {
 // minutes (then retried once), so every post does not pay for a request that is certain to fail.
 const providerBreaker = createProviderBreaker({
   cooldownMs: PROVIDER_BREAKER_COOLDOWN_MIN * 60000,
+  cooldownByKind: {
+    billing: Math.max(PROVIDER_BREAKER_COOLDOWN_MIN, 60) * 60000,
+    auth: Math.max(PROVIDER_BREAKER_COOLDOWN_MIN, 240) * 60000,
+    outage: Math.min(PROVIDER_BREAKER_COOLDOWN_MIN, 5) * 60000
+  },
   onTrip: function(provider, reason, kind) {
     console.warn("PROVIDER_SWITCHED_OFF " + JSON.stringify({ provider: provider, kind: kind, failover: PROVIDER_FAILOVER_ENABLED, reason: String(reason || "").slice(0, 200) }));
     maybeBillingAlert(reason, provider);
@@ -1825,23 +1837,51 @@ function startCostBudgetMonitor() {
 
 async function renderEconomyTextCard(payload) {
   ensureDataDir();
-  const raw = String(payload && payload.title || "Новость").trim().slice(0,160);
+  const raw = String(payload && payload.title || "Новость").trim().slice(0, 180);
   const esc = function(v){ return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
+  const channel = String(currentWorkspace().name || "News Factory");
+  const topic = String(payload && payload.topicId || currentWorkspace().channelId || "NEWS").toUpperCase();
+  const seed = crypto.createHash("sha256").update(channel + "|" + raw).digest()[0];
+  const variants = [
+    { a:"#0b1630", b:"#2849a8", accent:"#58d6ff" },
+    { a:"#10231f", b:"#176b5c", accent:"#54e3b2" },
+    { a:"#22142f", b:"#71356f", accent:"#f58bd8" },
+    { a:"#251b0d", b:"#8a5a16", accent:"#ffd36b" },
+    { a:"#1f1414", b:"#7b3030", accent:"#ff8b8b" },
+    { a:"#101a28", b:"#225c7a", accent:"#7dd7ff" }
+  ];
+  const v = variants[seed % variants.length];
   const words = raw.split(/\s+/), lines = [];
   let line = "";
   for (const word of words) {
     const next = line ? line + " " + word : word;
-    if (next.length > 34 && line) { lines.push(line); line = word; } else line = next;
+    if (next.length > 31 && line) { lines.push(line); line = word; } else line = next;
     if (lines.length >= 3) break;
   }
   if (line && lines.length < 4) lines.push(line);
-  const text = lines.slice(0,4).map(function(v,i){
-    return '<text x="90" y="'+(360+i*100)+'" font-family="Arial,sans-serif" font-size="70" font-weight="700" fill="#15232d">'+esc(v)+'</text>';
+  const text = lines.slice(0,4).map(function(x,i){
+    return '<text x="92" y="'+(355+i*98)+'" font-family="Arial,sans-serif" font-size="68" font-weight="800" fill="#fff">'+esc(x)+'</text>';
   }).join("");
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024"><rect width="1536" height="1024" fill="#eef8f8"/><rect width="20" height="1024" fill="#1fc8c5"/><text x="90" y="170" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#159d9b">'+esc(currentWorkspace().name||"News Factory")+'</text>'+text+'<text x="90" y="915" font-family="Arial,sans-serif" font-size="30" fill="#61727c">'+esc(payload && payload.cardNote || "Режим экономии · без AI-обложки")+'</text></svg>';
+  const note = esc(payload && payload.cardNote || "Редакционная карточка");
+  const variant = seed % 3;
+  const decor = variant === 0
+    ? '<circle cx="1320" cy="170" r="240" fill="'+v.accent+'" opacity=".18"/><circle cx="1400" cy="860" r="330" fill="'+v.accent+'" opacity=".08"/>'
+    : variant === 1
+      ? '<path d="M1040 0 L1536 0 L1536 1024 L1280 1024 Z" fill="'+v.accent+'" opacity=".10"/><circle cx="1280" cy="260" r="170" fill="'+v.accent+'" opacity=".12"/>'
+      : '<rect x="1120" y="-80" width="520" height="1180" rx="220" transform="rotate(18 1120 -80)" fill="'+v.accent+'" opacity=".10"/>';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024">'+
+    '<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="'+v.a+'"/><stop offset="1" stop-color="'+v.b+'"/></linearGradient></defs>'+
+    '<rect width="1536" height="1024" fill="url(#bg)"/>'+decor+
+    '<rect x="92" y="92" width="14" height="110" rx="7" fill="'+v.accent+'"/>'+
+    '<text x="138" y="138" font-family="Arial,sans-serif" font-size="38" font-weight="800" fill="#fff">'+esc(channel)+'</text>'+
+    '<text x="138" y="188" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="'+v.accent+'">'+esc(topic)+'</text>'+
+    text+
+    '<text x="92" y="925" font-family="Arial,sans-serif" font-size="28" fill="#dbe7ff">'+note+'</text>'+
+    '<text x="1440" y="925" text-anchor="end" font-family="Arial,sans-serif" font-size="25" font-weight="700" fill="'+v.accent+'">NEWS FACTORY</text>'+
+    '</svg>';
   const fileName = "budget_card_" + String(payload && payload.id || crypto.randomBytes(5).toString("hex")).replace(/[^a-zA-Z0-9_-]/g,"_").slice(0,70) + "_" + Date.now() + ".webp";
-  await sharp(Buffer.from(svg)).webp({quality:86}).toFile(path.join(MEDIA_DIR,fileName));
-  return { url: mediaPublicUrl(fileName), model: "local-budget-card", economy: true };
+  await sharp(Buffer.from(svg)).webp({quality:88}).toFile(path.join(MEDIA_DIR,fileName));
+  return { url: mediaPublicUrl(fileName), model: "local-branded-card-v2", economy: true, variant: variant };
 }
 
 async function costSummaryBetween(startAt, endAt, workspaceOnly, workspaceId) {
@@ -2152,7 +2192,7 @@ function sourceMediaLicense(sourceOrItem) {
 }
 function isIndependentGeneratedUrl(value) {
   const v = String(value || "");
-  return /(?:^|\/)cover_[a-zA-Z0-9_-]+\.png(?:\?|$)/.test(v);
+  return /(?:^|\/)(?:cover_[a-zA-Z0-9_-]+\.png|budget_card_[a-zA-Z0-9_-]+\.webp)(?:\?|$)/.test(v);
 }
 function findVerbatimOverlap(sourceText, outputText, minWords) {
   const normalize = function(value) {
@@ -2182,13 +2222,48 @@ async function enforceCopyrightSafeMedia(post) {
   out.copyrightMediaMode = COPYRIGHT_MEDIA_MODE;
   out.copyrightPolicyVersion = "v2";
   if (mediaLicenseAllowsReuse(license)) {
+    const candidatePack = Array.from(new Set(
+      [out.imageUrl].concat(Array.isArray(out.mediaPackUrls) ? out.mediaPackUrls : []).filter(Boolean)
+    ));
+    if (candidatePack.length) {
+      const clean = await sanitizeMediaPack(candidatePack, out.editorialV2 && out.editorialV2.album === true ? MEDIA_DIRECTOR_MAX_IMAGES : 1);
+      if (clean.length) {
+        out.imageUrl = clean[0];
+        out.mediaPackUrls = clean;
+      } else {
+        out.originalImageUrl = out.originalImageUrl || out.imageUrl || "";
+        out.imageUrl = "";
+        out.mediaPackUrls = [];
+        out.mediaQualityRejectedAtPublish = true;
+      }
+    }
+    if (!out.imageUrl && !out.videoUrl && !out.generatedImageUrl && GENERATE_COVER_IF_MISSING) {
+      const local = await renderEconomyTextCard({
+        id: out.newsId || out.postId || out.id || newId("media_gate"),
+        title: out.title || currentWorkspace().name || "News Factory",
+        text: out.text || "",
+        topicId: out.topicId || currentWorkspace().channelId || "",
+        cardNote: "Редакционная карточка"
+      });
+      out.generatedImageUrl = local.url;
+      out.generatedBy = local.model;
+      out.mediaType = "generated";
+      out.mediaStatus = "local_card";
+      out.mediaOrigin = "local_branded_card";
+      out.copyrightMediaDecision = "bad_source_media_replaced";
+    }
     if (!out.mediaOrigin && (out.videoUrl || out.imageUrl)) out.mediaOrigin = "source_media";
+    if (MEDIA_REQUIRED && !out.imageUrl && !out.videoUrl && !out.generatedImageUrl) {
+      throw new Error("Публикация запрещена: качественное медиа не подготовлено");
+    }
     return out;
   }
 
   const generatedIndependent =
     out.mediaStatus === "generated" ||
+    out.mediaStatus === "local_card" ||
     out.mediaOrigin === "ai_generated" ||
+    out.mediaOrigin === "local_branded_card" ||
     isIndependentGeneratedUrl(out.generatedImageUrl);
 
   out.originalImageUrl = out.originalImageUrl || out.imageUrl || "";
@@ -2204,18 +2279,19 @@ async function enforceCopyrightSafeMedia(post) {
       if (MEDIA_REQUIRED) throw new Error("Медиа этого источника запрещено настройками, а генерация резервной обложки отключена");
       return out;
     }
-    const generated = await generateNewsCover({
+    const generated = await renderEconomyTextCard({
       id: out.newsId || out.postId || out.id || newId("copyright"),
       title: out.title || currentWorkspace().name || "News Factory",
       text: out.text || "",
-      sourceName: out.sourceName || ""
+      topicId: out.topicId || currentWorkspace().channelId || "",
+      cardNote: "Редакционная карточка"
     });
     out.generatedImageUrl = generated.url;
     out.generatedBy = generated.model;
   }
   out.mediaType = "generated";
-  out.mediaStatus = "generated";
-  out.mediaOrigin = "ai_generated";
+  out.mediaStatus = out.mediaOrigin === "ai_generated" ? "generated" : "local_card";
+  out.mediaOrigin = generatedIndependent && out.mediaOrigin === "ai_generated" ? "ai_generated" : "local_branded_card";
   out.copyrightMediaDecision = "source_media_blocked";
   return out;
 }
@@ -2693,6 +2769,8 @@ function noteSourceEvent(sourceOrItem, event, extra) {
   else if (event === "fetch_ok") { stat.errorStreak = 0; }
   else if (event === "junk") { recordOutcome(stat, "junk"); stat.lastJunkReason = String(extra && extra.reason || "").slice(0, 160); }
   else if (event === "useful") { recordOutcome(stat, "ok"); }
+  else if (event === "media_good") { stat.mediaGood = Number(stat.mediaGood || 0) + 1; stat.lastMediaScore = Number(extra && extra.score || 0); }
+  else if (event === "media_bad") { stat.mediaBad = Number(stat.mediaBad || 0) + 1; stat.lastMediaScore = Number(extra && extra.score || 0); }
 }
 
 // Pause sources that only bring junk or keep failing. Keeps at least a few
@@ -2897,7 +2975,10 @@ async function prefilterCandidates(candidates, summary) {
   if (rejected.length || ranked.length) {
     console.log("HEADLINE_PREFILTER " + JSON.stringify({ workspace: currentWorkspaceId(), total: candidates.length, kept: ranked.length, rejected: rejected.length, examples: rejected.slice(0, 5).map(function(r){ return (r.candidate.link.title || "").slice(0, 70) + " — " + r.reason; }) }));
   }
-  return ranked.map(function(r){ return r.candidate; });
+  return ranked.map(function(r){
+    r.candidate.prefilterScore = Math.max(0, Math.min(10, Number(r.score || 0)));
+    return r.candidate;
+  });
 }
 
 function buildSourceRankings() {
@@ -2919,6 +3000,10 @@ function buildSourceRankings() {
         Math.min(100, selectedPerCheck * 500) * 0.30 +
         reliability * 100 * 0.10
       );
+      const mediaGood = Number(stat.mediaGood || 0);
+      const mediaBad = Number(stat.mediaBad || 0);
+      const mediaSamples = mediaGood + mediaBad;
+      if (mediaSamples >= 5) rating -= Math.min(10, Math.round((mediaBad / mediaSamples) * 12));
       rating = Math.max(0, Math.min(100, rating));
     }
     let status = "Собираем данные";
@@ -2946,6 +3031,9 @@ function buildSourceRankings() {
       lastPublishedAt: stat.lastPublishedAt || "",
       useful: Number(stat.useful || 0),
       junk: Number(stat.junk || 0),
+      mediaGood: Number(stat.mediaGood || 0),
+      mediaBad: Number(stat.mediaBad || 0),
+      mediaGoodRate: (Number(stat.mediaGood || 0) + Number(stat.mediaBad || 0)) ? Number(stat.mediaGood || 0) / (Number(stat.mediaGood || 0) + Number(stat.mediaBad || 0)) : null,
       lastJunkReason: stat.lastJunkReason || "",
       autoPaused: source.autoPaused || null
     };
@@ -3292,15 +3380,16 @@ function extractArticleMediaCandidates(html, pageUrl) {
   const imageSeen = new Set();
   const videoSeen = new Set();
 
-  function addImage(raw, score, reason) {
+  function addImage(raw, score, reason, meta) {
     const url = canonicalizeUrl(htmlDecode(raw || ""), pageUrl);
     if (!url || !/^https?:\/\//i.test(url) || imageSeen.has(url)) return;
     if (/\.(svg|ico)(\?|$)/i.test(url)) return;
-    if (/(?:logo|avatar|icon|sprite|emoji|badge|pixel|tracker|placeholder|favicon)/i.test(url)) score -= 80;
-    if (/(?:article|news|upload|media|image|photo|press|cdn|content)/i.test(url)) score += 8;
-    if (score < 15) return;
+    let nextScore = Number(score || 0);
+    if (/(?:logo|avatar|icon|sprite|emoji|badge|pixel|tracker|placeholder|favicon)/i.test(url)) nextScore -= 80;
+    if (/(?:article|news|upload|media|image|photo|press|cdn|content)/i.test(url)) nextScore += 8;
+    if (nextScore < 15) return;
     imageSeen.add(url);
-    images.push({ url: url, score: score, reason: reason || "page_image" });
+    images.push(Object.assign({ url: url, score: nextScore, reason: reason || "page_image" }, meta || {}));
   }
 
   function addVideo(raw, score, reason) {
@@ -3335,13 +3424,14 @@ function extractArticleMediaCandidates(html, pageUrl) {
     let score = 30;
     const width = Number(widthMatch && widthMatch[1] || 0);
     const height = Number(heightMatch && heightMatch[1] || 0);
-    if (width >= 900 || height >= 600) score += 30;
+    if (width >= 1200 || height >= 800) score += 40;
+    else if (width >= 900 || height >= 600) score += 30;
     else if (width >= 500 || height >= 350) score += 15;
-    else if (width && height && (width < 220 || height < 160)) score -= 30;
+    else if (width && height && (width < 320 || height < 200)) score -= 35;
     const alt = String(altMatch && altMatch[1] || "");
     if (alt.length >= 20) score += 10;
-    if (/(?:logo|avatar|icon|banner|advert|реклам|логотип)/i.test(alt)) score -= 50;
-    addImage(raw, score, "article_img");
+    if (/(?:logo|avatar|icon|banner|advert|реклам|логотип|флаг|герб|скриншот|screenshot)/i.test(alt)) score -= 50;
+    addImage(raw, score, "article_img", { alt: alt.slice(0, 300), width: width, height: height });
   }
 
   const posterRe = /<video\b[^>]*poster=["']([^"']+)["'][^>]*>/gi;
@@ -3352,10 +3442,7 @@ function extractArticleMediaCandidates(html, pageUrl) {
 
   images.sort(function(a,b){ return b.score - a.score; });
   videos.sort(function(a,b){ return b.score - a.score; });
-  return {
-    images: images.slice(0, 10),
-    videos: videos.slice(0, 4)
-  };
+  return { images: images.slice(0, 12), videos: videos.slice(0, 4) };
 }
 
 function mediaPublicUrl(fileName) {
@@ -4456,13 +4543,31 @@ async function localImageFingerprint(mediaUrl) {
   if (!file || !fs.existsSync(file)) return null;
   try {
     const meta = await sharp(file).metadata();
-    const raw = await sharp(file).resize(16, 16, { fit: "fill" }).grayscale().raw().toBuffer();
+    const hashRaw = await sharp(file).resize(16, 16, { fit: "fill" }).grayscale().raw().toBuffer();
+    const probe = await sharp(file).resize(48, 48, { fit: "fill" }).grayscale().raw().toBuffer();
     const stats = await sharp(file).stats();
     let sum = 0;
-    for (const v of raw) sum += v;
-    const avg = sum / raw.length;
-    const bits = Array.from(raw, function(v){ return v >= avg ? 1 : 0; });
-    return { width: Number(meta.width || 0), height: Number(meta.height || 0), bits: bits, entropy: Number(stats.entropy || 0) };
+    for (const val of hashRaw) sum += val;
+    const avg = sum / hashRaw.length;
+    const bits = Array.from(hashRaw, function(val){ return val >= avg ? 1 : 0; });
+    let white = 0, dark = 0, edges = 0, edgeTotal = 0;
+    const w = 48;
+    for (let y = 0; y < 48; y += 1) {
+      for (let x = 0; x < 48; x += 1) {
+        const idx = y * w + x;
+        const val = probe[idx];
+        if (val >= 242) white += 1;
+        if (val <= 22) dark += 1;
+        if (x > 0) { edgeTotal += 1; if (Math.abs(val - probe[idx - 1]) >= 42) edges += 1; }
+        if (y > 0) { edgeTotal += 1; if (Math.abs(val - probe[idx - w]) >= 42) edges += 1; }
+      }
+    }
+    const pixels = probe.length || 1;
+    return {
+      width: Number(meta.width || 0), height: Number(meta.height || 0), bits: bits,
+      entropy: Number(stats.entropy || 0), whiteRatio: white / pixels, darkRatio: dark / pixels,
+      edgeDensity: edgeTotal ? edges / edgeTotal : 0
+    };
   } catch {
     return null;
   }
@@ -4495,6 +4600,38 @@ function isSourcePlaceholderImage(sourceName, newsId, fp) {
 // Logos, brand cards and flat graphics have very low entropy (~0.5–4); real photos ~6.5–7.8.
 const MEDIA_MIN_PHOTO_ENTROPY = 5;
 function looksLikeGraphic(fp) { return Boolean(fp) && fp.entropy > 0 && fp.entropy < MEDIA_MIN_PHOTO_ENTROPY; }
+function looksLikeScreenshot(fp) {
+  if (!fp) return false;
+  return (fp.whiteRatio >= 0.42 && fp.edgeDensity >= 0.075) ||
+    (fp.whiteRatio >= 0.56 && fp.entropy > 0 && fp.entropy < 6.4);
+}
+function assessMediaQuality(fp, candidate) {
+  const c = candidate || {};
+  const url = String(c.url || "").toLowerCase();
+  const alt = String(c.alt || "").toLowerCase();
+  let score = Math.max(0, Math.min(100, Number(c.score || 55)));
+  const reasons = [];
+  if (!fp) return { score: 0, pass: false, reasons: ["unreadable"] };
+  if (fp.width >= 1400 && fp.height >= 800) score += 14;
+  else if (fp.width >= 1000 && fp.height >= 600) score += 8;
+  else if (fp.width < 700 || fp.height < 400) { score -= 28; reasons.push("small"); }
+  if (looksLikeGraphic(fp)) { score -= 60; reasons.push("flat_graphic"); }
+  if (looksLikeScreenshot(fp)) { score -= 60; reasons.push("screenshot_like"); }
+  if (isLikelyThumbnailUrl(url)) { score -= 28; reasons.push("thumbnail"); }
+  if (/(?:screenshot|screen-shot|screencap|twitter|x\.com|tweet|tgme|telegram|status\/|post\/)/i.test(url + " " + alt)) {
+    score -= 22; reasons.push("social_screenshot");
+  }
+  const explicitLogoOrFlag = /(?:logo|emblem|coat.?of.?arms|flag|герб|флаг|логотип|icon|avatar)/i.test(url + " " + alt);
+  if (explicitLogoOrFlag) {
+    score -= 55; reasons.push("logo_or_flag");
+  }
+  const ratio = fp.height ? fp.width / fp.height : 0;
+  if (ratio && (ratio < 0.58 || ratio > 2.25)) { score -= 12; reasons.push("awkward_ratio"); }
+  if (fp.entropy >= 6.2 && fp.whiteRatio < 0.35) score += 6;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const hardReject = explicitLogoOrFlag || looksLikeScreenshot(fp);
+  return { score: score, pass: !hardReject && score >= MEDIA_QUALITY_MIN_SCORE, reasons: reasons, hardReject: hardReject };
+}
 
 // Final clean-up of a post's photo set, used everywhere a pack is (re)built:
 // keeps order, puts a real photo first if the main one is a logo/graphic, and keeps
@@ -4503,19 +4640,16 @@ function looksLikeGraphic(fp) { return Boolean(fp) && fp.entropy > 0 && fp.entro
 async function sanitizeMediaPack(urls, maxCount) {
   const limit = Math.max(1, Number(maxCount || MEDIA_DIRECTOR_MAX_IMAGES));
   const list = Array.from(new Set((Array.isArray(urls) ? urls : []).map(function(u){ return String(u || "").trim(); }).filter(Boolean)));
-  if (list.length <= 1) return list;
+  if (!list.length) return [];
   const entries = [];
   for (const url of list) entries.push({ url: url, fp: await localImageFingerprint(url) });
-  if (looksLikeGraphic(entries[0].fp)) {
-    const photoIndex = entries.findIndex(function(e, i){ return i > 0 && e.fp && !looksLikeGraphic(e.fp) && e.fp.width >= MEDIA_EXTRA_MIN_WIDTH && !isLikelyThumbnailUrl(e.url); });
-    if (photoIndex > 0) entries.unshift(entries.splice(photoIndex, 1)[0]);
-  }
-  const kept = [entries[0]];
-  for (const e of entries.slice(1)) {
+  const kept = [];
+  for (const e of entries) {
     if (kept.length >= limit) break;
     if (!e.fp || isLikelyThumbnailUrl(e.url)) continue;
-    if (e.fp.width < MEDIA_EXTRA_MIN_WIDTH || e.fp.height < MEDIA_EXTRA_MIN_HEIGHT) continue;
-    if (looksLikeGraphic(e.fp)) continue;
+    const quality = assessMediaQuality(e.fp, { url: e.url, score: kept.length ? 55 : 80, reason: "sanitizer" });
+    if (!quality.pass) continue;
+    if (kept.length > 0 && (e.fp.width < MEDIA_EXTRA_MIN_WIDTH || e.fp.height < MEDIA_EXTRA_MIN_HEIGHT)) continue;
     if (kept.some(function(k){ return imageFingerprintsSimilar(k.fp, e.fp); })) continue;
     kept.push(e);
   }
@@ -4556,6 +4690,7 @@ async function enhanceSourceCandidate(preparedUrl, payload, suffix) {
 
 async function prepareMediaDirector(payload) {
   const p = payload || {};
+  const deferExpensive = p.deferExpensive === true;
   const license = normalizeMediaLicense(p.mediaLicense || "unknown");
   const sourceAllowed = mediaLicenseAllowsReuse(license);
   const candidates = p.mediaCandidates && typeof p.mediaCandidates === "object" ? p.mediaCandidates : { images: [], videos: [] };
@@ -4566,6 +4701,15 @@ async function prepareMediaDirector(payload) {
   const selectedVideo = String((videos[0] && videos[0].url) || fallbackVideo || "").trim();
 
   if (!sourceAllowed) {
+    if (deferExpensive) {
+      return {
+        videoUrl: "", imageUrl: "", originalImageUrl: fallbackImage || (images[0] && images[0].url) || "",
+        originalVideoUrl: selectedVideo, generatedImageUrl: "", mediaPackUrls: [], originalMediaUrls: [],
+        mediaType: "pending", mediaStatus: "deferred_generation", mediaPriority: 90, mediaLicense: license,
+        mediaOrigin: "deferred", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+        mediaDirector: { strategy: "blocked_source_deferred", sourceCandidateCount: images.length + videos.length, selectedCount: 0 }
+      };
+    }
     const safe = await ensureMediaForNews(Object.assign({}, p, {
       imageUrl: fallbackImage || (images[0] && images[0].url) || "",
       videoUrl: selectedVideo
@@ -4582,14 +4726,16 @@ async function prepareMediaDirector(payload) {
   const originalImageUrls = [];
   const enhancedImageUrls = [];
   const enhancementLog = [];
+  const qualityLog = [];
   const seen = new Set();
-  const pool = images.map(function(x){ return x && x.url; }).filter(Boolean);
-  if (fallbackImage) pool.unshift(fallbackImage);
+  const pool = images.map(function(x){ return x && typeof x === "object" ? x : { url: String(x || ""), score: 55, reason: "candidate" }; }).filter(function(x){ return x && x.url; });
+  if (fallbackImage && !pool.some(function(x){ return x.url === fallbackImage; })) pool.unshift({ url: fallbackImage, score: 90, reason: "fallback_meta" });
 
   const fingerprints = [];
-  for (const sourceImage of pool) {
+  let bestRejectedScore = 0;
+  for (const sourceCandidate of pool) {
     if (imageUrls.length >= MEDIA_DIRECTOR_MAX_IMAGES) break;
-    const key = String(sourceImage || "");
+    const key = String(sourceCandidate.url || "");
     if (!key || seen.has(key)) continue;
     seen.add(key);
     const isExtra = imageUrls.length > 0;
@@ -4599,26 +4745,28 @@ async function prepareMediaDirector(payload) {
       const cached = String(prepared.imageUrl || "").trim();
       if (!cached) continue;
       const fp = await localImageFingerprint(cached);
-      if (!isExtra && (!fp || fp.width < 320 || fp.height < 180)) {
-        // Tracking pixels, icons and broken files are not a news photo.
-        console.log("MEDIA_MAIN_TOO_SMALL " + JSON.stringify({ source: p.sourceName || "", news: p.id || "", width: fp && fp.width || 0, height: fp && fp.height || 0 }));
-        continue;
+      const placeholder = isSourcePlaceholderImage(p.sourceName, p.articleUrl || p.id, fp);
+      const quality = assessMediaQuality(fp, sourceCandidate);
+      if (placeholder) {
+        quality.pass = false;
+        quality.score = Math.max(0, quality.score - 50);
+        quality.reasons = quality.reasons.concat(["source_placeholder"]);
       }
-      if (!isExtra && fp && (looksLikeGraphic(fp) || isSourcePlaceholderImage(p.sourceName, p.articleUrl || p.id, fp))) {
-        // Main photo is a logo / brand card / the source's default share image
-        // (e.g. the VK logo on every VK press release): not a news photo.
-        console.log("MEDIA_PLACEHOLDER_SKIPPED " + JSON.stringify({ source: p.sourceName || "", news: p.id || "", entropy: Number(fp.entropy || 0).toFixed(2), url: key.slice(0, 160) }));
+      bestRejectedScore = Math.max(bestRejectedScore, quality.score);
+      qualityLog.push({ url: key.slice(0, 220), score: quality.score, pass: quality.pass, reasons: quality.reasons });
+      if (!quality.pass) {
+        console.log("MEDIA_QUALITY_REJECTED " + JSON.stringify({
+          source: p.sourceName || "", news: p.id || "", score: quality.score,
+          reasons: quality.reasons, width: fp && fp.width || 0, height: fp && fp.height || 0
+        }));
         continue;
       }
       if (isExtra) {
-        // Extra photos must be large and genuinely different from the ones already chosen.
-        if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT || looksLikeGraphic(fp)) continue;
+        if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT) continue;
         if (fingerprints.some(function(prev){ return imageFingerprintsSimilar(prev, fp); })) continue;
       }
       if (fp) fingerprints.push(fp);
-      // Generative enhancement only for the main photo: it is rate-limited by OpenAI
-      // (5 input images/min) and must not rewrite every news photo in an album.
-      const enhanced = isExtra
+      const enhanced = (isExtra || deferExpensive)
         ? { url: cached, enhanced: false, error: "" }
         : await enhanceSourceCandidate(cached, p, "md" + imageUrls.length);
       const chosen = String(enhanced.url || cached).trim();
@@ -4627,81 +4775,120 @@ async function prepareMediaDirector(payload) {
       enhancedImageUrls.push(enhanced.enhanced ? chosen : "");
       originalImageUrls.push(String(prepared.originalImageUrl || key));
       enhancementLog.push({
-        originalUrl: String(prepared.originalImageUrl || key),
-        cachedUrl: cached,
-        enhancedUrl: enhanced.enhanced ? chosen : "",
-        enhanced: Boolean(enhanced.enhanced),
-        model: enhanced.model || "",
-        error: enhanced.error || ""
+        originalUrl: String(prepared.originalImageUrl || key), cachedUrl: cached,
+        enhancedUrl: enhanced.enhanced ? chosen : "", enhanced: Boolean(enhanced.enhanced),
+        model: enhanced.model || "", error: enhanced.error || ""
       });
     } catch (error) {
       console.warn("Media Director image skipped:", error.message);
     }
   }
 
+  const mainQuality = qualityLog.find(function(x){ return x.pass; });
   if (selectedVideo) {
     const poster = imageUrls[0] || "";
     return {
-      videoUrl: selectedVideo,
-      imageUrl: poster,
-      originalImageUrl: originalImageUrls[0] || fallbackImage || "",
-      originalVideoUrl: selectedVideo,
-      generatedImageUrl: "",
-      enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
-      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      mediaEnhancementLog: enhancementLog,
-      mediaType: "video",
-      mediaStatus: enhancedImageUrls.some(Boolean) ? "video_poster_enhanced" : "video_found",
-      mediaPriority: 1,
-      mediaLicense: license,
-      mediaOrigin: "source_media",
-      copyrightSafe: COPYRIGHT_SAFE_MODE,
-      copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
-      mediaDirector: {
-        strategy: "video_first",
-        sourceCandidateCount: images.length + videos.length,
-        selectedCount: 1 + imageUrls.length,
-        enhancedCount: enhancedImageUrls.filter(Boolean).length,
-        videoReason: videos[0] && videos[0].reason || (fallbackVideo ? "meta_video" : "")
-      }
+      videoUrl: selectedVideo, imageUrl: poster, originalImageUrl: originalImageUrls[0] || fallbackImage || "",
+      originalVideoUrl: selectedVideo, generatedImageUrl: "", enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
+      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES), originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
+      mediaEnhancementLog: enhancementLog, mediaQualityLog: qualityLog, mediaQualityScore: mainQuality ? mainQuality.score : bestRejectedScore,
+      mediaType: "video", mediaStatus: deferExpensive ? "video_approved_pending_enhancement" : (enhancedImageUrls.some(Boolean) ? "video_poster_enhanced" : "video_found"),
+      mediaPriority: 1, mediaLicense: license, mediaOrigin: "source_media", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      mediaDirector: { strategy: "video_first", sourceCandidateCount: images.length + videos.length, selectedCount: 1 + imageUrls.length, enhancedCount: enhancedImageUrls.filter(Boolean).length }
     };
   }
 
   if (imageUrls.length) {
     return {
-      videoUrl: "",
-      imageUrl: imageUrls[0],
-      originalImageUrl: originalImageUrls[0] || fallbackImage || "",
-      originalVideoUrl: "",
-      generatedImageUrl: "",
-      enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
-      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
-      mediaEnhancementLog: enhancementLog,
+      videoUrl: "", imageUrl: imageUrls[0], originalImageUrl: originalImageUrls[0] || fallbackImage || "",
+      originalVideoUrl: "", generatedImageUrl: "", enhancedImageUrl: enhancedImageUrls.find(Boolean) || "",
+      mediaPackUrls: imageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES), originalMediaUrls: originalImageUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES),
+      mediaEnhancementLog: enhancementLog, mediaQualityLog: qualityLog, mediaQualityScore: mainQuality ? mainQuality.score : bestRejectedScore,
       mediaType: imageUrls.length > 1 ? "album" : "photo",
-      mediaStatus: enhancedImageUrls.some(Boolean) ? "enhanced" : "photo_found",
-      mediaPriority: 2,
-      mediaLicense: license,
-      mediaOrigin: "source_media",
-      copyrightSafe: COPYRIGHT_SAFE_MODE,
-      copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
-      mediaDirector: {
-        strategy: imageUrls.length > 1 ? "enhanced_source_album" : "enhanced_source_photo",
-        sourceCandidateCount: images.length + videos.length,
-        selectedCount: imageUrls.length,
-        enhancedCount: enhancedImageUrls.filter(Boolean).length
-      }
+      mediaStatus: deferExpensive ? "photo_approved_pending_enhancement" : (enhancedImageUrls.some(Boolean) ? "enhanced" : "photo_found"),
+      mediaPriority: 2, mediaLicense: license, mediaOrigin: "source_media", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      mediaDirector: { strategy: deferExpensive ? "quality_source_deferred" : (imageUrls.length > 1 ? "enhanced_source_album" : "enhanced_source_photo"), sourceCandidateCount: images.length + videos.length, selectedCount: imageUrls.length, enhancedCount: enhancedImageUrls.filter(Boolean).length }
+    };
+  }
+
+  if (deferExpensive) {
+    return {
+      videoUrl: "", imageUrl: "", originalImageUrl: fallbackImage || "", originalVideoUrl: fallbackVideo || "",
+      generatedImageUrl: "", enhancedImageUrl: "", mediaPackUrls: [], originalMediaUrls: [],
+      mediaEnhancementLog: [], mediaQualityLog: qualityLog, mediaQualityScore: bestRejectedScore,
+      mediaType: "pending", mediaStatus: "deferred_missing", mediaPriority: 90, mediaLicense: license,
+      mediaOrigin: "deferred", copyrightSafe: COPYRIGHT_SAFE_MODE, copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+      mediaDirector: { strategy: "bad_or_missing_media_deferred", sourceCandidateCount: images.length + videos.length, selectedCount: 0, rejectedBestScore: bestRejectedScore }
     };
   }
 
   const fallback = await ensureMediaForNews(Object.assign({}, p, { imageUrl: "", videoUrl: "" }));
   fallback.mediaDirector = {
-    strategy: "ai_fallback",
-    sourceCandidateCount: images.length + videos.length,
-    selectedCount: fallback.generatedImageUrl ? 1 : 0
+    strategy: "ai_fallback", sourceCandidateCount: images.length + videos.length,
+    selectedCount: fallback.generatedImageUrl ? 1 : 0, rejectedBestScore: bestRejectedScore
   };
   return fallback;
+}
+
+function editorialCostTier(rewrite, editorialMeta, media) {
+  const importance = Number(editorialMeta && editorialMeta.importance || 0);
+  const score = Number(rewrite && rewrite.editorialScore || 0);
+  if ((media && media.videoUrl) || importance >= MEDIA_AI_COVER_MIN_IMPORTANCE || score >= 85) return 1;
+  if (importance >= 6 || score >= 65) return 2;
+  return 3;
+}
+
+async function finalizeApprovedMedia(media, payload, tier) {
+  const current = Object.assign({}, media || {});
+  const p = payload || {};
+  current.costTier = tier;
+
+  if (current.videoUrl) {
+    if (current.imageUrl && IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES) {
+      const enhanced = await enhanceSourceCandidate(current.imageUrl, p, "final_video_poster");
+      if (enhanced.url) {
+        current.imageUrl = enhanced.url;
+        current.enhancedImageUrl = enhanced.enhanced ? enhanced.url : current.enhancedImageUrl || "";
+        current.mediaStatus = enhanced.enhanced ? "video_poster_enhanced" : "video_found";
+      }
+    }
+    return current;
+  }
+
+  if (current.imageUrl) {
+    if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES) {
+      const enhanced = await enhanceSourceCandidate(current.imageUrl, p, "final_main");
+      if (enhanced.url) {
+        current.imageUrl = enhanced.url;
+        current.enhancedImageUrl = enhanced.enhanced ? enhanced.url : current.enhancedImageUrl || "";
+        current.mediaPackUrls = [current.imageUrl].concat((current.mediaPackUrls || []).slice(1)).slice(0, MEDIA_DIRECTOR_MAX_IMAGES);
+        current.mediaStatus = enhanced.enhanced ? "enhanced" : "photo_found";
+      }
+    }
+    return current;
+  }
+
+  if (tier === 1 && GENERATE_COVER_IF_MISSING) {
+    try {
+      const generated = await generateNewsCover(Object.assign({}, p, { costPurpose: "image_generation_final" }));
+      current.generatedImageUrl = generated.url;
+      current.mediaType = "generated";
+      current.mediaStatus = generated.economy ? "local_card" : "generated";
+      current.mediaOrigin = generated.economy ? "local_branded_card" : "ai_generated";
+      current.generatedBy = generated.model;
+      return current;
+    } catch (error) {
+      console.warn("Final AI cover failed, using local branded card:", error.message);
+    }
+  }
+
+  const local = await renderEconomyTextCard(Object.assign({}, p, { cardNote: tier === 1 ? "Резервная редакционная карточка" : "Редакционная карточка" }));
+  current.generatedImageUrl = local.url;
+  current.mediaType = "generated";
+  current.mediaStatus = "local_card";
+  current.mediaOrigin = "local_branded_card";
+  current.generatedBy = local.model;
+  return current;
 }
 
 function hasPublishableMedia(item) {
@@ -4999,6 +5186,29 @@ async function getCollectorRuns(limit) {
   return r.rows;
 }
 
+function editorialQueueReadyDepth() {
+  const now = Date.now();
+  return (state.queue || []).filter(function(item) {
+    if (!item || item.telegramPublished || item.status === "publish_failed" || item.status === "media_failed") return false;
+    if (item.qcStatus === "hold") return false;
+    if (item.editorialV2 && !["approved","pass"].includes(String(item.editorialV2.status || item.editorialV2.verdict || "").toLowerCase())) return false;
+    const stamp = new Date(item.articlePublishedAt || item.createdAt || item.queuedAt || 0).getTime();
+    if (Number.isFinite(stamp) && stamp > 0 && now - stamp > queueMaxAgeHoursFor(currentWorkspace()) * 3600000) return false;
+    return true;
+  }).length;
+}
+
+function capacityGateDecision(candidate, trigger) {
+  const triggerName = String(trigger || "");
+  if (triggerName === "manual" || triggerName.includes("last-chance")) return { allow: true, reason: "urgent_trigger", depth: editorialQueueReadyDepth() };
+  const depth = editorialQueueReadyDepth();
+  const score = Number(candidate && candidate.prefilterScore || 0);
+  const hasVideo = Boolean(candidate && candidate.link && candidate.link.hasVideo);
+  if (depth < EDITORIAL_QUEUE_TARGET) return { allow: true, reason: "queue_needs_posts", depth: depth, score: score };
+  if (score >= EDITORIAL_CAPACITY_BYPASS_SCORE || hasVideo) return { allow: true, reason: hasVideo ? "video_bypass" : "top_story_bypass", depth: depth, score: score };
+  return { allow: false, reason: "queue_full", depth: depth, score: score };
+}
+
 async function collectOnce(trigger) {
   if (!COLLECTOR_ENABLED) return { ok: false, error: "Collector disabled" };
   const collectorWorkspaceId = currentWorkspaceId();
@@ -5200,6 +5410,16 @@ async function collectOnce(trigger) {
           }
           claimed = crossChannelClaim(articleKeys);
         }
+
+        const capacity = capacityGateDecision(candidate, trigger);
+        if (!capacity.allow) {
+          summary.capacityDeferred = Number(summary.capacityDeferred || 0) + 1;
+          console.log("EDITORIAL_CAPACITY_DEFERRED " + JSON.stringify({
+            workspace: currentWorkspaceId(), url: url, depth: capacity.depth, score: capacity.score, target: EDITORIAL_QUEUE_TARGET
+          }));
+          continue;
+        }
+
         // Scoped by workspace: the same article in two channels (e.g. Афиша Daily in
         // food and internet) collided on news_items_pkey and failed every collection.
         // The default workspace keeps the old ids.
@@ -5247,6 +5467,7 @@ async function collectOnce(trigger) {
         }
         const media = await prepareMediaDirector({
           id: id,
+          deferExpensive: MEDIA_DEFER_EXPENSIVE,
           articleUrl: url,
           title: originalTitle,
           text: originalText,
@@ -5302,8 +5523,11 @@ async function collectOnce(trigger) {
         summary.found += 1;
         state.stats.discovered += 1;
         noteSourceEvent(source, "discovered");
+        if (Number.isFinite(Number(media.mediaQualityScore))) {
+          noteSourceEvent(source, Number(media.mediaQualityScore) >= MEDIA_QUALITY_MIN_SCORE ? "media_good" : "media_bad", { score: Number(media.mediaQualityScore) });
+        }
 
-        if (MEDIA_REQUIRED && !hasPublishableMedia(baseItem)) {
+        if (MEDIA_REQUIRED && !hasPublishableMedia(baseItem) && !["deferred_missing","deferred_generation"].includes(String(baseItem.metadata.mediaStatus || ""))) {
           baseItem.status = "missing_media";
           await saveNewsItem(baseItem);
           summary.skipped += 1;
@@ -5427,6 +5651,43 @@ async function collectOnce(trigger) {
         baseItem.metadata.decisionSummary = qc.decisionSummary;
         baseItem.metadata.qcModel = qc.model || "";
         baseItem.metadata.sourceRole = sourceRole;
+
+        // A held draft must never trigger paid image generation. It can keep a free
+        // local fallback until a later retry actually approves the post.
+        const costTier = qc.qcStatus === "hold" ? 3 : editorialCostTier(rewrite, editorialV2Meta, media);
+        const finalMedia = await finalizeApprovedMedia(media, {
+          id: id,
+          newsId: id,
+          title: rewrite.title || originalTitle,
+          text: rewrite.text,
+          topicId: editorialChannelId(),
+          sourceName: source.name,
+          sourceUrl: url,
+          mediaLicense: media.mediaLicense || sourceMediaLicense(source)
+        }, costTier);
+        Object.assign(media, finalMedia);
+        Object.assign(baseItem.metadata, {
+          imageUrl: media.imageUrl || "",
+          originalImageUrl: media.originalImageUrl || "",
+          originalVideoUrl: media.originalVideoUrl || "",
+          videoUrl: media.videoUrl || "",
+          generatedImageUrl: media.generatedImageUrl || "",
+          enhancedImageUrl: media.enhancedImageUrl || "",
+          mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
+          mediaType: media.mediaType || "",
+          mediaStatus: media.mediaStatus || "",
+          mediaOrigin: media.mediaOrigin || "",
+          mediaQualityScore: media.mediaQualityScore == null ? null : Number(media.mediaQualityScore),
+          mediaCostTier: costTier,
+          generatedBy: media.generatedBy || ""
+        });
+        if (MEDIA_REQUIRED && !(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
+          baseItem.status = "missing_media_final";
+          baseItem.metadata.autoPublishBlocked = "missing_media_final";
+          await saveNewsItem(baseItem);
+          summary.skipped += 1;
+          continue;
+        }
 
         const postText = rewrite.text;
 
@@ -8186,6 +8447,7 @@ async function sendMultiPlatformPost(post, targets) {
     message_id: null,
     vkPostId: null,
     telegramPublished: false,
+    telegramStatus: selected.telegram ? "pending" : "not_selected",
     vkPublished: false,
     vkStatus: selected.vk ? "pending" : "not_selected",
     vkMediaAttempts: 0,
@@ -8214,50 +8476,81 @@ async function sendMultiPlatformPost(post, targets) {
     }
   };
 
+  const tgJob = selected.telegram
+    ? sendTelegramPostWithRepair(telegramPrepared)
+    : Promise.resolve(null);
+  const vkJob = selected.vk
+    ? ((!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID)
+        ? Promise.reject(Object.assign(new Error("VK не настроен для публикации"), { vkErrorCode: "config_missing" }))
+        : publishVkPostWithRepair(vkPrepared))
+    : Promise.resolve(null);
+
+  // Important: both networks get their own attempt. A Telegram failure cannot prevent
+  // VK from posting, and a VK failure cannot roll back Telegram.
+  const settled = await Promise.allSettled([tgJob, vkJob]);
+  const tgSettled = settled[0];
+  const vkSettled = settled[1];
+
   if (selected.telegram) {
-    const tgAttempt = await sendTelegramPostWithRepair(telegramPrepared);
-    const tg = tgAttempt.result;
-    telegramPrepared = tgAttempt.post;
-    result.message_id = tg.message_id;
-    result.telegramPublished = true;
-    result.repairLog.push.apply(result.repairLog, tgAttempt.repairLog || []);
-    result.publishedText = telegramPrepared.text || result.publishedText;
-    result.publishedTitle = telegramPrepared.title || result.publishedTitle;
-    result.publishedTelegramText = telegramPrepared.text || "";
-    result.publishedTelegramTitle = telegramPrepared.title || "";
+    if (tgSettled.status === "fulfilled" && tgSettled.value) {
+      const tgAttempt = tgSettled.value;
+      const tg = tgAttempt.result;
+      telegramPrepared = tgAttempt.post;
+      result.message_id = tg.message_id;
+      result.telegramPublished = true;
+      result.telegramStatus = "published";
+      result.repairLog.push.apply(result.repairLog, tgAttempt.repairLog || []);
+      result.publishedText = telegramPrepared.text || result.publishedText;
+      result.publishedTitle = telegramPrepared.title || result.publishedTitle;
+      result.publishedTelegramText = telegramPrepared.text || "";
+      result.publishedTelegramTitle = telegramPrepared.title || "";
+    } else {
+      const error = tgSettled.reason || new Error("Telegram publish failed");
+      result.telegramStatus = "failed";
+      result.telegramError = String(error && error.message || error);
+      result.telegramPermanent = Boolean(error && (error.permanent || error.telegramPermanent));
+    }
   }
 
   if (selected.vk) {
-    if (!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
-      result.vkStatus = "failed";
-      result.vkError = "VK не настроен для публикации";
-    } else {
-      try {
-        const vkAttempt = await publishVkPostWithRepair(vkPrepared);
-        const vk = vkAttempt.result;
-        vkPrepared = vkAttempt.post;
-        result.repairLog.push.apply(result.repairLog, vkAttempt.repairLog || []);
-        result.publishedVkText = vkPrepared.text || "";
-        result.publishedVkTitle = vkPrepared.title || "";
-        if (vk && vk.post_id) {
-          result.vkPostId = vk.post_id;
-          result.vkPublished = true;
-          result.vkStatus = "published";
-          result.vkMediaMode = vk.mediaMode || "";
-          result.vkMediaAttempts = Number(vk.mediaAttempts || 0);
-          result.vkPreviewSlug = vk.previewSlug || "";
-          result.vkPreviewUrl = vk.previewUrl || "";
-          result.vkPreviewImageUrl = vk.previewImageUrl || "";
-        }
-      } catch (error) {
-        result.vkStatus = error && error.mediaFailed ? "media_failed" : "failed";
-        result.vkMediaAttempts = Number(error && error.mediaAttempts || 0);
-        result.vkErrorCode = error && error.vkErrorCode != null ? error.vkErrorCode : null;
-        result.vkError = String(error && (error.vkErrorMsg || error.message) || error);
-        result.vkPreviewSlug = String(error && error.previewSlug || "");
-        result.vkPreviewUrl = result.vkPreviewSlug ? previewPageUrl(result.vkPreviewSlug) : "";
+    if (vkSettled.status === "fulfilled" && vkSettled.value) {
+      const vkAttempt = vkSettled.value;
+      const vk = vkAttempt.result;
+      vkPrepared = vkAttempt.post;
+      result.repairLog.push.apply(result.repairLog, vkAttempt.repairLog || []);
+      result.publishedVkText = vkPrepared.text || "";
+      result.publishedVkTitle = vkPrepared.title || "";
+      if (vk && vk.post_id) {
+        result.vkPostId = vk.post_id;
+        result.vkPublished = true;
+        result.vkStatus = "published";
+        result.vkMediaMode = vk.mediaMode || "";
+        result.vkMediaAttempts = Number(vk.mediaAttempts || 0);
+        result.vkPreviewSlug = vk.previewSlug || "";
+        result.vkPreviewUrl = vk.previewUrl || "";
+        result.vkPreviewImageUrl = vk.previewImageUrl || "";
       }
+    } else {
+      const error = vkSettled.reason || new Error("VK publish failed");
+      result.vkStatus = error && error.mediaFailed ? "media_failed" : "failed";
+      result.vkMediaAttempts = Number(error && error.mediaAttempts || 0);
+      result.vkErrorCode = error && error.vkErrorCode != null ? error.vkErrorCode : null;
+      result.vkError = String(error && (error.vkErrorMsg || error.message) || error);
+      result.vkPreviewSlug = String(error && error.previewSlug || "");
+      result.vkPreviewUrl = result.vkPreviewSlug ? previewPageUrl(result.vkPreviewSlug) : "";
     }
+  }
+
+  // Preserve retry semantics only when neither network succeeded, but do it after
+  // both autonomous jobs had their chance.
+  if ((selected.telegram || selected.vk) && !result.telegramPublished && !result.vkPublished) {
+    const error = new Error([
+      result.telegramError ? "Telegram: " + result.telegramError : "",
+      result.vkError ? "VK: " + result.vkError : ""
+    ].filter(Boolean).join(" | ") || "Публикация не удалась ни в одной сети");
+    error.permanent = Boolean(result.telegramPermanent && (!selected.vk || result.vkErrorCode === "config_missing"));
+    error.partialResult = result;
+    throw error;
   }
 
   return result;
@@ -9062,8 +9355,11 @@ async function openAIModelProbe() {
 
 async function anthropicEditorialProbe(force) {
   if (!ANTHROPIC_API_KEY) return { ok: false, error: "ANTHROPIC_API_KEY не задан" };
+  if (!force && providerBreaker.isOpen("anthropic")) {
+    return { ok: false, error: providerBreaker.reason("anthropic") || "Anthropic временно отключён circuit breaker", breaker: true };
+  }
   const now = Date.now();
-  if (!force && anthropicProbeCache.value && now - anthropicProbeCache.at < 10 * 60 * 1000) {
+  if (!force && anthropicProbeCache.value && now - anthropicProbeCache.at < ANTHROPIC_HEALTH_CACHE_MIN * 60 * 1000) {
     return anthropicProbeCache.value;
   }
   try {
@@ -13494,8 +13790,10 @@ async function repairBrokenQueueImages() {
   const withImages = (state.queue || []).filter(function(q){ return q && q.newsId && !q.telegramPublished && (q.enhancedImageUrl || q.imageUrl); });
   let broken = 0;
   for (const q of withImages) {
-    const fp = await localImageFingerprint(q.enhancedImageUrl || q.imageUrl);
-    if (!(fp && fp.width >= 320 && fp.height >= 180)) broken += 1;
+    const image = q.enhancedImageUrl || q.imageUrl;
+    const fp = await localImageFingerprint(image);
+    const quality = assessMediaQuality(fp, { url: image, score: 80, reason: "queue_repair" });
+    if (!quality.pass) broken += 1;
   }
   if (withImages.length >= 6 && broken > withImages.length / 2) return { fixed: 0, failed: 0, skipped: "too_many_broken", broken: broken, total: withImages.length };
   for (const item of (state.queue || [])) {
@@ -13505,22 +13803,28 @@ async function repairBrokenQueueImages() {
     if (img) {
       // Only files in our /media folder count; remote URLs give no fingerprint.
       const fp = await localImageFingerprint(img);
-      ok = Boolean(fp && fp.width >= 320 && fp.height >= 180);
+      ok = assessMediaQuality(fp, { url: img, score: 80, reason: "queue_repair" }).pass;
     }
     if (ok) continue;
     if (!img && item.generatedImageUrl) continue;
     if (!img && item.videoUrl) continue;
     try {
       if (item.videoUrl) { item.imageUrl = ""; item.enhancedImageUrl = ""; fixed += 1; continue; }
-      const generated = await generateNewsCover({ id: item.newsId || item.id, title: item.title, text: item.text, sourceName: item.sourceName || "" });
+      const generated = await renderEconomyTextCard({
+        id: item.newsId || item.id,
+        title: item.title,
+        text: item.text,
+        topicId: item.topicId || currentWorkspace().channelId || "",
+        cardNote: "Редакционная карточка"
+      });
       if (img && !item.originalImageUrl) item.originalImageUrl = img;
       item.imageUrl = "";
       item.enhancedImageUrl = "";
       item.mediaPackUrls = [];
       item.generatedImageUrl = generated.url;
       item.mediaType = "generated";
-      item.mediaStatus = "generated";
-      item.mediaOrigin = "ai_generated";
+      item.mediaStatus = "local_card";
+      item.mediaOrigin = "local_branded_card";
       item.generatedBy = generated.model;
       item.generatedAt = new Date().toISOString();
       fixed += 1;
