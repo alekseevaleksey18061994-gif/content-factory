@@ -1717,6 +1717,25 @@ button{line-height:1.2!important}
 .workspace-card-copy small{display:block;color:#657895;font-size:10.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .workspace-card-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .workspace-card-actions button{min-height:36px;padding:7px 10px;font-size:10.5px}
+.ws-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:#b9c4d4}
+.ws-dot.on{background:#18b26b}.ws-dot.warn{background:#e2a32b}
+.ws-search{width:100%;min-height:40px;border:1px solid var(--line,rgba(70,132,188,.2));border-radius:12px;padding:0 12px;background:rgba(255,255,255,.9);margin-bottom:8px}
+.account-menu .ws-search{margin:0 0 8px}
+.account-workspaces{max-height:min(60vh,420px);overflow:auto}
+.workspace-card{grid-template-columns:auto minmax(0,1fr) auto}
+.workspace-card.has-edit{grid-template-rows:auto auto}
+.ws-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+.ws-chip{font-size:10px;font-weight:700;padding:2px 8px;border-radius:99px;background:rgba(70,132,188,.10);color:#41597a}
+.ws-chip.ok{background:rgba(24,178,107,.14);color:#0d7a48}.ws-chip.off{background:rgba(120,130,150,.14);color:#5b6679}
+.ws-missing{margin-top:6px;font-size:10.5px;color:#9a6a00;background:rgba(226,163,43,.14);border-radius:9px;padding:4px 8px}
+.ws-edit{grid-column:1/-1;display:none;border-top:1px dashed rgba(70,132,188,.25);padding-top:10px;margin-top:2px}
+.ws-edit.open{display:block}
+.ws-edit .account-form-grid{margin-bottom:10px}
+.ws-edit select,.ws-edit input{width:100%;min-height:40px}
+.ws-edit-actions{display:flex;gap:8px;flex-wrap:wrap}
+.ws-fill-bar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:#526986}
+@media(max-width:600px){.ws-edit .account-form-grid{grid-template-columns:1fr}}
+
 @media(max-width:900px){
   .account-layout{grid-template-columns:1fr}
   .account-create-card{grid-column:auto}
@@ -2195,6 +2214,7 @@ button{line-height:1.2!important}
             </button>
             <div class="account-menu" id="accountMenu">
               <div class="account-menu-title">Каналы</div>
+              <input class="ws-search" id="accountMenuSearch" type="search" placeholder="Найти канал…" autocomplete="off" oninput="wsMenuFilter=this.value;renderWorkspaceMenu()" style="display:none">
               <div class="account-workspaces" id="accountWorkspaceMenu"></div>
               <button class="account-menu-profile" type="button" onclick="goPage('accountPage');toggleAccountMenu(false)">Личный кабинет</button>
             </div>
@@ -2564,6 +2584,8 @@ button{line-height:1.2!important}
 
           <section class="card account-list-card">
             <div class="panel-title"><div><h3>Мои каналы</h3><p>Переключение меняет весь рабочий контекст News Factory.</p></div><span class="chip" id="accountWorkspaceCount">1 кабинет</span></div>
+            <div class="ws-fill-bar"><span id="workspaceFillInfo"></span><button type="button" id="workspaceFillBtn" onclick="autoFillWorkspaces()">Заполнить автоматически</button></div>
+            <input class="ws-search" id="workspaceSearch" type="search" placeholder="Найти канал по названию или @username…" autocomplete="off" oninput="wsFilter=this.value;renderWorkspaceList()">
             <div class="workspace-list" id="workspaceList"></div>
           </section>
 
@@ -2907,6 +2929,7 @@ function toggleAccountMenu(force){
 async function loadWorkspaces(){
   var j=await api('/api/workspaces',{headers:{'x-workspace-id':activeWorkspaceId||''}});
   workspaces=Array.isArray(j.workspaces)?j.workspaces:[];
+  wsProfiles=Array.isArray(j.profiles)?j.profiles:[];
   if(!workspaces.some(function(ws){return ws.id===activeWorkspaceId})){
     activeWorkspaceId=j.activeWorkspaceId||j.defaultWorkspaceId||(workspaces[0]&&workspaces[0].id)||'';
     if(activeWorkspaceId)localStorage.setItem('nf_workspace',activeWorkspaceId);
@@ -2937,33 +2960,149 @@ function renderWorkspaceChrome(){
   if(el('accountWorkspaceCount'))el('accountWorkspaceCount').textContent=workspaces.length+' '+(workspaces.length===1?'кабинет':'кабинета');
   if(el('removeAccountAvatarBtn'))el('removeAccountAvatarBtn').style.display=ws.avatarUrl?'inline-flex':'none';
 
-  var menu=el('accountWorkspaceMenu');
-  if(menu)menu.innerHTML=workspaces.map(function(item){
-    var active=item.id===activeWorkspaceId;
-    return '<button class="account-workspace-option '+(active?'active':'')+'" type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">'+
-      '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
-      '<span class="workspace-option-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
-    '</button>';
-  }).join('');
-
-  var list=el('workspaceList');
-  if(list)list.innerHTML=workspaces.map(function(item){
-    var active=item.id===activeWorkspaceId;
-    return '<div class="workspace-card '+(active?'active':'')+'">'+
-      '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
-      '<span class="workspace-card-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+(active?' · текущий':'')+'</small></span>'+
-      '<span class="workspace-card-actions">'+
-        '<button type="button" onclick="chooseWorkspaceAvatar(\''+esc(item.id)+'\')">Фото</button>'+
-        (!active?'<button type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">Переключить</button>':'<span class="chip">Активен</span>')+
-        ((!active&&workspaces.length>1)?'<button class="danger" type="button" onclick="removeWorkspace(\''+esc(item.id)+'\')">Удалить</button>':'')+
-      '</span>'+
-    '</div>';
-  }).join('');
+  renderWorkspaceMenu();
+  renderWorkspaceList();
 
   var currentRoute=(location.hash||'#home').slice(1);
   if(el('topSubtitleText')&&currentRoute!=='system'&&currentRoute!=='connections'){
     el('topSubtitleText').textContent=currentRoute==='account'?'Кабинет · '+(ws.name||'News Factory')+' · ':(ws.name||'News Factory')+' · ';
   }
+}
+var WS_PROFILE_LABELS={ai:'ИИ',auto:'Авто',money:'Деньги',tech:'Технологии',games:'Игры',kino:'Кино',science:'Наука',sport:'Спорт',world:'В мире',stars:'Звёзды',travel:'Путешествия',shopping:'Покупки',home:'Для дома',food:'Еда',business:'Бизнес',crypto:'Крипта'};
+var WS_MISSING_LABELS={telegramChannel:'Telegram-канал',username:'username',profile:'профиль канала',avatar:'фото',sources:'источники (меньше 15)'};
+var WS_CRITICAL=['telegramChannel','username','profile'];
+var wsProfiles=[],wsFilter='',wsMenuFilter='',wsOpenEdit='',wsDrafts={},wsSkipCapture=false;
+function wsMatches(item,q){
+  q=String(q||'').trim().toLowerCase();if(!q)return true;
+  return [item.name,item.id,item.telegramChannel,item.telegramPublicUsername,item.slug,workspaceHandle(item),WS_PROFILE_LABELS[item.editorialChannelId]].join(' ').toLowerCase().indexOf(q)>=0;
+}
+function wsMissing(item){return (item.summary&&item.summary.missing)||[]}
+function wsCriticalMissing(item){return wsMissing(item).filter(function(k){return WS_CRITICAL.indexOf(k)>=0})}
+function wsDot(item){
+  var s=item.summary||{};
+  var cls=wsCriticalMissing(item).length?'warn':(s.autoPublish?'on':'');
+  var title=wsCriticalMissing(item).length?'Не заполнено: '+wsCriticalMissing(item).map(function(k){return WS_MISSING_LABELS[k]}).join(', '):(s.autoPublish?'Автопубликация включена':'Автопубликация выключена');
+  return '<i class="ws-dot '+cls+'" title="'+esc(title)+'"></i>';
+}
+function renderWorkspaceMenu(){
+  var menu=el('accountWorkspaceMenu');if(!menu)return;
+  var search=el('accountMenuSearch');
+  if(search)search.style.display=workspaces.length>6?'block':'none';
+  var items=workspaces.filter(function(x){return wsMatches(x,workspaces.length>6?wsMenuFilter:'')});
+  menu.innerHTML=items.length?items.map(function(item){
+    var active=item.id===activeWorkspaceId;
+    return '<button class="account-workspace-option '+(active?'active':'')+'" type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">'+
+      '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
+      '<span class="workspace-option-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
+      '<span style="margin-left:auto">'+wsDot(item)+'</span>'+
+    '</button>';
+  }).join(''):'<div class="empty">Ничего не найдено</div>';
+}
+function wsEditorHtml(item){
+  var id=esc(item.id);
+  var opts='<option value="">Определить автоматически'+(item.editorialChannelId&&!item.channelId?' (сейчас: '+esc(WS_PROFILE_LABELS[item.editorialChannelId]||item.editorialChannelId)+')':'')+'</option>'+
+    (wsProfiles||[]).map(function(pid){return '<option value="'+esc(pid)+'"'+(item.channelId===pid?' selected':'')+'>'+esc(WS_PROFILE_LABELS[pid]||pid)+'</option>'}).join('');
+  return '<div class="ws-edit'+(wsOpenEdit===item.id?' open':'')+'" id="wsEdit_'+id+'">'+
+    '<div class="account-form-grid">'+
+      '<label class="account-field"><span>Название</span><input id="wsE_'+id+'_name" data-orig="'+esc(item.name||'')+'" value="'+esc(item.name||'')+'"></label>'+
+      '<label class="account-field"><span>Инициалы</span><input id="wsE_'+id+'_initials" data-orig="'+esc(item.initials||'')+'" maxlength="3" value="'+esc(item.initials||'')+'"></label>'+
+      '<label class="account-field"><span>Telegram-канал (@username или ссылка t.me/…)</span><input id="wsE_'+id+'_tg" data-orig="'+esc(item.telegramChannel||'')+'" placeholder="@channel" value="'+esc(item.telegramChannel||'')+'"></label>'+
+      '<label class="account-field"><span>Публичный username</span><input id="wsE_'+id+'_user" data-orig="'+esc(item.telegramPublicUsername||'')+'" placeholder="channel" value="'+esc(item.telegramPublicUsername||'')+'"></label>'+
+      '<label class="account-field"><span>Профиль канала (тематика)</span><select id="wsE_'+id+'_profile" data-orig="'+esc(item.channelId||'')+'">'+opts+'</select></label>'+
+    '</div>'+
+    '<div class="ws-edit-actions"><button class="primary" type="button" onclick="saveWorkspaceEdit(\''+id+'\')">Сохранить</button><button type="button" onclick="cancelWorkspaceEdit(\''+id+'\')">Отмена</button></div>'+
+  '</div>';
+}
+function wsCaptureDrafts(){
+  document.querySelectorAll('#workspaceList .ws-edit [data-orig]').forEach(function(n){
+    if(n.value!==n.getAttribute('data-orig'))wsDrafts[n.id]=n.value;else delete wsDrafts[n.id];
+  });
+}
+function wsRestoreDrafts(){
+  Object.keys(wsDrafts).forEach(function(id){var n=el(id);if(n)n.value=wsDrafts[id];});
+}
+function wsClearDrafts(wsId){
+  Object.keys(wsDrafts).forEach(function(k){if(k.indexOf('wsE_'+wsId+'_')===0)delete wsDrafts[k];});
+}
+function renderWorkspaceList(){
+  var list=el('workspaceList');if(!list)return;
+  if(wsSkipCapture)wsSkipCapture=false;else wsCaptureDrafts();
+  var total=workspaces.length,ready=workspaces.filter(function(x){return !wsCriticalMissing(x).length}).length;
+  if(el('workspaceFillInfo'))el('workspaceFillInfo').textContent='Заполнено '+ready+' из '+total+(ready<total?' · не хватает Telegram, username или профиля':'');
+  var open=document.activeElement&&document.activeElement.closest?document.activeElement.closest('.ws-edit'):null;
+  if(open&&!wsOpenEdit)wsOpenEdit=open.id.replace(/^wsEdit_/,'');
+  var items=workspaces.filter(function(x){return wsMatches(x,wsFilter)});
+  list.innerHTML=items.length?items.map(function(item){
+    var active=item.id===activeWorkspaceId,s=item.summary||{};
+    var miss=wsMissing(item).map(function(k){return WS_MISSING_LABELS[k]}).filter(Boolean);
+    var profile=item.editorialChannelId?(WS_PROFILE_LABELS[item.editorialChannelId]||item.editorialChannelId):'профиль не определён';
+    return '<div class="workspace-card has-edit '+(active?'active':'')+'">'+
+      '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
+      '<span class="workspace-card-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+(active?' · текущий':'')+'</small>'+
+        '<span class="ws-chips">'+
+          '<span class="ws-chip '+(s.autoPublish?'ok':'off')+'">'+(s.autoPublish?'Авто-публикация':'Авто выключено')+'</span>'+
+          '<span class="ws-chip">Очередь '+Number(s.queue||0)+'</span>'+
+          '<span class="ws-chip">Источников '+Number(s.sources||0)+'</span>'+
+          '<span class="ws-chip">Опубликовано '+Number(s.published||0)+'</span>'+
+          '<span class="ws-chip">'+esc(profile)+'</span>'+
+        '</span>'+
+        (miss.length?'<span class="ws-missing" style="display:block">Не заполнено: '+esc(miss.join(', '))+'</span>':'')+
+      '</span>'+
+      '<span class="workspace-card-actions">'+
+        (!active?'<button class="primary" type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">Открыть</button>':'<span class="chip">Активен</span>')+
+        '<button type="button" onclick="toggleWorkspaceEdit(\''+esc(item.id)+'\')">Изменить</button>'+
+        '<button type="button" onclick="chooseWorkspaceAvatar(\''+esc(item.id)+'\')">Фото</button>'+
+        ((!active&&workspaces.length>1)?'<button class="danger" type="button" onclick="removeWorkspace(\''+esc(item.id)+'\')">Удалить</button>':'')+
+      '</span>'+
+      wsEditorHtml(item)+
+    '</div>';
+  }).join(''):'<div class="empty">Ничего не найдено</div>';
+  wsRestoreDrafts();
+}
+function cancelWorkspaceEdit(id){
+  wsClearDrafts(id);wsSkipCapture=true;wsOpenEdit='';renderWorkspaceList();
+}
+function toggleWorkspaceEdit(id){
+  wsOpenEdit=(wsOpenEdit===id)?'':id;
+  var node=el('wsEdit_'+id);
+  document.querySelectorAll('.ws-edit.open').forEach(function(n){if(n!==node)n.classList.remove('open')});
+  if(node)node.classList.toggle('open',wsOpenEdit===id);
+}
+async function saveWorkspaceEdit(id){
+  wsCaptureDrafts();
+  var v=function(k){var n=el('wsE_'+id+'_'+k);return n?n.value.trim():''};
+  var item=workspaces.find(function(x){return x.id===id})||{};
+  var body={id:id,name:v('name'),initials:v('initials'),telegramChannel:v('tg'),telegramPublicUsername:v('user').replace(/^@/,'')};
+  // Если канал сменили, а username не трогали и он был производным от старого канала — обновляем и его.
+  var oldHandle=String(item.telegramChannel||'').replace(/^@/,'');
+  var newHandle=body.telegramChannel.replace(/^(?:https?:\/\/)?(?:t\.me|telegram\.me)\//i,'').replace(/^@/,'').replace(/[\/?].*$/,'');
+  if(body.telegramChannel&&body.telegramChannel!==item.telegramChannel&&body.telegramPublicUsername===String(item.telegramPublicUsername||'')&&oldHandle&&oldHandle===body.telegramPublicUsername&&/^[A-Za-z0-9_]{5,32}$/.test(newHandle)){
+    body.telegramPublicUsername=newHandle;
+  }
+  var sel=el('wsE_'+id+'_profile');
+  if(sel&&sel.options.length>1)body.channelId=sel.value; // список профилей не загрузился — не трогаем закреплённый профиль
+  if(!body.name){toast('Укажите название канала');return}
+  try{
+    await api('/api/workspaces/update',{method:'POST',body:JSON.stringify(body)});
+    wsClearDrafts(id);wsSkipCapture=true;wsOpenEdit='';await loadWorkspaces();renderWorkspaceChrome();toast('Канал сохранён');
+  }catch(e){toast(e.message||'Не удалось сохранить')}
+}
+async function autoFillWorkspaces(){
+  var plan=[];
+  workspaces.forEach(function(x){
+    var patch={},notes=[];
+    if(!x.telegramPublicUsername&&/^@[A-Za-z0-9_]+$/.test(x.telegramChannel||'')){patch.telegramPublicUsername=x.telegramChannel.slice(1);notes.push('username '+x.telegramChannel)}
+    if(!x.channelId&&x.editorialChannelId){patch.channelId=x.editorialChannelId;notes.push('профиль «'+(WS_PROFILE_LABELS[x.editorialChannelId]||x.editorialChannelId)+'»')}
+    if(notes.length)plan.push({id:x.id,name:x.name,patch:patch,notes:notes});
+  });
+  if(!plan.length){toast('Автозаполнять нечего. Остальное нужно ввести вручную: Telegram-каналы и фото.');return}
+  if(!confirm('Будет заполнено:\n\n'+plan.map(function(p){return '• '+p.name+': '+p.notes.join(', ')}).join('\n')+'\n\nTelegram-каналы и фото система не придумывает. Продолжить?'))return;
+  var done=0,failure='';
+  try{
+    for(var i=0;i<plan.length;i++){await api('/api/workspaces/update',{method:'POST',body:JSON.stringify(Object.assign({id:plan[i].id},plan[i].patch))});done++}
+  }catch(e){failure=e.message||'ошибка'}
+  try{await loadWorkspaces();renderWorkspaceChrome()}catch(e){}
+  toast(failure?'Заполнено '+done+' из '+plan.length+', остановилось на ошибке: '+failure:'Заполнено каналов: '+done);
 }
 function switchWorkspace(id){
   if(!id||id===activeWorkspaceId){toggleAccountMenu(false);return}
