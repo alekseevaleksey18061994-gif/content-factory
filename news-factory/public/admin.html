@@ -2329,6 +2329,17 @@ button{line-height:1.2!important}
 @media(max-width:1180px){.promotion-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.promotion-two{grid-template-columns:1fr}}
 @media(max-width:720px){#promotionPage{padding:14px!important;border-radius:22px}.promotion-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.promotion-network-row{grid-template-columns:minmax(0,1fr) 72px 24px}.promotion-network-row .promotion-network-metric:nth-of-type(3){display:none}.promotion-campaign-form{grid-template-columns:1fr}.promotion-campaign-form button{grid-column:auto}}
 
+.qa-toolbar{display:flex;gap:8px;flex-wrap:wrap}.qa-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.qa-progress-track{height:7px;border-radius:999px;background:rgba(57,105,153,.12);overflow:hidden}.qa-progress-track span{display:block;height:100%;width:0;background:linear-gradient(90deg,#27c6e8,#6d78ff);transition:width .3s}
+.qa-slot-list,.qa-channel-list{display:grid;gap:9px}.qa-slot-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:11px 12px;border:1px solid rgba(67,129,185,.14);border-radius:14px;background:rgba(250,253,255,.84)}
+.qa-slot-row>div b,.qa-channel-head b{display:block;font-size:12px}.qa-slot-row small,.qa-channel-head small{display:block;color:#6e8099;font-size:9.5px;margin-top:2px}.qa-slot-row>span{font-size:10px;font-weight:800}.qa-slot-ok>span{color:#11885b}.qa-slot-miss>span{color:#ce4f58}.qa-slot-title{grid-column:1/-1}
+.qa-channel{border:1px solid rgba(67,129,185,.15);border-radius:16px;background:rgba(250,253,255,.88);padding:12px}.qa-channel.qa-ok{box-shadow:inset 3px 0 #27a96c}.qa-channel.qa-warn{box-shadow:inset 3px 0 #e6a72e}.qa-channel.qa-bad{box-shadow:inset 3px 0 #db5862}
+.qa-channel-head{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center}.qa-percent{font-size:18px;font-weight:900}.qa-state{font-size:9px;font-weight:900;padding:5px 8px;border-radius:999px;background:rgba(75,112,151,.08)}
+.qa-checks{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.qa-checks span{font-size:9.5px;font-weight:750;padding:5px 7px;border-radius:999px;background:rgba(59,111,159,.07)}.qa-checks span.ok{color:#168458}.qa-checks span.bad{color:#c84c57;background:rgba(211,76,89,.08)}
+.qa-sample{margin-top:10px;padding:10px;border-radius:13px;background:rgba(73,124,174,.055)}.qa-sample small{display:block;color:#68809d;font-size:9px;font-weight:800}.qa-sample b{display:block;font-size:12px;margin-top:4px}.qa-sample p{font-size:11px;line-height:1.45;margin:5px 0 0;color:#405471}
+@media(max-width:980px){.qa-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:720px){#qaPage{padding:14px!important;border-radius:22px}.qa-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.qa-toolbar{width:100%}.qa-toolbar button{flex:1}.qa-channel-head{grid-template-columns:minmax(0,1fr) auto}.qa-channel-head .qa-state{grid-column:1/-1;width:max-content}}
+
 </style>
 </head>
 <body>
@@ -2351,6 +2362,7 @@ button{line-height:1.2!important}
       <button class="nav" data-page="calendarPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.2" width="17" height="15.3" rx="2.2"/><path d="M7.5 3.5v3.4M16.5 3.5v3.4M3.5 9h17"/><path d="M7.5 12.4h2M12 12.4h2M16.5 12.4h.1M7.5 16.2h2M12 16.2h2M16.5 16.2h.1"/></svg></span><b>Календарь публикаций</b></button>
       <button class="nav" data-page="statsPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V11.5h3.5V20M10.3 20V6.8h3.5V20M16.6 20V3.8h3.5V20"/><path d="M3 20.5h18"/></svg></span><b>Статистика</b></button>
       <button class="nav" data-page="promotionPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13.5V9.8l11-4.3v12.3L4 13.5Z"/><path d="M15 8.5c2.8.4 4.5 1.7 5 3.2-1 1.6-2.7 2.8-5 3.2M6.5 14.4l1.2 4.1h3.1l-1.6-3"/></svg></span><b>Продвижение</b></button>
+      <button class="nav" data-page="qaPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19.5 7v5.3c0 4.2-2.8 7.1-7.5 8.2-4.7-1.1-7.5-4-7.5-8.2V7Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg></span><b>Редакционный QA</b></button>
       <button class="nav" data-page="costsPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M15.8 8.5c-.8-.7-1.9-1-3.1-1-1.7 0-2.8.8-2.8 2 0 3.2 6.2 1.4 6.2 5 0 1.3-1.2 2.2-3.2 2.2-1.4 0-2.8-.5-3.7-1.3M12.7 5.6v12.8"/></svg></span><b>Расходы</b></button>
       <button class="nav" data-page="historyPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span><b>История</b></button>
       <button class="nav" data-page="modePage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.1 13.6a7.9 7.9 0 0 0 0-3.2l2-1.5-2-3.4-2.4 1a8 8 0 0 0-2.8-1.6L13.6 2H10.4l-.4 2.9a8 8 0 0 0-2.8 1.6l-2.4-1-2 3.4 2 1.5a7.9 7.9 0 0 0 0 3.2l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 2.8 1.6l.4 2.9h3.2l.4-2.9a8 8 0 0 0 2.8-1.6l2.4 1 2-3.4Z"/></svg></span><b>Режим работы</b></button>
@@ -2709,6 +2721,43 @@ button{line-height:1.2!important}
             <div id="promoCreativeResult" class="promotion-creative-result"><div class="empty">Креатив ещё не создан.</div></div>
           </section>
         </div>
+      </section>
+
+      <section class="page" id="qaPage">
+        <div class="page-head">
+          <div><h2>Редакционный QA</h2><p>Проверка всей сети без публикации: Channel DNA, стиль, тип контента, Channel Score, источники и фактчек.</p></div>
+          <div class="qa-toolbar">
+            <button id="qaRepairBtn" onclick="repairCurrentSlot()">Догнать текущий слот</button>
+            <button class="primary" id="qaRunBtn" onclick="startEditorialQa()">Проверить всю редакцию</button>
+          </div>
+        </div>
+
+        <div class="qa-kpis">
+          <div class="kpi"><b id="qaPass">—</b><span>Прошли</span><small>Все обязательные проверки</small></div>
+          <div class="kpi"><b id="qaWarn">—</b><span>Предупреждения</span><small>Работает, но есть деградация</small></div>
+          <div class="kpi"><b id="qaFail">—</b><span>Ошибки</span><small>Нужно исправить</small></div>
+          <div class="kpi"><b id="qaAverage">—</b><span>Проверок пройдено</span><small>Среднее по сети</small></div>
+          <div class="kpi"><b id="qaSlotCoverage">—</b><span>Текущий слот</span><small id="qaSlotLabel">—</small></div>
+        </div>
+
+        <section class="card qa-status-card">
+          <div class="panel-title">
+            <div><h3>Состояние проверки</h3><p id="qaStatusText">QA ещё не запускался.</p></div>
+            <span class="chip" id="qaProgress">0/0</span>
+          </div>
+          <div class="qa-progress-track"><span id="qaProgressBar"></span></div>
+          <div class="notice" id="qaCheckerNote" style="margin-top:10px">Проверка ничего не публикует. Контрольные тексты генерируются только для QA.</div>
+        </section>
+
+        <section class="card" style="margin-top:14px">
+          <div class="panel-title"><div><h3>Публикации текущего часа</h3><p>Какие каналы реально выпустили назначенный пост.</p></div><button onclick="loadEditorialQa(false)">Обновить</button></div>
+          <div id="qaSlotRows" class="qa-slot-list"><div class="empty">Загрузка…</div></div>
+        </section>
+
+        <section class="card" style="margin-top:14px">
+          <div class="panel-title"><div><h3>Каналы</h3><p>Контрольная генерация и технические редакционные правила по каждому профилю.</p></div></div>
+          <div id="qaChannels" class="qa-channel-list"><div class="empty">Нажмите «Проверить всю редакцию».</div></div>
+        </section>
       </section>
 
       <section class="page" id="costsPage">
@@ -3510,6 +3559,7 @@ var pageRoutes={
   publishPage:'publish',
   statsPage:'stats',
   promotionPage:'promotion',
+  qaPage:'qa',
   costsPage:'costs',
   calendarPage:'calendar',
   historyPage:'history',
@@ -3526,7 +3576,7 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={networkPage:'Общий дашборд',homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',promotionPage:'Продвижение',costsPage:'Расходы',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
+  var titles={networkPage:'Общий дашборд',homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',promotionPage:'Продвижение',qaPage:'Редакционный QA',costsPage:'Расходы',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var workspaceName=currentWorkspaceMeta.name||'News Factory';
   if(el('topSubtitleText'))el('topSubtitleText').textContent=id==='networkPage'?'Вся сеть каналов · ':id==='connectionsPage'?'Состояние News Factory, интеграции и хранение данных.':(id==='accountPage'?'Кабинет · '+workspaceName+' · ':workspaceName+' · ');
@@ -3537,6 +3587,7 @@ function goPage(id,options){
   if(id==='calendarPage'){renderCalendar();}
   if(id==='statsPage'){loadAnalytics(false);}
   if(id==='promotionPage'){loadPromotion(false);}
+  if(id==='qaPage'){loadEditorialQa(false);}
   if(id==='costsPage'){loadCosts(false);}
   if(id==='accountPage'){renderWorkspaceChrome();}
   if(id==='networkPage'){renderNetworkDashboard();}
@@ -3956,6 +4007,79 @@ function renderPlatformAnalytics(data){
       '<div class="post-stat-cell"><b>'+fmtMetric(p.comments||0)+'</b><span>Комментарии</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.reposts||0)+'</b><span>Репосты</span></div></div>';
   }).join(''):'<div class="analytics-empty">В сообществе пока нет доступных постов для статистики.</div>';
+}
+
+var editorialQaPoll=null;
+function qaStatusLabel(v){return v==='pass'?'Готово':v==='warn'?'Внимание':v==='fail'?'Ошибка':'Ожидание'}
+function qaStatusClass(v){return v==='pass'?'qa-ok':v==='warn'?'qa-warn':v==='fail'?'qa-bad':'qa-idle'}
+function renderEditorialQa(data){
+  var qa=data.qa||{},sum=qa.summary||{},cov=data.publicationCoverage||{},channels=qa.channels||[];
+  if(el('qaPass'))el('qaPass').textContent=sum.pass==null?'—':sum.pass;
+  if(el('qaWarn'))el('qaWarn').textContent=sum.warn==null?'—':sum.warn;
+  if(el('qaFail'))el('qaFail').textContent=sum.fail==null?'—':sum.fail;
+  if(el('qaAverage'))el('qaAverage').textContent=sum.averagePercent==null?'—':sum.averagePercent+'%';
+  if(el('qaSlotCoverage'))el('qaSlotCoverage').textContent=(cov.published==null?'—':cov.published+'/'+cov.total);
+  if(el('qaSlotLabel'))el('qaSlotLabel').textContent=cov.slot||'Текущий час';
+
+  var progress=qa.progress||{done:0,total:0},pct=progress.total?Math.round(progress.done/progress.total*100):0;
+  if(el('qaProgress'))el('qaProgress').textContent=progress.done+'/'+progress.total;
+  if(el('qaProgressBar'))el('qaProgressBar').style.width=pct+'%';
+  if(el('qaStatusText')){
+    el('qaStatusText').textContent=qa.status==='running'?'Проверяю каналы: '+progress.done+' из '+progress.total:
+      qa.status==='done'?'Проверка завершена'+(qa.finishedAt?' · '+new Date(qa.finishedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):''):
+      qa.status==='error'?'Ошибка QA: '+(qa.error||'неизвестная ошибка'):'QA ещё не запускался.';
+  }
+  if(el('qaCheckerNote')){
+    el('qaCheckerNote').textContent=sum.degraded?
+      'В '+sum.degraded+' каналах проверка прошла в резервном режиме: один из внешних проверщиков недоступен. Это видно отдельно и не скрывается.':
+      'Проверка ничего не публикует. Контрольные тексты генерируются только для QA.';
+  }
+
+  var slotRows=cov.channels||[];
+  if(el('qaSlotRows'))el('qaSlotRows').innerHTML=slotRows.length?slotRows.map(function(x){
+    return '<div class="qa-slot-row '+(x.published?'qa-slot-ok':'qa-slot-miss')+'">'+
+      '<div><b>'+esc(x.name||x.workspaceId)+'</b><small>'+esc(x.telegram?'@'+String(x.telegram).replace(/^@/,''):'Telegram не настроен')+'</small></div>'+
+      '<span>'+(x.published?'Опубликовано':'Не вышло')+'</span>'+
+      (x.title?'<small class="qa-slot-title">'+esc(x.title)+'</small>':'')+
+    '</div>';
+  }).join(''):'<div class="empty">Нет данных по текущему слоту.</div>';
+
+  if(el('qaChannels'))el('qaChannels').innerHTML=channels.length?channels.map(function(x){
+    var checks=x.checks||[],sample=x.sample||{};
+    return '<div class="qa-channel '+qaStatusClass(x.status)+'">'+
+      '<div class="qa-channel-head"><div><b>'+esc(x.name||x.workspaceId)+'</b><small>'+esc(x.channelId||'')+' · '+esc(x.type||'')+'</small></div>'+
+      '<span class="qa-percent">'+Number(x.percent||0)+'%</span><span class="qa-state">'+qaStatusLabel(x.status)+'</span></div>'+
+      '<div class="qa-checks">'+checks.map(function(ch){return '<span class="'+(ch.pass?'ok':'bad')+'" title="'+esc(ch.note||'')+'">'+(ch.pass?'✓':'×')+' '+esc(ch.label||ch.key)+'</span>'}).join('')+'</div>'+
+      (sample.title?'<div class="qa-sample"><small>Контрольный пост · '+esc(sample.contentBucket||'')+(sample.degradedQc?' · резервный QC':'')+'</small><b>'+esc(sample.title)+'</b><p>'+esc(String(sample.text||'').slice(0,300))+'</p></div>':'')+
+    '</div>';
+  }).join(''):(qa.status==='running'?'<div class="empty">Первый канал ещё проверяется…</div>':'<div class="empty">Нажмите «Проверить всю редакцию».</div>');
+}
+async function loadEditorialQa(schedulePoll){
+  try{
+    var j=await api('/api/editorial/qa');
+    renderEditorialQa(j);
+    var running=j.qa&&j.qa.status==='running';
+    if(running&&!editorialQaPoll)editorialQaPoll=setInterval(function(){loadEditorialQa(false)},5000);
+    if(!running&&editorialQaPoll){clearInterval(editorialQaPoll);editorialQaPoll=null}
+    var btn=el('qaRunBtn');if(btn){btn.disabled=running;btn.textContent=running?'Проверяю…':'Проверить всю редакцию'}
+  }catch(e){toast('Редакционный QA: '+e.message)}
+}
+async function startEditorialQa(){
+  var btn=el('qaRunBtn');if(btn){btn.disabled=true;btn.textContent='Запускаю…'}
+  try{
+    await api('/api/editorial/qa/run',{method:'POST',body:'{}'});
+    toast('QA запущен. Публикаций не будет.');
+    await loadEditorialQa(true);
+  }catch(e){toast('QA: '+e.message);if(btn){btn.disabled=false;btn.textContent='Проверить всю редакцию'}}
+}
+async function repairCurrentSlot(){
+  var btn=el('qaRepairBtn');if(btn){btn.disabled=true;btn.textContent='Догоняю…'}
+  try{
+    var j=await api('/api/editorial/repair-current-slot',{method:'POST',body:'{}'});
+    toast('Проверил текущий слот');
+    await loadEditorialQa(false);
+  }catch(e){toast('Слот: '+e.message)}
+  finally{if(btn){btn.disabled=false;btn.textContent='Догнать текущий слот'}}
 }
 
 var promotionData=null;
