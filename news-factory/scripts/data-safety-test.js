@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import {
   atomicWriteFileSync,
   loadJsonStoreWithRecovery,
@@ -23,7 +23,10 @@ import { resolveCostPricing, calculateUsageCost, BUILTIN_COST_PRICING } from "..
 
 const appDir = fileURLToPath(new URL("..", import.meta.url));
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "news-factory-data-safety-"));
-let portCounter = 39400 + Math.floor(Math.random() * 400);
+// Ask the OS for a free port (random fixed ranges collided with other suites running at the same time).
+function freePortSync() {
+  return Number(execFileSync(process.execPath, ["-e", "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"], { encoding: "utf8" }).trim());
+}
 const quietLog = { error() {}, warn() {}, log() {} };
 const sleep = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
 
@@ -90,7 +93,7 @@ globalThis.fetch = async function (input, init) {
 `);
 
 function startServer(dataDir, extraEnv, cwd) {
-  const port = portCounter++;
+  const port = freePortSync();
   const env = Object.assign({}, process.env, {
     PORT: String(port), DATA_DIR: dataDir, DATABASE_URL: "", ADMIN_UI_PASSWORD: "local-smoke-password", ADMIN_UI_PASSWORD_SHA256: "",
     COLLECTOR_ENABLED: "false", AUTO_PUBLISH_ENABLED: "false", TELEGRAM_BOT_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",

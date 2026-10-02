@@ -138,7 +138,7 @@ const CHANNEL_HINTS = [
   [/кино|kino|movie/i, "kino"],
   [/наук|science/i, "science"],
   [/спорт|sport/i, "sport"],
-  [/в мире|world/i, "world"],
+  [/в мире|в интернет|в сети|world|internet/i, "world"],
   [/звёзд|звезд|stars/i, "stars"],
   [/путешеств|travel/i, "travel"],
   [/покуп|shop/i, "shopping"],
@@ -522,6 +522,16 @@ export function normalizeWriterResult(raw, channelId) {
     conflicts: r.conflicts ? str(r.conflicts, 500) : null,
     legalFlags: Array.isArray(r.legal_flags) ? r.legal_flags.map(String).slice(0, 10) : [],
     crosspromoTarget: r.crosspromo_target ? str(r.crosspromo_target, 20) : null,
+    contentBucket: str(r.content_bucket, 40),
+    channelSignals: (function(){
+      const src = r.channel_signals && typeof r.channel_signals === "object" ? r.channel_signals : {};
+      const out = {};
+      ["virality","utility","discussion","visual","wow","local","deal"].forEach(function(key){
+        const n = Number(src[key]);
+        if (Number.isFinite(n)) out[key] = Math.max(0, Math.min(10, Math.round(n)));
+      });
+      return out;
+    })(),
     entities: Array.isArray(r.entities) ? r.entities.map(function(x){ return str(x, 60); }).filter(Boolean).slice(0, 4) : []
   };
   if (out.status === "ok") {
@@ -639,9 +649,22 @@ export function createEditorialPipeline(options) {
     const failed = results.filter(function(r){ return r.failed; });
     const done = results.filter(function(r){ return !r.failed; });
     const merged = mergeVerdicts(done);
+    const openaiDone = done.some(function(r){ return r && r.provider === "openai"; });
     let verdict = merged.verdict;
-    if (!done.length || (requireAllCheckers && failed.length)) verdict = "unavailable";
-    return { verdict, errors: merged.errors, checkers: results };
+
+    // OpenAI is the primary checker. A secondary checker outage (billing, rate
+    // limit, provider incident) must be visible as degraded QC, but must not
+    // freeze every channel and create empty publication slots. If OpenAI itself
+    // is unavailable, the result remains unavailable.
+    if (!done.length || !openaiDone) verdict = "unavailable";
+    const degraded = Boolean(failed.length && openaiDone);
+    return {
+      verdict,
+      errors: merged.errors,
+      checkers: results,
+      degraded,
+      failedProviders: failed.map(function(r){ return r.provider; })
+    };
   }
 
   // request: { now, sources, recent_posts, network_recent, network_channels, signature,
@@ -655,7 +678,7 @@ export function createEditorialPipeline(options) {
     }
     let post = writer.result;
     let check = await runCheckers(channelId, post, request);
-    log.push({ step: "check", round: 0, verdict: check.verdict, checkers: summarizeCheckers(check.checkers) });
+    log.push({ step: "check", round: 0, verdict: check.verdict, degraded: Boolean(check.degraded), checkers: summarizeCheckers(check.checkers) });
 
     let round = 0;
     while (check.verdict === "fix" && round < maxFixRounds) {
@@ -663,7 +686,7 @@ export function createEditorialPipeline(options) {
       const fixNotes = check.errors.map(function(e){ return { field: e.field, quote: e.quote, problem: e.problem, fix: e.fix }; });
       writer = await runWriter(channelId, Object.assign({}, request, {
         fix_notes: fixNotes,
-        previous_post: { title: post.title, tg_text: post.tgText, vk_text: post.vkText, format: post.format, hook_type: post.hookType, ending_type: post.endingType }
+        previous_post: { title: post.title, tg_text: post.tgText, vk_text: post.vkText, format: post.format, hook_type: post.hookType, ending_type: post.endingType, content_bucket: post.contentBucket, channel_signals: post.channelSignals }
       }));
       log.push({ step: "writer", round, model: writer.model, status: writer.result.status });
       if (writer.result.status === "skip") {
@@ -671,7 +694,7 @@ export function createEditorialPipeline(options) {
       }
       post = writer.result;
       check = await runCheckers(channelId, post, request);
-      log.push({ step: "check", round, verdict: check.verdict, checkers: summarizeCheckers(check.checkers) });
+      log.push({ step: "check", round, verdict: check.verdict, degraded: Boolean(check.degraded), checkers: summarizeCheckers(check.checkers) });
     }
 
     const finalVerdict = check.verdict === "fix" ? "fix_exhausted" : check.verdict;
@@ -681,6 +704,8 @@ export function createEditorialPipeline(options) {
       post,
       errors: check.errors,
       checkers: check.checkers,
+      degraded: Boolean(check.degraded),
+      failedProviders: check.failedProviders || [],
       rounds: round,
       log,
       writerModel: writer.model

@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.43.0",
+  "version": "0.46.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,7 +17,11 @@
     "test:dedupe": "node scripts/dedupe-test.js",
     "test:security": "node scripts/security-test.js",
     "test:prompts-code": "node scripts/prompts-code-test.js",
-    "test:publish-guards": "node scripts/publish-guards-test.js"
+    "test:publish-guards": "node scripts/publish-guards-test.js",
+    "test:promotion-smoke": "node scripts/promotion-smoke.js",
+    "test:scheduler-recovery": "node scripts/scheduler-recovery-smoke.js",
+    "test:channel-dna": "node scripts/channel-dna-v2-test.js && node scripts/channel-dna-integration-smoke.js",
+    "test:editorial-qa": "node scripts/editorial-qa-smoke.js"
   },
   "dependencies": {
     "pg": "^8.13.1",

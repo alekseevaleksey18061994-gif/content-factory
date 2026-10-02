@@ -11,6 +11,8 @@ import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-securi
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451 } from "./lib/channel-dna.js";
+import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
@@ -156,8 +158,10 @@ const DYNAMIC_SLOT_END_HOUR = 23;
 const DYNAMIC_SLOT_PREP_MINUTE = 45;
 const SCHEDULER_SLOT_WINDOW_MINUTES = Math.max(1, Math.min(14, Number(process.env.SCHEDULER_SLOT_WINDOW_MINUTES || 10)));
 const DYNAMIC_SLOT_MAX_AGE_HOURS = Math.max(4, Math.min(48, Number(process.env.DYNAMIC_SLOT_MAX_AGE_HOURS || 24)));
-const DYNAMIC_DAILY_TARGET = 10;
-const DYNAMIC_DAILY_MAX = 12;
+// Regular channel promise: one regular publication slot every hour from 08:00
+// through 23:00 Moscow. The old 12-post cap silently skipped evening slots.
+const DYNAMIC_DAILY_TARGET = DYNAMIC_SLOT_END_HOUR - DYNAMIC_SLOT_START_HOUR + 1;
+const DYNAMIC_DAILY_MAX = Math.max(DYNAMIC_DAILY_TARGET, Math.min(24, Number(process.env.DYNAMIC_DAILY_MAX || DYNAMIC_DAILY_TARGET)));
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
@@ -844,13 +848,39 @@ function workspaceSummary(ws) {
   if (!resolveChannelId(ws)) missing.push("profile");
   if (!String(ws.avatarUrl || "").trim()) missing.push("avatar");
   if (sources < 15) missing.push("sources");
+  const history = Array.isArray(st.history) ? st.history : [];
+  // Moscow day window computed once (no per-entry date formatting); invalid
+  // dates and test publications are ignored.
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const dayStartMs = now.getTime() - nowMinutes * 60000 - (now.getUTCSeconds() * 1000 + now.getUTCMilliseconds());
+  let publishedToday = 0, lastMs = 0;
+  for (const h of history) {
+    if (!h || !h.publishedAt || h.publicationOrigin === "test") continue;
+    const t = Date.parse(h.publishedAt);
+    if (!Number.isFinite(t)) continue;
+    if (t > lastMs) lastMs = t;
+    if (t >= dayStartMs) publishedToday += 1;
+  }
+  const lastPublishedAt = lastMs ? new Date(lastMs).toISOString() : "";
+  const queue = Array.isArray(st.queue) ? st.queue.length : 0;
+  // Operational problems (what stops posts from coming out), separate from
+  // cosmetic settings like the avatar.
+  const problems = [];
+  const hoursSincePost = lastMs ? (Date.now() - lastMs) / 3600000 : null;
+  if (autoPublish && nowMinutes >= 10 * 60 && (hoursSincePost == null || hoursSincePost > 3)) problems.push("stale");
+  if (autoPublish && queue === 0) problems.push("emptyQueue");
+  if (!autoPublish && String(st.mode || "") !== "PAUSED") problems.push("notAuto");
   return {
     mode: String(st.mode || ""),
     autoPublish: autoPublish,
-    queue: Array.isArray(st.queue) ? st.queue.length : 0,
+    queue: queue,
     sources: sources,
     published: Number(st.stats && st.stats.published || 0),
-    missing: missing
+    publishedToday: publishedToday,
+    lastPublishedAt: lastPublishedAt,
+    missing: missing,
+    problems: problems
   };
 }
 function persistWorkspaceStore() {
@@ -1185,6 +1215,36 @@ function ensureConfiguredWorkspaces() {
 }
 ensureConfiguredWorkspaces();
 
+(function backfillChannelDnaV2SourceClasses(){
+  let changed = false;
+  const migration = "v0.44.0-channel-dna-v2";
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+    if (ws.state.migrations.includes(migration)) continue;
+    for (const source of (ws.state.sources || [])) {
+      if (!source) continue;
+      const next = sourceClassFor(source);
+      if (source.sourceClass !== next) {
+        source.sourceClass = next;
+        changed = true;
+      }
+    }
+    for (const item of (ws.state.queue || [])) {
+      if (!item) continue;
+      if (!item.sourceClass) item.sourceClass = sourceClassFor(item);
+    }
+    for (const item of (ws.state.history || [])) {
+      if (!item) continue;
+      if (!item.sourceClass) item.sourceClass = sourceClassFor(item);
+    }
+    ws.state.migrations.push(migration);
+    ws.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+  if (changed) persistWorkspaceStore();
+})();
+
 const state = new Proxy({}, {
   get: function(_target, prop){ return currentWorkspace().state[prop]; },
   set: function(_target, prop, value){ currentWorkspace().state[prop] = value; return true; },
@@ -1389,7 +1449,8 @@ function operationLabel(value) {
     story_composer: "Объединение нескольких источников",
     title_translation: "Перевод заголовков",
     editorial_score_batch: "Пакетный рейтинг новостей",
-    image_generation: "AI-обложка / fallback"
+    image_generation: "AI-обложка / fallback",
+    promotion_creative: "Продвижение · рекламный креатив"
   };
   return labels[String(value || "")] || String(value || "Другое");
 }
@@ -1604,6 +1665,37 @@ async function apiBalanceSnapshot(knownRate) {
     }));
   }
   return out;
+}
+
+// Provider out of money: tell the owner in Telegram (once per 3 hours per provider)
+// instead of silently failing every call.
+const billingAlertSentAt = {};
+function maybeBillingAlert(text) {
+  const msg = String(text || "");
+  let provider = "";
+  if (/no credits remaining|insufficient_quota|exceeded your current quota/i.test(msg)) provider = "OpenAI";
+  else if (/credit balance is too low/i.test(msg)) provider = "Anthropic (Claude)";
+  if (!provider || !BOT_TOKEN) return;
+  const last = billingAlertSentAt[provider] || 0;
+  if (Date.now() - last < 3 * 3600000) return;
+  const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+  const chatId = TELEGRAM_ALERT_CHAT_ID || String(ws && ws.state && ws.state.telegramAlertChatId || "").trim();
+  // Throttle the log line too, but retry the message soon if no chat is known yet.
+  billingAlertSentAt[provider] = chatId ? Date.now() : Date.now() - 3 * 3600000 + 10 * 60000;
+  console.warn("BILLING_EXHAUSTED " + JSON.stringify({ provider: provider, alerted: Boolean(chatId) }));
+  if (!chatId) return;
+  const link = provider === "OpenAI" ? "https://platform.openai.com/settings/organization/billing/" : "https://console.anthropic.com/settings/billing";
+  telegramApi("sendMessage", {
+    chat_id: chatId,
+    text: "🚨 News Factory: на балансе " + provider + " закончились деньги.\n" +
+      (provider === "OpenAI" ? "Новые посты не пишутся — каналы выпустят то, что уже в очереди, и остановятся." : "Вторая проверка фактов не работает — посты проверяет только одна нейросеть.") +
+      "\nПополните баланс: " + link,
+    disable_web_page_preview: true
+  }).catch(function(error){
+    // Failed send: allow another try in 10 minutes instead of 3 hours.
+    billingAlertSentAt[provider] = Date.now() - 3 * 3600000 + 10 * 60000;
+    console.warn("Billing alert failed:", error.message);
+  });
 }
 
 async function sendCostBudgetAlert(snapshot, threshold) {
@@ -2281,29 +2373,38 @@ function findStoryClusterCandidate(newItem) {
 
 
 function sourceEditorialRole(sourceOrItem) {
-  let group = String(sourceOrItem && (sourceOrItem.group || sourceOrItem.sourceGroup) || "").toLowerCase();
-  if (!group && sourceOrItem) {
-    const sourceId = String(sourceOrItem.sourceId || sourceOrItem.id || "");
-    const sourceName = String(sourceOrItem.sourceName || sourceOrItem.name || "");
+  const item = sourceOrItem || {};
+  const group = String(item.group || item.sourceGroup || "").toLowerCase();
+  if (group === "story") return "multi_source";
+
+  let resolved = item;
+  if (!item.group && !item.sourceGroup && !item.sourceClass && !item.source_class) {
+    const sourceId = String(item.sourceId || item.id || "");
+    const sourceName = String(item.sourceName || item.name || "");
     const ws = currentWorkspace();
     const source = ws && ws.state && Array.isArray(ws.state.sources)
-      ? ws.state.sources.find(function(item){
-          return item && ((sourceId && String(item.id || "") === sourceId) || (sourceName && String(item.name || "") === sourceName));
+      ? ws.state.sources.find(function(x){
+          return x && ((sourceId && String(x.id || "") === sourceId) || (sourceName && String(x.name || "") === sourceName));
         })
       : null;
-    group = String(source && source.group || "").toLowerCase();
+    if (source) resolved = source;
   }
-  if (group === "official") return "official_primary";
-  if (group === "blogger" || group === "creator") return "author_opinion";
-  if (group === "media") return "media_context";
-  if (group === "story") return "multi_source";
+
+  const sourceClass = sourceClassFor(resolved);
+  if (sourceClass === "OFFICIAL") return "official_primary";
+  if (sourceClass === "CREATOR") return "author_opinion";
+  if (sourceClass === "COMMUNITY") return "community_signal";
+  if (sourceClass === "SOCIAL") return "social_signal";
+  if (sourceClass === "MEDIA") return "media_context";
   return "context_source";
 }
 
 function sourceRoleLabel(role) {
   const map = {
     official_primary: "Официальный первичный источник",
-    author_opinion: "Авторское мнение/демонстрация",
+    author_opinion: "Автор/создатель контента",
+    community_signal: "Сообщество / пользовательская находка",
+    social_signal: "Соцсеть / вирусный первичный сигнал",
     media_context: "СМИ и дополнительный контекст",
     multi_source: "Несколько независимых источников",
     context_source: "Контекстный источник"
@@ -2458,6 +2559,7 @@ function buildDecisionExplanation(item) {
   if (!item) return { summary: "Нет данных", factors: [] };
   const diversity = editorialDiversityPenalty(item);
   const learning = editorialLearningBonus(item);
+  const strategy = channelStrategyScore(editorialChannelId(), item, recentHistoryItems(24), item);
   const base = Number(item.aiScore);
   const quality = Number(item.qualityScore);
   const factors = [];
@@ -2470,6 +2572,11 @@ function buildDecisionExplanation(item) {
   if (item.videoUrl) factors.push("Видео: приоритет +" + videoPriorityBonus(item, Number.isFinite(base) ? base : 60));
   if (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length > 1) factors.push("Media Pack: " + item.mediaPackUrls.length + " изображения");
   if (learning.bonus) factors.push("Обучение на статистике: " + (learning.bonus > 0 ? "+" : "") + learning.bonus);
+  factors.push("Тип контента: " + strategy.bucket);
+  factors.push("Источник: " + strategy.sourceClass);
+  if (strategy.fit && strategy.fit.score != null) factors.push("Channel Score: " + strategy.fit.score + "/10");
+  if (strategy.mix && strategy.mix.bonus) factors.push("Баланс контента: " + (strategy.mix.bonus > 0 ? "+" : "") + strategy.mix.bonus);
+  if (strategy.sourceBonus) factors.push("Бонус класса источника: +" + strategy.sourceBonus);
   if (diversity.penalty) factors.push("Штраф за повторяемость: -" + diversity.penalty);
   if (item.qcIssues && item.qcIssues.length) factors.push("QC: " + item.qcIssues.slice(0, 2).join("; "));
   return {
@@ -2477,6 +2584,7 @@ function buildDecisionExplanation(item) {
     factors: factors.slice(0, 10),
     diversityPenalty: diversity.penalty,
     learningBonus: learning.bonus,
+    channelStrategy: strategy,
     autoQualityMin: AUTO_QUALITY_MIN,
     autoEligible: autoQualityEligible(item)
   };
@@ -2583,7 +2691,7 @@ async function discoverSourcesWithAI(count) {
   const channelId = resolveChannelId(ws);
   const prompt = buildDiscoveryPrompt({
     channelName: ws && ws.name || "",
-    topic: CHANNEL_TOPICS_RU[channelId] || "",
+    topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "",
     count: count,
     existingHosts: Array.from(new Set((state.sources || []).map(function(x){ return sourceHost(x && x.url); }).filter(Boolean)))
   });
@@ -2634,7 +2742,7 @@ async function replenishSources(reason) {
       if (!check.ok) { rejected[key] = { at: new Date().toISOString(), reason: check.reason }; continue; }
       const source = {
         id: "auto-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", priority: 2,
+        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", sourceClass: sourceClassFor(c), priority: 2,
         url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
         autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" }
       };
@@ -2688,9 +2796,10 @@ async function prefilterCandidates(candidates, summary) {
     const channelId = resolveChannelId(ws);
     const prompt = buildPrefilterPrompt({
       channelName: ws && ws.name || "",
-      topic: CHANNEL_TOPICS_RU[channelId] || "",
+      topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "",
+      focus: channelFocus(channelId),
       today: new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Moscow" }).format(now),
-      items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
+      items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, sourceClass: sourceClassFor(candidate.source), date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
     });
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
@@ -2714,6 +2823,7 @@ async function prefilterCandidates(candidates, summary) {
     } catch (error) {
       // Fail open: without the pre-filter the old order is used, nothing is lost.
       console.warn("HEADLINE_PREFILTER_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: error.message }));
+      maybeBillingAlert(error.message);
     }
   }
   for (const r of rejected) {
@@ -2768,6 +2878,7 @@ function buildSourceRankings() {
     else if (rating != null) status = "Сильный";
     return {
       id: source.id,
+      sourceClass: source.sourceClass || sourceClassFor(source),
       rating: rating,
       status: status,
       checks: checks,
@@ -4856,7 +4967,7 @@ async function collectOnce(trigger) {
         if (!source.preview || Date.now() - new Date(source.preview.at || 0).getTime() > 7 * 24 * 3600000) {
           try { source.preview = extractSitePreview(html, source.url); } catch {}
         }
-        const isTelegramCreator = source.group === "blogger" || source.group === "creator";
+        const isTelegramCreator = source.group === "blogger" || source.group === "creator" || /^https?:\/\/t\.me\/s\//i.test(String(source.url || ""));
         const links = (isTelegramCreator
           ? extractTelegramSourcePosts(html, source.url)
           : extractArticleLinks(html, source.url)
@@ -5005,7 +5116,13 @@ async function collectOnce(trigger) {
           }
           claimed = crossChannelClaim(articleKeys);
         }
-        const id = "news_" + crypto.createHash("sha256").update(currentWorkspaceId() + "\n" + contentHash + "\n" + url).digest("hex").slice(0, 20);
+        // Scoped by workspace: the same article in two channels (e.g. Афиша Daily in
+        // food and internet) collided on news_items_pkey and failed every collection.
+        // The default workspace keeps the old ids.
+        const wsIdForHash = currentWorkspaceId();
+        const id = "news_" + (wsIdForHash && wsIdForHash !== workspaceStore.defaultWorkspaceId
+          ? crypto.createHash("sha256").update(wsIdForHash + "\n" + url + "\n" + contentHash).digest("hex").slice(0, 20)
+          : contentHash.slice(0, 20));
         // Cheap duplicate check on the source text BEFORE media preparation and the
         // writer/checker calls: an obvious repeat of a recently published post costs
         // one short classifier call instead of media + 3-6 LLM calls.
@@ -5132,6 +5249,7 @@ async function collectOnce(trigger) {
             state.stats.rewritten += 1;
           } catch (error) {
             summary.errors.push(originalTitle + ": " + error.message);
+            maybeBillingAlert(error.message);
             // A transient model error (429, timeout) must not lose the article: retried on the next ticks,
             // recorded as rewrite_error (and so seen) only after SKIP_RETRY_MAX attempts.
             if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
@@ -5172,6 +5290,7 @@ async function collectOnce(trigger) {
             state.stats.rewritten += 1;
           } catch (error) {
             summary.errors.push(originalTitle + ": " + error.message);
+            maybeBillingAlert(error.message);
             if (bumpSkipAttempt(url, "rewrite_error") < SKIP_RETRY_MAX) { saveState(); continue; }
             baseItem.status = "rewrite_error";
             baseItem.metadata.rewriteError = error.message;
@@ -5304,6 +5423,9 @@ async function collectOnce(trigger) {
             topicEntities: qc.topicEntities,
             platformVariants: qc.platformVariants,
             sourceRole: sourceRole,
+            sourceClass: sourceClassFor(source),
+            contentBucket: editorialV2Meta && editorialV2Meta.contentBucket || "",
+            channelSignals: editorialV2Meta && editorialV2Meta.channelSignals || {},
             decisionSummary: qc.decisionSummary,
             mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
             editorialV2: editorialV2Meta,
@@ -5372,6 +5494,9 @@ async function collectOnce(trigger) {
             topicEntities: qc.topicEntities,
             platformVariants: qc.platformVariants,
             sourceRole: sourceRole,
+            sourceClass: sourceClassFor(source),
+            contentBucket: editorialV2Meta && editorialV2Meta.contentBucket || "",
+            channelSignals: editorialV2Meta && editorialV2Meta.channelSignals || {},
             decisionSummary: qc.decisionSummary,
             editorialV2: editorialV2Meta
           };
@@ -5561,9 +5686,12 @@ function videoPriorityBonus(item, baseScore) {
 
 function dynamicItemScore(item) {
   const aiScore = Number(item && item.aiScore);
+  const channelId = editorialChannelId();
+  const strategy = channelStrategyScore(channelId, item, recentHistoryItems(24), item);
 
   if (Number.isFinite(aiScore)) {
-    // Order of publication follows the 100-point post rating shown in the admin.
+    // The visible post rating stays 0–100. Selection gets an additional Channel DNA
+    // layer so a story that fits this specific channel can outrank generic "important" news.
     const base = Math.max(0, Math.min(100, queueItemRating(item)));
     const quality = Number(item && item.qualityScore);
     const qualityBonus = Number.isFinite(quality) ? Math.max(-8, Math.min(8, (quality - AUTO_QUALITY_MIN) * 0.35)) : -4;
@@ -5571,13 +5699,14 @@ function dynamicItemScore(item) {
     const learning = editorialLearningBonus(item);
     const storyBonus = item && item.storyCluster && Number(item.storyCluster.sourceCount) > 1 ? 4 : 0;
     const updateBonus = item && item.storyUpdateOf ? 2 : 0;
-    return Math.max(0, Math.min(100,
+    return Math.max(0, Math.min(124,
       base +
       videoPriorityBonus(item, base) +
       qualityBonus +
       learning.bonus +
       storyBonus +
-      updateBonus -
+      updateBonus +
+      strategy.totalBonus -
       diversity.penalty
     ));
   }
@@ -5586,7 +5715,7 @@ function dynamicItemScore(item) {
   const fallback = Math.min(74, Math.max(0, 68 - ageMinutes * 0.2));
   const diversity = editorialDiversityPenalty(item);
   const learning = editorialLearningBonus(item);
-  return Math.max(0, Math.min(79, fallback + videoPriorityBonus(item, fallback) + learning.bonus - diversity.penalty));
+  return Math.max(0, Math.min(103, fallback + videoPriorityBonus(item, fallback) + learning.bonus + strategy.totalBonus - diversity.penalty));
 }
 
 function dynamicUsedQueueIds() {
@@ -5749,6 +5878,19 @@ async function prepareRussianAiSlot(time) {
   return { ok: true, slot: slotTime, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
 }
 
+function slotHasSuccessfulPublication(slotKey) {
+  return (state.history || []).some(function(item){
+    if (!item || String(item.scheduledSlot || "") !== String(slotKey || "")) return false;
+    return Boolean(item.messageId || item.telegramMessageId || item.vkPostId || item.publishedAt);
+  });
+}
+
+function emptySlotCollectorAllowed(schedulerState, slotKey) {
+  const same = String(schedulerState.lastEmptySlotKey || "") === String(slotKey || "");
+  const at = new Date(schedulerState.lastEmptySlotAttemptAt || 0).getTime();
+  return !same || !Number.isFinite(at) || Date.now() - at >= 2 * 60 * 1000;
+}
+
 async function publishDynamicSlot(kind) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
   const now = new Date();
@@ -5771,7 +5913,11 @@ async function publishDynamicSlot(kind) {
     : (publishKind === "russian-ai" ? state.russianAiScheduler : state.dynamicScheduler);
 
   if (schedulerState.lastPublishedSlot === slotKey) {
-    return { ok: true, skipped: "already_done" };
+    if (slotHasSuccessfulPublication(slotKey)) return { ok: true, skipped: "already_done" };
+    // Older builds marked an empty slot as completed. Clear that stale marker so
+    // catch-up can recover the missing publication.
+    schedulerState.lastPublishedSlot = "";
+    saveState();
   }
   if (publishKind === "blogger") {
     if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
@@ -5787,28 +5933,59 @@ async function publishDynamicSlot(kind) {
   if (!queueId) {
     const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
     let lastChanceItem = dynamicAssignBest(day, time, laneKind);
-    if (!lastChanceItem && !isCollectorRunning()) {
-      const lastChanceTrigger = publishKind === "blogger"
-        ? "blogger-slot-last-chance"
-        : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
-      await collectOnce(lastChanceTrigger);
+
+    if (!lastChanceItem && emptySlotCollectorAllowed(schedulerState, slotKey)) {
+      schedulerState.lastEmptySlotKey = slotKey;
+      schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
+      saveState();
+
+      // Fast path first: an Anthropic outage may already have left a strong,
+      // fully sourced story in the queue with qcStatus=hold. Repair at most two
+      // such items with primary OpenAI QC before doing a costly full source scan.
+      const rescue = await retryUnavailableEditorialQueueItems(2).catch(function(error){
+        return { checked: 0, repaired: 0, held: 0, skipped: 0, error: String(error && error.message || error) };
+      });
       lastChanceItem = dynamicAssignBest(day, time, laneKind);
+      if (lastChanceItem) {
+        console.log("SLOT_FAST_RESCUE " + JSON.stringify({
+          workspace: currentWorkspaceId(),
+          slot: slotKey,
+          queueId: lastChanceItem.id,
+          rescue: rescue
+        }));
+      }
+
+      if (!lastChanceItem && !isCollectorRunning()) {
+        const lastChanceTrigger = publishKind === "blogger"
+          ? "blogger-slot-last-chance"
+          : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
+        const collectorResult = await collectOnce(lastChanceTrigger);
+        lastChanceItem = dynamicAssignBest(day, time, laneKind);
+        console.log("SLOT_FULL_RESCUE " + JSON.stringify({
+          workspace: currentWorkspaceId(),
+          slot: slotKey,
+          queueId: lastChanceItem && lastChanceItem.id || "",
+          collector: collectorResult
+        }));
+      }
     }
     queueId = lastChanceItem && lastChanceItem.id || "";
   }
 
   if (!queueId) {
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = schedulerState.lastEmptySlotAttemptAt || new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "empty_slot" };
+    return { ok: true, skipped: "empty_slot_retry_pending", slot: time };
   }
 
   const item = (state.queue || []).find(function(q){ return q && q.id === queueId; });
   if (!item) {
     delete schedule.assignments[day][time];
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "missing_item" };
+    return { ok: true, skipped: "missing_item_retry_pending" };
   }
 
   const releasePublishLock = acquirePublishLock(item.id);
@@ -5817,9 +5994,10 @@ async function publishDynamicSlot(kind) {
   if (dynamicItemAgeMs(item) > dynamicItemMaxAgeMs(item)) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "stale" };
+    return { ok: true, skipped: "stale_retry_pending" };
   }
 
   if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) {
@@ -5945,6 +6123,9 @@ async function publishDynamicSlot(kind) {
       topicEntities: normalizeTopicEntities(item.topicEntities),
       platformVariants: item.platformVariants || null,
       sourceRole: item.sourceRole || sourceEditorialRole(item),
+      sourceClass: item.sourceClass || sourceClassFor(item),
+      contentBucket: item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || "",
+      channelSignals: item.channelSignals || (item.editorialV2 && item.editorialV2.channelSignals) || {},
       decisionSummary: item.decisionSummary || "",
       decisionExplanation: buildDecisionExplanation(item),
       repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
@@ -5974,6 +6155,9 @@ async function publishDynamicSlot(kind) {
     historyItem.qcStatus = item.qcStatus || historyItem.qcStatus || "";
     historyItem.topicEntities = normalizeTopicEntities(item.topicEntities || historyItem.topicEntities);
     historyItem.platformVariants = item.platformVariants || historyItem.platformVariants || null;
+    historyItem.sourceClass = item.sourceClass || sourceClassFor(item);
+    historyItem.contentBucket = item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || historyItem.contentBucket || "";
+    historyItem.channelSignals = item.channelSignals || (item.editorialV2 && item.editorialV2.channelSignals) || historyItem.channelSignals || {};
     historyItem.decisionExplanation = buildDecisionExplanation(item);
     historyItem.publicationOrigin = publishKind === "blogger"
       ? "blogger-schedule"
@@ -5982,8 +6166,12 @@ async function publishDynamicSlot(kind) {
   }
 
   delete schedule.assignments[day][time];
-  schedulerState.lastPublishedSlot = slotKey;
-  schedulerState.lastPublishedAt = publishedAt;
+  if (result.telegramPublished || result.vkPublished) {
+    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastPublishedAt = publishedAt;
+    schedulerState.lastEmptySlotKey = "";
+    schedulerState.lastEmptySlotAttemptAt = "";
+  }
 
   const mediaFailed = result.vkStatus === "media_failed";
   const stillPending = pendingAutoTargets(item);
@@ -6092,8 +6280,11 @@ async function dynamicSchedulerTick() {
   state.dynamicScheduler = state.dynamicScheduler || {};
   const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action;
   if (state.dynamicScheduler.lastTickKey === key) return;
-  state.dynamicScheduler.lastTickKey = key;
-  saveState();
+
+  // Do not persist the tick as completed before the work succeeds.
+  // A deploy/restart in the middle of the slot must be able to retry it.
+  state.dynamicScheduler.lastAttemptedTickKey = key;
+  state.dynamicScheduler.lastAttemptedTickAt = new Date().toISOString();
 
   try {
     const result = action === "prepare"
@@ -6107,10 +6298,55 @@ async function dynamicSchedulerTick() {
             : action === "russian_ai_prepare"
               ? await prepareRussianAiSlot(russianAiTime)
               : await publishDynamicSlot("russian-ai");
-    console.log("Dynamic scheduler " + action + ":", JSON.stringify(result));
+    state.dynamicScheduler.lastTickKey = key;
+    state.dynamicScheduler.lastTickCompletedAt = new Date().toISOString();
+    saveState();
+    console.log("Dynamic scheduler " + action + " " + currentWorkspaceId() + ":", JSON.stringify(result));
   } catch (error) {
-    console.error("Dynamic scheduler " + action + " failed:", error.message);
+    // Leave lastTickKey untouched: the next 30-second tick can retry inside the window.
+    console.error("Dynamic scheduler " + action + " " + currentWorkspaceId() + " failed:", error.message);
   }
+}
+
+async function catchUpCurrentRegularSlotAllWorkspaces() {
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  const minute = nowMinutes % 60;
+  // Give a slow collector/checker up to 44 minutes to recover the hourly post.
+  // 20:45 is already the preparation window for 21:00, so stop before it.
+  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 44) return;
+
+  const day = moscowDateKey(now);
+  const time = String(hour).padStart(2, "0") + ":00";
+  const slotKey = day + " " + time;
+
+  await Promise.all(workspaceStore.workspaces.map(async function(ws) {
+    if (!ws || schedulerTickRunning.has(ws.id)) return;
+    schedulerTickRunning.add(ws.id);
+    try {
+      await workspaceContext.run({ workspaceId: ws.id }, async function() {
+        state.dynamicScheduler = state.dynamicScheduler || {};
+        if (slotHasSuccessfulPublication(slotKey)) {
+          state.dynamicScheduler.lastPublishedSlot = slotKey;
+          return;
+        }
+        if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) return;
+
+        const schedule = ensureScheduleShape(state);
+        if (schedule.suppressed[day] && schedule.suppressed[day][time]) return;
+        const assignment = schedule.assignments[day] && schedule.assignments[day][time] || "";
+
+        console.warn("SCHEDULER_CATCHUP_START " + JSON.stringify({ workspace: ws.id, slot: time, queueId: assignment, minute: minute }));
+        const result = await publishDynamicSlot();
+        console.log("SCHEDULER_CATCHUP_RESULT " + JSON.stringify({ workspace: ws.id, slot: time, result: result }));
+      });
+    } catch (error) {
+      console.error("SCHEDULER_CATCHUP_FAILED " + JSON.stringify({ workspace: ws.id, slot: time, error: error.message }));
+    } finally {
+      schedulerTickRunning.delete(ws.id);
+    }
+  }));
 }
 
 async function dynamicSchedulerTickAllWorkspaces() {
@@ -6131,10 +6367,14 @@ async function dynamicSchedulerTickAllWorkspaces() {
 function startCollectorScheduler() {
   if (!COLLECTOR_ENABLED || collectorTimer) return;
   collectorTimer = setInterval(function() {
-    dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
+    dynamicSchedulerTickAllWorkspaces()
+      .then(function(){ return catchUpCurrentRegularSlotAllWorkspaces(); })
+      .catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });
   }, 30000);
-  dynamicSchedulerTickAllWorkspaces().catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
-  console.log("Dynamic scheduler: regular hourly + autoblogger slots + Russian AI slots 09:30/11:30/13:30/16:30/19:30/22:30 Moscow");
+  dynamicSchedulerTickAllWorkspaces()
+    .then(function(){ return catchUpCurrentRegularSlotAllWorkspaces(); })
+    .catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
+  console.log("Dynamic scheduler: regular hourly + restart catch-up + autoblogger slots + Russian AI slots 09:30/11:30/13:30/16:30/19:30/22:30 Moscow");
 }
 
 function sendJson(res, status, payload, headers) {
@@ -6550,6 +6790,79 @@ async function telegramApi(method, payload) {
   }
 }
 
+async function ensureTelegramPublishTarget(workspace, repair) {
+  const ws = workspace || currentWorkspace();
+  if (!ws) throw new Error("Telegram workspace is missing");
+  const configured = String(ws.telegramChannel || "").trim();
+  if (!configured) throw new Error("Telegram channel is not configured for this account");
+
+  let chat = await telegramApi("getChat", { chat_id: configured });
+  let repaired = false;
+
+  // If the configured username points to a discussion group, follow its linked
+  // broadcast channel instead of silently publishing into the wrong chat.
+  if (chat && chat.type !== "channel" && chat.linked_chat_id != null) {
+    try {
+      const linked = await telegramApi("getChat", { chat_id: chat.linked_chat_id });
+      if (linked && linked.type === "channel") {
+        chat = linked;
+        if (repair) {
+          ws.telegramChannel = linked.username ? ("@" + linked.username) : String(linked.id);
+          if (linked.username) {
+            ws.telegramPublicUsername = String(linked.username).replace(/^@/, "");
+            ws.slug = ws.telegramPublicUsername;
+          }
+          ws.updatedAt = new Date().toISOString();
+          persistWorkspaceStore();
+          repaired = true;
+        }
+      }
+    } catch {}
+  }
+
+  if (!chat || chat.type !== "channel") {
+    throw new Error("Telegram цель не является каналом: " + String(chat && chat.type || "unknown"));
+  }
+
+  const actualUsername = String(chat.username || "").replace(/^@/, "").toLowerCase();
+  const expectedUsername = String(ws.telegramPublicUsername || ws.slug || "").replace(/^@/, "").toLowerCase();
+
+  if (repair && actualUsername && expectedUsername !== actualUsername) {
+    ws.telegramPublicUsername = actualUsername;
+    ws.slug = actualUsername;
+    ws.telegramChannel = "@" + actualUsername;
+    ws.updatedAt = new Date().toISOString();
+    persistWorkspaceStore();
+    repaired = true;
+  }
+
+  return {
+    chat: chat,
+    chatId: chat.id,
+    username: actualUsername,
+    title: String(chat.title || ""),
+    repaired: repaired
+  };
+}
+
+function assertTelegramPublishResult(message, target) {
+  const chat = message && message.chat;
+  if (!chat || chat.id == null) throw new Error("Telegram не вернул чат опубликованного сообщения");
+  if (!target || target.chatId == null) throw new Error("Telegram target verification unavailable");
+  if (String(chat.id) !== String(target.chatId)) {
+    throw new Error("Telegram опубликовал сообщение не в тот канал");
+  }
+  if (chat.type !== "channel") {
+    throw new Error("Telegram публикация ушла не в канал: " + String(chat.type || "unknown"));
+  }
+  const expected = String(target.username || "").toLowerCase();
+  const actual = String(chat.username || "").replace(/^@/, "").toLowerCase();
+  if (expected && actual && expected !== actual) {
+    throw new Error("Telegram username не совпал после публикации");
+  }
+  return message;
+}
+
 function telegramUploadMeta(rawUrl, fallbackKind) {
   const value = String(rawUrl || "").trim();
   let ext = fallbackKind === "video" ? "mp4" : "jpg";
@@ -6664,8 +6977,8 @@ async function telegramCoverFallback(post, failingUrl, idPrefix) {
 }
 
 async function sendTelegramPost(post) {
-  const telegramChannel = currentTelegramChannel();
-  if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
+  const target = await ensureTelegramPublishTarget(currentWorkspace(), true);
+  const telegramChannel = target.chatId;
   const html = formatTelegramPost(post);
   const mediaPackUrls = Array.from(new Set((Array.isArray(post.mediaPackUrls) ? post.mediaPackUrls : [])
     .map(function(url){ return String(url || "").trim(); })
@@ -6703,7 +7016,7 @@ async function sendTelegramPost(post) {
       if (Array.isArray(messages) && messages.length) {
         const first = messages[0];
         first.media_group_message_ids = messages.map(function(message){ return message.message_id; });
-        return first;
+        return assertTelegramPublishResult(first, target);
       }
     } catch (error) {
       console.warn("sendMediaGroup failed, falling back to one image:", error.message);
@@ -6718,12 +7031,12 @@ async function sendTelegramPost(post) {
 
   if (videoUrl) {
     try {
-      return await telegramMediaApi("sendVideo", {
+      return assertTelegramPublishResult(await telegramMediaApi("sendVideo", {
         chat_id: telegramChannel,
         caption: telegramCaptionFits(html) ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
         parse_mode: "HTML",
         supports_streaming: true
-      }, "video", videoUrl, "video");
+      }, "video", videoUrl, "video"), target);
     } catch (error) {
       console.warn("sendVideo failed:", error.message);
       if (isTelegramFatalError(error)) throw error;
@@ -6743,11 +7056,11 @@ async function sendTelegramPost(post) {
 
   if (imageUrl && telegramCaptionFits(html)) {
     try {
-      return await telegramMediaApi("sendPhoto", {
+      return assertTelegramPublishResult(await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
         caption: html,
         parse_mode: "HTML"
-      }, "photo", imageUrl, "image");
+      }, "photo", imageUrl, "image"), target);
     } catch (error) {
       console.warn("sendPhoto failed:", error.message);
       // Chat rejected us / rate limit / bad markup: a new cover cannot fix it, do not pay for one.
@@ -6756,11 +7069,11 @@ async function sendTelegramPost(post) {
         try {
           const generatedFallback = await telegramCoverFallback(post, imageUrl, "telegram_photo_fallback");
           imageUrl = generatedFallback.url;
-          return await telegramMediaApi("sendPhoto", {
+          return assertTelegramPublishResult(await telegramMediaApi("sendPhoto", {
             chat_id: telegramChannel,
             caption: html,
             parse_mode: "HTML"
-          }, "photo", imageUrl, "image");
+          }, "photo", imageUrl, "image"), target);
         } catch (fallbackError) {
           console.warn("Telegram generated photo fallback failed:", fallbackError.message);
           if (MEDIA_REQUIRED) throw fallbackError;
@@ -6798,20 +7111,20 @@ async function sendTelegramPost(post) {
         disable_web_page_preview: true
       });
     }
-    return photo;
+    return assertTelegramPublishResult(photo, target);
   }
 
   throw new Error("Публикация запрещена: медиа не подготовлено");
 }
 
 async function sendTelegram(text) {
-  const telegramChannel = currentTelegramChannel();
-  if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
-  return telegramApi("sendMessage", {
-    chat_id: telegramChannel,
+  const target = await ensureTelegramPublishTarget(currentWorkspace(), true);
+  const result = await telegramApi("sendMessage", {
+    chat_id: target.chatId,
     text: String(text || ""),
     disable_web_page_preview: true
   });
+  return assertTelegramPublishResult(result, target);
 }
 
 async function discoverTelegramAlertChat() {
@@ -8139,6 +8452,406 @@ async function buildPlatformAnalytics(force) {
 }
 
 
+async function fetchTelegramSubscriberCountLight(workspace) {
+  const ws = workspace || currentWorkspace();
+  const chatId = String(ws && ws.telegramChannel || "").trim();
+  if (!chatId) return { available: false, subscribers: null, error: "Telegram-канал не настроен" };
+
+  const probe = await telegramProbe("getChatMemberCount", { chat_id: chatId });
+  if (probe.ok && Number.isFinite(Number(probe.result))) {
+    return { available: true, subscribers: Number(probe.result), source: "bot_api", error: "" };
+  }
+
+  const username = String(ws && (ws.telegramPublicUsername || ws.slug) || "").replace(/^@/, "").trim();
+  if (!username) return { available: false, subscribers: null, error: probe.error || "Публичный username не настроен" };
+  try {
+    const response = await fetch("https://t.me/s/" + encodeURIComponent(username), {
+      headers: {
+        "user-agent": "Mozilla/5.0 (compatible; NewsFactoryGrowth/1.0; +https://t.me/" + username + ")",
+        "accept-language": "ru,en;q=0.8"
+      },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error("Telegram HTTP " + response.status);
+    const parsed = parseTelegramPreview(await response.text());
+    if (parsed.subscribers != null && Number.isFinite(Number(parsed.subscribers))) {
+      return { available: true, subscribers: Number(parsed.subscribers), source: "public_web_preview", error: "" };
+    }
+    return { available: false, subscribers: null, error: probe.error || "Telegram не вернул число подписчиков" };
+  } catch (error) {
+    return { available: false, subscribers: null, error: probe.error || String(error && error.message || error) };
+  }
+}
+
+async function recordPromotionSnapshot(workspaceId, platform, totals) {
+  if (!db || !dbReady || !workspaceId || !platform) return false;
+  const t = totals || {};
+  const subscribers = Number(t.subscribers);
+  if (!Number.isFinite(subscribers) || subscribers < 0) return false;
+  try {
+    const recent = await db.query(
+      "SELECT subscribers, recorded_at FROM promotion_snapshots WHERE workspace_id=$1 AND platform=$2 ORDER BY recorded_at DESC LIMIT 1",
+      [workspaceId, platform]
+    );
+    const last = recent.rows[0];
+    if (last) {
+      const age = Date.now() - new Date(last.recorded_at).getTime();
+      if (age < 45 * 60 * 1000 && Number(last.subscribers) === subscribers) return false;
+    }
+    await db.query(
+      "INSERT INTO promotion_snapshots(workspace_id,platform,subscribers,views,engagement_rate) VALUES($1,$2,$3,$4,$5)",
+      [
+        workspaceId,
+        platform,
+        subscribers,
+        Math.max(0, Number(t.views || 0) || 0),
+        Number.isFinite(Number(t.engagementRate)) ? Number(t.engagementRate) : null
+      ]
+    );
+    return true;
+  } catch (error) {
+    console.warn("Promotion snapshot failed " + workspaceId + "/" + platform + ":", error.message);
+    return false;
+  }
+}
+
+async function promotionBaselineMaps(workspaceIds) {
+  const ids = (workspaceIds || []).filter(Boolean);
+  const out = { day: new Map(), week: new Map(), month: new Map(), first: new Map() };
+  if (!db || !dbReady || !ids.length) return out;
+  try {
+    const r = await db.query(
+      "SELECT DISTINCT ON (workspace_id, platform) workspace_id, platform, subscribers, recorded_at " +
+      "FROM promotion_snapshots WHERE workspace_id = ANY($1::text[]) ORDER BY workspace_id, platform, recorded_at ASC",
+      [ids]
+    );
+    for (const row of r.rows) out.first.set(row.workspace_id + ":" + row.platform, { subscribers: Number(row.subscribers), recordedAt: row.recorded_at });
+  } catch (error) {
+    console.warn("Promotion first snapshot failed:", error.message);
+  }
+
+  for (const entry of [["day",1],["week",7],["month",30]]) {
+    const key = entry[0], days = entry[1];
+    try {
+      const r = await db.query(
+        "SELECT DISTINCT ON (workspace_id, platform) workspace_id, platform, subscribers, recorded_at " +
+        "FROM promotion_snapshots WHERE workspace_id = ANY($1::text[]) " +
+        "AND recorded_at <= NOW() - ($2::int * INTERVAL '1 day') " +
+        "ORDER BY workspace_id, platform, recorded_at DESC",
+        [ids, days]
+      );
+      for (const row of r.rows) out[key].set(row.workspace_id + ":" + row.platform, { subscribers: Number(row.subscribers), recordedAt: row.recorded_at });
+    } catch (error) {
+      console.warn("Promotion baseline " + key + " failed:", error.message);
+    }
+  }
+  return out;
+}
+
+function promotionDelta(current, baseline) {
+  const now = Number(current);
+  if (!Number.isFinite(now) || !baseline || !Number.isFinite(Number(baseline.subscribers))) return null;
+  return now - Number(baseline.subscribers);
+}
+
+async function promotionCampaignReport(workspaceId) {
+  const empty = { spendRub: 0, attributedSubscribers: 0, clicks: 0, costPerSubscriber: null, active: 0, campaigns: [] };
+  if (!db || !dbReady) return empty;
+  try {
+    const [summary, list] = await Promise.all([
+      db.query(
+        "SELECT COALESCE(SUM(spend_rub),0)::float8 AS spend_rub, COALESCE(SUM(attributed_subscribers),0)::int AS subscribers, " +
+        "COALESCE(SUM(clicks),0)::int AS clicks, COUNT(*) FILTER (WHERE status='active')::int AS active " +
+        "FROM promotion_campaigns WHERE workspace_id=$1",
+        [workspaceId]
+      ),
+      db.query(
+        "SELECT id,name,platform,source_type,source_name,spend_rub::float8 AS spend_rub,clicks,attributed_subscribers,status,started_at,ended_at " +
+        "FROM promotion_campaigns WHERE workspace_id=$1 ORDER BY started_at DESC LIMIT 30",
+        [workspaceId]
+      )
+    ]);
+    const s = summary.rows[0] || {};
+    const spendRub = Number(s.spend_rub || 0);
+    const subscribers = Number(s.subscribers || 0);
+    return {
+      spendRub: spendRub,
+      attributedSubscribers: subscribers,
+      clicks: Number(s.clicks || 0),
+      costPerSubscriber: subscribers > 0 ? Number((spendRub / subscribers).toFixed(2)) : null,
+      active: Number(s.active || 0),
+      campaigns: list.rows.map(function(row){
+        return {
+          id: row.id,
+          name: row.name,
+          platform: row.platform,
+          sourceType: row.source_type,
+          sourceName: row.source_name,
+          spendRub: Number(row.spend_rub || 0),
+          clicks: Number(row.clicks || 0),
+          attributedSubscribers: Number(row.attributed_subscribers || 0),
+          status: row.status,
+          startedAt: row.started_at,
+          endedAt: row.ended_at
+        };
+      })
+    };
+  } catch (error) {
+    console.warn("Promotion campaigns report failed:", error.message);
+    return empty;
+  }
+}
+
+function promotionTopPosts(analytics) {
+  const rows = [];
+  const tg = analytics && analytics.telegram || {};
+  for (const p of (tg.posts || [])) {
+    const views = Number(p.views || 0);
+    const interactions = Number(p.reactions || 0) + Number(p.comments || 0);
+    rows.push({
+      platform: "telegram",
+      title: p.title || ("Telegram #" + (p.messageId || "")),
+      url: p.url || "",
+      views: views,
+      interactions: interactions,
+      engagementRate: views > 0 ? Number(((interactions / views) * 100).toFixed(2)) : 0,
+      publishedAt: p.publishedAt || ""
+    });
+  }
+  const vk = analytics && analytics.vk || {};
+  for (const p of (vk.posts || [])) {
+    const views = Number(p.views || 0);
+    const interactions = Number(p.likes || 0) + Number(p.comments || 0) + Number(p.reposts || 0);
+    rows.push({
+      platform: "vk",
+      title: p.title || ("VK #" + (p.postId || "")),
+      url: p.url || "",
+      views: views,
+      interactions: interactions,
+      engagementRate: views > 0 ? Number(((interactions / views) * 100).toFixed(2)) : 0,
+      publishedAt: p.publishedAt || ""
+    });
+  }
+  rows.sort(function(a,b){
+    if (b.views !== a.views) return b.views - a.views;
+    return b.engagementRate - a.engagementRate;
+  });
+  return rows.slice(0, 8);
+}
+
+async function buildPromotionReport(force) {
+  const selectedWorkspaceId = currentWorkspaceId();
+  const allWorkspaces = workspaceStore.workspaces.slice();
+  const rows = await Promise.all(allWorkspaces.map(function(ws){
+    return workspaceContext.run({ workspaceId: ws.id }, async function(){
+      const tg = await fetchTelegramSubscriberCountLight(ws);
+      let vkSubscribers = null;
+      let vkAvailable = false;
+      if (workspaceVkPublishingAllowed(ws)) {
+        try {
+          const vk = await fetchVkAnalytics();
+          if (vk && vk.totals && Number.isFinite(Number(vk.totals.subscribers))) {
+            vkSubscribers = Number(vk.totals.subscribers);
+            vkAvailable = true;
+            await recordPromotionSnapshot(ws.id, "vk", vk.totals);
+          }
+        } catch {}
+      }
+      if (tg.available) await recordPromotionSnapshot(ws.id, "telegram", { subscribers: tg.subscribers });
+      return {
+        id: ws.id,
+        name: ws.name,
+        handle: ws.telegramPublicUsername ? ("@" + String(ws.telegramPublicUsername).replace(/^@/,"")) : String(ws.telegramChannel || ""),
+        avatarUrl: ws.avatarUrl || "",
+        telegramSubscribers: tg.available ? tg.subscribers : null,
+        telegramAvailable: Boolean(tg.available),
+        telegramError: tg.error || "",
+        vkSubscribers: vkSubscribers,
+        vkAvailable: vkAvailable,
+        published: Number(ws.state && ws.state.stats && ws.state.stats.published || 0)
+      };
+    });
+  }));
+
+  const baselines = await promotionBaselineMaps(allWorkspaces.map(function(ws){ return ws.id; }));
+  rows.forEach(function(row){
+    const key = row.id + ":telegram";
+    row.growth = {
+      day: promotionDelta(row.telegramSubscribers, baselines.day.get(key)),
+      week: promotionDelta(row.telegramSubscribers, baselines.week.get(key)),
+      month: promotionDelta(row.telegramSubscribers, baselines.month.get(key))
+    };
+    const first = baselines.first.get(key);
+    row.sinceStart = first ? { delta: promotionDelta(row.telegramSubscribers, first), since: first.recordedAt } : null;
+    row.totalSubscribers = (Number.isFinite(Number(row.telegramSubscribers)) ? Number(row.telegramSubscribers) : 0) +
+      (Number.isFinite(Number(row.vkSubscribers)) ? Number(row.vkSubscribers) : 0);
+  });
+
+  let details = { analytics: { telegram: {}, vk: {} }, topPosts: [] };
+  await workspaceContext.run({ workspaceId: selectedWorkspaceId }, async function(){
+    const analytics = await buildPlatformAnalytics(Boolean(force));
+    details.analytics = analytics;
+    details.topPosts = promotionTopPosts(analytics);
+    if (analytics.telegram && analytics.telegram.totals) await recordPromotionSnapshot(selectedWorkspaceId, "telegram", analytics.telegram.totals);
+    if (analytics.vk && analytics.vk.totals && Number.isFinite(Number(analytics.vk.totals.subscribers))) {
+      await recordPromotionSnapshot(selectedWorkspaceId, "vk", analytics.vk.totals);
+    }
+  });
+
+  const refreshedBaselines = await promotionBaselineMaps([selectedWorkspaceId]);
+  const currentRow = rows.find(function(row){ return row.id === selectedWorkspaceId; }) || rows[0] || {};
+  const currentTg = Number.isFinite(Number(currentRow.telegramSubscribers)) ? Number(currentRow.telegramSubscribers) : null;
+  const currentVk = Number.isFinite(Number(currentRow.vkSubscribers)) ? Number(currentRow.vkSubscribers) : null;
+  const sumGrowth = function(period) {
+    let found = false, total = 0;
+    const tgBase = refreshedBaselines[period].get(selectedWorkspaceId + ":telegram");
+    const vkBase = refreshedBaselines[period].get(selectedWorkspaceId + ":vk");
+    if (currentTg != null && tgBase) { total += currentTg - Number(tgBase.subscribers); found = true; }
+    if (currentVk != null && vkBase) { total += currentVk - Number(vkBase.subscribers); found = true; }
+    return found ? total : null;
+  };
+
+  const vkGrowth = {
+    day: promotionDelta(currentVk, refreshedBaselines.day.get(selectedWorkspaceId + ":vk")),
+    week: promotionDelta(currentVk, refreshedBaselines.week.get(selectedWorkspaceId + ":vk")),
+    month: promotionDelta(currentVk, refreshedBaselines.month.get(selectedWorkspaceId + ":vk"))
+  };
+
+  const campaigns = await promotionCampaignReport(selectedWorkspaceId);
+  const networkTotalSubscribers = rows.reduce(function(sum,row){ return sum + Number(row.totalSubscribers || 0); }, 0);
+  const networkWeekGrowthValues = rows.map(function(row){ return row.growth && row.growth.week; }).filter(function(v){ return v != null; });
+  const networkGrowth = function(period) {
+    const values = rows.map(function(row){ return row.growth && row.growth[period]; }).filter(function(v){ return v != null; });
+    return values.length ? values.reduce(function(a,b){ return a + b; }, 0) : null;
+  };
+  const sinceRows = rows.filter(function(row){ return row.sinceStart && row.sinceStart.delta != null; });
+  const networkSince = sinceRows.length ? {
+    delta: sinceRows.reduce(function(sum,row){ return sum + row.sinceStart.delta; }, 0),
+    since: sinceRows.map(function(row){ return row.sinceStart.since; }).sort()[0]
+  } : null;
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    tracking: {
+      dbReady: dbReady,
+      note: "Рост считается по автоматическим снимкам аудитории. Первые дельты появятся после накопления истории."
+    },
+    current: {
+      id: currentRow.id || selectedWorkspaceId,
+      name: currentRow.name || (currentWorkspace() && currentWorkspace().name) || "Канал",
+      handle: currentRow.handle || "",
+      telegramSubscribers: currentTg,
+      vkSubscribers: currentVk,
+      totalSubscribers: Number(currentRow.totalSubscribers || 0),
+      growth: { day: sumGrowth("day"), week: sumGrowth("week"), month: sumGrowth("month") },
+      telegramGrowth: currentRow.growth || { day: null, week: null, month: null },
+      sinceStart: currentRow.sinceStart || null,
+      vkAvailable: Boolean(currentRow.vkAvailable),
+      vkGrowth: vkGrowth,
+      campaignSummary: campaigns,
+      topPosts: details.topPosts,
+      analytics: details.analytics
+    },
+    network: {
+      channels: rows,
+      totalSubscribers: networkTotalSubscribers,
+      weekGrowth: networkWeekGrowthValues.length ? networkWeekGrowthValues.reduce(function(a,b){ return a + b; }, 0) : null,
+      growth: { day: networkGrowth("day"), week: networkGrowth("week"), month: networkGrowth("month") },
+      sinceStart: networkSince,
+      vkConnected: rows.some(function(row){ return row.vkAvailable; }),
+      trackedChannels: rows.filter(function(row){ return row.telegramAvailable || row.vkAvailable; }).length
+    }
+  };
+}
+
+async function generatePromotionCreative() {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY не настроен");
+  const ws = currentWorkspace();
+  const recent = (state.history || []).slice(0, 12).map(function(h){
+    return {
+      title: String(h && h.title || "").slice(0, 180),
+      text: String(h && h.text || "").replace(/\s+/g," ").slice(0, 450),
+      views: Number(h && h.views || 0)
+    };
+  }).filter(function(x){ return x.title || x.text; });
+  const prompt = [
+    "Ты growth-редактор News Factory.",
+    "Нужно подготовить рекламный креатив для привлечения живых подписчиков в Telegram-канал «" + String(ws.name || "News Factory") + "».",
+    "Не выдумывай цифры, достижения, эксклюзивность или факты, которых нет во входных данных.",
+    "Пиши по-русски, живо и коротко, без канцелярита.",
+    "Нужны четыре поля:",
+    "headline — короткий рекламный заголовок;",
+    "telegram_ad — рекламный пост на 350–550 знаков;",
+    "short_video_hook — хук для Reels/Shorts на 1–2 предложения;",
+    "cta — короткий призыв подписаться.",
+    'Верни строго JSON без markdown: {"headline":"...","telegram_ad":"...","short_video_hook":"...","cta":"..."}. ',
+    "",
+    "Недавние темы канала:",
+    JSON.stringify(recent.slice(0, 6))
+  ].join("\n");
+
+  const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+  for (const model of candidates) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 900, text: { format: { type: "json_object" } } }),
+        signal: AbortSignal.timeout(45000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) { lastError = data && data.error && data.error.message || ("HTTP " + response.status); continue; }
+      recordOpenAIResponseUsage(model, "promotion_creative", data, "responses", {});
+      const raw = extractOpenAIText(data).replace(/^\s*```json\s*/i,"").replace(/\s*```\s*$/,"").trim();
+      const parsed = JSON.parse(raw);
+      return {
+        model: model,
+        headline: String(parsed.headline || "").trim(),
+        telegramAd: String(parsed.telegram_ad || "").trim(),
+        shortVideoHook: String(parsed.short_video_hook || "").trim(),
+        cta: String(parsed.cta || "").trim()
+      };
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+  throw new Error(lastError || "Не удалось создать рекламный креатив");
+}
+
+let promotionSnapshotTimer = null;
+async function refreshPromotionSnapshotsAllWorkspaces() {
+  if (!db || !dbReady) return { ok: false, skipped: "db_unavailable" };
+  let recorded = 0;
+  for (const ws of workspaceStore.workspaces) {
+    await workspaceContext.run({ workspaceId: ws.id }, async function(){
+      const tg = await fetchTelegramSubscriberCountLight(ws);
+      if (tg.available && await recordPromotionSnapshot(ws.id, "telegram", { subscribers: tg.subscribers })) recorded += 1;
+      if (workspaceVkPublishingAllowed(ws)) {
+        try {
+          const vk = await fetchVkAnalytics();
+          if (vk && vk.totals && Number.isFinite(Number(vk.totals.subscribers))) {
+            if (await recordPromotionSnapshot(ws.id, "vk", vk.totals)) recorded += 1;
+          }
+        } catch {}
+      }
+    });
+  }
+  return { ok: true, recorded: recorded };
+}
+
+function startPromotionSnapshotMonitor() {
+  if (promotionSnapshotTimer) return;
+  setTimeout(function(){
+    refreshPromotionSnapshotsAllWorkspaces().catch(function(error){ console.warn("Promotion snapshot startup failed:", error.message); });
+  }, 12000);
+  promotionSnapshotTimer = setInterval(function(){
+    refreshPromotionSnapshotsAllWorkspaces().catch(function(error){ console.warn("Promotion snapshot refresh failed:", error.message); });
+  }, 60 * 60 * 1000);
+}
+
+
 
 function addLearningSample(map, key, value) {
   const k = String(key || "").trim().toLowerCase();
@@ -8628,6 +9341,7 @@ function editorialRecentPosts(limit) {
         ending_type: v2.endingType || "",
         title_emoji: v2.titleEmoji || "",
         crosspromo_target: v2.crosspromoTarget || null,
+        content_bucket: v2.contentBucket || item.contentBucket || "",
         entities: normalizeTopicEntities(item.topicEntities).slice(0, 4),
         audience: item.performanceScore == null ? undefined : (item.performanceScore >= 2 ? "выше среднего" : (item.performanceScore <= -2 ? "ниже среднего" : "средне"))
       };
@@ -8843,7 +9557,8 @@ async function runEditorialV2(sources, options) {
     network_recent: editorialNetworkRecent(),
     network_channels: editorialNetworkChannels(),
     registry: editorialRegistryForSources(sourceText),
-    has_photo: Boolean(opts.hasPhoto)
+    has_photo: Boolean(opts.hasPhoto),
+    channel_strategy: channelStrategy(channelId)
   };
   const formatStats = editorialFormatStats();
   if (formatStats) request.format_stats = formatStats;
@@ -8886,6 +9601,8 @@ async function runEditorialV2(sources, options) {
     endingType: post.endingType || "",
     titleEmoji: post.titleEmoji || "",
     crosspromoTarget: post.crosspromoTarget || null,
+    contentBucket: post.contentBucket || "",
+    channelSignals: post.channelSignals || {},
     album: Boolean(post.album),
     legalFlags: post.legalFlags || [],
     conflicts: post.conflicts || null,
@@ -8893,11 +9610,14 @@ async function runEditorialV2(sources, options) {
     rounds: outcome.rounds || 0,
     writerModel: outcome.writerModel || "",
     checkers: checkerModels,
+    degradedQc: Boolean(outcome.degraded),
+    failedProviders: outcome.failedProviders || [],
     errors: (outcome.errors || []).slice(0, 12),
     log: outcome.log || [],
     checkedAt: new Date().toISOString()
   };
 
+  (outcome.checkers || []).forEach(function(c){ if (c && c.failed) maybeBillingAlert(c.error); });
   // One structured line per editorial decision so the pipeline can be monitored from
   // Railway logs. No secrets, no post bodies.
   console.log("EDITORIAL_V2 " + JSON.stringify({
@@ -8906,8 +9626,11 @@ async function runEditorialV2(sources, options) {
     status: outcome.status,
     verdict: outcome.verdict,
     importance: meta.importance,
+    contentBucket: meta.contentBucket || undefined,
     rounds: meta.rounds,
     checkers: checkerModels,
+    degradedQc: Boolean(outcome.degraded),
+    failedProviders: outcome.failedProviders || [],
     errors: (outcome.errors || []).length,
     skipReason: meta.skipReason ? String(meta.skipReason).slice(0, 120) : undefined,
     checkerErrors: (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + ": " + String(c.error || "").slice(0, 160); }),
@@ -8923,9 +9646,10 @@ async function runEditorialV2(sources, options) {
     issues.unshift("Проверка недоступна: " + (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + " — " + String(c.error || "").slice(0, 120); }).join("; "));
   }
   const approved = outcome.status === "approved";
+  const degradedNote = outcome.degraded ? " · резервный режим: недоступен " + (outcome.failedProviders || []).join(", ") : "";
   const decision = approved
-    ? "Пост прошёл проверку: " + checkerModels.join(", ") + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
-    : "Пост не прошёл проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "одна из нейросетей-проверщиков недоступна", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
+    ? "Пост прошёл проверку: " + checkerModels.join(", ") + degradedNote + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
+    : "Пост не прошёл проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "основной проверщик недоступен", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
 
   return {
     skip: false,
@@ -8959,6 +9683,289 @@ async function runEditorialV2(sources, options) {
       model: checkerModels.join(", ")
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Editorial QA: production dry-run for all channel profiles. It never publishes.
+// The run is asynchronous because a full network audit can take several minutes.
+// ---------------------------------------------------------------------------
+
+let editorialQaState = {
+  status: "idle",
+  startedAt: "",
+  finishedAt: "",
+  progress: { done: 0, total: 0 },
+  summary: null,
+  channels: [],
+  error: ""
+};
+// The last QA result survives restarts (deploys happen several times a day).
+const EDITORIAL_QA_FILE = path.join(DATA_DIR, "editorial-qa.json");
+try {
+  if (fs.existsSync(EDITORIAL_QA_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(EDITORIAL_QA_FILE, "utf8"));
+    if (saved && typeof saved === "object" && Array.isArray(saved.channels)) {
+      editorialQaState = Object.assign({}, editorialQaState, saved);
+      if (editorialQaState.status === "running") {
+        editorialQaState.status = "error";
+        editorialQaState.error = "проверка прервалась из-за перезапуска сервера";
+      }
+    }
+  }
+} catch (error) { console.warn("Editorial QA state load failed:", error.message); }
+function saveEditorialQaState() {
+  try { ensureDataDir(); fs.writeFileSync(EDITORIAL_QA_FILE, JSON.stringify(editorialQaState), "utf8"); }
+  catch (error) { console.warn("Editorial QA state save failed:", error.message); }
+}
+
+function qaStyleCheck(channelId, title, body) {
+  const strategy = channelStrategy(channelId);
+  const text = (String(title || "") + " " + String(body || "")).toLowerCase();
+  const formal = [
+    /согласно пресс-релизу/g,
+    /в пресс-службе (?:сообщили|заявили)/g,
+    /компания сообщила о том, что/g,
+    /как отмечается в сообщении/g,
+    /по данным пресс-службы/g
+  ];
+  let formalHits = 0;
+  formal.forEach(function(re){ formalHits += (text.match(re) || []).length; });
+
+  if (strategy.type === "blogger") {
+    return {
+      pass: formalHits === 0,
+      note: formalHits ? "Есть канцелярская/пресс-релизная подача" : "Блогерский профиль без пресс-релизных маркеров",
+      formalHits
+    };
+  }
+  if (strategy.type === "trends") {
+    return {
+      pass: formalHits <= 1,
+      note: formalHits > 1 ? "Слишком официальная подача для трендового канала" : "Трендовый профиль без перегруза канцеляритом",
+      formalHits
+    };
+  }
+  return {
+    pass: formalHits <= 2,
+    note: formalHits > 2 ? "Слишком много пресс-релизных формулировок" : "Стиль соответствует новостному профилю",
+    formalHits
+  };
+}
+
+function publicationCoverageSnapshot() {
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  const day = moscowDateKey(now);
+  const time = String(hour).padStart(2, "0") + ":00";
+  const slotKey = day + " " + time;
+  const channels = workspaceStore.workspaces.map(function(ws){
+    const history = ws && ws.state && Array.isArray(ws.state.history) ? ws.state.history : [];
+    const hit = history.find(function(item){
+      return item && String(item.scheduledSlot || "") === slotKey && Boolean(item.messageId || item.telegramMessageId || item.vkPostId || item.publishedAt);
+    });
+    const assignment = ws && ws.state && ws.state.schedule && ws.state.schedule.assignments &&
+      ws.state.schedule.assignments[day] && ws.state.schedule.assignments[day][time] || "";
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      channelId: resolveChannelId(ws),
+      telegram: ws.telegramPublicUsername || String(ws.telegramChannel || "").replace(/^@/, ""),
+      published: Boolean(hit),
+      // Channels in manual or paused mode are not expected to post in the slot.
+      expected: Boolean(workspaceSummary(ws).autoPublish),
+      title: hit && hit.title || "",
+      publishedAt: hit && hit.publishedAt || "",
+      queueId: assignment || ""
+    };
+  });
+  return {
+    slot: slotKey,
+    time: time,
+    minute: nowMinutes % 60,
+    published: channels.filter(function(x){ return x.published; }).length,
+    publishedExpected: channels.filter(function(x){ return x.published && x.expected; }).length,
+    total: channels.length,
+    expected: channels.filter(function(x){ return x.expected; }).length,
+    missing: channels.filter(function(x){ return !x.published; }).map(function(x){ return x.workspaceId; }),
+    channels
+  };
+}
+
+function qaSourceClassCounts() {
+  const counts = { OFFICIAL:0, MEDIA:0, CREATOR:0, COMMUNITY:0, SOCIAL:0 };
+  (state.sources || []).forEach(function(source){
+    if (!source || !source.enabled) return;
+    const cls = source.sourceClass || sourceClassFor(source);
+    if (Object.prototype.hasOwnProperty.call(counts, cls)) counts[cls] += 1;
+  });
+  return counts;
+}
+
+function qaRecentMix(channelId) {
+  const strategy = channelStrategy(channelId);
+  const mix = strategy.mix || {};
+  const recent = (state.history || []).filter(function(item){
+    return item && !item.isDigest && item.publicationOrigin !== "digest";
+  }).slice(0, 24);
+  const counts = {};
+  Object.keys(mix).forEach(function(k){ counts[k] = 0; });
+  recent.forEach(function(item){
+    const bucket = item.contentBucket || item.editorialV2 && item.editorialV2.contentBucket || "";
+    if (Object.prototype.hasOwnProperty.call(counts, bucket)) counts[bucket] += 1;
+  });
+  return { sampleSize: recent.length, counts, target: mix };
+}
+
+function qaScoreChecks(checks) {
+  const required = checks.filter(function(x){ return x.required !== false; });
+  const passed = required.filter(function(x){ return x.pass === true; }).length;
+  const percent = required.length ? Math.round(passed / required.length * 100) : 0;
+  return { passed, total: required.length, percent };
+}
+
+async function runEditorialQaForWorkspace(ws) {
+  return workspaceContext.run({ workspaceId: ws.id }, async function(){
+    const channelId = resolveChannelId(ws);
+    const strategy = channelStrategy(channelId);
+    const sourceClasses = qaSourceClassCounts();
+    const recentMix = qaRecentMix(channelId);
+    const sourceClassVariety = Object.values(sourceClasses).filter(function(n){ return n > 0; }).length;
+
+    const candidates = (state.queue || []).filter(function(item){
+      return item && String(item.sourceOriginalText || "").trim() && !item.telegramPublished && item.status !== "media_failed";
+    }).sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); });
+    const candidate = candidates[0] || null;
+
+    const checks = [
+      { key:"profile", label:"Channel DNA", pass:Boolean(channelId && Object.keys(strategy.mix || {}).length), note:channelId + " · " + strategy.type },
+      { key:"sources", label:"Классы источников", pass:sourceClassVariety >= 2, note:sourceClassVariety + " активных классов" },
+      { key:"candidate", label:"Контрольный материал", pass:Boolean(candidate), note:candidate ? String(candidate.sourceOriginalTitle || candidate.title || "").slice(0,120) : "Нет подходящего материала в очереди" }
+    ];
+
+    let sample = null;
+    let degraded = false;
+    let checkerError = "";
+    if (candidate) {
+      try {
+        const result = await runEditorialV2([{
+          name: String(candidate.sourceName || "Источник"),
+          url: String(candidate.sourceUrl || ""),
+          date: String(candidate.articlePublishedAt || candidate.createdAt || ""),
+          role: sourceRoleLabel(candidate.sourceRole || sourceEditorialRole(candidate)),
+          title: String(candidate.sourceOriginalTitle || candidate.title || ""),
+          text: String(candidate.sourceOriginalText || candidate.text || "").slice(0,7000),
+          photos: [candidate.originalImageUrl, candidate.imageUrl, candidate.generatedImageUrl].filter(Boolean).slice(0,3)
+        }], {
+          hasPhoto: Boolean(candidate.videoUrl || candidate.imageUrl || candidate.generatedImageUrl),
+          newsId: "qa_" + ws.id + "_" + Date.now()
+        });
+
+        const meta = result.meta || {};
+        const bucketKeys = Object.keys(strategy.mix || {});
+        const signals = meta.channelSignals || {};
+        const allSignals = ["virality","utility","discussion","visual","wow","local","deal"].every(function(k){ return Number.isFinite(Number(signals[k])); });
+        const style = qaStyleCheck(channelId, result.rewrite && result.rewrite.title, result.rewrite && result.rewrite.text);
+        degraded = Boolean(meta.degradedQc);
+        checkerError = degraded ? String((meta.failedProviders || []).join(", ")) : "";
+
+        checks.push(
+          { key:"bucket", label:"Тип контента", pass:bucketKeys.includes(String(meta.contentBucket || "")), note:String(meta.contentBucket || "не определён") },
+          { key:"signals", label:"Channel Score", pass:allSignals, note:allSignals ? "7/7 сигналов" : "Не все сигналы заполнены" },
+          { key:"style", label:"Стиль канала", pass:style.pass, note:style.note },
+          { key:"qc", label:"Фактчек", pass:meta.verdict === "pass", note:meta.verdict === "pass" ? (degraded ? "PASS · резервный режим" : "PASS") : String(meta.verdict || "нет результата") }
+        );
+
+        sample = {
+          sourceTitle: String(candidate.sourceOriginalTitle || candidate.title || "").slice(0,180),
+          title: String(result.rewrite && result.rewrite.title || "").slice(0,180),
+          text: String(result.rewrite && result.rewrite.text || "").slice(0,700),
+          contentBucket: meta.contentBucket || "",
+          channelSignals: signals,
+          verdict: meta.verdict || "",
+          degradedQc: degraded,
+          failedProviders: meta.failedProviders || [],
+          checkerModels: meta.checkers || []
+        };
+      } catch (error) {
+        checks.push({ key:"generation", label:"Контрольная генерация", pass:false, note:String(error && error.message || error).slice(0,220) });
+      }
+    }
+
+    const scored = qaScoreChecks(checks);
+    let status = scored.percent >= 85 ? "pass" : (scored.percent >= 60 ? "warn" : "fail");
+    if (degraded && status === "pass") status = "warn";
+
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      channelId,
+      type: strategy.type,
+      status,
+      percent: scored.percent,
+      checks,
+      sourceClasses,
+      recentMix,
+      sample,
+      degradedQc: degraded,
+      checkerError
+    };
+  });
+}
+
+async function runEditorialQaNetwork() {
+  if (editorialQaState.status === "running") return editorialQaState;
+  editorialQaState = {
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    progress: { done: 0, total: workspaceStore.workspaces.length },
+    summary: null,
+    channels: [],
+    error: ""
+  };
+  // Saved at start too: a restart mid-run is then reported, not shown as the old result.
+  saveEditorialQaState();
+
+  try {
+    for (const ws of workspaceStore.workspaces) {
+      let result;
+      try {
+        result = await runEditorialQaForWorkspace(ws);
+      } catch (error) {
+        result = {
+          workspaceId: ws.id,
+          name: ws.name,
+          channelId: resolveChannelId(ws),
+          status: "fail",
+          percent: 0,
+          checks: [{ key:"runtime", label:"Запуск QA", pass:false, note:String(error && error.message || error).slice(0,220) }],
+          sourceClasses: {},
+          recentMix: {},
+          sample: null
+        };
+      }
+      editorialQaState.channels.push(result);
+      editorialQaState.progress.done += 1;
+    }
+
+    const channels = editorialQaState.channels;
+    editorialQaState.summary = {
+      pass: channels.filter(function(x){ return x.status === "pass"; }).length,
+      warn: channels.filter(function(x){ return x.status === "warn"; }).length,
+      fail: channels.filter(function(x){ return x.status === "fail"; }).length,
+      averagePercent: channels.length ? Math.round(channels.reduce(function(sum,x){ return sum + Number(x.percent || 0); },0) / channels.length) : 0,
+      degraded: channels.filter(function(x){ return x.degradedQc; }).length
+    };
+    editorialQaState.status = "done";
+    editorialQaState.finishedAt = new Date().toISOString();
+  } catch (error) {
+    editorialQaState.status = "error";
+    editorialQaState.error = String(error && error.message || error);
+    editorialQaState.finishedAt = new Date().toISOString();
+  }
+  saveEditorialQaState();
+  return editorialQaState;
 }
 
 // ---------------------------------------------------------------------------
@@ -9173,13 +10180,22 @@ setInterval(function() {
   })().catch(function(error){ console.warn("Extras tick failed:", error.message); }).finally(function(){ extrasTickRunning = false; });
 }, 60000);
 
-async function retryUnavailableEditorialQueueItems() {
+async function retryUnavailableEditorialQueueItems(limit) {
   if (costEconomyMode()) return { checked: 0, repaired: 0, held: 0, skipped: 0, economyMode: true };
-  if (!editorialV2Active() || !ANTHROPIC_API_KEY) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
-  const probe = await anthropicEditorialProbe(false);
-  if (!probe.ok) return { checked: 0, repaired: 0, held: 0, skipped: 0, error: probe.error || "Anthropic checker unavailable" };
+  if (!editorialV2Active()) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
 
-  const marker = "structured-json-v1";
+  // Retry even when Anthropic is temporarily unavailable. Editorial v2 now
+  // operates in explicit degraded mode with OpenAI as the primary checker,
+  // instead of leaving the whole queue on hold and causing empty slots.
+  let secondaryChecker = { ok: false, error: "ANTHROPIC_API_KEY не задан" };
+  if (ANTHROPIC_API_KEY) {
+    secondaryChecker = await anthropicEditorialProbe(false).catch(function(error){
+      return { ok: false, error: String(error && error.message || error) };
+    });
+  }
+
+  const marker = "structured-json-v2-degraded-safe";
+  const maxItems = Math.max(1, Math.min(6, Number(limit || 6)));
   const candidates = (state.queue || []).filter(function(item) {
     if (!item || !item.editorialV2) return false;
     if (item.editorialV2RetryVersion === marker) return false;
@@ -9187,7 +10203,7 @@ async function retryUnavailableEditorialQueueItems() {
     const checkerList = Array.isArray(item.editorialV2.checkers) ? item.editorialV2.checkers : [];
     const hadAnthropicFailure = checkerList.some(function(x){ return /^anthropic:error$/i.test(String(x || "")); });
     return verdict === "unavailable" || hadAnthropicFailure;
-  }).slice(0, 6);
+  }).slice(0, maxItems);
 
   let repaired = 0;
   let held = 0;
@@ -9242,6 +10258,9 @@ async function retryUnavailableEditorialQueueItems() {
       item.aiScoreReason = rewrite.scoreReason || item.aiScoreReason || "";
       item.contentFormat = rewrite.contentFormat || item.contentFormat || "";
       item.contentFormatLabel = rewrite.contentFormatLabel || item.contentFormatLabel || "";
+      item.contentBucket = result.meta && result.meta.contentBucket || item.contentBucket || "";
+      item.channelSignals = result.meta && result.meta.channelSignals || item.channelSignals || {};
+      item.sourceClass = item.sourceClass || sourceClassFor(item);
       item.qualityScore = Number(qc.qualityScore || item.qualityScore || 0);
       item.qualityBreakdown = qc.qualityBreakdown || item.qualityBreakdown || {};
       item.qcStatus = qc.qcStatus || "hold";
@@ -9268,7 +10287,14 @@ async function retryUnavailableEditorialQueueItems() {
     }
   }
 
-  return { checked: candidates.length, repaired, held, skipped };
+  return {
+    checked: candidates.length,
+    repaired,
+    held,
+    skipped,
+    degradedSecondaryChecker: !secondaryChecker.ok,
+    secondaryCheckerError: secondaryChecker.ok ? "" : String(secondaryChecker.error || "").slice(0, 240)
+  };
 }
 
 // Re-runs every not-yet-published queue item through the current editorial v2 rules
@@ -9343,6 +10369,9 @@ async function rebuildQueueWithEditorialV2() {
         aiTier: v2.rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (v2.rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal"),
         contentFormat: v2.rewrite.contentFormat,
         contentFormatLabel: v2.rewrite.contentFormatLabel,
+        contentBucket: v2.meta && v2.meta.contentBucket || item.contentBucket || "",
+        channelSignals: v2.meta && v2.meta.channelSignals || item.channelSignals || {},
+        sourceClass: item.sourceClass || sourceClassFor(item),
         qualityScore: v2.qc.qualityScore,
         qualityBreakdown: v2.qc.qualityBreakdown,
         qcStatus: v2.qc.qcStatus,
@@ -10755,6 +11784,29 @@ const server = http.createServer(async function(req, res) {
       const result = await rebuildQueueWithEditorialV2();
       return sendJson(res, result.ok ? 200 : 409, result);
     }
+    if (req.method === "GET" && p === "/api/editorial/qa") {
+      return sendJson(res, 200, {
+        ok: true,
+        qa: editorialQaState,
+        publicationCoverage: publicationCoverageSnapshot()
+      });
+    }
+    if (req.method === "POST" && p === "/api/editorial/qa/run") {
+      if (editorialQaState.status === "running") {
+        return sendJson(res, 202, { ok: true, started: false, qa: editorialQaState });
+      }
+      runEditorialQaNetwork().catch(function(error){
+        editorialQaState.status = "error";
+        editorialQaState.error = String(error && error.message || error);
+        editorialQaState.finishedAt = new Date().toISOString();
+      });
+      return sendJson(res, 202, { ok: true, started: true });
+    }
+    if (req.method === "POST" && p === "/api/editorial/repair-current-slot") {
+      await catchUpCurrentRegularSlotAllWorkspaces();
+      return sendJson(res, 200, { ok: true, publicationCoverage: publicationCoverageSnapshot() });
+    }
+
     if (req.method === "GET" && p === "/api/editorial/status") {
       const recent = (state.queue || []).concat(state.history || []).filter(function(item){ return item && item.editorialV2; }).slice(0, 20);
       const anthropicHealth = ANTHROPIC_API_KEY ? await anthropicEditorialProbe(false) : { ok: false, error: "ANTHROPIC_API_KEY не задан" };
@@ -10965,6 +12017,37 @@ const server = http.createServer(async function(req, res) {
       const force = url.searchParams.get("refresh") === "1";
       const analytics = await buildPlatformAnalytics(force);
       return sendJson(res, 200, analytics);
+    }
+
+    if (req.method === "GET" && p === "/api/promotion") {
+      const force = url.searchParams.get("refresh") === "1";
+      const report = await buildPromotionReport(force);
+      return sendJson(res, 200, report, { "cache-control": "no-store" });
+    }
+
+    if (req.method === "POST" && p === "/api/promotion/campaigns") {
+      if (!db || !dbReady) return sendJson(res, 503, { ok: false, error: "PostgreSQL временно недоступен" });
+      const body = await readJson(req);
+      const name = String(body.name || "").trim().slice(0, 120);
+      if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название кампании" });
+      const platform = ["telegram","vk","cross"].includes(String(body.platform || "").toLowerCase()) ? String(body.platform).toLowerCase() : "telegram";
+      const sourceType = ["seeding","reels","shorts","vk","crosspromo","blogger","other"].includes(String(body.sourceType || "").toLowerCase()) ? String(body.sourceType).toLowerCase() : "other";
+      const sourceName = String(body.sourceName || "").trim().slice(0, 160);
+      const spendRub = Math.max(0, Math.min(100000000, Number(body.spendRub || 0) || 0));
+      const clicks = Math.max(0, Math.min(100000000, Math.round(Number(body.clicks || 0) || 0)));
+      const attributedSubscribers = Math.max(0, Math.min(100000000, Math.round(Number(body.attributedSubscribers || 0) || 0)));
+      const id = newId("promo");
+      await db.query(
+        "INSERT INTO promotion_campaigns(id,workspace_id,name,platform,source_type,source_name,spend_rub,clicks,attributed_subscribers,status) " +
+        "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')",
+        [id,currentWorkspaceId(),name,platform,sourceType,sourceName,spendRub,clicks,attributedSubscribers]
+      );
+      return sendJson(res, 201, { ok: true, id: id });
+    }
+
+    if (req.method === "POST" && p === "/api/promotion/creative") {
+      const creative = await generatePromotionCreative();
+      return sendJson(res, 200, { ok: true, creative: creative });
     }
 
     if (req.method === "GET" && p === "/api/status") {
@@ -11703,6 +12786,7 @@ const server = http.createServer(async function(req, res) {
 });
 
 await initDb();
+startPromotionSnapshotMonitor();
 for (const ws of workspaceStore.workspaces) {
   await workspaceContext.run({ workspaceId: ws.id }, async function(){
     const startupCleanup = pruneQueueItems(state);
@@ -11851,7 +12935,7 @@ async function seedChannelSources(ws) {
     if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
     state.sources.push({
       id: "seed-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-      name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
+      name: c.name, type: "web", group: c.group || "media", sourceClass: sourceClassFor(c), priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
       autoAdded: { at: new Date().toISOString(), from: "seed", why: "стартовый набор канала", reason: "seed" }
     });
@@ -11876,7 +12960,7 @@ const SEED_LISTS_V0423 = new Set(["food", "business", "crypto"]);
 // v0.42.4: lists cleaned against the channel profiles (trader/promo/tabloid sources retired, replacements added,
 // sourceKey no longer collapses sibling rubrics). Re-seeded once under a new prefix: it adds the new entries and
 // drops only the retired seed sources (see retiredSeedSources); business only regains the sections the old key dropped.
-const SEED_LISTS_V0424 = new Set(["money", "kino", "stars", "world", "travel", "shopping", "home", "food", "business", "crypto"]);
+const SEED_LISTS_V0424 = new Set(["money", "kino", "stars", "travel", "shopping", "home", "food", "business", "crypto"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -11927,6 +13011,127 @@ function setupNewChannels() {
     }
   })().catch(function(error){ console.warn("Source seed failed:", error.message); }).finally(function(){ channelSetupRunning = false; });
 }
+// v0.43.0: source rework after the owner's review — off-topic sources are paused
+// (kept, not deleted) and new ones added after server validation. «Что там в
+// мире?» becomes «Что там в сети?» (viral and internet trends).
+async function reworkChannelSources(ws, customPlan, tag) {
+  const channelId = resolveChannelId(ws);
+  const plan = customPlan || SOURCE_REWORK_V0430[channelId];
+  const reworkTag = tag || "v0.43.0";
+  if (!plan) return null;
+  // Exact URL match (not sourceKey): a key covers the whole section, and pausing
+  // iz.ru/rubric/obshchestvo must not pause iz.ru/rubric/zhizn.
+  const normUrl = function(u) { try { const x = new URL(String(u || "")); return (x.hostname.replace(/^www\./i, "") + x.pathname.replace(/\/+$/, "") + x.search).toLowerCase(); } catch { return ""; } };
+  const disableUrls = new Set((plan.disable || []).map(normUrl).filter(Boolean));
+  const paused = [];
+  const now = new Date().toISOString();
+  for (const src of (state.sources || [])) {
+    if (!src || !src.enabled || !disableUrls.has(normUrl(src.url))) continue;
+    src.enabled = false;
+    src.autoPaused = { reason: "не по теме канала (пересборка источников " + reworkTag + ")", at: now };
+    paused.push(src.name);
+  }
+  const added = [];
+  const failed = [];
+  for (const c of freshCandidates(plan.add || [], state.sources, state.sourceBlockedHosts || [])) {
+    const check = await validateSourceCandidate(c.url);
+    if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
+    state.sources.push({
+      id: "dna-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
+      name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
+      url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
+      autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: reworkTag }
+    });
+    added.push(c.name);
+  }
+  let renamed = false;
+  if (channelId === "world" && /в мире/i.test(String(ws.name || ""))) {
+    ws.name = "Что там в сети?";
+    // The channel profile was resolved from the old name; keep it explicit.
+    if (!ws.channelId) ws.channelId = "world";
+    ws.updatedAt = now;
+    renamed = true;
+  }
+  saveState();
+  if (renamed) persistWorkspaceStore();
+  return { channel: channelId, paused: paused, added: added, failed: failed, renamed: renamed, active: (state.sources || []).filter(function(x){ return x && x.enabled; }).length };
+}
+let sourceReworkRetryTimer = null;
+function scheduleSourceReworkRetry() {
+  if (sourceReworkRetryTimer) return;
+  sourceReworkRetryTimer = setTimeout(function(){ sourceReworkRetryTimer = null; runSourceRework(); }, 30 * 60 * 1000);
+}
+let sourceReworkRunning = false;
+function runSourceRework() {
+  if (sourceReworkRunning) return;
+  sourceReworkRunning = true;
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      const migration = "v0.43.0-source-rework";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws);
+        // Sites unreachable at start: retry on the next starts (up to 3) instead
+        // of leaving the channel with old sources paused and no new ones.
+        state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+        state.seedAttempts[migration] = Number(state.seedAttempts[migration] || 0) + 1;
+        const planned = result && SOURCE_REWORK_V0430[result.channel] ? SOURCE_REWORK_V0430[result.channel].add.length : 0;
+        const done = !result || !planned || result.added.length > 0 || state.seedAttempts[migration] >= 3;
+        if (done) state.migrations.push(migration);
+        else scheduleSourceReworkRetry();
+        saveState();
+        if (result) console.log("SOURCE_REWORK " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+      });
+    }
+  })().catch(function(error){ console.warn("Source rework failed:", error.message); }).finally(function(){ sourceReworkRunning = false; });
+}
+setTimeout(runSourceRework, 90000);
+
+// v0.44.1: the recreated «Что там в интернете?» channel keeps the same world
+// editorial profile but gets an expanded viral/social source pack. This migration
+// reruns only that workspace; freshCandidates prevents duplicate sources.
+setTimeout(function runInternetSourcePackV0441() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "world") continue;
+      const migration = "v0.44.1-internet-source-pack";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws);
+        state.migrations.push(migration);
+        saveState();
+        console.log("INTERNET_SOURCE_PACK " + JSON.stringify(Object.assign({ workspace: ws.id }, result || {})));
+      });
+    }
+  })().catch(function(error){ console.warn("Internet source pack failed:", error.message); });
+}, 95000);
+
+// v0.45.1: «Что там в интернете?» got almost nothing from meme-only channels
+// (pictures without a story are skipped as «нет контекста»), Reddit is not
+// reachable from the server and social-media industry sites are off-topic.
+// Pause those, add sources that publish viral stories with context.
+setTimeout(function runInternetSourceFixV0451() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "world") continue;
+      const migration = "v0.45.1-internet-sources";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws, INTERNET_SOURCE_FIX_V0451, "v0.45.1");
+        state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+        state.seedAttempts[migration] = Number(state.seedAttempts[migration] || 0) + 1;
+        if ((result && result.added.length > 0) || state.seedAttempts[migration] >= 3) state.migrations.push(migration);
+        saveState();
+        console.log("INTERNET_SOURCE_FIX " + JSON.stringify(Object.assign({ workspace: ws.id }, result || {})));
+      });
+    }
+  })().catch(function(error){ console.warn("Internet source fix failed:", error.message); });
+}, 100000);
+
 setTimeout(setupNewChannels, 30000);
 setInterval(setupNewChannels, 15 * 60 * 1000);
 
@@ -11949,7 +13154,8 @@ async function enableAutoPublishingAfterChecks(ws) {
   checks.enoughSources = checks.sources >= 15;
   let botCanPost = false;
   try {
-    const chat = await telegramApi("getChat", { chat_id: checks.telegramChannel });
+    const target = await ensureTelegramPublishTarget(ws, true);
+    const chat = target.chat;
     const me = await telegramApi("getMe", {});
     const member = await telegramApi("getChatMember", { chat_id: chat.id, user_id: me.id });
     // Telegram omits can_post_messages for the creator only; an administrator must have it explicitly true.
@@ -11959,6 +13165,9 @@ async function enableAutoPublishingAfterChecks(ws) {
       (member.status === "creator" || (member.status === "administrator" && member.can_post_messages === true));
     if (checks.chatType && checks.chatType !== "channel") checks.telegramError = "chat type is " + checks.chatType + ", expected channel";
     checks.chatTitle = chat.title || "";
+    checks.chatType = chat.type || "";
+    checks.chatUsername = chat.username || "";
+    checks.targetRepaired = Boolean(target.repaired);
   } catch (error) { checks.telegramError = String(error.message || error).slice(0, 160); }
   checks.botCanPost = Boolean(botCanPost);
   const ok = checks.profile && checks.telegramChannel && checks.enoughSources && checks.botCanPost;
@@ -12173,6 +13382,45 @@ setTimeout(function() {
 }, 3 * 60 * 1000);
 await workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, async function(){ await discoverTelegramAlertChat(); });
 startCollectorScheduler();
+
+setTimeout(function(){
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.telegramChannel) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try {
+          const target = await ensureTelegramPublishTarget(ws, true);
+          let previewPosts = null;
+          if (target.username) {
+            try {
+              const response = await fetch("https://t.me/s/" + encodeURIComponent(target.username), {
+                headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegramHealth/1.0)" },
+                signal: AbortSignal.timeout(10000)
+              });
+              if (response.ok) previewPosts = parseTelegramPreview(await response.text()).posts.length;
+            } catch {}
+          }
+          console.log("TELEGRAM_TARGET_HEALTH " + JSON.stringify({
+            workspace: ws.id,
+            configured: ws.telegramChannel,
+            type: target.chat && target.chat.type || "",
+            chatId: target.chatId,
+            username: target.username,
+            title: target.title,
+            repaired: target.repaired,
+            previewPosts: previewPosts
+          }));
+        } catch (error) {
+          console.error("TELEGRAM_TARGET_HEALTH " + JSON.stringify({
+            workspace: ws.id,
+            configured: ws.telegramChannel,
+            error: String(error && error.message || error)
+          }));
+        }
+      });
+    }
+  })().catch(function(error){ console.warn("Telegram target health scan failed:", error.message); });
+}, 7000);
 
 setTimeout(function() {
   (async function(){
