@@ -8,6 +8,7 @@ on:
       - "news-factory/prompts/chto-tam.md"
       - "news-factory/scripts/editorial-v2-test.js"
       - "news-factory/package.json"
+      - "news-factory/server.js"
       - ".github/workflows/editorial-tests.yml"
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "news-factory/prompts/chto-tam.md"
       - "news-factory/scripts/editorial-v2-test.js"
       - "news-factory/package.json"
+      - "news-factory/server.js"
 
 jobs:
   editorial:
