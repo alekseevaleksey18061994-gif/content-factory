@@ -682,6 +682,34 @@ function workspaceVkPublishingAllowed(ws) {
   return Boolean(target && target.id === workspaceStore.defaultWorkspaceId);
 }
 function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", vkPublishingAllowed: workspaceVkPublishingAllowed(ws), channelId: ws.channelId || "", editorialChannelId: resolveChannelId(ws), createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+function normalizeTelegramChannelInput(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const link = text.match(/^(?:https?:\/\/)?(?:t\.me|telegram\.me)\/(?:s\/)?([A-Za-z][A-Za-z0-9_]{4,31})\/?(?:\?.*)?$/i);
+  if (link) return "@" + link[1];
+  if (/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(text)) return "@" + text;
+  return text; // @username и числовые chat_id (-100…) не трогаем
+}
+function workspaceSummary(ws) {
+  const st = ws && ws.state && typeof ws.state === "object" ? ws.state : {};
+  const sources = Array.isArray(st.sources) ? st.sources.filter(function(x){ return x && x.enabled; }).length : 0;
+  const topic = st.topicSettings && st.topicSettings.default || {};
+  const autoPublish = String(st.mode || "") === "AUTO" && topic.auto_publish_telegram !== false;
+  const missing = [];
+  if (!String(ws.telegramChannel || "").trim()) missing.push("telegramChannel");
+  if (!String(ws.telegramPublicUsername || ws.slug || "").trim()) missing.push("username");
+  if (!resolveChannelId(ws)) missing.push("profile");
+  if (!String(ws.avatarUrl || "").trim()) missing.push("avatar");
+  if (sources < 15) missing.push("sources");
+  return {
+    mode: String(st.mode || ""),
+    autoPublish: autoPublish,
+    queue: Array.isArray(st.queue) ? st.queue.length : 0,
+    sources: sources,
+    published: Number(st.stats && st.stats.published || 0),
+    missing: missing
+  };
+}
 function persistWorkspaceStore() {
   ensureDataDir();
   fs.writeFileSync(WORKSPACES_FILE, JSON.stringify(workspaceStore, null, 2), "utf8");
@@ -9828,7 +9856,7 @@ const server = http.createServer(async function(req, res) {
       });
     }
     if (req.method === "GET" && p === "/api/workspaces") {
-      return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, workspaces: workspaceStore.workspaces.map(publicWorkspaceMeta) });
+      return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, profiles: EDITORIAL_CHANNEL_IDS, workspaces: workspaceStore.workspaces.map(function(ws){ return Object.assign(publicWorkspaceMeta(ws), { summary: workspaceSummary(ws) }); }) });
     }
     if (req.method === "POST" && p === "/api/workspaces") {
       const body = await readJson(req);
@@ -9841,7 +9869,7 @@ const server = http.createServer(async function(req, res) {
         id: id, name: name,
         slug: String(body.slug || body.telegramPublicUsername || "").replace(/^@/, "").trim(),
         initials: String(body.initials || "").trim(),
-        telegramChannel: String(body.telegramChannel || body.telegramPublicUsername || "").trim(),
+        telegramChannel: normalizeTelegramChannelInput(body.telegramChannel || body.telegramPublicUsername || ""),
         telegramPublicUsername: String(body.telegramPublicUsername || body.telegramChannel || "").replace(/^@/, "").trim(),
         channelId: String(body.channelId || "").trim().toLowerCase(),
         state: freshWorkspaceState()
@@ -9857,8 +9885,9 @@ const server = http.createServer(async function(req, res) {
       if (body.name != null) workspace.name = String(body.name || "").trim().slice(0, 80) || workspace.name;
       if (body.initials != null) workspace.initials = String(body.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3) || workspace.initials;
       if (body.slug != null) workspace.slug = String(body.slug || "").replace(/^@/, "").trim().slice(0, 80);
-      if (body.telegramChannel != null) workspace.telegramChannel = String(body.telegramChannel || "").trim();
+      if (body.telegramChannel != null) workspace.telegramChannel = normalizeTelegramChannelInput(body.telegramChannel);
       if (body.telegramPublicUsername != null) workspace.telegramPublicUsername = String(body.telegramPublicUsername || "").replace(/^@/, "").trim();
+      if (!workspace.telegramPublicUsername && /^@[A-Za-z0-9_]+$/.test(workspace.telegramChannel || "")) workspace.telegramPublicUsername = workspace.telegramChannel.slice(1);
       if (body.channelId != null) {
         const requestedChannelId = String(body.channelId || "").trim().toLowerCase();
         if (requestedChannelId && !EDITORIAL_CHANNEL_IDS.includes(requestedChannelId)) return sendJson(res, 400, { ok: false, error: "Неизвестный профиль канала: " + requestedChannelId + ". Допустимо: " + EDITORIAL_CHANNEL_IDS.join(", ") });

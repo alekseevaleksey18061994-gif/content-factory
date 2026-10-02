@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.41.6",
+  "version": "0.42.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "test:vk-link-preview": "node scripts/vk-link-preview-smoke.js",
     "test:vk-community-photo": "node scripts/vk-community-photo-smoke.js",
     "test:editorial": "node scripts/editorial-v2-test.js",
-    "test:costs-smoke": "node scripts/costs-smoke.js"
+    "test:costs-smoke": "node scripts/costs-smoke.js",
+    "test:accounts-smoke": "node scripts/accounts-smoke.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
