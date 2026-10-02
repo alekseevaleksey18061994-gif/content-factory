@@ -82,6 +82,12 @@ const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase(
 const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
 const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_ENHANCE_SOURCE_IMAGES = String(process.env.AUTO_ENHANCE_SOURCE_IMAGES || "true").toLowerCase() !== "false";
+// Golden-mean pipeline: cheap validation first; expensive/generated media only after editorial approval.
+const MEDIA_DEFER_EXPENSIVE = String(process.env.MEDIA_DEFER_EXPENSIVE || "true").toLowerCase() !== "false";
+const MEDIA_QUALITY_MIN_SCORE = Math.max(35, Math.min(90, Number(process.env.MEDIA_QUALITY_MIN_SCORE || 62) || 62));
+const EDITORIAL_QUEUE_TARGET = Math.max(1, Math.min(12, Number(process.env.EDITORIAL_QUEUE_TARGET || 4) || 4));
+const EDITORIAL_CAPACITY_BYPASS_SCORE = Math.max(7, Math.min(10, Number(process.env.EDITORIAL_CAPACITY_BYPASS_SCORE || 9) || 9));
+const MEDIA_AI_COVER_MIN_IMPORTANCE = Math.max(6, Math.min(10, Number(process.env.MEDIA_AI_COVER_MIN_IMPORTANCE || 8) || 8));
 const COPYRIGHT_MEDIA_MODE = String(process.env.COPYRIGHT_MEDIA_MODE || "balanced").trim().toLowerCase();
 const COPYRIGHT_SAFE_MODE = COPYRIGHT_MEDIA_MODE === "strict";
 const COPYRIGHT_MAX_VERBATIM_WORDS = Math.max(8, Number(process.env.COPYRIGHT_MAX_VERBATIM_WORDS || 12));
@@ -2897,7 +2903,10 @@ async function prefilterCandidates(candidates, summary) {
   if (rejected.length || ranked.length) {
     console.log("HEADLINE_PREFILTER " + JSON.stringify({ workspace: currentWorkspaceId(), total: candidates.length, kept: ranked.length, rejected: rejected.length, examples: rejected.slice(0, 5).map(function(r){ return (r.candidate.link.title || "").slice(0, 70) + " — " + r.reason; }) }));
   }
-  return ranked.map(function(r){ return r.candidate; });
+  return ranked.map(function(r){
+    r.candidate.prefilterScore = Math.max(0, Math.min(10, Number(r.score || 0)));
+    return r.candidate;
+  });
 }
 
 function buildSourceRankings() {
@@ -4999,7 +5008,30 @@ async function getCollectorRuns(limit) {
   return r.rows;
 }
 
-async function collectOnce(trigger) {
+async function editorialQueueReadyDepth() {
+  const now = Date.now();
+  return (state.queue || []).filter(function(item) {
+    if (!item || item.telegramPublished || item.status === "publish_failed" || item.status === "media_failed") return false;
+    if (item.qcStatus === "hold") return false;
+    if (item.editorialV2 && !["approved","pass"].includes(String(item.editorialV2.status || item.editorialV2.verdict || "").toLowerCase())) return false;
+    const stamp = new Date(item.articlePublishedAt || item.createdAt || item.queuedAt || 0).getTime();
+    if (Number.isFinite(stamp) && stamp > 0 && now - stamp > queueMaxAgeHoursFor(currentWorkspace()) * 3600000) return false;
+    return true;
+  }).length;
+}
+
+function capacityGateDecision(candidate, trigger) {
+  const triggerName = String(trigger || "");
+  if (triggerName === "manual" || triggerName.includes("last-chance")) return { allow: true, reason: "urgent_trigger", depth: editorialQueueReadyDepth() };
+  const depth = editorialQueueReadyDepth();
+  const score = Number(candidate && candidate.prefilterScore || 0);
+  const hasVideo = Boolean(candidate && candidate.link && candidate.link.hasVideo);
+  if (depth < EDITORIAL_QUEUE_TARGET) return { allow: true, reason: "queue_needs_posts", depth: depth, score: score };
+  if (score >= EDITORIAL_CAPACITY_BYPASS_SCORE || hasVideo) return { allow: true, reason: hasVideo ? "video_bypass" : "top_story_bypass", depth: depth, score: score };
+  return { allow: false, reason: "queue_full", depth: depth, score: score };
+}
+
+function collectOnce(trigger) {
   if (!COLLECTOR_ENABLED) return { ok: false, error: "Collector disabled" };
   const collectorWorkspaceId = currentWorkspaceId();
   if (collectorRunningWorkspaces.has(collectorWorkspaceId)) return { ok: false, error: "Collector already running" };
@@ -5200,6 +5232,16 @@ async function collectOnce(trigger) {
           }
           claimed = crossChannelClaim(articleKeys);
         }
+
+        const capacity = capacityGateDecision(candidate, trigger);
+        if (!capacity.allow) {
+          summary.capacityDeferred = Number(summary.capacityDeferred || 0) + 1;
+          console.log("EDITORIAL_CAPACITY_DEFERRED " + JSON.stringify({
+            workspace: currentWorkspaceId(), url: url, depth: capacity.depth, score: capacity.score, target: EDITORIAL_QUEUE_TARGET
+          }));
+          continue;
+        }
+
         // Scoped by workspace: the same article in two channels (e.g. Афиша Daily in
         // food and internet) collided on news_items_pkey and failed every collection.
         // The default workspace keeps the old ids.
