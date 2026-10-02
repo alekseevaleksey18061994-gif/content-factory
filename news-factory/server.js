@@ -2689,6 +2689,27 @@ function extractPublishedAt(html) {
   return "";
 }
 
+// Site preview for the Sources page: share image, favicon and page title.
+function extractSitePreview(html, pageUrl) {
+  const src = String(html || "");
+  let icon = "";
+  const links = src.match(/<link[^>]+>/gi) || [];
+  const ranked = [];
+  for (const tag of links) {
+    const rel = (tag.match(/rel=["']([^"']+)["']/i) || [])[1] || "";
+    const href = (tag.match(/href=["']([^"']+)["']/i) || [])[1] || "";
+    if (!href || !/icon/i.test(rel)) continue;
+    const size = Number(((tag.match(/sizes=["'](\d+)x\d+["']/i) || [])[1]) || (/apple-touch/i.test(rel) ? 180 : 32));
+    ranked.push({ href: href, size: size });
+  }
+  ranked.sort(function(a, b){ return Math.abs(a.size - 96) - Math.abs(b.size - 96); });
+  if (ranked[0]) icon = canonicalizeUrl(htmlDecode(ranked[0].href), pageUrl) || "";
+  if (!icon) { try { icon = new URL("/favicon.ico", pageUrl).toString(); } catch {} }
+  const title = htmlDecode(((src.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i) || [])[1]) ||
+    ((src.match(/<title[^>]*>([^<]{1,160})<\/title>/i) || [])[1]) || "").trim().slice(0, 120);
+  return { image: extractMetaImage(src, pageUrl) || "", icon: /^https?:\/\//i.test(icon) ? icon : "", title: title, at: new Date().toISOString() };
+}
+
 function extractMetaImage(html, pageUrl) {
   const source = String(html || "");
   const patterns = [
@@ -4404,6 +4425,10 @@ async function collectOnce(trigger) {
       try {
         const html = await fetchText(source.url, 15000);
         noteSourceEvent(source, "fetch_ok");
+        // Refresh the site preview once a week (cheap: the page is already loaded).
+        if (!source.preview || Date.now() - new Date(source.preview.at || 0).getTime() > 7 * 24 * 3600000) {
+          try { source.preview = extractSitePreview(html, source.url); } catch {}
+        }
         const isTelegramCreator = source.group === "blogger" || source.group === "creator";
         const links = (isTelegramCreator
           ? extractTelegramSourcePosts(html, source.url)
