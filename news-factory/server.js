@@ -10850,7 +10850,16 @@ function setupNewChannels() {
         const autoMigration = "v0.40.3-auto-publish";
         if (!state.migrations.includes(autoMigration) && !state.migrations.includes("v0.40.2-money-auto-publish")) {
           const auto = await enableAutoPublishingAfterChecks(ws);
-          if (auto.enabled) { state.migrations.push(autoMigration); saveState(); }
+          if (auto.enabled) {
+            state.migrations.push(autoMigration);
+            saveState();
+            // Fill the empty queue right away so the first post is ready for the next slot.
+            if (!isCollectorRunning(ws.id)) {
+              collectOnce("channel-start").then(function(r){
+                console.log("CHANNEL_START_COLLECT " + JSON.stringify({ workspace: ws.id, found: r && r.found, queued: r && r.queued, skipped: r && r.skipped }));
+              }).catch(function(error){ console.warn("Channel start collect failed:", error.message); });
+            }
+          }
           console.log("AUTO_PUBLISH_SETUP " + JSON.stringify(Object.assign({ workspace: ws.id }, auto)));
         }
       });
