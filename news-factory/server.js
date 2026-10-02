@@ -1831,23 +1831,51 @@ function startCostBudgetMonitor() {
 
 async function renderEconomyTextCard(payload) {
   ensureDataDir();
-  const raw = String(payload && payload.title || "Новость").trim().slice(0,160);
+  const raw = String(payload && payload.title || "Новость").trim().slice(0, 180);
   const esc = function(v){ return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
+  const channel = String(currentWorkspace().name || "News Factory");
+  const topic = String(payload && payload.topicId || currentWorkspace().channelId || "NEWS").toUpperCase();
+  const seed = crypto.createHash("sha256").update(channel + "|" + raw).digest()[0];
+  const variants = [
+    { a:"#0b1630", b:"#2849a8", accent:"#58d6ff" },
+    { a:"#10231f", b:"#176b5c", accent:"#54e3b2" },
+    { a:"#22142f", b:"#71356f", accent:"#f58bd8" },
+    { a:"#251b0d", b:"#8a5a16", accent:"#ffd36b" },
+    { a:"#1f1414", b:"#7b3030", accent:"#ff8b8b" },
+    { a:"#101a28", b:"#225c7a", accent:"#7dd7ff" }
+  ];
+  const v = variants[seed % variants.length];
   const words = raw.split(/\s+/), lines = [];
   let line = "";
   for (const word of words) {
     const next = line ? line + " " + word : word;
-    if (next.length > 34 && line) { lines.push(line); line = word; } else line = next;
+    if (next.length > 31 && line) { lines.push(line); line = word; } else line = next;
     if (lines.length >= 3) break;
   }
   if (line && lines.length < 4) lines.push(line);
-  const text = lines.slice(0,4).map(function(v,i){
-    return '<text x="90" y="'+(360+i*100)+'" font-family="Arial,sans-serif" font-size="70" font-weight="700" fill="#15232d">'+esc(v)+'</text>';
+  const text = lines.slice(0,4).map(function(x,i){
+    return '<text x="92" y="'+(355+i*98)+'" font-family="Arial,sans-serif" font-size="68" font-weight="800" fill="#fff">'+esc(x)+'</text>';
   }).join("");
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024"><rect width="1536" height="1024" fill="#eef8f8"/><rect width="20" height="1024" fill="#1fc8c5"/><text x="90" y="170" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#159d9b">'+esc(currentWorkspace().name||"News Factory")+'</text>'+text+'<text x="90" y="915" font-family="Arial,sans-serif" font-size="30" fill="#61727c">'+esc(payload && payload.cardNote || "Режим экономии · без AI-обложки")+'</text></svg>';
+  const note = esc(payload && payload.cardNote || "Редакционная карточка");
+  const variant = seed % 3;
+  const decor = variant === 0
+    ? '<circle cx="1320" cy="170" r="240" fill="'+v.accent+'" opacity=".18"/><circle cx="1400" cy="860" r="330" fill="'+v.accent+'" opacity=".08"/>'
+    : variant === 1
+      ? '<path d="M1040 0 L1536 0 L1536 1024 L1280 1024 Z" fill="'+v.accent+'" opacity=".10"/><circle cx="1280" cy="260" r="170" fill="'+v.accent+'" opacity=".12"/>'
+      : '<rect x="1120" y="-80" width="520" height="1180" rx="220" transform="rotate(18 1120 -80)" fill="'+v.accent+'" opacity=".10"/>';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024">'+
+    '<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="'+v.a+'"/><stop offset="1" stop-color="'+v.b+'"/></linearGradient></defs>'+
+    '<rect width="1536" height="1024" fill="url(#bg)"/>'+decor+
+    '<rect x="92" y="92" width="14" height="110" rx="7" fill="'+v.accent+'"/>'+
+    '<text x="138" y="138" font-family="Arial,sans-serif" font-size="38" font-weight="800" fill="#fff">'+esc(channel)+'</text>'+
+    '<text x="138" y="188" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="'+v.accent+'">'+esc(topic)+'</text>'+
+    text+
+    '<text x="92" y="925" font-family="Arial,sans-serif" font-size="28" fill="#dbe7ff">'+note+'</text>'+
+    '<text x="1440" y="925" text-anchor="end" font-family="Arial,sans-serif" font-size="25" font-weight="700" fill="'+v.accent+'">NEWS FACTORY</text>'+
+    '</svg>';
   const fileName = "budget_card_" + String(payload && payload.id || crypto.randomBytes(5).toString("hex")).replace(/[^a-zA-Z0-9_-]/g,"_").slice(0,70) + "_" + Date.now() + ".webp";
-  await sharp(Buffer.from(svg)).webp({quality:86}).toFile(path.join(MEDIA_DIR,fileName));
-  return { url: mediaPublicUrl(fileName), model: "local-budget-card", economy: true };
+  await sharp(Buffer.from(svg)).webp({quality:88}).toFile(path.join(MEDIA_DIR,fileName));
+  return { url: mediaPublicUrl(fileName), model: "local-branded-card-v2", economy: true, variant: variant };
 }
 
 async function costSummaryBetween(startAt, endAt, workspaceOnly, workspaceId) {
