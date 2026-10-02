@@ -3824,7 +3824,7 @@ function render(){
         '<div class="qa-tools">'+
           '<button class="qa-tool" onclick="openQueuePreview('+ja(q.id)+')">Просмотр</button>'+
           '<button class="qa-tool" onclick="toggleWhy('+ja(q.id)+')">Почему он?</button>'+
-          (q.videoUrl?'<span class="qa-tool qa-note">🎬 Видео</span>':((q.originalImageUrl||q.imageUrl||q.mediaStatus==='copyright_pending')?'<button class="qa-tool" onclick="enhanceQueuePhoto('+ja(q.id)+')">Обложка</button>':'<span class="qa-tool qa-note">Медиа готово</span>'))+
+          (q.videoUrl?'<span class="qa-tool qa-note">🎬 Видео</span>':'<button class="qa-tool" onclick="enhanceQueuePhoto('+ja(q.id)+')">Обложка</button>')+
         '</div>'+
         whyPostHtml(q)+
       '</div>'+
@@ -4898,13 +4898,13 @@ async function enhanceQueuePhoto(id){
   var item=(state.queue||[]).find(function(q){return q.id===id});
   if(!item)return;
   if(item.videoUrl){toast('У этой новости приоритет у видео');return}
-  toast('Готовлю безопасную AI-обложку…');
+  toast('Готовлю обложку…');
   try{
-    await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id})});
-    toast('AI-обложка готова');
+    var result=await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id})});
+    toast(result&&result.mode==='enhanced'?'Фото улучшено':'Новая AI-обложка готова');
     await load();
     openQueuePreview(id);
-  }catch(e){toast('Фото: '+e.message)}
+  }catch(e){toast('Обложка: '+e.message)}
 }
 async function publishQueue(id){
   var targets=queueTargets(id);if(!targets.telegram&&!targets.vk){toast('Выберите соцсеть');return}
