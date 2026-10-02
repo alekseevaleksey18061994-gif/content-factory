@@ -130,6 +130,8 @@ try {
 const COST_TRACKING_VERSION = 2;
 const COST_TRACKING_RETENTION_DAYS = Math.max(30, Math.min(2000, Number(process.env.COST_TRACKING_RETENTION_DAYS || 400)));
 const COST_EVENT_BUFFER_MAX = 2000;
+const COST_MONTHLY_BUDGET_RUB = Math.max(0, Number(process.env.COST_MONTHLY_BUDGET_RUB || 0) || 0);
+const COST_DAILY_BUDGET_RUB = Math.max(0, Number(process.env.COST_DAILY_BUDGET_RUB || 0) || 0);
 const COST_PRICING_CONFIG = resolveCostPricing(process.env.COST_PRICING_JSON || "");
 const COST_PRICING_UPDATED_AT = COST_PRICING_CONFIG.updatedAt;
 const COST_PRICING = COST_PRICING_CONFIG.pricing;
@@ -985,6 +987,7 @@ async function insertCostEventRow(row) {
       row.newsId || null, JSON.stringify(row.extra || {})
     ]
   );
+  scheduleCostBudgetCheck();
 }
 
 function persistCostEvent(row) {
@@ -1223,6 +1226,153 @@ async function getInfrastructureEstimate() {
 }
 
 
+
+let costBudgetCheckTimer = null;
+let costBudgetInterval = null;
+
+function networkCostBudgetState() {
+  const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+  if (!ws.state.costBudget || typeof ws.state.costBudget !== "object") {
+    ws.state.costBudget = {
+      monthlyRub: COST_MONTHLY_BUDGET_RUB,
+      dailyRub: COST_DAILY_BUDGET_RUB,
+      economyMode: false,
+      economyReason: "",
+      alerts: {},
+      updatedAt: ""
+    };
+  }
+  const b = ws.state.costBudget;
+  b.monthlyRub = Math.max(0, Number(b.monthlyRub || 0) || 0);
+  b.dailyRub = Math.max(0, Number(b.dailyRub || 0) || 0);
+  if (!b.alerts || typeof b.alerts !== "object") b.alerts = {};
+  return b;
+}
+
+function costEconomyMode() {
+  return Boolean(networkCostBudgetState().economyMode);
+}
+
+async function costBudgetSnapshot(knownRate) {
+  const b = networkCostBudgetState();
+  const now = new Date();
+  const rate = Number(knownRate || 0) || await getUsdRubRate();
+  const todayBounds = moscowPeriodBounds("today", now, 1);
+  const monthStart = new Date(Date.UTC(todayBounds.moscowYear, todayBounds.moscowMonth - 1, 1, -3, 0, 0, 0));
+  let todayUsd = 0, monthUsd = 0;
+  if (db && dbReady) {
+    todayUsd = (await costSummaryBetween(todayBounds.start, now, false, "")).costUsd;
+    monthUsd = (await costSummaryBetween(monthStart, now, false, "")).costUsd;
+  }
+  const todayRub = rate ? todayUsd * rate : 0;
+  const monthToDateRub = rate ? monthUsd * rate : 0;
+  return {
+    configured: Boolean(b.monthlyRub || b.dailyRub),
+    monthlyBudgetRub: b.monthlyRub,
+    dailyBudgetRub: b.dailyRub,
+    todayRub: todayRub,
+    monthToDateRub: monthToDateRub,
+    monthlyRatio: b.monthlyRub ? monthToDateRub / b.monthlyRub : 0,
+    dailyRatio: b.dailyRub ? todayRub / b.dailyRub : 0,
+    economyMode: Boolean(b.economyMode),
+    economyReason: String(b.economyReason || ""),
+    fxAvailable: Boolean(rate)
+  };
+}
+
+async function sendCostBudgetAlert(snapshot, threshold) {
+  if (!BOT_TOKEN) return false;
+  const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+  const alertChatId = TELEGRAM_ALERT_CHAT_ID || String(ws.state.telegramAlertChatId || "").trim();
+  if (!alertChatId) return false;
+  const parts = [];
+  if (snapshot.dailyBudgetRub && snapshot.dailyRatio >= threshold / 100) {
+    parts.push("День: " + Math.round(snapshot.todayRub).toLocaleString("ru-RU") + " ₽ из " + Math.round(snapshot.dailyBudgetRub).toLocaleString("ru-RU") + " ₽");
+  }
+  if (snapshot.monthlyBudgetRub && snapshot.monthlyRatio >= threshold / 100) {
+    parts.push("Месяц: " + Math.round(snapshot.monthToDateRub).toLocaleString("ru-RU") + " ₽ из " + Math.round(snapshot.monthlyBudgetRub).toLocaleString("ru-RU") + " ₽");
+  }
+  if (!parts.length) return false;
+  await telegramApi("sendMessage", {
+    chat_id: alertChatId,
+    text: (threshold >= 100 ? "🚨 News Factory: бюджет исчерпан" : "⚠️ News Factory: 80% бюджета") + "\n" + parts.join("\n") +
+      (threshold >= 100 ? "\nВключён режим экономии." : ""),
+    disable_web_page_preview: true
+  });
+  return true;
+}
+
+async function evaluateCostBudget(notify) {
+  const b = networkCostBudgetState();
+  const snap = await costBudgetSnapshot();
+  const dailyOver = snap.dailyBudgetRub > 0 && snap.dailyRatio >= 1;
+  const monthlyOver = snap.monthlyBudgetRub > 0 && snap.monthlyRatio >= 1;
+  const economy = Boolean(dailyOver || monthlyOver);
+  const reason = dailyOver && monthlyOver ? "daily_and_monthly" : (dailyOver ? "daily" : (monthlyOver ? "monthly" : ""));
+  let dirty = b.economyMode !== economy || b.economyReason !== reason;
+  b.economyMode = economy;
+  b.economyReason = reason;
+  if (dirty) b.updatedAt = new Date().toISOString();
+
+  if (notify && snap.configured && snap.fxAvailable) {
+    const mskDay = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0,10);
+    for (const threshold of [80,100]) {
+      const reached = (snap.dailyBudgetRub && snap.dailyRatio >= threshold/100) || (snap.monthlyBudgetRub && snap.monthlyRatio >= threshold/100);
+      const key = "last" + threshold + "Day";
+      if (reached && b.alerts[key] !== mskDay) {
+        try {
+          if (await sendCostBudgetAlert(snap, threshold)) {
+            b.alerts[key] = mskDay;
+            dirty = true;
+          }
+        } catch (error) {
+          console.warn("Cost budget Telegram alert failed:", error.message);
+        }
+      }
+    }
+  }
+  if (dirty) persistWorkspaceStore();
+  return Object.assign({}, snap, { economyMode: economy, economyReason: reason });
+}
+
+function scheduleCostBudgetCheck() {
+  if (costBudgetCheckTimer) return;
+  costBudgetCheckTimer = setTimeout(function() {
+    costBudgetCheckTimer = null;
+    evaluateCostBudget(true).catch(function(error){ console.warn("Cost budget check failed:", error.message); });
+  }, 3500);
+  if (costBudgetCheckTimer.unref) costBudgetCheckTimer.unref();
+}
+
+function startCostBudgetMonitor() {
+  if (costBudgetInterval) clearInterval(costBudgetInterval);
+  costBudgetInterval = setInterval(function() {
+    evaluateCostBudget(true).catch(function(error){ console.warn("Cost budget monitor failed:", error.message); });
+  }, 10 * 60 * 1000);
+  if (costBudgetInterval.unref) costBudgetInterval.unref();
+}
+
+async function renderEconomyTextCard(payload) {
+  ensureDataDir();
+  const raw = String(payload && payload.title || "Новость").trim().slice(0,160);
+  const esc = function(v){ return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
+  const words = raw.split(/\s+/), lines = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? line + " " + word : word;
+    if (next.length > 34 && line) { lines.push(line); line = word; } else line = next;
+    if (lines.length >= 3) break;
+  }
+  if (line && lines.length < 4) lines.push(line);
+  const text = lines.slice(0,4).map(function(v,i){
+    return '<text x="90" y="'+(360+i*100)+'" font-family="Arial,sans-serif" font-size="70" font-weight="700" fill="#15232d">'+esc(v)+'</text>';
+  }).join("");
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024"><rect width="1536" height="1024" fill="#eef8f8"/><rect width="20" height="1024" fill="#1fc8c5"/><text x="90" y="170" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#159d9b">'+esc(currentWorkspace().name||"News Factory")+'</text>'+text+'<text x="90" y="915" font-family="Arial,sans-serif" font-size="30" fill="#61727c">Режим экономии · без AI-обложки</text></svg>';
+  const fileName = "budget_card_" + String(payload && payload.id || crypto.randomBytes(5).toString("hex")).replace(/[^a-zA-Z0-9_-]/g,"_").slice(0,70) + "_" + Date.now() + ".webp";
+  await sharp(Buffer.from(svg)).webp({quality:86}).toFile(path.join(MEDIA_DIR,fileName));
+  return { url: mediaPublicUrl(fileName), model: "local-budget-card", economy: true };
+}
+
 async function costSummaryBetween(startAt, endAt, workspaceOnly, workspaceId) {
   const params = [startAt.toISOString(), endAt.toISOString()];
   let where = "WHERE at >= $1 AND at < $2";
@@ -1317,6 +1467,7 @@ async function buildCostsReport(days, scope, workspaceId, requestedPeriod) {
         estimatedMonthlyRub: convertRub(infrastructure.estimatedMonthlyUsd),
         services: infrastructure.services.map(function(s){ return Object.assign({}, s, { monthlyRub: convertRub(s.monthlyUsd) }); })
       }),
+      budget: await costBudgetSnapshot(rate),
       freeServices: [],
       note: "PostgreSQL временно недоступен; новые события находятся в памяти и будут дозаписаны автоматически."
     };
@@ -1487,6 +1638,7 @@ async function buildCostsReport(days, scope, workspaceId, requestedPeriod) {
     costPerPublishedPost:{costUsd:currentCostPerPost,costRub:convertRub(currentCostPerPost),publishedPosts:publishedTotal,changePct:percentChange(currentCostPerPost,previousCostPerPost)},
     wastedOnSkipped:{costUsd:wastedUsd,costRub:convertRub(wastedUsd),sharePct:selected.costUsd?wastedUsd/selected.costUsd*100:0},
     providers:providers, operations:operations, workspaces:workspaces, daily:daily,
+    budget: await costBudgetSnapshot(rate),
     infrastructure:Object.assign({},infrastructure,{
       estimatedMonthlyRub:convertRub(infrastructure.estimatedMonthlyUsd),
       services:infrastructure.services.map(function(s){return Object.assign({},s,{monthlyRub:convertRub(s.monthlyUsd)});})
@@ -2159,6 +2311,8 @@ async function initDb() {
     await flushCostEventBuffer();
     await cleanupCostEvents();
     scheduleCostRetentionCleanup();
+    startCostBudgetMonitor();
+    await evaluateCostBudget(false);
     await saveStateSnapshot();
     console.log("PostgreSQL ready");
     return true;
@@ -2822,6 +2976,7 @@ function visualRecipeFor(payload, index) {
 }
 
 async function generateNewsCover(payload) {
+  if (costEconomyMode()) return renderEconomyTextCard(payload);
   if (!OPENAI_API_KEY || !GENERATE_COVER_IF_MISSING) {
     throw new Error("Генерация обложек отключена");
   }
@@ -7476,6 +7631,7 @@ async function runEditorialV2(sources, options) {
 }
 
 async function retryUnavailableEditorialQueueItems() {
+  if (costEconomyMode()) return { checked: 0, repaired: 0, held: 0, skipped: 0, economyMode: true };
   if (!editorialV2Active() || !ANTHROPIC_API_KEY) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
   const probe = await anthropicEditorialProbe(false);
   if (!probe.ok) return { checked: 0, repaired: 0, held: 0, skipped: 0, error: probe.error || "Anthropic checker unavailable" };
@@ -7575,6 +7731,7 @@ async function retryUnavailableEditorialQueueItems() {
 // (writer + GPT/Claude check). Non-destructive: items the writer now skips are put on
 // hold with a reason instead of being deleted.
 async function rebuildQueueWithEditorialV2() {
+  if (costEconomyMode()) return { ok: false, economyMode: true, error: "Режим экономии: пересборка очереди приостановлена" };
   if (!editorialV2Active()) return { ok: false, error: "Редакция v2 выключена" };
   const wsId = currentWorkspaceId();
   if (collectorRunningWorkspaces.has(wsId)) return { ok: false, error: "Идёт сбор новостей, попробуйте позже" };
@@ -8877,6 +9034,15 @@ const server = http.createServer(async function(req, res) {
       const period = String(url.searchParams.get("period") || "").toLowerCase();
       return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId(), period), { "cache-control": "no-store" });
     }
+    if (req.method === "POST" && p === "/api/costs/budget") {
+      const body = await readJson(req);
+      const b = networkCostBudgetState();
+      if (Object.prototype.hasOwnProperty.call(body,"monthlyRub")) b.monthlyRub = Math.max(0, Number(body.monthlyRub || 0) || 0);
+      if (Object.prototype.hasOwnProperty.call(body,"dailyRub")) b.dailyRub = Math.max(0, Number(body.dailyRub || 0) || 0);
+      b.updatedAt = new Date().toISOString();
+      persistWorkspaceStore();
+      return sendJson(res,200,{ok:true,budget:await evaluateCostBudget(true)});
+    }
 
     if (req.method === "GET" && p === "/api/editorial/registry") {
       return sendJson(res, 200, { ok: true, registry: loadEditorialRegistry() });
@@ -9087,6 +9253,7 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/status") {
       const force = url.searchParams.get("refresh") === "1";
       const status = await buildSystemStatus(force);
+      status.costBudget = await costBudgetSnapshot();
       return sendJson(res, 200, status);
     }
 

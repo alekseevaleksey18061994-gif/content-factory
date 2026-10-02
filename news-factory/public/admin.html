@@ -2021,6 +2021,13 @@ button{line-height:1.2!important}
 /* Расходы */
 .cost-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .cost-toolbar select{min-height:38px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);padding:0 12px;font-weight:750}
+.cost-budget-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end}
+.cost-budget-grid input{width:100%;min-height:40px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);padding:0 12px}
+.cost-budget-grid label{display:grid;gap:5px;font-size:12px;color:var(--muted);font-weight:700}
+.cost-budget-track{height:10px;border-radius:99px;background:var(--soft);overflow:hidden;margin-top:10px}
+.cost-budget-fill{height:100%;background:var(--accent);width:0}.cost-budget-fill.warn{background:#e2a32b}.cost-budget-fill.danger{background:#d64b4b}
+.cost-budget-meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)}
+@media(max-width:600px){.cost-budget-grid{grid-template-columns:1fr 1fr}.cost-budget-grid button{grid-column:1/-1}}
 .cost-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .cost-kpi{padding:14px 15px;border:1px solid var(--line);border-radius:16px;background:var(--card-2)}
 .cost-kpi small{display:block;color:var(--muted);font-size:11px;font-weight:750;margin-bottom:6px}
@@ -2344,6 +2351,16 @@ button{line-height:1.2!important}
             <div class="cost-kpi"><small>Railway run-rate</small><b id="costRailway">—</b><span>Оценка в месяц</span></div>
           </div>
           <div class="notice" id="costNotice" style="margin-top:12px">Учёт начинается с момента включения этого раздела.</div>
+        </section>
+        <section class="card" style="margin-top:14px">
+          <div class="panel-title"><div><h3>Бюджет</h3><p>0 или пусто — лимит выключен.</p></div><span class="chip" id="costEconomyStatus">Обычный режим</span></div>
+          <div class="cost-budget-grid">
+            <label>Месяц, ₽<input id="costMonthlyBudget" type="number" min="0" step="100"></label>
+            <label>День, ₽<input id="costDailyBudget" type="number" min="0" step="100"></label>
+            <button onclick="saveCostBudget()">Сохранить</button>
+          </div>
+          <div class="cost-budget-track"><div id="costBudgetFill" class="cost-budget-fill"></div></div>
+          <div class="cost-budget-meta"><span id="costBudgetProgress">Бюджет не задан</span><span id="costBudgetDaily">Дневной лимит выключен</span></div>
         </section>
 
         <section class="card" style="margin-top:14px">
@@ -3482,13 +3499,30 @@ function tokenShort(v){
 function costServiceCard(name,rub,usd,calls,note){
   return '<div class="cost-service"><div class="cost-service-head"><div><b>'+esc(name)+'</b><small>'+esc(note||'')+'</small></div><b class="cost-service-price">'+moneyRub(rub)+'</b></div><small>'+moneyUsd(usd)+(calls!=null?' · '+Number(calls||0).toLocaleString('ru-RU')+' вызовов':'')+'</small></div>';
 }
+function renderCostBudget(b){
+  b=b||{};
+  var monthly=Number(b.monthlyBudgetRub||0),daily=Number(b.dailyBudgetRub||0),used=Number(b.monthToDateRub||0);
+  if(el('costMonthlyBudget')&&document.activeElement!==el('costMonthlyBudget'))el('costMonthlyBudget').value=monthly||'';
+  if(el('costDailyBudget')&&document.activeElement!==el('costDailyBudget'))el('costDailyBudget').value=daily||'';
+  var ratio=monthly?used/monthly:0,pct=Math.max(0,Math.min(100,ratio*100));
+  if(el('costBudgetFill')){el('costBudgetFill').style.width=pct+'%';el('costBudgetFill').className='cost-budget-fill'+(ratio>=1?' danger':ratio>=.8?' warn':'');}
+  if(el('costBudgetProgress'))el('costBudgetProgress').textContent=monthly?moneyRub(used)+' из '+moneyRub(monthly):'Месячный бюджет не задан';
+  if(el('costBudgetDaily'))el('costBudgetDaily').textContent=daily?'Сегодня '+moneyRub(b.todayRub||0)+' из '+moneyRub(daily):'Дневной лимит выключен';
+  if(el('costEconomyStatus'))el('costEconomyStatus').textContent=b.economyMode?'Режим экономии':'Обычный режим';
+}
+async function saveCostBudget(){
+  try{
+    var j=await api('/api/costs/budget',{method:'POST',body:JSON.stringify({monthlyRub:Number(el('costMonthlyBudget').value||0),dailyRub:Number(el('costDailyBudget').value||0)})});
+    renderCostBudget(j.budget||{});toast('Бюджет сохранён');await loadCosts(true);
+  }catch(e){toast('Бюджет: '+e.message)}
+}
 async function loadCosts(force){
   var days=Number((el('costDays')||{}).value||30);
   var scope=String((el('costScope')||{}).value||'network');
   try{
     if(el('costPeriod'))el('costPeriod').textContent='Обновляю…';
     var j=await api('/api/costs?days='+encodeURIComponent(days)+'&scope='+encodeURIComponent(scope));
-    var totals=j.totals||{},providers=j.providers||[],infra=j.infrastructure||{};
+    var totals=j.totals||{},providers=j.providers||[],infra=j.infrastructure||{};renderCostBudget(j.budget||{});
     var byProvider={};providers.forEach(function(x){byProvider[x.id]=x});
     var oa=byProvider.openai||{},an=byProvider.anthropic||{};
     if(el('costTotal'))el('costTotal').textContent=moneyRub(totals.costRub);
