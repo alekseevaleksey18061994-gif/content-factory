@@ -2699,6 +2699,8 @@ function noteSourceEvent(sourceOrItem, event, extra) {
   else if (event === "fetch_ok") { stat.errorStreak = 0; }
   else if (event === "junk") { recordOutcome(stat, "junk"); stat.lastJunkReason = String(extra && extra.reason || "").slice(0, 160); }
   else if (event === "useful") { recordOutcome(stat, "ok"); }
+  else if (event === "media_good") { stat.mediaGood = Number(stat.mediaGood || 0) + 1; stat.lastMediaScore = Number(extra && extra.score || 0); }
+  else if (event === "media_bad") { stat.mediaBad = Number(stat.mediaBad || 0) + 1; stat.lastMediaScore = Number(extra && extra.score || 0); }
 }
 
 // Pause sources that only bring junk or keep failing. Keeps at least a few
@@ -2928,6 +2930,10 @@ function buildSourceRankings() {
         Math.min(100, selectedPerCheck * 500) * 0.30 +
         reliability * 100 * 0.10
       );
+      const mediaGood = Number(stat.mediaGood || 0);
+      const mediaBad = Number(stat.mediaBad || 0);
+      const mediaSamples = mediaGood + mediaBad;
+      if (mediaSamples >= 5) rating -= Math.min(10, Math.round((mediaBad / mediaSamples) * 12));
       rating = Math.max(0, Math.min(100, rating));
     }
     let status = "Собираем данные";
@@ -2955,6 +2961,9 @@ function buildSourceRankings() {
       lastPublishedAt: stat.lastPublishedAt || "",
       useful: Number(stat.useful || 0),
       junk: Number(stat.junk || 0),
+      mediaGood: Number(stat.mediaGood || 0),
+      mediaBad: Number(stat.mediaBad || 0),
+      mediaGoodRate: (Number(stat.mediaGood || 0) + Number(stat.mediaBad || 0)) ? Number(stat.mediaGood || 0) / (Number(stat.mediaGood || 0) + Number(stat.mediaBad || 0)) : null,
       lastJunkReason: stat.lastJunkReason || "",
       autoPaused: source.autoPaused || null
     };
@@ -3301,15 +3310,16 @@ function extractArticleMediaCandidates(html, pageUrl) {
   const imageSeen = new Set();
   const videoSeen = new Set();
 
-  function addImage(raw, score, reason) {
+  function addImage(raw, score, reason, meta) {
     const url = canonicalizeUrl(htmlDecode(raw || ""), pageUrl);
     if (!url || !/^https?:\/\//i.test(url) || imageSeen.has(url)) return;
     if (/\.(svg|ico)(\?|$)/i.test(url)) return;
-    if (/(?:logo|avatar|icon|sprite|emoji|badge|pixel|tracker|placeholder|favicon)/i.test(url)) score -= 80;
-    if (/(?:article|news|upload|media|image|photo|press|cdn|content)/i.test(url)) score += 8;
-    if (score < 15) return;
+    let nextScore = Number(score || 0);
+    if (/(?:logo|avatar|icon|sprite|emoji|badge|pixel|tracker|placeholder|favicon)/i.test(url)) nextScore -= 80;
+    if (/(?:article|news|upload|media|image|photo|press|cdn|content)/i.test(url)) nextScore += 8;
+    if (nextScore < 15) return;
     imageSeen.add(url);
-    images.push({ url: url, score: score, reason: reason || "page_image" });
+    images.push(Object.assign({ url: url, score: nextScore, reason: reason || "page_image" }, meta || {}));
   }
 
   function addVideo(raw, score, reason) {
@@ -3344,13 +3354,14 @@ function extractArticleMediaCandidates(html, pageUrl) {
     let score = 30;
     const width = Number(widthMatch && widthMatch[1] || 0);
     const height = Number(heightMatch && heightMatch[1] || 0);
-    if (width >= 900 || height >= 600) score += 30;
+    if (width >= 1200 || height >= 800) score += 40;
+    else if (width >= 900 || height >= 600) score += 30;
     else if (width >= 500 || height >= 350) score += 15;
-    else if (width && height && (width < 220 || height < 160)) score -= 30;
+    else if (width && height && (width < 320 || height < 200)) score -= 35;
     const alt = String(altMatch && altMatch[1] || "");
     if (alt.length >= 20) score += 10;
-    if (/(?:logo|avatar|icon|banner|advert|реклам|логотип)/i.test(alt)) score -= 50;
-    addImage(raw, score, "article_img");
+    if (/(?:logo|avatar|icon|banner|advert|реклам|логотип|флаг|герб|скриншот|screenshot)/i.test(alt)) score -= 50;
+    addImage(raw, score, "article_img", { alt: alt.slice(0, 300), width: width, height: height });
   }
 
   const posterRe = /<video\b[^>]*poster=["']([^"']+)["'][^>]*>/gi;
@@ -3361,10 +3372,7 @@ function extractArticleMediaCandidates(html, pageUrl) {
 
   images.sort(function(a,b){ return b.score - a.score; });
   videos.sort(function(a,b){ return b.score - a.score; });
-  return {
-    images: images.slice(0, 10),
-    videos: videos.slice(0, 4)
-  };
+  return { images: images.slice(0, 12), videos: videos.slice(0, 4) };
 }
 
 function mediaPublicUrl(fileName) {
@@ -4465,13 +4473,31 @@ async function localImageFingerprint(mediaUrl) {
   if (!file || !fs.existsSync(file)) return null;
   try {
     const meta = await sharp(file).metadata();
-    const raw = await sharp(file).resize(16, 16, { fit: "fill" }).grayscale().raw().toBuffer();
+    const hashRaw = await sharp(file).resize(16, 16, { fit: "fill" }).grayscale().raw().toBuffer();
+    const probe = await sharp(file).resize(48, 48, { fit: "fill" }).grayscale().raw().toBuffer();
     const stats = await sharp(file).stats();
     let sum = 0;
-    for (const v of raw) sum += v;
-    const avg = sum / raw.length;
-    const bits = Array.from(raw, function(v){ return v >= avg ? 1 : 0; });
-    return { width: Number(meta.width || 0), height: Number(meta.height || 0), bits: bits, entropy: Number(stats.entropy || 0) };
+    for (const val of hashRaw) sum += val;
+    const avg = sum / hashRaw.length;
+    const bits = Array.from(hashRaw, function(val){ return val >= avg ? 1 : 0; });
+    let white = 0, dark = 0, edges = 0, edgeTotal = 0;
+    const w = 48;
+    for (let y = 0; y < 48; y += 1) {
+      for (let x = 0; x < 48; x += 1) {
+        const idx = y * w + x;
+        const val = probe[idx];
+        if (val >= 242) white += 1;
+        if (val <= 22) dark += 1;
+        if (x > 0) { edgeTotal += 1; if (Math.abs(val - probe[idx - 1]) >= 42) edges += 1; }
+        if (y > 0) { edgeTotal += 1; if (Math.abs(val - probe[idx - w]) >= 42) edges += 1; }
+      }
+    }
+    const pixels = probe.length || 1;
+    return {
+      width: Number(meta.width || 0), height: Number(meta.height || 0), bits: bits,
+      entropy: Number(stats.entropy || 0), whiteRatio: white / pixels, darkRatio: dark / pixels,
+      edgeDensity: edgeTotal ? edges / edgeTotal : 0
+    };
   } catch {
     return null;
   }
@@ -4504,6 +4530,36 @@ function isSourcePlaceholderImage(sourceName, newsId, fp) {
 // Logos, brand cards and flat graphics have very low entropy (~0.5–4); real photos ~6.5–7.8.
 const MEDIA_MIN_PHOTO_ENTROPY = 5;
 function looksLikeGraphic(fp) { return Boolean(fp) && fp.entropy > 0 && fp.entropy < MEDIA_MIN_PHOTO_ENTROPY; }
+function looksLikeScreenshot(fp) {
+  if (!fp) return false;
+  return (fp.whiteRatio >= 0.42 && fp.edgeDensity >= 0.075) ||
+    (fp.whiteRatio >= 0.56 && fp.entropy > 0 && fp.entropy < 6.4);
+}
+function assessMediaQuality(fp, candidate) {
+  const c = candidate || {};
+  const url = String(c.url || "").toLowerCase();
+  const alt = String(c.alt || "").toLowerCase();
+  let score = Math.max(0, Math.min(100, Number(c.score || 55)));
+  const reasons = [];
+  if (!fp) return { score: 0, pass: false, reasons: ["unreadable"] };
+  if (fp.width >= 1400 && fp.height >= 800) score += 14;
+  else if (fp.width >= 1000 && fp.height >= 600) score += 8;
+  else if (fp.width < 700 || fp.height < 400) { score -= 28; reasons.push("small"); }
+  if (looksLikeGraphic(fp)) { score -= 48; reasons.push("flat_graphic"); }
+  if (looksLikeScreenshot(fp)) { score -= 42; reasons.push("screenshot_like"); }
+  if (isLikelyThumbnailUrl(url)) { score -= 28; reasons.push("thumbnail"); }
+  if (/(?:screenshot|screen-shot|screencap|twitter|x\.com|tweet|tgme|telegram|status\/|post\/)/i.test(url + " " + alt)) {
+    score -= 22; reasons.push("social_screenshot");
+  }
+  if (/(?:logo|emblem|coat.?of.?arms|flag|герб|флаг|логотип|icon|avatar)/i.test(url + " " + alt)) {
+    score -= 35; reasons.push("logo_or_flag");
+  }
+  const ratio = fp.height ? fp.width / fp.height : 0;
+  if (ratio && (ratio < 0.58 || ratio > 2.25)) { score -= 12; reasons.push("awkward_ratio"); }
+  if (fp.entropy >= 6.2 && fp.whiteRatio < 0.35) score += 6;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  return { score: score, pass: score >= MEDIA_QUALITY_MIN_SCORE, reasons: reasons };
+}
 
 // Final clean-up of a post's photo set, used everywhere a pack is (re)built:
 // keeps order, puts a real photo first if the main one is a logo/graphic, and keeps
