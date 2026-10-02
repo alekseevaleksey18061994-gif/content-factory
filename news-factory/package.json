@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.43.1",
+  "version": "0.43.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,8 @@
     "test:costs-smoke": "node scripts/costs-smoke.js",
     "test:accounts-smoke": "node scripts/accounts-smoke.js",
     "test:seed-lists": "node scripts/seed-lists-test.js",
-    "test:promotion-smoke": "node scripts/promotion-smoke.js"
+    "test:promotion-smoke": "node scripts/promotion-smoke.js",
+    "test:scheduler-recovery": "node scripts/scheduler-recovery-smoke.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
