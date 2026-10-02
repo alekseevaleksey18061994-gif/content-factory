@@ -2263,6 +2263,72 @@ button{line-height:1.2!important}
   .network-kpis{grid-template-columns:1fr 1fr}
 }
 
+
+/* v0.43.1 — Promotion / audience growth */
+#promotionPage{
+  border-radius:28px;
+  padding:20px!important;
+  background:
+    radial-gradient(circle at 88% 8%,rgba(32,212,220,.11),transparent 31%),
+    radial-gradient(circle at 8% 88%,rgba(102,92,255,.06),transparent 32%),
+    linear-gradient(145deg,rgba(218,246,255,.82),rgba(229,244,255,.76));
+  border:1px solid rgba(76,151,198,.10);
+}
+.promotion-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.promotion-kpis .positive,.promotion-delta.positive,.promotion-network-metric .positive{color:#12865c}
+.promotion-kpis .negative,.promotion-delta.negative,.promotion-network-metric .negative{color:#c24a57}
+.promotion-two{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.75fr);gap:18px}
+.promotion-network{display:grid;gap:8px}
+.promotion-network-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 90px 90px 24px;
+  align-items:center;
+  gap:10px;
+  width:100%;
+  min-height:0;
+  text-align:left;
+  padding:11px 12px;
+  border:1px solid rgba(67,129,185,.14);
+  border-radius:15px;
+  background:rgba(249,253,255,.86);
+  box-shadow:none;
+  color:#081735;
+}
+.promotion-network-row:hover{transform:none;border-color:rgba(22,140,255,.28);background:#fff}
+.promotion-network-main{display:flex;align-items:center;gap:10px;min-width:0}
+.promotion-network-main>span:last-child{min-width:0}
+.promotion-network-main b,.promotion-network-main small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.promotion-network-main b{font-size:12.5px}.promotion-network-main small{font-size:10px;color:#687a96;margin-top:2px}
+.promotion-mini-avatar{width:36px;height:36px;flex:0 0 36px;border-radius:12px;display:grid;place-items:center;overflow:hidden;background:linear-gradient(135deg,#26d4d5,#168cff 62%,#665cff);color:#fff;font-size:10px;font-weight:900}
+.promotion-mini-avatar img{width:100%;height:100%;object-fit:cover}
+.promotion-network-metric{text-align:right}.promotion-network-metric b{display:block;font-size:13px}.promotion-network-metric small{display:block;color:#7687a0;font-size:9px;margin-top:2px}
+.promotion-network-arrow{color:#7890ac;text-align:right}
+.promotion-platforms{display:grid;gap:10px}
+.promotion-platform{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:11px;padding:13px;border:1px solid rgba(67,129,185,.14);border-radius:16px;background:rgba(249,253,255,.84)}
+.promotion-platform-icon{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(135deg,#24cfe0,#168cff);color:#fff;font-size:11px;font-weight:900}.promotion-platform-icon.vk{background:linear-gradient(135deg,#168cff,#526cff)}
+.promotion-platform b{display:block;font-size:20px}.promotion-platform small{display:block;color:#677a98;font-size:10.5px;margin-top:2px}
+.promotion-delta{font-size:12px;font-weight:800;color:#71829d}
+.promotion-top-posts{display:grid;gap:8px}
+.promotion-post{display:grid;grid-template-columns:32px minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px 4px;border-top:1px solid rgba(67,129,185,.13)}
+.promotion-post:first-child{border-top:0}
+.promotion-rank{width:28px;height:28px;border-radius:10px;background:rgba(22,140,255,.08);display:grid;place-items:center;color:#167fe0;font-size:11px;font-weight:900}
+.promotion-post-copy{min-width:0}.promotion-post-copy b{display:block;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.promotion-post-copy small{display:block;color:#6c7f9d;font-size:10px;margin-top:3px}
+.promotion-post a{font-size:10.5px;color:#167fe0;text-decoration:none;font-weight:700}
+.promotion-campaign-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.promotion-campaign-form label{display:grid;gap:4px;color:#5d7190;font-size:10px;font-weight:700}
+.promotion-campaign-form label input{width:100%}
+.promotion-campaign-form button{grid-column:1/-1}
+.promotion-campaigns{display:grid;gap:8px}
+.promotion-campaign-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 2px;border-top:1px solid rgba(67,129,185,.13)}
+.promotion-campaign-row:first-child{border-top:0}.promotion-campaign-row>div:last-child{text-align:right}
+.promotion-campaign-row b{display:block;font-size:12px}.promotion-campaign-row small{display:block;color:#6b7e9a;font-size:9.5px;margin-top:3px}
+.promotion-creative-result{display:grid;gap:9px;margin-top:12px}
+.promotion-creative-block{padding:12px 13px;border:1px solid rgba(67,129,185,.14);border-radius:15px;background:rgba(249,253,255,.84)}
+.promotion-creative-block small{display:block;color:#64809e;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+.promotion-creative-block b{display:block;font-size:13px;line-height:1.4}.promotion-creative-block p{margin:0;white-space:pre-wrap;font-size:12px;line-height:1.55;color:#263b5d}
+@media(max-width:1180px){.promotion-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.promotion-two{grid-template-columns:1fr}}
+@media(max-width:720px){#promotionPage{padding:14px!important;border-radius:22px}.promotion-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.promotion-network-row{grid-template-columns:minmax(0,1fr) 72px 24px}.promotion-network-row .promotion-network-metric:nth-of-type(3){display:none}.promotion-campaign-form{grid-template-columns:1fr}.promotion-campaign-form button{grid-column:auto}}
+
 </style>
 </head>
 <body>
@@ -2284,6 +2350,7 @@ button{line-height:1.2!important}
       <div class="side-title">Контроль</div>
       <button class="nav" data-page="calendarPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.2" width="17" height="15.3" rx="2.2"/><path d="M7.5 3.5v3.4M16.5 3.5v3.4M3.5 9h17"/><path d="M7.5 12.4h2M12 12.4h2M16.5 12.4h.1M7.5 16.2h2M12 16.2h2M16.5 16.2h.1"/></svg></span><b>Календарь публикаций</b></button>
       <button class="nav" data-page="statsPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V11.5h3.5V20M10.3 20V6.8h3.5V20M16.6 20V3.8h3.5V20"/><path d="M3 20.5h18"/></svg></span><b>Статистика</b></button>
+      <button class="nav" data-page="promotionPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13.5V9.8l11-4.3v12.3L4 13.5Z"/><path d="M15 8.5c2.8.4 4.5 1.7 5 3.2-1 1.6-2.7 2.8-5 3.2M6.5 14.4l1.2 4.1h3.1l-1.6-3"/></svg></span><b>Продвижение</b></button>
       <button class="nav" data-page="costsPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M15.8 8.5c-.8-.7-1.9-1-3.1-1-1.7 0-2.8.8-2.8 2 0 3.2 6.2 1.4 6.2 5 0 1.3-1.2 2.2-3.2 2.2-1.4 0-2.8-.5-3.7-1.3M12.7 5.6v12.8"/></svg></span><b>Расходы</b></button>
       <button class="nav" data-page="historyPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span><b>История</b></button>
       <button class="nav" data-page="modePage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.1 13.6a7.9 7.9 0 0 0 0-3.2l2-1.5-2-3.4-2.4 1a8 8 0 0 0-2.8-1.6L13.6 2H10.4l-.4 2.9a8 8 0 0 0-2.8 1.6l-2.4-1-2 3.4 2 1.5a7.9 7.9 0 0 0 0 3.2l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 2.8 1.6l.4 2.9h3.2l.4-2.9a8 8 0 0 0 2.8-1.6l2.4 1 2-3.4Z"/></svg></span><b>Режим работы</b></button>
@@ -2569,6 +2636,79 @@ button{line-height:1.2!important}
           <div class="notice" id="vkAnalyticsNote" style="margin-top:12px">Загружаю данные VK…</div>
           <div class="post-stats-list" id="vkPostStats" style="margin-top:12px"></div>
         </section>
+      </section>
+
+      <section class="page" id="promotionPage">
+        <div class="page-head">
+          <div><h2>Продвижение</h2><p>Рост аудитории по всей сети каналов: подписчики, динамика, кампании и лучшие посты.</p></div>
+          <button class="primary" id="promotionRefreshBtn" onclick="loadPromotion(true)">Обновить</button>
+        </div>
+
+        <div class="promotion-kpis">
+          <div class="kpi"><b id="promoSubscribers">—</b><span>Подписчики</span><small id="promoSubscribersMeta">Текущий канал</small></div>
+          <div class="kpi"><b id="promoDayGrowth">—</b><span>Рост за сутки</span><small>Telegram + VK</small></div>
+          <div class="kpi"><b id="promoWeekGrowth">—</b><span>Рост за 7 дней</span><small>Telegram + VK</small></div>
+          <div class="kpi"><b id="promoMonthGrowth">—</b><span>Рост за 30 дней</span><small>Telegram + VK</small></div>
+          <div class="kpi"><b id="promoSpend">—</b><span>Расходы на рост</span><small>Учтённые кампании</small></div>
+          <div class="kpi"><b id="promoCps">—</b><span>Цена подписчика</span><small>По атрибутированным кампаниям</small></div>
+        </div>
+
+        <div class="promotion-two">
+          <section class="card">
+            <div class="panel-title"><div><h3>Вся сеть каналов</h3><p id="promoNetworkSubtitle">Собираю аудиторию по аккаунтам…</p></div><span class="chip" id="promoTrackedChannels">—</span></div>
+            <div id="promoNetwork" class="promotion-network"><div class="empty">Загрузка…</div></div>
+          </section>
+
+          <section class="card">
+            <div class="panel-title"><div><h3>Текущий канал</h3><p id="promoCurrentName">—</p></div></div>
+            <div class="promotion-platforms">
+              <div class="promotion-platform"><span class="promotion-platform-icon">TG</span><div><b id="promoTgSubs">—</b><small>подписчиков Telegram</small></div><span id="promoTgWeek" class="promotion-delta">—</span></div>
+              <div class="promotion-platform"><span class="promotion-platform-icon vk">VK</span><div><b id="promoVkSubs">—</b><small>подписчиков VK</small></div><span class="promotion-delta">—</span></div>
+            </div>
+            <div class="notice" id="promoTrackingNote" style="margin-top:12px">История роста начнёт заполняться автоматически.</div>
+          </section>
+        </div>
+
+        <section class="card" style="margin-top:18px">
+          <div class="panel-title"><div><h3>Лучшие посты для продвижения</h3><p>Материалы с наибольшими просмотрами — кандидаты на посевы, Reels и Shorts.</p></div></div>
+          <div id="promoTopPosts" class="promotion-top-posts"><div class="empty">Загружаю лучшие публикации…</div></div>
+        </section>
+
+        <div class="promotion-two" style="margin-top:18px">
+          <section class="card">
+            <div class="panel-title"><div><h3>Кампании</h3><p>Фиксируй посевы и рекламные размещения — News Factory посчитает стоимость подписчика.</p></div><span class="chip" id="promoCampaignCount">0</span></div>
+            <div class="promotion-campaign-form">
+              <input id="promoCampaignName" placeholder="Название кампании">
+              <input id="promoCampaignSource" placeholder="Источник: канал / блогер / площадка">
+              <select id="promoCampaignType">
+                <option value="seeding">Telegram-посев</option>
+                <option value="reels">Reels</option>
+                <option value="shorts">YouTube Shorts</option>
+                <option value="vk">VK</option>
+                <option value="crosspromo">Перелив между каналами</option>
+                <option value="blogger">Блогер</option>
+                <option value="other">Другое</option>
+              </select>
+              <select id="promoCampaignPlatform">
+                <option value="telegram">Telegram</option>
+                <option value="vk">VK</option>
+                <option value="cross">Несколько площадок</option>
+              </select>
+              <label><span>Расход, ₽</span><input id="promoCampaignSpend" type="number" min="0" step="100" value="0"></label>
+              <label><span>Пришло подписчиков</span><input id="promoCampaignSubs" type="number" min="0" step="1" value="0"></label>
+              <label><span>Клики</span><input id="promoCampaignClicks" type="number" min="0" step="1" value="0"></label>
+              <button class="primary" id="promoCampaignSaveBtn" onclick="addPromotionCampaign()">Добавить кампанию</button>
+            </div>
+            <div class="notice" style="margin-top:12px">Источник подписки Telegram Bot API напрямую не показывает. Здесь фиксируется атрибуция по конкретному посеву/ссылке или данным рекламной площадки.</div>
+            <div id="promoCampaigns" class="promotion-campaigns" style="margin-top:12px"><div class="empty">Кампаний пока нет</div></div>
+          </section>
+
+          <section class="card">
+            <div class="panel-title"><div><h3>Рекламный креатив</h3><p>AI подготовит короткий рекламный пост и хук для Reels/Shorts на основе контента канала.</p></div><span class="chip">AI</span></div>
+            <button class="primary" id="promoCreativeBtn" onclick="generatePromotionCreative()">Создать креатив</button>
+            <div id="promoCreativeResult" class="promotion-creative-result"><div class="empty">Креатив ещё не создан.</div></div>
+          </section>
+        </div>
       </section>
 
       <section class="page" id="costsPage">
@@ -3369,6 +3509,7 @@ var pageRoutes={
   queuePage:'queue',
   publishPage:'publish',
   statsPage:'stats',
+  promotionPage:'promotion',
   costsPage:'costs',
   calendarPage:'calendar',
   historyPage:'history',
@@ -3385,7 +3526,7 @@ function goPage(id,options){
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
-  var titles={networkPage:'Общий дашборд',homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',costsPage:'Расходы',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
+  var titles={networkPage:'Общий дашборд',homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',promotionPage:'Продвижение',costsPage:'Расходы',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
   el('topTitle').textContent=titles[id]||'News Factory';
   var workspaceName=currentWorkspaceMeta.name||'News Factory';
   if(el('topSubtitleText'))el('topSubtitleText').textContent=id==='networkPage'?'Вся сеть каналов · ':id==='connectionsPage'?'Состояние News Factory, интеграции и хранение данных.':(id==='accountPage'?'Кабинет · '+workspaceName+' · ':workspaceName+' · ');
@@ -3395,6 +3536,7 @@ function goPage(id,options){
   if(id==='newsPage'){loadNews();loadCollectorStatus();}
   if(id==='calendarPage'){renderCalendar();}
   if(id==='statsPage'){loadAnalytics(false);}
+  if(id==='promotionPage'){loadPromotion(false);}
   if(id==='costsPage'){loadCosts(false);}
   if(id==='accountPage'){renderWorkspaceChrome();}
   if(id==='networkPage'){renderNetworkDashboard();}
@@ -3815,6 +3957,126 @@ function renderPlatformAnalytics(data){
       '<div class="post-stat-cell"><b>'+fmtMetric(p.reposts||0)+'</b><span>Репосты</span></div></div>';
   }).join(''):'<div class="analytics-empty">В сообществе пока нет доступных постов для статистики.</div>';
 }
+
+var promotionData=null;
+function promoFmtRub(v){
+  var n=Number(v||0);
+  return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(n)+' ₽';
+}
+function promoDelta(v){
+  if(v===null||v===undefined||!Number.isFinite(Number(v)))return '—';
+  var n=Number(v);
+  return (n>0?'+':'')+new Intl.NumberFormat('ru-RU').format(n);
+}
+function promoDeltaClass(v){
+  if(v===null||v===undefined||!Number.isFinite(Number(v)))return '';
+  return Number(v)>0?'positive':Number(v)<0?'negative':'';
+}
+async function loadPromotion(force){
+  var btn=el('promotionRefreshBtn');
+  if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
+  try{
+    var j=await api('/api/promotion'+(force?'?refresh=1':''));
+    promotionData=j;
+    renderPromotion(j);
+  }catch(e){
+    if(el('promoTrackingNote'))el('promoTrackingNote').textContent='Продвижение: '+e.message;
+    toast('Продвижение: '+e.message);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Обновить'}
+  }
+}
+function renderPromotion(data){
+  var cur=data.current||{},growth=cur.growth||{},campaign=cur.campaignSummary||{},network=data.network||{};
+  if(el('promoSubscribers'))el('promoSubscribers').textContent=fmtMetric(cur.totalSubscribers||0);
+  if(el('promoSubscribersMeta'))el('promoSubscribersMeta').textContent=cur.name||'Текущий канал';
+  if(el('promoDayGrowth')){el('promoDayGrowth').textContent=promoDelta(growth.day);el('promoDayGrowth').className=promoDeltaClass(growth.day)}
+  if(el('promoWeekGrowth')){el('promoWeekGrowth').textContent=promoDelta(growth.week);el('promoWeekGrowth').className=promoDeltaClass(growth.week)}
+  if(el('promoMonthGrowth')){el('promoMonthGrowth').textContent=promoDelta(growth.month);el('promoMonthGrowth').className=promoDeltaClass(growth.month)}
+  if(el('promoSpend'))el('promoSpend').textContent=promoFmtRub(campaign.spendRub||0);
+  if(el('promoCps'))el('promoCps').textContent=campaign.costPerSubscriber==null?'—':promoFmtRub(campaign.costPerSubscriber);
+  if(el('promoCurrentName'))el('promoCurrentName').textContent=(cur.name||'Канал')+(cur.handle?' · '+cur.handle:'');
+  if(el('promoTgSubs'))el('promoTgSubs').textContent=cur.telegramSubscribers==null?'—':fmtMetric(cur.telegramSubscribers);
+  if(el('promoVkSubs'))el('promoVkSubs').textContent=cur.vkSubscribers==null?'—':fmtMetric(cur.vkSubscribers);
+  if(el('promoTgWeek')){el('promoTgWeek').textContent=promoDelta(growth.week);el('promoTgWeek').className='promotion-delta '+promoDeltaClass(growth.week)}
+  if(el('promoTrackingNote'))el('promoTrackingNote').textContent=(data.tracking&&data.tracking.note)||'Рост аудитории отслеживается автоматически.';
+  if(el('promoTrackedChannels'))el('promoTrackedChannels').textContent=(network.trackedChannels||0)+'/'+((network.channels||[]).length||0);
+  if(el('promoNetworkSubtitle'))el('promoNetworkSubtitle').textContent='Всего '+fmtMetric(network.totalSubscribers||0)+' подписчиков'+(network.weekGrowth==null?'':' · '+promoDelta(network.weekGrowth)+' за 7 дней');
+
+  var rows=network.channels||[];
+  if(el('promoNetwork'))el('promoNetwork').innerHTML=rows.length?rows.map(function(row){
+    var g=row.growth||{};
+    return '<button class="promotion-network-row" type="button" onclick="openWorkspacePromotion(\''+esc(row.id)+'\')">'+
+      '<span class="promotion-network-main"><span class="promotion-mini-avatar">'+(row.avatarUrl?'<img src="'+esc(row.avatarUrl)+'" alt="">':esc(String(row.name||'NF').split(/\s+/).map(function(x){return x[0]||''}).join('').slice(0,2).toUpperCase()))+'</span><span><b>'+esc(row.name||'Канал')+'</b><small>'+esc(row.handle||'Telegram не настроен')+'</small></span></span>'+
+      '<span class="promotion-network-metric"><b>'+(row.telegramSubscribers==null?'—':fmtMetric(row.telegramSubscribers))+'</b><small>TG</small></span>'+
+      '<span class="promotion-network-metric"><b class="'+promoDeltaClass(g.week)+'">'+promoDelta(g.week)+'</b><small>7 дней</small></span>'+
+      '<span class="promotion-network-arrow">→</span>'+
+    '</button>';
+  }).join(''):'<div class="empty">Нет каналов для отслеживания</div>';
+
+  var posts=cur.topPosts||[];
+  if(el('promoTopPosts'))el('promoTopPosts').innerHTML=posts.length?posts.map(function(p,index){
+    return '<div class="promotion-post">'+
+      '<span class="promotion-rank">'+(index+1)+'</span>'+
+      '<div class="promotion-post-copy"><b>'+esc(p.title||'Публикация')+'</b><small>'+(p.platform==='vk'?'VK':'Telegram')+' · '+fmtMetric(p.views||0)+' просмотров · '+Number(p.engagementRate||0).toFixed(2)+'% ER</small></div>'+
+      (p.url?'<a href="'+esc(p.url)+'" target="_blank" rel="noopener">Открыть</a>':'')+
+    '</div>';
+  }).join(''):'<div class="empty">Пока недостаточно данных по публикациям.</div>';
+
+  var campaigns=campaign.campaigns||[];
+  if(el('promoCampaignCount'))el('promoCampaignCount').textContent=campaigns.length;
+  if(el('promoCampaigns'))el('promoCampaigns').innerHTML=campaigns.length?campaigns.map(function(x){
+    var cps=x.attributedSubscribers>0?x.spendRub/x.attributedSubscribers:null;
+    return '<div class="promotion-campaign-row"><div><b>'+esc(x.name||'Кампания')+'</b><small>'+esc(x.sourceName||x.sourceType||'Источник не указан')+' · '+esc(String(x.platform||'').toUpperCase())+'</small></div>'+
+      '<div><b>'+promoFmtRub(x.spendRub||0)+'</b><small>'+(x.attributedSubscribers||0)+' подписч.'+(cps==null?'':' · '+promoFmtRub(cps)+'/подп.')+'</small></div></div>';
+  }).join(''):'<div class="empty">Кампаний пока нет. Добавь первый посев или рекламное размещение.</div>';
+}
+function openWorkspacePromotion(id){
+  if(!id||id===activeWorkspaceId){goPage('promotionPage');return}
+  activeWorkspaceId=id;
+  localStorage.setItem('nf_workspace',id);
+  location.hash='#promotion';
+  location.reload();
+}
+async function addPromotionCampaign(){
+  var name=el('promoCampaignName').value.trim();
+  if(!name){toast('Укажите название кампании');return}
+  var btn=el('promoCampaignSaveBtn');if(btn){btn.disabled=true;btn.textContent='Сохраняю…'}
+  try{
+    await api('/api/promotion/campaigns',{method:'POST',body:JSON.stringify({
+      name:name,
+      sourceName:el('promoCampaignSource').value.trim(),
+      sourceType:el('promoCampaignType').value,
+      platform:el('promoCampaignPlatform').value,
+      spendRub:Number(el('promoCampaignSpend').value||0),
+      attributedSubscribers:Number(el('promoCampaignSubs').value||0),
+      clicks:Number(el('promoCampaignClicks').value||0)
+    })});
+    el('promoCampaignName').value='';
+    el('promoCampaignSource').value='';
+    el('promoCampaignSpend').value='0';
+    el('promoCampaignSubs').value='0';
+    el('promoCampaignClicks').value='0';
+    await loadPromotion(false);
+    toast('Кампания добавлена');
+  }catch(e){toast('Кампания: '+e.message)}
+  finally{if(btn){btn.disabled=false;btn.textContent='Добавить кампанию'}}
+}
+async function generatePromotionCreative(){
+  var btn=el('promoCreativeBtn'),box=el('promoCreativeResult');
+  if(btn){btn.disabled=true;btn.textContent='Генерирую…'}
+  if(box)box.innerHTML='<div class="empty">AI анализирует недавние темы канала…</div>';
+  try{
+    var j=await api('/api/promotion/creative',{method:'POST',body:'{}'});
+    var x=j.creative||{};
+    box.innerHTML='<div class="promotion-creative-block"><small>Заголовок</small><b>'+esc(x.headline||'—')+'</b></div>'+
+      '<div class="promotion-creative-block"><small>Рекламный пост</small><p>'+esc(x.telegramAd||'—')+'</p></div>'+
+      '<div class="promotion-creative-block"><small>Хук для Reels / Shorts</small><p>'+esc(x.shortVideoHook||'—')+'</p></div>'+
+      '<div class="promotion-creative-block"><small>CTA</small><p>'+esc(x.cta||'—')+'</p></div>';
+  }catch(e){box.innerHTML='<div class="notice">Не удалось создать креатив: '+esc(e.message)+'</div>'}
+  finally{if(btn){btn.disabled=false;btn.textContent='Создать креатив'}}
+}
+window.openWorkspacePromotion=openWorkspacePromotion;
 
 function renderDashboard(){
   var activeSources=(state.sources||[]).filter(function(x){return x.enabled}).length;
