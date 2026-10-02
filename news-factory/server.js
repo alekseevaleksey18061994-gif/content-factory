@@ -7742,6 +7742,12 @@ async function buildPromotionReport(force) {
     return found ? total : null;
   };
 
+  const vkGrowth = {
+    day: promotionDelta(currentVk, refreshedBaselines.day.get(selectedWorkspaceId + ":vk")),
+    week: promotionDelta(currentVk, refreshedBaselines.week.get(selectedWorkspaceId + ":vk")),
+    month: promotionDelta(currentVk, refreshedBaselines.month.get(selectedWorkspaceId + ":vk"))
+  };
+
   const campaigns = await promotionCampaignReport(selectedWorkspaceId);
   const networkTotalSubscribers = rows.reduce(function(sum,row){ return sum + Number(row.totalSubscribers || 0); }, 0);
   const networkWeekGrowthValues = rows.map(function(row){ return row.growth && row.growth.week; }).filter(function(v){ return v != null; });
@@ -7761,6 +7767,8 @@ async function buildPromotionReport(force) {
       vkSubscribers: currentVk,
       totalSubscribers: Number(currentRow.totalSubscribers || 0),
       growth: { day: sumGrowth("day"), week: sumGrowth("week"), month: sumGrowth("month") },
+      telegramGrowth: currentRow.growth || { day: null, week: null, month: null },
+      vkGrowth: vkGrowth,
       campaignSummary: campaigns,
       topPosts: details.topPosts,
       analytics: details.analytics
