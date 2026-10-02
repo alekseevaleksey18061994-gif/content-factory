@@ -1039,6 +1039,36 @@ function ensureConfiguredWorkspaces() {
 }
 ensureConfiguredWorkspaces();
 
+(function backfillChannelDnaV2SourceClasses(){
+  let changed = false;
+  const migration = "v0.44.0-channel-dna-v2";
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+    if (ws.state.migrations.includes(migration)) continue;
+    for (const source of (ws.state.sources || [])) {
+      if (!source) continue;
+      const next = sourceClassFor(source);
+      if (source.sourceClass !== next) {
+        source.sourceClass = next;
+        changed = true;
+      }
+    }
+    for (const item of (ws.state.queue || [])) {
+      if (!item) continue;
+      if (!item.sourceClass) item.sourceClass = sourceClassFor(item);
+    }
+    for (const item of (ws.state.history || [])) {
+      if (!item) continue;
+      if (!item.sourceClass) item.sourceClass = sourceClassFor(item);
+    }
+    ws.state.migrations.push(migration);
+    ws.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+  if (changed) persistWorkspaceStore();
+})();
+
 const state = new Proxy({}, {
   get: function(_target, prop){ return currentWorkspace().state[prop]; },
   set: function(_target, prop, value){ currentWorkspace().state[prop] = value; return true; },
@@ -11504,7 +11534,7 @@ async function seedChannelSources(ws) {
     if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
     state.sources.push({
       id: "seed-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-      name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
+      name: c.name, type: "web", group: c.group || "media", sourceClass: sourceClassFor(c), priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
       autoAdded: { at: new Date().toISOString(), from: "seed", why: "стартовый набор канала", reason: "seed" }
     });
