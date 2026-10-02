@@ -7,7 +7,8 @@ import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
-import { channelTopic, channelFocus, SOURCE_REWORK_V0430 } from "./lib/channel-dna.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430 } from "./lib/channel-dna.js";
+import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
@@ -1037,6 +1038,36 @@ function ensureConfiguredWorkspaces() {
   }
 }
 ensureConfiguredWorkspaces();
+
+(function backfillChannelDnaV2SourceClasses(){
+  let changed = false;
+  const migration = "v0.44.0-channel-dna-v2";
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+    if (ws.state.migrations.includes(migration)) continue;
+    for (const source of (ws.state.sources || [])) {
+      if (!source) continue;
+      const next = sourceClassFor(source);
+      if (source.sourceClass !== next) {
+        source.sourceClass = next;
+        changed = true;
+      }
+    }
+    for (const item of (ws.state.queue || [])) {
+      if (!item) continue;
+      if (!item.sourceClass) item.sourceClass = sourceClassFor(item);
+    }
+    for (const item of (ws.state.history || [])) {
+      if (!item) continue;
+      if (!item.sourceClass) item.sourceClass = sourceClassFor(item);
+    }
+    ws.state.migrations.push(migration);
+    ws.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+  if (changed) persistWorkspaceStore();
+})();
 
 const state = new Proxy({}, {
   get: function(_target, prop){ return currentWorkspace().state[prop]; },
@@ -2103,29 +2134,38 @@ function findStoryClusterCandidate(newItem) {
 
 
 function sourceEditorialRole(sourceOrItem) {
-  let group = String(sourceOrItem && (sourceOrItem.group || sourceOrItem.sourceGroup) || "").toLowerCase();
-  if (!group && sourceOrItem) {
-    const sourceId = String(sourceOrItem.sourceId || sourceOrItem.id || "");
-    const sourceName = String(sourceOrItem.sourceName || sourceOrItem.name || "");
+  const item = sourceOrItem || {};
+  const group = String(item.group || item.sourceGroup || "").toLowerCase();
+  if (group === "story") return "multi_source";
+
+  let resolved = item;
+  if (!item.group && !item.sourceGroup && !item.sourceClass && !item.source_class) {
+    const sourceId = String(item.sourceId || item.id || "");
+    const sourceName = String(item.sourceName || item.name || "");
     const ws = currentWorkspace();
     const source = ws && ws.state && Array.isArray(ws.state.sources)
-      ? ws.state.sources.find(function(item){
-          return item && ((sourceId && String(item.id || "") === sourceId) || (sourceName && String(item.name || "") === sourceName));
+      ? ws.state.sources.find(function(x){
+          return x && ((sourceId && String(x.id || "") === sourceId) || (sourceName && String(x.name || "") === sourceName));
         })
       : null;
-    group = String(source && source.group || "").toLowerCase();
+    if (source) resolved = source;
   }
-  if (group === "official") return "official_primary";
-  if (group === "blogger" || group === "creator") return "author_opinion";
-  if (group === "media") return "media_context";
-  if (group === "story") return "multi_source";
+
+  const sourceClass = sourceClassFor(resolved);
+  if (sourceClass === "OFFICIAL") return "official_primary";
+  if (sourceClass === "CREATOR") return "author_opinion";
+  if (sourceClass === "COMMUNITY") return "community_signal";
+  if (sourceClass === "SOCIAL") return "social_signal";
+  if (sourceClass === "MEDIA") return "media_context";
   return "context_source";
 }
 
 function sourceRoleLabel(role) {
   const map = {
     official_primary: "Официальный первичный источник",
-    author_opinion: "Авторское мнение/демонстрация",
+    author_opinion: "Автор/создатель контента",
+    community_signal: "Сообщество / пользовательская находка",
+    social_signal: "Соцсеть / вирусный первичный сигнал",
     media_context: "СМИ и дополнительный контекст",
     multi_source: "Несколько независимых источников",
     context_source: "Контекстный источник"
@@ -2280,6 +2320,7 @@ function buildDecisionExplanation(item) {
   if (!item) return { summary: "Нет данных", factors: [] };
   const diversity = editorialDiversityPenalty(item);
   const learning = editorialLearningBonus(item);
+  const strategy = channelStrategyScore(editorialChannelId(), item, recentHistoryItems(24), item);
   const base = Number(item.aiScore);
   const quality = Number(item.qualityScore);
   const factors = [];
@@ -2292,6 +2333,11 @@ function buildDecisionExplanation(item) {
   if (item.videoUrl) factors.push("Видео: приоритет +" + videoPriorityBonus(item, Number.isFinite(base) ? base : 60));
   if (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length > 1) factors.push("Media Pack: " + item.mediaPackUrls.length + " изображения");
   if (learning.bonus) factors.push("Обучение на статистике: " + (learning.bonus > 0 ? "+" : "") + learning.bonus);
+  factors.push("Тип контента: " + strategy.bucket);
+  factors.push("Источник: " + strategy.sourceClass);
+  if (strategy.fit && strategy.fit.score != null) factors.push("Channel Score: " + strategy.fit.score + "/10");
+  if (strategy.mix && strategy.mix.bonus) factors.push("Баланс контента: " + (strategy.mix.bonus > 0 ? "+" : "") + strategy.mix.bonus);
+  if (strategy.sourceBonus) factors.push("Бонус класса источника: +" + strategy.sourceBonus);
   if (diversity.penalty) factors.push("Штраф за повторяемость: -" + diversity.penalty);
   if (item.qcIssues && item.qcIssues.length) factors.push("QC: " + item.qcIssues.slice(0, 2).join("; "));
   return {
@@ -2299,6 +2345,7 @@ function buildDecisionExplanation(item) {
     factors: factors.slice(0, 10),
     diversityPenalty: diversity.penalty,
     learningBonus: learning.bonus,
+    channelStrategy: strategy,
     autoQualityMin: AUTO_QUALITY_MIN,
     autoEligible: autoQualityEligible(item)
   };
@@ -2450,7 +2497,7 @@ async function replenishSources(reason) {
       if (!check.ok) { rejected[key] = { at: new Date().toISOString(), reason: check.reason }; continue; }
       const source = {
         id: "auto-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", priority: 2,
+        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", sourceClass: sourceClassFor(c), priority: 2,
         url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
         autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" }
       };
@@ -2507,7 +2554,7 @@ async function prefilterCandidates(candidates, summary) {
       topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "",
       focus: channelFocus(channelId),
       today: new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Moscow" }).format(now),
-      items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
+      items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, sourceClass: sourceClassFor(candidate.source), date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
     });
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
@@ -2585,6 +2632,7 @@ function buildSourceRankings() {
     else if (rating != null) status = "Сильный";
     return {
       id: source.id,
+      sourceClass: source.sourceClass || sourceClassFor(source),
       rating: rating,
       status: status,
       checks: checks,
@@ -4934,6 +4982,9 @@ async function collectOnce(trigger) {
             topicEntities: qc.topicEntities,
             platformVariants: qc.platformVariants,
             sourceRole: sourceRole,
+            sourceClass: sourceClassFor(source),
+            contentBucket: editorialV2Meta && editorialV2Meta.contentBucket || "",
+            channelSignals: editorialV2Meta && editorialV2Meta.channelSignals || {},
             decisionSummary: qc.decisionSummary,
             mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
             editorialV2: editorialV2Meta,
@@ -5000,6 +5051,9 @@ async function collectOnce(trigger) {
             topicEntities: qc.topicEntities,
             platformVariants: qc.platformVariants,
             sourceRole: sourceRole,
+            sourceClass: sourceClassFor(source),
+            contentBucket: editorialV2Meta && editorialV2Meta.contentBucket || "",
+            channelSignals: editorialV2Meta && editorialV2Meta.channelSignals || {},
             decisionSummary: qc.decisionSummary,
             editorialV2: editorialV2Meta
           };
@@ -5181,9 +5235,12 @@ function videoPriorityBonus(item, baseScore) {
 
 function dynamicItemScore(item) {
   const aiScore = Number(item && item.aiScore);
+  const channelId = editorialChannelId();
+  const strategy = channelStrategyScore(channelId, item, recentHistoryItems(24), item);
 
   if (Number.isFinite(aiScore)) {
-    // Order of publication follows the 100-point post rating shown in the admin.
+    // The visible post rating stays 0–100. Selection gets an additional Channel DNA
+    // layer so a story that fits this specific channel can outrank generic "important" news.
     const base = Math.max(0, Math.min(100, queueItemRating(item)));
     const quality = Number(item && item.qualityScore);
     const qualityBonus = Number.isFinite(quality) ? Math.max(-8, Math.min(8, (quality - AUTO_QUALITY_MIN) * 0.35)) : -4;
@@ -5191,13 +5248,14 @@ function dynamicItemScore(item) {
     const learning = editorialLearningBonus(item);
     const storyBonus = item && item.storyCluster && Number(item.storyCluster.sourceCount) > 1 ? 4 : 0;
     const updateBonus = item && item.storyUpdateOf ? 2 : 0;
-    return Math.max(0, Math.min(100,
+    return Math.max(0, Math.min(124,
       base +
       videoPriorityBonus(item, base) +
       qualityBonus +
       learning.bonus +
       storyBonus +
-      updateBonus -
+      updateBonus +
+      strategy.totalBonus -
       diversity.penalty
     ));
   }
@@ -5206,7 +5264,7 @@ function dynamicItemScore(item) {
   const fallback = Math.min(74, Math.max(0, 68 - ageMinutes * 0.2));
   const diversity = editorialDiversityPenalty(item);
   const learning = editorialLearningBonus(item);
-  return Math.max(0, Math.min(79, fallback + videoPriorityBonus(item, fallback) + learning.bonus - diversity.penalty));
+  return Math.max(0, Math.min(103, fallback + videoPriorityBonus(item, fallback) + learning.bonus + strategy.totalBonus - diversity.penalty));
 }
 
 function dynamicUsedQueueIds() {
@@ -5510,6 +5568,9 @@ async function publishDynamicSlot(kind) {
       topicEntities: normalizeTopicEntities(item.topicEntities),
       platformVariants: item.platformVariants || null,
       sourceRole: item.sourceRole || sourceEditorialRole(item),
+      sourceClass: item.sourceClass || sourceClassFor(item),
+      contentBucket: item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || "",
+      channelSignals: item.channelSignals || (item.editorialV2 && item.editorialV2.channelSignals) || {},
       decisionSummary: item.decisionSummary || "",
       decisionExplanation: buildDecisionExplanation(item),
       repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
@@ -5539,6 +5600,9 @@ async function publishDynamicSlot(kind) {
     historyItem.qcStatus = item.qcStatus || historyItem.qcStatus || "";
     historyItem.topicEntities = normalizeTopicEntities(item.topicEntities || historyItem.topicEntities);
     historyItem.platformVariants = item.platformVariants || historyItem.platformVariants || null;
+    historyItem.sourceClass = item.sourceClass || sourceClassFor(item);
+    historyItem.contentBucket = item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || historyItem.contentBucket || "";
+    historyItem.channelSignals = item.channelSignals || (item.editorialV2 && item.editorialV2.channelSignals) || historyItem.channelSignals || {};
     historyItem.decisionExplanation = buildDecisionExplanation(item);
     historyItem.publicationOrigin = publishKind === "blogger"
       ? "blogger-schedule"
@@ -8484,6 +8548,7 @@ function editorialRecentPosts(limit) {
         ending_type: v2.endingType || "",
         title_emoji: v2.titleEmoji || "",
         crosspromo_target: v2.crosspromoTarget || null,
+        content_bucket: v2.contentBucket || item.contentBucket || "",
         entities: normalizeTopicEntities(item.topicEntities).slice(0, 4),
         audience: item.performanceScore == null ? undefined : (item.performanceScore >= 2 ? "выше среднего" : (item.performanceScore <= -2 ? "ниже среднего" : "средне"))
       };
@@ -8572,7 +8637,8 @@ async function runEditorialV2(sources, options) {
     network_recent: editorialNetworkRecent(),
     network_channels: editorialNetworkChannels(),
     registry: editorialRegistryForSources(sourceText),
-    has_photo: Boolean(opts.hasPhoto)
+    has_photo: Boolean(opts.hasPhoto),
+    channel_strategy: channelStrategy(channelId)
   };
   const formatStats = editorialFormatStats();
   if (formatStats) request.format_stats = formatStats;
@@ -8615,6 +8681,8 @@ async function runEditorialV2(sources, options) {
     endingType: post.endingType || "",
     titleEmoji: post.titleEmoji || "",
     crosspromoTarget: post.crosspromoTarget || null,
+    contentBucket: post.contentBucket || "",
+    channelSignals: post.channelSignals || {},
     album: Boolean(post.album),
     legalFlags: post.legalFlags || [],
     conflicts: post.conflicts || null,
@@ -8635,6 +8703,7 @@ async function runEditorialV2(sources, options) {
     status: outcome.status,
     verdict: outcome.verdict,
     importance: meta.importance,
+    contentBucket: meta.contentBucket || undefined,
     rounds: meta.rounds,
     checkers: checkerModels,
     errors: (outcome.errors || []).length,
@@ -8971,6 +9040,9 @@ async function retryUnavailableEditorialQueueItems() {
       item.aiScoreReason = rewrite.scoreReason || item.aiScoreReason || "";
       item.contentFormat = rewrite.contentFormat || item.contentFormat || "";
       item.contentFormatLabel = rewrite.contentFormatLabel || item.contentFormatLabel || "";
+      item.contentBucket = result.meta && result.meta.contentBucket || item.contentBucket || "";
+      item.channelSignals = result.meta && result.meta.channelSignals || item.channelSignals || {};
+      item.sourceClass = item.sourceClass || sourceClassFor(item);
       item.qualityScore = Number(qc.qualityScore || item.qualityScore || 0);
       item.qualityBreakdown = qc.qualityBreakdown || item.qualityBreakdown || {};
       item.qcStatus = qc.qcStatus || "hold";
@@ -9072,6 +9144,9 @@ async function rebuildQueueWithEditorialV2() {
         aiTier: v2.rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (v2.rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal"),
         contentFormat: v2.rewrite.contentFormat,
         contentFormatLabel: v2.rewrite.contentFormatLabel,
+        contentBucket: v2.meta && v2.meta.contentBucket || item.contentBucket || "",
+        channelSignals: v2.meta && v2.meta.channelSignals || item.channelSignals || {},
+        sourceClass: item.sourceClass || sourceClassFor(item),
         qualityScore: v2.qc.qualityScore,
         qualityBreakdown: v2.qc.qualityBreakdown,
         qcStatus: v2.qc.qcStatus,
@@ -11478,7 +11553,7 @@ async function seedChannelSources(ws) {
     if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
     state.sources.push({
       id: "seed-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-      name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
+      name: c.name, type: "web", group: c.group || "media", sourceClass: sourceClassFor(c), priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
       autoAdded: { at: new Date().toISOString(), from: "seed", why: "стартовый набор канала", reason: "seed" }
     });

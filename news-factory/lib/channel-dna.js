@@ -1,61 +1,138 @@
-// Channel DNA: what each channel of the network is, beyond "a news channel".
-// type: news | news_fun | blogger | trends (see prompts/chto-tam.md, section 9).
-// topic: short topic for the headline pre-filter and source discovery.
-// focus: extra pre-filter guidance — what besides plain news is worth keeping.
+// Channel DNA v2: each channel has its own editorial type, target content mix,
+// preferred source classes and scoring signals. The scheduler uses these values;
+// they are not just prompt instructions.
+
+export const SOURCE_CLASSES = ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"];
 
 export const CHANNEL_DNA = {
   ai: {
     type: "trends",
     topic: "искусственный интеллект: новости нейросетей и вирусные ИИ-находки — что люди сделали с ИИ, ролики и фото, которые разлетелись, новые ИИ-фильтры и приложения",
-    focus: "Кроме новостей компаний оставляй вирусные ИИ-видео и фото, необычные эксперименты людей с нейросетями, новые сервисы, которые все пробуют, приколы с ИИ. Скучные корпоративные пресс-релизы и отчёты о выручке оценивай низко."
+    focus: "Кроме новостей компаний оставляй вирусные ИИ-видео и фото, необычные эксперименты людей с нейросетями, новые сервисы, которые все пробуют, приколы с ИИ. Скучные корпоративные пресс-релизы и отчёты о выручке оценивай низко.",
+    mix: { important_news: 0.35, viral_find: 0.35, useful: 0.20, fun: 0.10 },
+    preferredSources: ["SOCIAL", "COMMUNITY", "CREATOR", "OFFICIAL", "MEDIA"],
+    scoreWeights: { virality: 0.28, utility: 0.20, discussion: 0.16, visual: 0.16, wow: 0.20 }
   },
-  auto: { type: "news_fun", topic: "автомобили, авторынок России и мира" },
-  money: { type: "news", topic: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии" },
-  tech: { type: "news", topic: "технологии и гаджеты: смартфоны, Apple, Android, приложения, интернет, связь" },
+  auto: {
+    type: "news_fun",
+    topic: "автомобили, авторынок России и мира",
+    focus: "Кроме обычных новостей оставляй реальные истории владельцев, видео, необычные машины, российские цены и практичные изменения для водителей.",
+    mix: { news: 0.45, owner_story: 0.20, unusual: 0.15, video: 0.10, practical: 0.10 },
+    preferredSources: ["MEDIA", "CREATOR", "OFFICIAL", "COMMUNITY", "SOCIAL"],
+    scoreWeights: { utility: 0.24, local: 0.22, discussion: 0.14, visual: 0.14, wow: 0.13, deal: 0.13 }
+  },
+  money: {
+    type: "news",
+    topic: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии",
+    focus: "В приоритете то, что влияет на деньги обычного человека: цены, банки, кредиты, комиссии, налоги, мошенничество и понятные объяснения.",
+    mix: { personal_impact: 0.55, explainer: 0.20, scams: 0.15, big_deal: 0.10 },
+    preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
+    scoreWeights: { utility: 0.36, local: 0.28, deal: 0.18, discussion: 0.10, wow: 0.08 }
+  },
+  tech: {
+    type: "news",
+    topic: "технологии и гаджеты: смартфоны, Apple, Android, приложения, интернет, связь",
+    focus: "Не дублируй общий ИИ-канал. ИИ сюда попадает, только если это функция конкретного продукта, приложения или устройства.",
+    mix: { product: 0.35, apps: 0.25, useful: 0.20, unusual: 0.10, industry: 0.10 },
+    preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
+    scoreWeights: { utility: 0.28, discussion: 0.18, visual: 0.14, wow: 0.14, local: 0.14, virality: 0.12 }
+  },
   games: {
     type: "blogger",
     topic: "видеоигры: релизы, трейлеры, обновления, скидки, слухи и жизнь игрового сообщества",
-    focus: "Оставляй и то, что обсуждают игроки: баги, мемы, находки сообщества, скандалы вокруг игр."
+    focus: "Оставляй и то, что обсуждают игроки: баги, мемы, находки сообщества, скандалы вокруг игр. Голос — игровой блогер для своих, не СМИ.",
+    mix: { release: 0.30, community: 0.30, video: 0.15, drama: 0.15, deal: 0.10 },
+    preferredSources: ["COMMUNITY", "CREATOR", "SOCIAL", "OFFICIAL", "MEDIA"],
+    scoreWeights: { discussion: 0.28, virality: 0.22, visual: 0.18, wow: 0.14, utility: 0.10, deal: 0.08 }
   },
   kino: {
     type: "blogger",
     topic: "кино и сериалы: премьеры, трейлеры, стриминги, сборы, кастинг, реакции зрителей",
-    focus: "Оставляй и обсуждаемое: первые реакции, провалы и рекорды, неожиданный кастинг, кадры со съёмок, что посмотреть вечером."
+    focus: "Подача как у своего человека: трейлеры, первые реакции, провалы, неожиданные кастинги, съёмки, мемы и что посмотреть.",
+    mix: { release: 0.25, reaction: 0.25, trailer: 0.20, backstage: 0.15, recommendation: 0.15 },
+    preferredSources: ["SOCIAL", "CREATOR", "COMMUNITY", "OFFICIAL", "MEDIA"],
+    scoreWeights: { discussion: 0.26, virality: 0.20, visual: 0.20, wow: 0.16, utility: 0.10, local: 0.08 }
   },
-  science: { type: "news_fun", topic: "наука: космос, животные, медицина, археология, необычные открытия" },
+  science: {
+    type: "news_fun",
+    topic: "наука: космос, животные, медицина, археология, необычные открытия",
+    focus: "Смещай ленту к вау-науке. Материал должен быть интересен человеку без научного образования и быстро объяснять, почему открытие удивляет или важно.",
+    mix: { wow: 0.45, space: 0.15, animals: 0.15, human: 0.15, future: 0.10 },
+    preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
+    scoreWeights: { wow: 0.30, visual: 0.18, utility: 0.16, discussion: 0.14, virality: 0.12, local: 0.10 }
+  },
   sport: {
     type: "news_fun",
     topic: "спорт: российский медийный спорт (поп-ММА — Hardcore, Top Dog, RCC, ACA, Наше Дело, Fight Nights; шоу «Титаны»; медиафутбол — Медиалига, Амкал, 2DROTS; бои блогеров), футбол, хоккей, UFC, бокс",
-    focus: "Поп-ММА, медиафутбол, бои блогеров, конфликты бойцов и вирусные спортивные моменты — по теме. Прогнозы на матчи с коэффициентами, промокоды и всё про ставки — отсеивай."
+    focus: "30–40% ленты — российский медийный спорт: поп-ММА, медиафутбол, шоу, бои блогеров, конфликты и вирусные моменты. Ставки и букмекеров отсеивай.",
+    mix: { mainstream: 0.50, media_sport: 0.35, viral: 0.15 },
+    preferredSources: ["CREATOR", "SOCIAL", "MEDIA", "OFFICIAL", "COMMUNITY"],
+    scoreWeights: { discussion: 0.24, virality: 0.20, local: 0.20, visual: 0.16, wow: 0.12, utility: 0.08 }
   },
   world: {
     type: "trends",
     topic: "вирусное в интернете: ролики и истории, которые все пересылают, мемы, тренды TikTok, Reels и YouTube, челленджи, интернет-феномены, вирусные приложения; без политики",
-    focus: "Это канал «Что там в сети?». Оставляй вирусные истории, мемы с историей, тренды соцсетей, челленджи. Политику, войны, криминал с пострадавшими и обычные мировые новости отсеивай."
+    focus: "Это канал «Что там в сети?». Оставляй вирусные истории, мемы с историей, тренды соцсетей, челленджи. Политику, войны, криминал с пострадавшими и обычные мировые новости отсеивай.",
+    mix: { viral_story: 0.45, meme_trend: 0.25, video: 0.20, app_phenomenon: 0.10 },
+    preferredSources: ["SOCIAL", "COMMUNITY", "CREATOR", "MEDIA", "OFFICIAL"],
+    scoreWeights: { virality: 0.34, discussion: 0.24, visual: 0.20, wow: 0.16, utility: 0.06 }
   },
   stars: {
     type: "blogger",
     topic: "знаменитости и шоу-бизнес: выступления, проекты, соцсети звёзд, образы, подтверждённые новости об отношениях",
-    focus: "Оставляй и то, что звёзды выложили в соцсетях и что обсуждают поклонники. Слухи о здоровье, беременности и детях звёзд отсеивай."
+    focus: "Коротко и эмоционально, как знакомый рассказывает, что произошло. Больше фото/видео, соцсетей, образов, выступлений и смешных эпизодов, без жёлтой агрессии.",
+    mix: { social: 0.30, performance: 0.20, funny: 0.20, style: 0.15, relationship: 0.15 },
+    preferredSources: ["SOCIAL", "CREATOR", "MEDIA", "COMMUNITY", "OFFICIAL"],
+    scoreWeights: { discussion: 0.26, virality: 0.24, visual: 0.20, wow: 0.16, local: 0.08, utility: 0.06 }
   },
-  travel: { type: "news_fun", topic: "путешествия для туристов из России: направления, визы и въезд, авиабилеты, необычные места, цены" },
+  travel: {
+    type: "news_fun",
+    topic: "путешествия для туристов из России: направления, визы и въезд, авиабилеты, необычные места, цены",
+    focus: "Не только правила въезда: необычные места, новые отели, выгодные направления, красивые маршруты, вирусные локации и полезные travel-фишки.",
+    mix: { practical: 0.35, unusual_place: 0.25, viral_location: 0.15, deal: 0.15, rules: 0.10 },
+    preferredSources: ["CREATOR", "MEDIA", "OFFICIAL", "SOCIAL", "COMMUNITY"],
+    scoreWeights: { utility: 0.26, visual: 0.22, local: 0.18, wow: 0.14, deal: 0.12, virality: 0.08 }
+  },
   shopping: {
     type: "trends",
     topic: "покупки глазами обычного покупателя: распродажи и реальные скидки, интересные и вирусные товары, Ozon, Wildberries, Яндекс Маркет, Авито для покупателей (возвраты, доставка, ПВЗ), магазины, права потребителя, мошенники",
-    focus: "Только то, что важно покупателю. Новости для продавцов маркетплейсов (комиссии селлеров, логистика, выручка площадок), обзоры гаджетов и макроэкономику отсеивай."
+    focus: "Только то, что важно покупателю. Новости для продавцов маркетплейсов, корпоративную выручку площадок и макроэкономику отсеивай.",
+    mix: { deal: 0.35, viral_product: 0.25, price_compare: 0.15, buyer_rights: 0.15, scam: 0.10 },
+    preferredSources: ["COMMUNITY", "SOCIAL", "CREATOR", "OFFICIAL", "MEDIA"],
+    scoreWeights: { deal: 0.28, utility: 0.26, virality: 0.16, discussion: 0.12, visual: 0.10, wow: 0.08 }
   },
   home: {
     type: "trends",
     topic: "дом: интерьер, ремонт, организация пространства, бытовая техника, умный дом, ЖКХ для жильцов; недвижимость — немного",
-    focus: "Интерьеры, ремонт, до/после, полезные вещи и ЖКХ для жильцов — по теме. Рынок недвижимости для инвесторов и застройщиков (сделки, выручка девелоперов) отсеивай; ипотеку и цены на жильё для людей оставляй, но оценивай ниже."
+    focus: "Интерьеры, ремонт, до/после, бытовая техника, умный дом и полезные решения. Недвижимость — максимум около 10% ленты, не деловая хроника девелоперов.",
+    mix: { interior: 0.25, renovation: 0.25, organization: 0.15, appliance: 0.15, smart_home: 0.10, real_estate: 0.10 },
+    preferredSources: ["CREATOR", "SOCIAL", "COMMUNITY", "MEDIA", "OFFICIAL"],
+    scoreWeights: { utility: 0.28, visual: 0.24, wow: 0.14, discussion: 0.12, deal: 0.12, virality: 0.10 }
   },
   food: {
     type: "blogger",
     topic: "еда: вирусные блюда и рецепты-тренды, новинки меню сетей и ресторанов, необычная еда, фуд-блогеры, цены на продукты",
-    focus: "Оставляй вирусные рецепты, новинки в меню, необычные продукты и гастротренды. Отраслевые новости (поставки, отчёты ресторанных компаний, регулирование) оценивай низко."
+    focus: "Больше интересного и развлекательного: вирусные блюда, необычные продукты, рестораны, фуд-блогеры, тесты, рецепты-тренды и смешные видео. Голос лёгкий и аппетитный.",
+    mix: { viral_food: 0.30, restaurant: 0.20, unusual: 0.20, creator: 0.15, prices: 0.15 },
+    preferredSources: ["SOCIAL", "CREATOR", "COMMUNITY", "MEDIA", "OFFICIAL"],
+    scoreWeights: { visual: 0.26, virality: 0.24, wow: 0.16, discussion: 0.14, utility: 0.12, deal: 0.08 }
   },
-  business: { type: "news", topic: "бизнес: компании, сделки, предприниматели, маркетплейсы для продавцов, бренды" },
-  crypto: { type: "news", topic: "криптовалюты для обычных людей: биткоин, Ethereum, TON, крупные движения, взломы, регулирование" }
+  business: {
+    type: "news",
+    topic: "бизнес: компании, сделки, предприниматели, маркетплейсы для продавцов, бренды",
+    focus: "Не перепечатка деловых СМИ: деньги, масштаб, предпринимательские истории, необычные бизнес-модели, провалы, стартапы и практический вывод.",
+    mix: { money_scale: 0.30, founder_story: 0.20, market: 0.20, startup: 0.15, failure: 0.15 },
+    preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
+    scoreWeights: { deal: 0.26, utility: 0.22, local: 0.16, discussion: 0.14, wow: 0.12, virality: 0.10 }
+  },
+  crypto: {
+    type: "news",
+    topic: "криптовалюты для обычных людей: биткоин, Ethereum, TON, крупные движения, взломы, регулирование",
+    focus: "Для обычного читателя: крупные движения BTC/ETH/TON, взломы, регулирование и полезные сервисы. Не забивай ленту мелкими токенами.",
+    mix: { major_market: 0.40, hack: 0.20, regulation: 0.15, useful: 0.15, unusual: 0.10 },
+    preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
+    scoreWeights: { deal: 0.24, utility: 0.22, discussion: 0.18, local: 0.14, virality: 0.12, wow: 0.10 }
+  }
 };
 
 export function channelTopic(channelId) {
@@ -64,6 +141,16 @@ export function channelTopic(channelId) {
 
 export function channelFocus(channelId) {
   return (CHANNEL_DNA[channelId] && CHANNEL_DNA[channelId].focus) || "";
+}
+
+export function channelStrategy(channelId) {
+  const dna = CHANNEL_DNA[channelId] || {};
+  return {
+    type: dna.type || "news",
+    mix: Object.assign({}, dna.mix || {}),
+    preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
+    scoreWeights: Object.assign({}, dna.scoreWeights || {})
+  };
 }
 
 // v0.43.0 source rework after the owner's review of the channels.
