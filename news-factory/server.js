@@ -2497,7 +2497,7 @@ async function replenishSources(reason) {
       if (!check.ok) { rejected[key] = { at: new Date().toISOString(), reason: check.reason }; continue; }
       const source = {
         id: "auto-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", priority: 2,
+        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", sourceClass: sourceClassFor(c), priority: 2,
         url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
         autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" }
       };
@@ -2554,7 +2554,7 @@ async function prefilterCandidates(candidates, summary) {
       topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "",
       focus: channelFocus(channelId),
       today: new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Moscow" }).format(now),
-      items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
+      items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, sourceClass: sourceClassFor(candidate.source), date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
     });
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
