@@ -10786,8 +10786,13 @@ setTimeout(function() {
 // server and adds what opens. Runs once per workspace and channel profile.
 async function seedChannelSources(ws) {
   const channelId = resolveChannelId(ws);
-  const seeds = SEED_SOURCES[channelId];
-  if (!seeds || channelId === "ai") return null;
+  if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") return null;
+  // Channels without a hand-made list get a starter set from AI discovery.
+  let seeds = SEED_SOURCES[channelId] || [];
+  if (seeds.length < 25) {
+    const found = await discoverSourcesWithAI(30).catch(function(){ return []; });
+    seeds = seeds.concat(found);
+  }
   if (!ws.channelId) ws.channelId = channelId;
   const aiDefaultIds = new Set(CURATED_SOURCES.map(function(x){ return x.id; }));
   const before = (state.sources || []).length;
@@ -10819,25 +10824,41 @@ async function seedChannelSources(ws) {
   saveState();
   return { channel: channelId, removedDefaults: removedDefaults, removed: removed, added: added, failed: failed, active: (state.sources || []).filter(function(x){ return x && x.enabled; }).length };
 }
-setTimeout(function() {
+// New network channels: seed sources and switch on auto-publishing. Runs at
+// start and every 15 minutes, so a channel created in the admin is picked up
+// without a restart.
+let channelSetupRunning = false;
+function setupNewChannels() {
+  if (channelSetupRunning) return;
+  channelSetupRunning = true;
   (async function(){
     for (const ws of workspaceStore.workspaces) {
       if (!ws || !ws.state) continue;
       const channelId = resolveChannelId(ws);
-      if (!SEED_SOURCES[channelId] || channelId === "ai") continue;
+      if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
       const migration = "v0.40.1-seed-" + channelId; // re-run: Telegram channels were merged into one key
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
-      if (ws.state.migrations.includes(migration)) continue;
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
-        const result = await seedChannelSources(ws);
-        state.migrations.push(migration);
-        saveState();
-        persistWorkspaceStore();
-        console.log("SOURCE_SEED " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+        if (!state.migrations.includes(migration)) {
+          const result = await seedChannelSources(ws);
+          state.migrations.push(migration);
+          saveState();
+          persistWorkspaceStore();
+          console.log("SOURCE_SEED " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+        }
+        // New network channel: switch on automatic publishing once all checks pass.
+        const autoMigration = "v0.40.3-auto-publish";
+        if (!state.migrations.includes(autoMigration) && !state.migrations.includes("v0.40.2-money-auto-publish")) {
+          const auto = await enableAutoPublishingAfterChecks(ws);
+          if (auto.enabled) { state.migrations.push(autoMigration); saveState(); }
+          console.log("AUTO_PUBLISH_SETUP " + JSON.stringify(Object.assign({ workspace: ws.id }, auto)));
+        }
       });
     }
-  })().catch(function(error){ console.warn("Source seed failed:", error.message); });
-}, 30000);
+  })().catch(function(error){ console.warn("Source seed failed:", error.message); }).finally(function(){ channelSetupRunning = false; });
+}
+setTimeout(setupNewChannels, 30000);
+setInterval(setupNewChannels, 15 * 60 * 1000);
 
 // Turn on automatic publishing for a new network channel only after checks:
 // Telegram channel set and reachable by the bot (can post), enough working
