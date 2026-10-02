@@ -6,6 +6,9 @@ import {
   parsePromptFile, buildSystemPrompt, loadPrompt, createEditorialPipeline, createModelClients,
   normalizeWriterResult, normalizeCheckerResult, mergeVerdicts, legacyScores, resolveChannelId, timeSlotFor
 } from "../lib/editorial-v2.js";
+import {
+  COST_STATE_MIGRATION_ID, collectLegacyCostRows, stripLegacyCostEvents
+} from "../lib/costs.js";
 
 const PROMPT = fileURLToPath(new URL("../prompts/chto-tam.md", import.meta.url));
 let passed = 0;
@@ -255,6 +258,47 @@ await test("Claude falls back when structured outputs are unavailable", async fu
   assert.equal(result.structured, false);
   assert.equal(seen[0].output_config.format.type, "json_schema");
   assert.equal(seen[1].output_config, undefined);
+});
+
+await test("cost migration: legacy state events are idempotent and removed after transfer", function() {
+  const workspaces = [{
+    id: "ai-main",
+    state: {
+      migrations: [],
+      costTracking: {
+        startedAt: "2026-10-01T00:00:00.000Z",
+        events: [{
+          id: "cost_legacy_1",
+          at: "2026-10-01T12:00:00.000Z",
+          workspaceId: "ai-main",
+          provider: "openai",
+          model: "gpt-x",
+          operation: "test",
+          endpoint: "responses",
+          kind: "text",
+          inputTokens: 10,
+          outputTokens: 3,
+          costUsd: 0.001,
+          pricingKnown: true,
+          estimated: false,
+          extra: {}
+        }]
+      }
+    }
+  }];
+  const first = collectLegacyCostRows(workspaces, COST_STATE_MIGRATION_ID);
+  const second = collectLegacyCostRows(workspaces, COST_STATE_MIGRATION_ID);
+  assert.equal(first.length, 1);
+  assert.equal(second.length, 1);
+  assert.equal(first[0].id, second[0].id);
+  const fakeDb = new Set();
+  first.concat(second).forEach(function(row){ fakeDb.add(row.id); });
+  assert.equal(fakeDb.size, 1, "ON CONFLICT(id) equivalent remains idempotent");
+  const stripped = stripLegacyCostEvents(workspaces, COST_STATE_MIGRATION_ID);
+  assert.equal(stripped.workspaces, 1);
+  assert.equal(workspaces[0].state.costTracking.events, undefined);
+  assert.ok(workspaces[0].state.migrations.includes(COST_STATE_MIGRATION_ID));
+  assert.equal(collectLegacyCostRows(workspaces, COST_STATE_MIGRATION_ID).length, 0);
 });
 
 await test("admin page script parses (guards against broken admin UI deploys)", async function() {

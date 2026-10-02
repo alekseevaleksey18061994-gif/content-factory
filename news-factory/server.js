@@ -15,6 +15,11 @@ import {
   loadPrompt as loadEditorialPrompt,
   CHANNEL_IDS as EDITORIAL_CHANNEL_IDS
 } from "./lib/editorial-v2.js";
+import {
+  COST_STATE_MIGRATION_ID,
+  collectLegacyCostRows,
+  stripLegacyCostEvents
+} from "./lib/costs.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
@@ -116,9 +121,9 @@ try {
   APP_VERSION = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")).version || APP_VERSION;
 } catch {}
 
-const COST_TRACKING_VERSION = 1;
-const COST_TRACKING_RETENTION_DAYS = Math.max(7, Math.min(180, Number(process.env.COST_TRACKING_RETENTION_DAYS || 62)));
-const COST_TRACKING_MAX_EVENTS = Math.max(1000, Math.min(100000, Number(process.env.COST_TRACKING_MAX_EVENTS || 25000)));
+const COST_TRACKING_VERSION = 2;
+const COST_TRACKING_RETENTION_DAYS = Math.max(30, Math.min(2000, Number(process.env.COST_TRACKING_RETENTION_DAYS || 400)));
+const COST_EVENT_BUFFER_MAX = 2000;
 const COST_PRICING_UPDATED_AT = "2026-10-02";
 const COST_PRICING = {
   openaiText: {
@@ -298,8 +303,7 @@ const defaultState = {
   stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 },
   costTracking: {
     version: COST_TRACKING_VERSION,
-    startedAt: new Date().toISOString(),
-    events: []
+    startedAt: new Date().toISOString()
   },
   migrations: [],
   updatedAt: new Date().toISOString()
@@ -464,7 +468,7 @@ function loadLegacyState() {
     loaded.costTracking = saved.costTracking && typeof saved.costTracking === "object"
       ? Object.assign(structuredClone(defaultState.costTracking), saved.costTracking)
       : structuredClone(defaultState.costTracking);
-    loaded.costTracking.events = Array.isArray(loaded.costTracking.events) ? loaded.costTracking.events : [];
+    if (saved.costTracking && Array.isArray(saved.costTracking.events)) loaded.costTracking.events = saved.costTracking.events;
     loaded.topicSettings = Object.assign(
       structuredClone(defaultState.topicSettings),
       saved.topicSettings && typeof saved.topicSettings === "object" ? saved.topicSettings : {}
@@ -578,7 +582,7 @@ function normalizeWorkspaceState(saved) {
   loaded.costTracking = source.costTracking && typeof source.costTracking === "object"
     ? Object.assign(structuredClone(defaultState.costTracking), source.costTracking)
     : structuredClone(defaultState.costTracking);
-  loaded.costTracking.events = Array.isArray(loaded.costTracking.events) ? loaded.costTracking.events : [];
+  if (source.costTracking && Array.isArray(source.costTracking.events)) loaded.costTracking.events = source.costTracking.events;
   loaded.costTracking.startedAt = String(loaded.costTracking.startedAt || new Date().toISOString());
   loaded.topicSettings = Object.assign(structuredClone(defaultState.topicSettings), source.topicSettings && typeof source.topicSettings === "object" ? source.topicSettings : {});
   loaded.topicSettings.default = Object.assign({ allow_text_fallback: false, auto_publish_telegram: true, auto_publish_vk: true }, loaded.topicSettings.default || {});
@@ -950,30 +954,112 @@ const state = new Proxy({}, {
   getOwnPropertyDescriptor: function(_target, prop){ const d = Object.getOwnPropertyDescriptor(currentWorkspace().state, prop); return d || { configurable: true, enumerable: true, writable: true, value: currentWorkspace().state[prop] }; }
 });
 
-let costPersistTimer = null;
 let cbrUsdRubCache = { at: 0, value: null };
 let infraSizeCache = { at: 0, mediaBytes: 0, dbBytes: 0 };
+const costEventBuffer = [];
+let costBufferFlushRunning = false;
+let costRetentionTimer = null;
 
 function ensureCostTracking(targetState) {
   if (!targetState.costTracking || typeof targetState.costTracking !== "object") {
-    targetState.costTracking = { version: COST_TRACKING_VERSION, startedAt: new Date().toISOString(), events: [] };
+    targetState.costTracking = { version: COST_TRACKING_VERSION, startedAt: new Date().toISOString() };
   }
-  if (!Array.isArray(targetState.costTracking.events)) targetState.costTracking.events = [];
+  targetState.costTracking.version = COST_TRACKING_VERSION;
   if (!targetState.costTracking.startedAt) targetState.costTracking.startedAt = new Date().toISOString();
-  const cutoff = Date.now() - COST_TRACKING_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  targetState.costTracking.events = targetState.costTracking.events.filter(function(e) {
-    const ts = new Date(e && e.at || 0).getTime();
-    return ts && ts >= cutoff;
-  }).slice(-COST_TRACKING_MAX_EVENTS);
   return targetState.costTracking;
 }
 
-function scheduleCostPersist() {
-  if (costPersistTimer) return;
-  costPersistTimer = setTimeout(function() {
-    costPersistTimer = null;
-    try { persistWorkspaceStore(); } catch (error) { console.warn("Cost ledger persist failed:", error.message); }
-  }, 1200);
+function bufferCostEvent(row) {
+  if (!row) return;
+  costEventBuffer.push(row);
+  if (costEventBuffer.length > COST_EVENT_BUFFER_MAX) {
+    costEventBuffer.splice(0, costEventBuffer.length - COST_EVENT_BUFFER_MAX);
+    console.warn("Cost event buffer reached limit; oldest events were dropped");
+  }
+}
+
+async function insertCostEventRow(row) {
+  if (!db || !dbReady) throw new Error("PostgreSQL unavailable");
+  await db.query(
+    `INSERT INTO cost_events(
+      id, at, workspace_id, provider, model, operation, endpoint, kind,
+      input_tokens, output_tokens, cached_input_tokens, cache_read_tokens, cache_write_tokens,
+      image_input_tokens, image_output_tokens, cost_usd, pricing_known, estimated, news_id, extra
+    ) VALUES(
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb
+    ) ON CONFLICT (id) DO NOTHING`,
+    [
+      row.id, row.at, row.workspaceId, row.provider, row.model, row.operation, row.endpoint, row.kind,
+      row.inputTokens, row.outputTokens, row.cachedInputTokens, row.cacheReadTokens, row.cacheWriteTokens,
+      row.imageInputTokens, row.imageOutputTokens, row.costUsd, row.pricingKnown, row.estimated,
+      row.newsId || null, JSON.stringify(row.extra || {})
+    ]
+  );
+}
+
+function persistCostEvent(row) {
+  if (!db || !dbReady) {
+    bufferCostEvent(row);
+    return;
+  }
+  insertCostEventRow(row).catch(function(error) {
+    bufferCostEvent(row);
+    console.warn("Cost event insert failed:", error.message);
+  });
+}
+
+async function flushCostEventBuffer() {
+  if (costBufferFlushRunning || !db || !dbReady || !costEventBuffer.length) return { flushed: 0, remaining: costEventBuffer.length };
+  costBufferFlushRunning = true;
+  let flushed = 0;
+  try {
+    while (costEventBuffer.length && dbReady) {
+      const row = costEventBuffer[0];
+      try {
+        await insertCostEventRow(row);
+        costEventBuffer.shift();
+        flushed += 1;
+      } catch (error) {
+        console.warn("Cost buffer flush failed:", error.message);
+        break;
+      }
+    }
+  } finally {
+    costBufferFlushRunning = false;
+  }
+  return { flushed: flushed, remaining: costEventBuffer.length };
+}
+
+async function migrateLegacyCostEventsToPostgres() {
+  if (!db || !dbReady) return { workspaces: 0, events: 0, skipped: true };
+  const rows = collectLegacyCostRows(workspaceStore.workspaces, COST_STATE_MIGRATION_ID);
+  let inserted = 0;
+  for (const row of rows) {
+    await insertCostEventRow(row);
+    inserted += 1;
+  }
+  const changed = stripLegacyCostEvents(workspaceStore.workspaces, COST_STATE_MIGRATION_ID);
+  if (changed.workspaces) persistWorkspaceStore();
+  console.log("Cost events legacy migration:", JSON.stringify({ workspaces: changed.workspaces, events: inserted }));
+  return { workspaces: changed.workspaces, events: inserted };
+}
+
+async function cleanupCostEvents() {
+  if (!db || !dbReady) return { deleted: 0 };
+  const result = await db.query(
+    "DELETE FROM cost_events WHERE at < NOW() - ($1::text || ' days')::interval",
+    [String(COST_TRACKING_RETENTION_DAYS)]
+  );
+  return { deleted: Number(result.rowCount || 0) };
+}
+
+function scheduleCostRetentionCleanup() {
+  if (costRetentionTimer) clearInterval(costRetentionTimer);
+  costRetentionTimer = setInterval(function() {
+    cleanupCostEvents().catch(function(error){ console.warn("Cost retention cleanup failed:", error.message); });
+    flushCostEventBuffer().catch(function(error){ console.warn("Cost buffer flush failed:", error.message); });
+  }, 24 * 60 * 60 * 1000);
+  if (costRetentionTimer && typeof costRetentionTimer.unref === "function") costRetentionTimer.unref();
 }
 
 function normalizeUsageNumber(value) {
@@ -1068,14 +1154,16 @@ function recordCostUsage(event) {
   const model = String(e.model || "unknown");
   const endpoint = String(e.endpoint || (provider === "anthropic" ? "messages" : "responses"));
   const priced = calculateUsageCost(provider, model, e.usage || {}, endpoint);
-  const tracking = ensureCostTracking(currentWorkspace().state);
+  const extra = e.extra && typeof e.extra === "object" ? e.extra : {};
   const row = {
-    id: "cost_" + crypto.randomBytes(6).toString("hex"),
+    id: "cost_" + crypto.randomBytes(10).toString("hex"),
     at: new Date().toISOString(),
     workspaceId: currentWorkspaceId(),
-    provider, model,
+    provider: provider,
+    model: model,
     operation: String(e.purpose || e.operation || "api_call").slice(0, 80),
-    endpoint, kind: priced.kind,
+    endpoint: endpoint,
+    kind: priced.kind,
     inputTokens: priced.inputTokens,
     outputTokens: priced.outputTokens,
     cachedInputTokens: priced.cachedInputTokens,
@@ -1087,11 +1175,10 @@ function recordCostUsage(event) {
     costUsd: Number(priced.costUsd || 0),
     pricingKnown: Boolean(priced.pricingKnown),
     estimated: Boolean(priced.estimated),
-    extra: e.extra && typeof e.extra === "object" ? e.extra : {}
+    newsId: String(e.newsId || extra.news_id || extra.newsId || "").trim() || null,
+    extra: extra
   };
-  tracking.events.push(row);
-  if (tracking.events.length > COST_TRACKING_MAX_EVENTS) tracking.events.splice(0, tracking.events.length - COST_TRACKING_MAX_EVENTS);
-  scheduleCostPersist();
+  persistCostEvent(row);
   return row;
 }
 
@@ -1206,63 +1293,134 @@ async function getInfrastructureEstimate() {
 
 async function buildCostsReport(days, scope, workspaceId) {
   const safeDays = Math.max(1, Math.min(COST_TRACKING_RETENTION_DAYS, Number(days || 30)));
-  const cutoff = Date.now() - safeDays * 24 * 60 * 60 * 1000;
-  const allEvents = [];
-  let startedAt = "";
-  for (const ws of workspaceStore.workspaces) {
-    if (scope === "workspace" && ws.id !== workspaceId) continue;
-    const tracking = ensureCostTracking(ws.state);
-    if (!startedAt || new Date(tracking.startedAt).getTime() < new Date(startedAt).getTime()) startedAt = tracking.startedAt;
-    for (const event of tracking.events) {
-      const ts = new Date(event && event.at || 0).getTime();
-      if (ts && ts >= cutoff) allEvents.push(Object.assign({}, event, { workspaceName: ws.name }));
-    }
-  }
-  const providers = new Map(), operations = new Map(), workspaces = new Map(), daysMap = new Map();
-  let totalUsd = 0, unpricedCalls = 0, totalCalls = 0, totalInputTokens = 0, totalOutputTokens = 0;
-
-  function addBucket(map, key, seed, event) {
-    if (!map.has(key)) map.set(key, Object.assign({ calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0 }, seed));
-    const b = map.get(key);
-    b.calls += 1;
-    b.costUsd += Number(event.costUsd || 0);
-    b.inputTokens += Number(event.inputTokens || 0);
-    b.outputTokens += Number(event.outputTokens || 0);
-    if (!event.pricingKnown) b.unpricedCalls += 1;
-  }
-
-  for (const event of allEvents) {
-    totalCalls += 1;
-    totalUsd += Number(event.costUsd || 0);
-    totalInputTokens += Number(event.inputTokens || 0);
-    totalOutputTokens += Number(event.outputTokens || 0);
-    if (!event.pricingKnown) unpricedCalls += 1;
-    addBucket(providers, event.provider, { id: event.provider, name: providerLabel(event.provider) }, event);
-    addBucket(operations, event.provider + "|" + event.operation + "|" + event.model, {
-      provider: event.provider, providerName: providerLabel(event.provider),
-      operation: event.operation, operationLabel: operationLabel(event.operation), model: event.model
-    }, event);
-    addBucket(workspaces, event.workspaceId, { id: event.workspaceId, name: event.workspaceName || event.workspaceId }, event);
-    const day = String(event.at || "").slice(0, 10);
-    if (day) addBucket(daysMap, day, { day }, event);
-  }
-
   const rate = await getUsdRubRate();
   const infrastructure = await getInfrastructureEstimate();
-  const toRows = function(map){ return Array.from(map.values()).sort(function(a,b){ return b.costUsd - a.costUsd || b.calls - a.calls; }); };
-  const convertRub = function(usd){ return rate ? usd * rate : null; };
+  const convertRub = function(usd){ return rate ? Number(usd || 0) * rate : null; };
+  const workspaceOnly = scope === "workspace";
+  const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000);
+  const params = workspaceOnly ? [cutoff.toISOString(), workspaceId] : [cutoff.toISOString()];
+  const where = "WHERE at >= $1" + (workspaceOnly ? " AND workspace_id=$2" : "");
+
+  if (!db || !dbReady) {
+    return {
+      ok: false,
+      scope: workspaceOnly ? "workspace" : "network",
+      days: safeDays,
+      dbReady: false,
+      bufferedEvents: costEventBuffer.length,
+      trackingStartedAt: new Date().toISOString(),
+      pricingUpdatedAt: COST_PRICING_UPDATED_AT,
+      currency: { usdRub: rate, source: rate ? "CBR" : "USD only" },
+      totals: { costUsd: 0, costRub: 0, calls: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0 },
+      providers: [], operations: [], workspaces: [], daily: [],
+      infrastructure: Object.assign({}, infrastructure, {
+        estimatedMonthlyRub: convertRub(infrastructure.estimatedMonthlyUsd),
+        services: infrastructure.services.map(function(s){ return Object.assign({}, s, { monthlyRub: convertRub(s.monthlyUsd) }); })
+      }),
+      freeServices: [],
+      note: "PostgreSQL временно недоступен; новые события находятся в памяти и будут дозаписаны автоматически."
+    };
+  }
+
+  const totalQ = await db.query(
+    `SELECT
+      COUNT(*)::int AS calls,
+      COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
+      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens,
+      COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
+      MIN(at) AS started_at
+    FROM cost_events ${where}`, params
+  );
+  const providerQ = await db.query(
+    `SELECT provider AS id, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
+      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+    FROM cost_events ${where}
+    GROUP BY provider ORDER BY cost_usd DESC, calls DESC`, params
+  );
+  const operationQ = await db.query(
+    `SELECT provider, operation, model, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
+      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+    FROM cost_events ${where}
+    GROUP BY provider, operation, model ORDER BY cost_usd DESC, calls DESC`, params
+  );
+  const workspaceQ = await db.query(
+    `SELECT workspace_id AS id, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
+      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+    FROM cost_events ${where}
+    GROUP BY workspace_id ORDER BY cost_usd DESC, calls DESC`, params
+  );
+  const dailyQ = await db.query(
+    `SELECT to_char(at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') AS day,
+      COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
+      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+    FROM cost_events ${where}
+    GROUP BY 1 ORDER BY 1`, params
+  );
+
+  const total = totalQ.rows[0] || {};
+  const workspaceNames = new Map(workspaceStore.workspaces.map(function(ws){ return [ws.id, ws.name || ws.id]; }));
+  const trackingStarts = workspaceStore.workspaces
+    .filter(function(ws){ return !workspaceOnly || ws.id === workspaceId; })
+    .map(function(ws){ return ensureCostTracking(ws.state).startedAt; })
+    .filter(Boolean)
+    .sort();
+  const trackingStartedAt = total.started_at || trackingStarts[0] || new Date().toISOString();
+
+  const providers = providerQ.rows.map(function(x){
+    const costUsd = Number(x.cost_usd || 0);
+    return {
+      id: x.id, name: providerLabel(x.id), calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
+      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+    };
+  });
+  const operations = operationQ.rows.map(function(x){
+    const costUsd = Number(x.cost_usd || 0);
+    return {
+      provider: x.provider, providerName: providerLabel(x.provider), operation: x.operation,
+      operationLabel: operationLabel(x.operation), model: x.model, calls: Number(x.calls || 0),
+      costUsd: costUsd, costRub: convertRub(costUsd), inputTokens: Number(x.input_tokens || 0),
+      outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+    };
+  });
+  const workspaces = workspaceQ.rows.map(function(x){
+    const costUsd = Number(x.cost_usd || 0);
+    return {
+      id: x.id, name: workspaceNames.get(x.id) || x.id, calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
+      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+    };
+  });
+  const daily = dailyQ.rows.map(function(x){
+    const costUsd = Number(x.cost_usd || 0);
+    return {
+      day: x.day, calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
+      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+    };
+  });
+
+  const totalUsd = Number(total.cost_usd || 0);
   return {
     ok: true,
-    scope: scope === "workspace" ? "workspace" : "network",
+    scope: workspaceOnly ? "workspace" : "network",
     days: safeDays,
-    trackingStartedAt: startedAt || new Date().toISOString(),
+    dbReady: true,
+    bufferedEvents: costEventBuffer.length,
+    trackingStartedAt: trackingStartedAt,
     pricingUpdatedAt: COST_PRICING_UPDATED_AT,
     currency: { usdRub: rate, source: rate ? "CBR" : "USD only" },
-    totals: { costUsd: totalUsd, costRub: convertRub(totalUsd), calls: totalCalls, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, unpricedCalls },
-    providers: toRows(providers).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
-    operations: toRows(operations).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
-    workspaces: toRows(workspaces).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
-    daily: Array.from(daysMap.values()).sort(function(a,b){ return a.day.localeCompare(b.day); }).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
+    totals: {
+      costUsd: totalUsd, costRub: convertRub(totalUsd), calls: Number(total.calls || 0),
+      inputTokens: Number(total.input_tokens || 0), outputTokens: Number(total.output_tokens || 0),
+      unpricedCalls: Number(total.unpriced_calls || 0)
+    },
+    providers: providers,
+    operations: operations,
+    workspaces: workspaces,
+    daily: daily,
     infrastructure: Object.assign({}, infrastructure, {
       estimatedMonthlyRub: convertRub(infrastructure.estimatedMonthlyUsd),
       services: infrastructure.services.map(function(s){ return Object.assign({}, s, { monthlyRub: convertRub(s.monthlyUsd) }); })
@@ -1272,7 +1430,7 @@ async function buildCostsReport(days, scope, workspaceId) {
       { name: "VK API", costUsd: 0, note: "Отдельной платы за API-публикации нет" },
       { name: "Sharp", costUsd: 0, note: "Улучшение исходных фото выполняется локально; расход идёт только в Railway CPU/RAM" }
     ],
-    note: "API-расходы считаются по usage из ответов моделей с момента включения учёта. Исторические расходы до этой версии не восстанавливаются."
+    note: "API-расходы хранятся в PostgreSQL; события старше " + COST_TRACKING_RETENTION_DAYS + " дней удаляются автоматически."
   };
 }
 
@@ -1930,6 +2088,10 @@ async function initDb() {
     `);
     await runMigrations();
     dbReady = true;
+    await migrateLegacyCostEventsToPostgres();
+    await flushCostEventBuffer();
+    await cleanupCostEvents();
+    scheduleCostRetentionCleanup();
     await saveStateSnapshot();
     console.log("PostgreSQL ready");
     return true;
