@@ -34,8 +34,15 @@ jobs:
 
       - name: Find changes to review
         id: range
+        env:
+          # workflow_dispatch input goes through an env var, never interpolated into the script text
+          SINCE_INPUT: ${{ github.event.inputs.since }}
         run: |
-          SINCE="${{ github.event.inputs.since || '24 hours ago' }}"
+          SINCE="${SINCE_INPUT:-24 hours ago}"
+          if ! printf '%s' "$SINCE" | grep -Eq '^[A-Za-z0-9 :.+-]{1,64}$'; then
+            echo "Invalid 'since' value (allowed: letters, digits, space, : . + -; max 64 chars)" >&2
+            exit 1
+          fi
           BASE=$(git rev-list -n 1 --before="$SINCE" HEAD -- || true)
           if [ -z "$BASE" ]; then BASE=$(git rev-list --max-parents=0 HEAD | tail -1); fi
           COUNT=$(git rev-list --count "$BASE"..HEAD -- news-factory)
