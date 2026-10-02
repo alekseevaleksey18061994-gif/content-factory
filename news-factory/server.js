@@ -65,6 +65,10 @@ const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5
 const HEADLINE_PREFILTER_ENABLED = String(process.env.HEADLINE_PREFILTER_ENABLED || "true").toLowerCase() !== "false";
 const SOURCE_AUTO_PAUSE_ENABLED = String(process.env.SOURCE_AUTO_PAUSE_ENABLED || "true").toLowerCase() !== "false";
 const POST_RATING_MIN_AUTO = Math.max(0, Math.min(100, Number(process.env.POST_RATING_MIN_AUTO || 50)));
+// Nothing waits for a human: below POST_RATING_MIN_AUTO a post is a reserve
+// (published only when no better post is available), below
+// POST_RATING_DROP_BELOW it is removed from the queue automatically.
+const POST_RATING_DROP_BELOW = Math.max(0, Math.min(100, Number(process.env.POST_RATING_DROP_BELOW || 35)));
 const SOURCES_MIN_ACTIVE = Math.max(0, Math.min(200, Number(process.env.SOURCES_MIN_ACTIVE || 40)));
 const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 120));
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
@@ -2100,7 +2104,42 @@ function ratingBelowAutoThreshold(item) {
 
 function autoQualityEligible(item) {
   const score = Number(item && item.qualityScore);
-  return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold" && !ratingBelowAutoThreshold(item);
+  return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold" && queueItemRating(item) >= POST_RATING_DROP_BELOW;
+}
+
+// Why a queue item can never be published automatically (removed by autoResolveQueue).
+function autoRejectReason(item) {
+  if (!item || !item.newsId) return "";
+  const rating = queueItemRating(item);
+  if (POST_RATING_DROP_BELOW > 0 && rating < POST_RATING_DROP_BELOW) return "рейтинг " + rating + " из 100 ниже " + POST_RATING_DROP_BELOW;
+  const verdict = item.editorialV2 && item.editorialV2.verdict;
+  if (item.qcStatus === "hold" && verdict === "reject") return "проверка GPT/Claude нашла ошибки и отклонила пост";
+  if (item.qcStatus === "hold" && verdict === "fix_exhausted") return "ошибки не исправлены за отведённые раунды";
+  if (item.qcStatus === "hold" && verdict === "copyright_overlap") return "текст слишком близок к источнику";
+  return "";
+}
+
+async function autoResolveQueue() {
+  const removed = [];
+  const keep = [];
+  for (const item of (state.queue || [])) {
+    const reason = autoRejectReason(item);
+    if (!reason) { keep.push(item); continue; }
+    removed.push({ item: item, reason: reason });
+  }
+  if (!removed.length) return { removed: 0 };
+  state.queue = keep;
+  saveState();
+  for (const r of removed) {
+    console.log("QUEUE_AUTO_REJECTED " + JSON.stringify({ workspace: currentWorkspaceId(), newsId: r.item.newsId, title: String(r.item.title || "").slice(0, 80), reason: r.reason }));
+    if (db && dbReady) {
+      try {
+        await db.query("UPDATE news_items SET status='auto_rejected', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
+          [r.item.newsId, JSON.stringify({ autoRejectReason: r.reason, autoRejectedAt: new Date().toISOString() }), currentWorkspaceId()]);
+      } catch (error) { console.warn("Auto reject status update failed:", error.message); }
+    }
+  }
+  return { removed: removed.length };
 }
 
 function buildDecisionExplanation(item) {
@@ -4957,6 +4996,12 @@ function dynamicUsedQueueIds() {
 }
 
 function dynamicBestQueueItem(kind) {
+  // Posts at or above the rating threshold first; reserve posts only when none is available.
+  const best = dynamicBestQueueItemRaw(kind, true);
+  return best || dynamicBestQueueItemRaw(kind, false);
+}
+
+function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const used = dynamicUsedQueueIds();
   const maxAge = DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000;
   const wantsBlogger = kind === "blogger";
@@ -4965,6 +5010,7 @@ function dynamicBestQueueItem(kind) {
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= maxAge)) return false;
       if (!autoQualityEligible(item)) return false;
+      if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item);
       if (wantsRussianAi) return isRussianAISource(item);
       return !isBloggerSource(item) && !isRussianAISource(item);
@@ -9431,7 +9477,7 @@ const server = http.createServer(async function(req, res) {
         item.decisionExplanation = buildDecisionExplanation(item);
         item.decisionExplanation.priorityScore = item.priorityScore;
       }
-      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), ratingMinAuto: POST_RATING_MIN_AUTO });
+      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), ratingMinAuto: POST_RATING_MIN_AUTO, ratingDropBelow: POST_RATING_DROP_BELOW });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
@@ -10582,6 +10628,21 @@ async function retryUnavailableEditorialAllWorkspaces() {
 }
 setInterval(function() {
   retryUnavailableEditorialAllWorkspaces().catch(function(error){ console.warn("EDITORIAL_V2_RETRY failed:", error.message); });
+}, 15 * 60 * 1000);
+
+// Queue clean-up without a human: posts that can never go out automatically are removed.
+async function autoResolveAllWorkspaces() {
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    await workspaceContext.run({ workspaceId: ws.id }, async function() {
+      const result = await autoResolveQueue();
+      if (result.removed) console.log("QUEUE_AUTO_RESOLVE " + JSON.stringify({ workspace: ws.id, removed: result.removed }));
+    });
+  }
+}
+setTimeout(function(){ autoResolveAllWorkspaces().catch(function(error){ console.warn("Queue auto resolve failed:", error.message); }); }, 90000);
+setInterval(function() {
+  autoResolveAllWorkspaces().catch(function(error){ console.warn("Queue auto resolve failed:", error.message); });
 }, 15 * 60 * 1000);
 
 server.listen(PORT, "0.0.0.0", function() {
