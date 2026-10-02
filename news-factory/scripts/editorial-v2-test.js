@@ -376,4 +376,17 @@ await test("admin page script parses (guards against broken admin UI deploys)", 
   assert.equal((html.match(/<\/html>/g) || []).length, 1, "exactly one </html>");
 });
 
+await test("collector checks duplicates before media preparation and LLM calls", async function() {
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.url)), "utf8");
+  const start = src.indexOf("async function collectOnce(");
+  assert.ok(start > 0);
+  const body = src.slice(start, start + 60000);
+  const pre = body.indexOf("storyPrecheck = await classifyPublishedStoryRelationship(");
+  const media = body.indexOf("await prepareMediaDirector(");
+  const writer = body.indexOf("await runEditorialV2(");
+  assert.ok(pre > 0 && media > 0 && writer > 0);
+  assert.ok(pre < media && pre < writer, "precheck must run before media and writer");
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));

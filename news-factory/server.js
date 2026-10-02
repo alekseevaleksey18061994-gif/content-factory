@@ -60,6 +60,7 @@ const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.E
 const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
 const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
 // Default 2: one main photo plus at most one genuinely different large photo.
@@ -3989,6 +3990,41 @@ async function collectOnce(trigger) {
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
         const id = "news_" + contentHash.slice(0, 20);
+        // Cheap duplicate check on the source text BEFORE media preparation and the
+        // writer/checker calls: an obvious repeat of a recently published post costs
+        // one short classifier call instead of media + 3-6 LLM calls.
+        let storyPrecheck = null;
+        if (STORY_PRECHECK_ENABLED) {
+          try {
+            storyPrecheck = await classifyPublishedStoryRelationship({ id: id, newsId: id, title: originalTitle, text: originalText, sourceId: source.id, sourceName: source.name });
+          } catch (error) {
+            console.warn("STORY_PRECHECK_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
+            storyPrecheck = null;
+          }
+          if (storyPrecheck && storyPrecheck.relation === "duplicate") {
+            console.log("STORY_PRECHECK_DUPLICATE " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, similarity: Number(storyPrecheck.similarity || 0).toFixed(2), publishedId: storyPrecheck.candidate && (storyPrecheck.candidate.id || storyPrecheck.candidate.queueId) || "" }));
+            await saveNewsItem({
+              id: id,
+              sourceId: source.id,
+              sourceName: source.name,
+              sourceUrl: source.url,
+              originalUrl: url,
+              originalTitle: originalTitle,
+              originalText: originalText,
+              contentHash: contentHash,
+              status: "duplicate_story",
+              metadata: {
+                trigger: trigger || "scheduler",
+                articlePublishedAt: articlePublishedAt || "",
+                storyRelation: { relation: "duplicate", reason: storyPrecheck.reason || "", similarity: storyPrecheck.similarity || 0, publishedTitle: storyPrecheck.candidate && storyPrecheck.candidate.title || "", stage: "precheck" },
+                autoPublishBlocked: "duplicate_story"
+              }
+            });
+            summary.skipped += 1;
+            saveState();
+            continue;
+          }
+        }
         const media = await prepareMediaDirector({
           id: id,
           title: originalTitle,
@@ -4309,7 +4345,11 @@ async function collectOnce(trigger) {
             editorialV2: editorialV2Meta
           };
 
-          const storyRelation = await classifyPublishedStoryRelationship(queueItem);
+          // Reuse the precheck verdict when the classifier already judged this story;
+          // otherwise (e.g. a foreign-language source) compare the rewritten post.
+          const storyRelation = (storyPrecheck && storyPrecheck.judged)
+            ? storyPrecheck
+            : await classifyPublishedStoryRelationship(queueItem);
           if (storyRelation.relation === "duplicate") {
             baseItem.status = "duplicate_story";
             baseItem.metadata.storyRelation = storyRelation;
@@ -7863,6 +7903,7 @@ async function classifyPublishedStoryRelationship(item) {
       relation: relation,
       candidate: relation === "new_story" ? null : best,
       similarity: bestScore,
+      judged: true,
       newFact: String(parsed.new_fact || "").trim(),
       reason: String(parsed.reason || "").trim()
     };
