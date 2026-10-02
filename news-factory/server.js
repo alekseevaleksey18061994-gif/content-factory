@@ -13810,15 +13810,21 @@ async function repairBrokenQueueImages() {
     if (!img && item.videoUrl) continue;
     try {
       if (item.videoUrl) { item.imageUrl = ""; item.enhancedImageUrl = ""; fixed += 1; continue; }
-      const generated = await generateNewsCover({ id: item.newsId || item.id, title: item.title, text: item.text, sourceName: item.sourceName || "" });
+      const generated = await renderEconomyTextCard({
+        id: item.newsId || item.id,
+        title: item.title,
+        text: item.text,
+        topicId: item.topicId || currentWorkspace().channelId || "",
+        cardNote: "Редакционная карточка"
+      });
       if (img && !item.originalImageUrl) item.originalImageUrl = img;
       item.imageUrl = "";
       item.enhancedImageUrl = "";
       item.mediaPackUrls = [];
       item.generatedImageUrl = generated.url;
       item.mediaType = "generated";
-      item.mediaStatus = "generated";
-      item.mediaOrigin = "ai_generated";
+      item.mediaStatus = "local_card";
+      item.mediaOrigin = "local_branded_card";
       item.generatedBy = generated.model;
       item.generatedAt = new Date().toISOString();
       fixed += 1;
