@@ -2570,7 +2570,7 @@ var ratingMinAuto=50,ratingDropBelow=35,state={},systemStatus={},newsItems=[],ca
 var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
-function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function esc(v){return String(v==null||v===false?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 // One human-readable decision per queue card instead of several raw scores.
 function queueDecision(q,rating){
   if(q.status==='media_failed')return {label:'Ошибка медиа VK',cls:'media_failed',reason:'VK не принял медиа'+(q.vkError?': '+q.vkError:'')};

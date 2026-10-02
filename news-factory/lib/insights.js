@@ -74,6 +74,10 @@ function n(v) { return Math.round(Number(v || 0)).toLocaleString("ru-RU"); }
 export function buildDailyReportText(data) {
   const d = data || {};
   const lines = ["📊 News Factory — итоги дня " + (d.date || "")];
+  // Spend goes first so it is never cut off by the Telegram length limit.
+  if (d.spendRub != null || d.spendUsd != null) {
+    lines.push("💸 Расходы на нейросети за сегодня: " + (d.spendRub != null ? n(d.spendRub) + " ₽" : "$" + Number(d.spendUsd || 0).toFixed(2)) + (d.budgetRub ? " из " + n(d.budgetRub) + " ₽ дневного бюджета" : ""));
+  }
   for (const ch of (d.channels || [])) {
     lines.push("");
     lines.push("📣 " + ch.name);
@@ -89,11 +93,13 @@ export function buildDailyReportText(data) {
     if (ch.sourcesAdded && ch.sourcesAdded.length) lines.push("➕ Добавлены источники: " + ch.sourcesAdded.slice(0, 5).join(", "));
     for (const p of (ch.problems || []).slice(0, 3)) lines.push("⚠️ " + p);
   }
-  if (d.spendRub != null || d.spendUsd != null) {
-    lines.push("");
-    lines.push("💸 Расходы на нейросети за сегодня: " + (d.spendRub != null ? n(d.spendRub) + " ₽" : "$" + Number(d.spendUsd || 0).toFixed(2)) + (d.budgetRub ? " из " + n(d.budgetRub) + " ₽ дневного бюджета" : ""));
+  const LIMIT = 3900;
+  let out = "";
+  for (const line of lines) {
+    if ((out + "\n" + line).length > LIMIT - 40) { out += "\n…остальное не поместилось, полный отчёт — в админке"; break; }
+    out += (out ? "\n" : "") + line;
   }
-  return lines.join("\n").slice(0, 3900);
+  return out;
 }
 
 // Top reasons from a list of reason strings, most frequent first.

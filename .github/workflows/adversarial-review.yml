@@ -1,0 +1,79 @@
+name: Adversarial review (News Factory)
+
+# Nightly "try to break it" review of the last day's changes. A sub-agent with a
+# fresh context has one goal — prove the code breaks; every finding must be
+# reproduced by a script; nothing is fixed here. Findings land in a GitHub issue
+# for the next working session. Can also be started by hand (Actions → Run).
+
+on:
+  schedule:
+    - cron: "45 0 * * *" # 03:45 Moscow time
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Review changes since (git date, e.g. '2 days ago')"
+        required: false
+        default: "24 hours ago"
+
+concurrency:
+  group: adversarial-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 200
+
+      - name: Find changes to review
+        id: range
+        run: |
+          SINCE="${{ github.event.inputs.since || '24 hours ago' }}"
+          BASE=$(git rev-list -n 1 --before="$SINCE" HEAD -- || true)
+          if [ -z "$BASE" ]; then BASE=$(git rev-list --max-parents=0 HEAD | tail -1); fi
+          COUNT=$(git rev-list --count "$BASE"..HEAD -- news-factory)
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Commits touching news-factory since '$SINCE': $COUNT"
+
+      - uses: actions/setup-node@v4
+        if: steps.range.outputs.count != '0'
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        if: steps.range.outputs.count != '0'
+        working-directory: news-factory
+        run: npm install --no-audit --no-fund
+
+      - name: Adversarial review
+        if: steps.range.outputs.count != '0'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --max-turns 80
+            --allowedTools "Task,Read,Glob,Grep,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(node:*),Bash(npm run:*),Bash(npm install:*),Bash(mkdir:*),Bash(ls:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh label create:*)"
+          prompt: |
+            Run an adversarial review of the News Factory changes in `git diff ${{ steps.range.outputs.base }}..HEAD -- news-factory`.
+
+            Launch sub-agents (Task tool), each with a fresh context and ONE goal: prove that the changed code breaks.
+            Split the diff between 2 sub-agents by area (for example: collector/sources/queue vs editorial/digests/report/admin UI).
+            Rules for every sub-agent:
+            - every attack must be reproduced by a runnable script under /tmp/adv/ whose output shows the failure; no script, no finding;
+            - nothing is fixed, no repository file is edited;
+            - pure functions can be imported from news-factory/lib/*.js; server.js functions can be sliced out of the source and evaluated with stubs;
+            - offline tests: `cd news-factory && npm run -s test:editorial`; never print secrets.
+
+            Then create ONE GitHub issue (create the label `adversarial-review` first if it does not exist) titled
+            "Адверсариальное ревью: <date>, <N> находок" with, in Russian:
+            - findings ranked by severity: title, file:line, failing scenario, how to reproduce (the script content), observed output, production impact;
+            - a short list of attacks that did not break anything.
+            If nothing broke, still create the issue saying so. Do not open pull requests.

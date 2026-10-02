@@ -31,7 +31,8 @@ For changes under `news-factory`:
 2. Run the relevant tests/smoke checks available in the repository.
 3. Check JavaScript syntax/build/startup impact.
 4. For DB changes, verify the migration is additive and idempotent where practical.
-5. In the PR/response, state:
+5. Adversarial review for non-trivial changes (before deploying to `main`, after a long session, or when confident the change is right): launch a sub-agent with a fresh context whose only goal is to prove the change breaks; every attack must be reproduced by a runnable script; the sub-agent fixes nothing. Fix confirmed findings yourself, add regression tests, re-run the scripts. A nightly GitHub Action (`.github/workflows/adversarial-review.yml`) does the same for the last day of changes and files a GitHub issue.
+6. In the PR/response, state:
    - what was found;
    - what changed;
    - how it was tested;

@@ -122,8 +122,11 @@ export function sourceHost(url) {
 export function sourceKey(url) {
   try {
     const u = new URL(String(url || ""));
-    const first = u.pathname.split("/").filter(Boolean)[0] || "";
-    return u.hostname.replace(/^www\./i, "").toLowerCase() + "/" + first.toLowerCase();
+    const segs = u.pathname.split("/").filter(Boolean).map(function(x){ return x.toLowerCase(); });
+    // Locale prefixes (/ru/, /en/) are not a section: habr.com/ru/hubs/... and
+    // habr.com/ru/companies/... are different sections.
+    const section = segs[0] && /^[a-z]{2}(-[a-z]{2})?$/.test(segs[0]) ? segs.slice(0, 3).join("/") : (segs[0] || "");
+    return u.hostname.replace(/^www\./i, "").toLowerCase() + "/" + section;
   } catch { return ""; }
 }
 
@@ -132,20 +135,23 @@ export function activeSourceCount(sources) {
 }
 
 export function sourcesNeeded(sources, target) {
-  const want = Math.max(0, Number(target) || DEFAULT_SOURCE_TARGET);
+  const t = Number(target);
+  const want = target === null || target === undefined || target === "" || !Number.isFinite(t) ? DEFAULT_SOURCE_TARGET : Math.max(0, t);
   return Math.max(0, want - activeSourceCount(sources));
 }
 
 // Candidates not yet present (by host+section) and not blocked by the editor.
 export function freshCandidates(candidates, sources, blockedHosts) {
   const keys = new Set((sources || []).map(function(s){ return sourceKey(s && s.url); }).filter(Boolean));
+  // A site already connected by its main page covers its news sections too.
+  const rootHosts = new Set((sources || []).filter(function(s){ return s && sourceKey(s.url).endsWith("/"); }).map(function(s){ return sourceHost(s.url); }));
   const blocked = new Set((blockedHosts || []).map(function(h){ return String(h || "").toLowerCase(); }));
   const out = [];
   for (const c of (candidates || [])) {
     if (!c || !/^https?:\/\//i.test(c.url || "")) continue;
     const key = sourceKey(c.url);
     const host = sourceHost(c.url);
-    if (!key || keys.has(key) || blocked.has(host)) continue;
+    if (!key || keys.has(key) || blocked.has(host) || blocked.has(key) || rootHosts.has(host)) continue;
     keys.add(key);
     out.push(c);
   }

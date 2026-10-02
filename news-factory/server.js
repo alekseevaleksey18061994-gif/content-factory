@@ -65,17 +65,19 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
 const HEADLINE_PREFILTER_ENABLED = String(process.env.HEADLINE_PREFILTER_ENABLED || "true").toLowerCase() !== "false";
 const SOURCE_AUTO_PAUSE_ENABLED = String(process.env.SOURCE_AUTO_PAUSE_ENABLED || "true").toLowerCase() !== "false";
-const POST_RATING_MIN_AUTO = Math.max(0, Math.min(100, Number(process.env.POST_RATING_MIN_AUTO || 50)));
+function envNumber(name, def, min, max) { const v = Number(String(process.env[name] == null ? "" : process.env[name]).replace(",", ".").replace(/[^0-9.\-]/g, "")); const n = process.env[name] == null || process.env[name] === "" || !Number.isFinite(v) ? def : v; return Math.max(min, Math.min(max, n)); }
+const POST_RATING_MIN_AUTO = envNumber("POST_RATING_MIN_AUTO", 50, 0, 100);
 // Nothing waits for a human: below POST_RATING_MIN_AUTO a post is a reserve
 // (published only when no better post is available), below
 // POST_RATING_DROP_BELOW it is removed from the queue automatically.
-const POST_RATING_DROP_BELOW = Math.max(0, Math.min(100, Number(process.env.POST_RATING_DROP_BELOW || 35)));
+const POST_RATING_DROP_BELOW = envNumber("POST_RATING_DROP_BELOW", 35, 0, 100);
+function normHHMM(v, def) { const m = String(v || "").trim().match(/^(\d{1,2}):(\d{2})$/); if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return def; return m[1].padStart(2, "0") + ":" + m[2]; }
 const DIGEST_ENABLED = String(process.env.DIGEST_ENABLED || "true").toLowerCase() !== "false";
-const DIGEST_EVENING_TIME = String(process.env.DIGEST_EVENING_TIME || "21:15");
-const DIGEST_SUNDAY_TIME = String(process.env.DIGEST_SUNDAY_TIME || "20:15");
+const DIGEST_EVENING_TIME = normHHMM(process.env.DIGEST_EVENING_TIME, "21:15");
+const DIGEST_SUNDAY_TIME = normHHMM(process.env.DIGEST_SUNDAY_TIME, "20:15");
 const DAILY_REPORT_ENABLED = String(process.env.DAILY_REPORT_ENABLED || "true").toLowerCase() !== "false";
-const DAILY_REPORT_TIME = String(process.env.DAILY_REPORT_TIME || "22:50");
-const SOURCES_MIN_ACTIVE = Math.max(0, Math.min(200, Number(process.env.SOURCES_MIN_ACTIVE || 40)));
+const DAILY_REPORT_TIME = normHHMM(process.env.DAILY_REPORT_TIME, "22:50");
+const SOURCES_MIN_ACTIVE = envNumber("SOURCES_MIN_ACTIVE", 40, 0, 200);
 const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 120));
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
@@ -2075,7 +2077,8 @@ function editorialLearningBonus(item) {
   const learning = state.editorialLearning;
   let bonus = 0;
   const reasons = [];
-  const format = learning.byFormat && learning.byFormat[item.contentFormat];
+  const formatKey = String((item.editorialV2 && item.editorialV2.format) || item.contentFormatLabel || item.contentFormat || "").trim().toLowerCase();
+  const format = learning.byFormat && learning.byFormat[formatKey];
   const source = learning.bySource && learning.bySource[String(item.sourceName || "").toLowerCase()];
   const entities = normalizeTopicEntities(item.topicEntities);
   if (format) {
@@ -2122,6 +2125,8 @@ function autoRejectReason(item) {
   if (item.qcStatus === "hold" && verdict === "reject") return "проверка GPT/Claude нашла ошибки и отклонила пост";
   if (item.qcStatus === "hold" && verdict === "fix_exhausted") return "ошибки не исправлены за отведённые раунды";
   if (item.qcStatus === "hold" && verdict === "copyright_overlap") return "текст слишком близок к источнику";
+  if (item.qcStatus === "hold" && item.editorialV2 && (item.editorialV2.status === "skip" || verdict === "skip")) return "редакция при повторной проверке решила пропустить новость";
+  if (item.qcStatus === "hold" && verdict === "unavailable" && Number(item.editorialV2RetryCount || 0) >= 6) return "проверка нейросетью недоступна после 6 попыток";
   return "";
 }
 
@@ -2135,6 +2140,7 @@ async function autoResolveQueue() {
   }
   if (!removed.length) return { removed: 0 };
   state.queue = keep;
+  for (const r of removed) removeQueueIdFromSchedule(state, r.item.id);
   saveState();
   for (const r of removed) {
     console.log("QUEUE_AUTO_REJECTED " + JSON.stringify({ workspace: currentWorkspaceId(), newsId: r.item.newsId, title: String(r.item.title || "").slice(0, 80), reason: r.reason }));
@@ -2180,6 +2186,8 @@ function sourceStatKey(sourceOrItem) {
   if (!sourceOrItem) return "";
   if (sourceOrItem.sourceId) return String(sourceOrItem.sourceId);
   if (sourceOrItem.id && String(sourceOrItem.id).startsWith("cars-")) return String(sourceOrItem.id);
+  // A source object keeps its own stats even when another source has the same name.
+  if (sourceOrItem.id && sourceOrItem.url && (state.sources || []).some(function(src){ return src && src.id === sourceOrItem.id; })) return String(sourceOrItem.id);
   const name = String(sourceOrItem.sourceName || sourceOrItem.name || "").trim();
   const found = (state.sources || []).find(function(src){ return src && src.name === name; });
   return found ? String(found.id) : "";
@@ -2340,18 +2348,36 @@ async function prefilterCandidates(candidates, summary) {
   const rejected = [];
   for (const candidate of candidates) {
     const title = candidate.link.title || "";
-    if (staleYearInTitle(title, Boolean(candidate.link.publishedAt), now)) rejected.push({ candidate: candidate, reason: "старая новость: в заголовке прошлый год, даты нет", score: 1 });
-    else kept.push(candidate);
+    // No hard drop by year in the title: web links carry no date here, and
+    // "к 2025 году" / model years are normal in fresh news. Freshness is judged
+    // by the pre-filter model and by the article date after the page is opened.
+    void title;
+    kept.push(candidate);
   }
-  let ranked = kept.map(function(candidate){ return { candidate: candidate, score: 5 }; });
-  if (HEADLINE_PREFILTER_ENABLED && OPENAI_API_KEY && kept.length) {
+  // Verdicts are cached per URL for a day: a kept link that waits for its turn
+  // is not paid for again, and every run it waits raises its priority so no
+  // source starves behind higher-scored links of other sources.
+  state.prefilterCache = state.prefilterCache && typeof state.prefilterCache === "object" ? state.prefilterCache : {};
+  const cache = state.prefilterCache;
+  const dayAgo = Date.now() - 24 * 3600000;
+  for (const key of Object.keys(cache)) if (new Date(cache[key].at || 0).getTime() < dayAgo) delete cache[key];
+  const cachedRanked = [];
+  const toJudge = [];
+  for (const candidate of kept) {
+    const hit = cache[candidate.link.url];
+    if (hit) { hit.waited = Number(hit.waited || 0) + 1; cachedRanked.push({ candidate: candidate, score: Number(hit.score || 5) + hit.waited * 1.5 }); }
+    else toJudge.push(candidate);
+  }
+  let ranked = toJudge.map(function(candidate){ return { candidate: candidate, score: 5 }; });
+  const judged = toJudge;
+  if (HEADLINE_PREFILTER_ENABLED && OPENAI_API_KEY && judged.length) {
     const ws = currentWorkspace();
     const channelId = resolveChannelId(ws);
     const prompt = buildPrefilterPrompt({
       channelName: ws && ws.name || "",
       topic: CHANNEL_TOPICS_RU[channelId] || "",
       today: new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Moscow" }).format(now),
-      items: kept.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
+      items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
     });
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
@@ -2362,13 +2388,13 @@ async function prefilterCandidates(candidates, summary) {
       });
       const data = await response.json().catch(function(){ return {}; });
       if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
-      recordOpenAIResponseUsage(OPENAI_MODEL, "headline_prefilter", data, "responses", { items: kept.length });
-      const verdicts = parsePrefilterResult(extractOpenAIText(data), kept.length);
+      recordOpenAIResponseUsage(OPENAI_MODEL, "headline_prefilter", data, "responses", { items: judged.length });
+      const verdicts = parsePrefilterResult(extractOpenAIText(data), judged.length);
       if (!verdicts) throw new Error("не удалось разобрать ответ");
       ranked = [];
-      kept.forEach(function(candidate, index) {
+      judged.forEach(function(candidate, index) {
         const v = verdicts.get(index + 1);
-        if (v.keep) ranked.push({ candidate: candidate, score: v.score });
+        if (v.keep) { ranked.push({ candidate: candidate, score: v.score }); cache[candidate.link.url] = { score: v.score, waited: 0, at: new Date().toISOString() }; }
         else rejected.push({ candidate: candidate, reason: v.reason || "отсеяно по заголовку", score: v.score });
       });
     } catch (error) {
@@ -2382,7 +2408,7 @@ async function prefilterCandidates(candidates, summary) {
     noteSourceEvent(source, "junk", { reason: r.reason });
     try {
       await saveNewsItem({
-        id: "news_" + crypto.createHash("sha256").update("prefilter\n" + link.url).digest("hex").slice(0, 20),
+        id: "news_" + crypto.createHash("sha256").update("prefilter\n" + currentWorkspaceId() + "\n" + link.url).digest("hex").slice(0, 20),
         sourceId: source.id, sourceName: source.name, sourceUrl: source.url,
         originalUrl: link.url, originalTitle: link.title || "", originalText: String(link.text || "").slice(0, 2000),
         contentHash: "", status: "prefilter_skip",
@@ -2390,6 +2416,7 @@ async function prefilterCandidates(candidates, summary) {
       });
     } catch (error) { console.warn("Prefilter save failed:", error.message); }
   }
+  ranked = ranked.concat(cachedRanked);
   ranked.sort(function(a, b){ return b.score - a.score; });
   summary.prefilterRejected = rejected.length;
   if (rejected.length || ranked.length) {
@@ -3989,7 +4016,7 @@ async function prepareMediaDirector(payload) {
       const cached = String(prepared.imageUrl || "").trim();
       if (!cached) continue;
       const fp = await localImageFingerprint(cached);
-      if (!isExtra && fp && (looksLikeGraphic(fp) || isSourcePlaceholderImage(p.sourceName, p.id, fp))) {
+      if (!isExtra && fp && (looksLikeGraphic(fp) || isSourcePlaceholderImage(p.sourceName, p.articleUrl || p.id, fp))) {
         // Main photo is a logo / brand card / the source's default share image
         // (e.g. the VK logo on every VK press release): not a news photo.
         console.log("MEDIA_PLACEHOLDER_SKIPPED " + JSON.stringify({ source: p.sourceName || "", news: p.id || "", entropy: Number(fp.entropy || 0).toFixed(2), url: key.slice(0, 160) }));
@@ -4477,6 +4504,7 @@ async function collectOnce(trigger) {
         }
         const media = await prepareMediaDirector({
           id: id,
+          articleUrl: url,
           title: originalTitle,
           text: originalText,
           sourceName: source.name,
@@ -7965,8 +7993,21 @@ async function runEditorialV2(sources, options) {
 
 // ---------------------------------------------------------------------------
 // Digests: evening «Главное за день» and Sunday «Топ недели» from published posts.
-async function publishDigest(kind) {
+const digestRunning = new Set();
+async function publishDigest(kind, force) {
+  const lockKey = currentWorkspaceId() + ":" + kind;
+  if (digestRunning.has(lockKey)) return { ok: true, skipped: "already_running" };
+  digestRunning.add(lockKey);
+  try { return await publishDigestUnlocked(kind, force); }
+  finally { digestRunning.delete(lockKey); }
+}
+
+async function publishDigestUnlocked(kind, force) {
   if (!editorialV2Active()) return { ok: false, skipped: "editorial_v2_off" };
+  state.digests = state.digests && typeof state.digests === "object" ? state.digests : {};
+  const today = moscowParts(new Date()).day;
+  const publishedKey = kind === "sunday" ? "publishedSunday" : "publishedEvening";
+  if (!force && state.digests[publishedKey] === today) return { ok: true, skipped: "already_published_today" };
   if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) return { ok: true, skipped: "auto_disabled" };
   const now = new Date();
   const posts = pickDigestPosts(state.history, kind, now);
@@ -8009,6 +8050,7 @@ async function publishDigest(kind) {
     contentFormat: "Дайджест", contentFormatLabel: "Дайджест", editorialV2: v2.meta, publicationOrigin: "digest"
   });
   state.history = state.history.slice(0, 300);
+  state.digests[publishedKey] = today;
   saveState();
   return { ok: true, published: true, kind: kind, posts: posts.length, messageId: result.message_id || null };
 }
@@ -8017,22 +8059,31 @@ async function maybePublishDigest() {
   if (!DIGEST_ENABLED) return;
   const now = moscowParts(new Date());
   state.digests = state.digests && typeof state.digests === "object" ? state.digests : {};
+  state.digests.attempts = state.digests.attempts && typeof state.digests.attempts === "object" ? state.digests.attempts : {};
   const jobs = [];
-  if (now.weekday === 0) jobs.push({ kind: "sunday", time: DIGEST_SUNDAY_TIME, key: "lastSunday" });
-  jobs.push({ kind: "evening", time: DIGEST_EVENING_TIME, key: "lastEvening" });
+  if (now.weekday === 0) jobs.push({ kind: "sunday", time: DIGEST_SUNDAY_TIME, doneKey: "lastSunday", publishedKey: "publishedSunday" });
+  jobs.push({ kind: "evening", time: DIGEST_EVENING_TIME, doneKey: "lastEvening", publishedKey: "publishedEvening" });
   for (const job of jobs) {
-    if (state.digests[job.key] === now.day) continue;
+    if (state.digests[job.doneKey] === now.day || state.digests[job.publishedKey] === now.day) continue;
     if (now.hhmm < job.time || now.hhmm > addMinutesHHMM(job.time, 40)) continue;
-    // Sunday top replaces the evening digest on Sundays.
-    if (job.kind === "evening" && now.weekday === 0 && state.digests.lastSunday === now.day) { state.digests.lastEvening = now.day; continue; }
-    state.digests[job.key] = now.day;
+    // On Sundays the weekly top replaces the evening digest — only if it was actually published.
+    if (job.kind === "evening" && now.weekday === 0 && state.digests.publishedSunday === now.day) { state.digests.lastEvening = now.day; saveState(); continue; }
+    const attemptKey = job.kind + ":" + now.day;
+    const attempts = Number(state.digests.attempts[attemptKey] || 0);
+    if (attempts >= 3) continue;
+    state.digests.attempts[attemptKey] = attempts + 1;
+    for (const key of Object.keys(state.digests.attempts)) if (!key.endsWith(now.day)) delete state.digests.attempts[key];
     saveState();
+    let result;
     try {
-      const result = await publishDigest(job.kind);
-      console.log("DIGEST " + JSON.stringify(Object.assign({ workspace: currentWorkspaceId() }, result)));
+      result = await publishDigest(job.kind, false);
     } catch (error) {
-      console.warn("DIGEST_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), kind: job.kind, error: error.message }));
+      result = { ok: false, error: error.message };
     }
+    console.log("DIGEST " + JSON.stringify(Object.assign({ workspace: currentWorkspaceId(), kind: job.kind, attempt: attempts + 1 }, result)));
+    // Definitive outcomes close the day; temporary failures are retried (up to 3 times in the window).
+    if (result && (result.published || result.skipped === "already_published_today")) state.digests[job.doneKey] = now.day;
+    saveState();
     return;
   }
 }
@@ -8051,7 +8102,7 @@ async function collectDailyReportForWorkspace() {
   const recent = (state.history || []).filter(function(h){ return h && h.publishedAt && new Date(h.publishedAt).getTime() >= since; });
   const regular = recent.filter(function(h){ return !isDigestHistory(h); });
   const username = currentTelegramPublicUsername();
-  const best = regular.slice().sort(function(a, b){ return Number(b.views || 0) - Number(a.views || 0); })[0] || null;
+  const best = regular.filter(function(h){ return Number(h.views || 0) > 0; }).sort(function(a, b){ return Number(b.views || 0) - Number(a.views || 0); })[0] || null;
   const filtered = { prefilter: 0, editorial: 0, duplicate: 0, autoRejected: 0 };
   const reasons = [];
   if (db && dbReady) {
@@ -8126,10 +8177,17 @@ async function maybeSendDailyReport() {
   ws.state.dailyReport = ws.state.dailyReport && typeof ws.state.dailyReport === "object" ? ws.state.dailyReport : {};
   if (ws.state.dailyReport.lastDay === now.day) return;
   if (now.hhmm < DAILY_REPORT_TIME || now.hhmm > addMinutesHHMM(DAILY_REPORT_TIME, 60)) return;
-  ws.state.dailyReport.lastDay = now.day;
+  const attempts = ws.state.dailyReport.attemptsDay === now.day ? Number(ws.state.dailyReport.attempts || 0) : 0;
+  if (attempts >= 3) return;
+  ws.state.dailyReport.attemptsDay = now.day;
+  ws.state.dailyReport.attempts = attempts + 1;
+  let result;
+  try { result = await sendDailyReport(false); }
+  catch (error) { result = { ok: false, error: error.message }; }
+  // no_chat is not retried today (the owner has to /start the bot first).
+  if (result.ok || result.error === "no_chat") ws.state.dailyReport.lastDay = now.day;
   await workspaceContext.run({ workspaceId: ws.id }, async function(){ saveState(); });
-  const result = await sendDailyReport(false);
-  if (!result.ok) console.warn("DAILY_REPORT_FAILED " + JSON.stringify({ error: result.error }));
+  if (!result.ok) console.warn("DAILY_REPORT_FAILED " + JSON.stringify({ error: result.error, attempt: attempts + 1 }));
 }
 
 let extrasTickRunning = false;
@@ -8192,6 +8250,7 @@ async function retryUnavailableEditorialQueueItems() {
       });
 
       item.editorialV2RetryVersion = marker;
+      item.editorialV2RetryCount = Number(item.editorialV2RetryCount || 0) + 1;
       item.editorialV2RetryAt = new Date().toISOString();
       item.editorialV2RetryError = "";
       item.editorialV2 = result.meta;
@@ -9980,12 +10039,13 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/report/daily") {
-      const result = await sendDailyReport(true);
+      let result;
+      try { result = await sendDailyReport(true); } catch (error) { result = { ok: false, error: error.message }; }
       return sendJson(res, result.ok ? 200 : 409, result);
     }
     if (req.method === "POST" && p === "/api/digest/publish") {
       const body = await readJson(req);
-      const result = await publishDigest(body.kind === "sunday" ? "sunday" : "evening");
+      const result = await publishDigest(body.kind === "sunday" ? "sunday" : "evening", body.force === true);
       return sendJson(res, result.ok ? 200 : 409, result);
     }
 
@@ -10033,7 +10093,7 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const removed = state.sources.find(function(x){ return x.id === body.id; });
       // A source the editor removed is never re-added automatically.
-      const removedHost = removed && sourceHost(removed.url);
+      const removedHost = removed && sourceKey(removed.url);
       if (removedHost) {
         state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
         if (!state.sourceBlockedHosts.includes(removedHost)) state.sourceBlockedHosts.push(removedHost);

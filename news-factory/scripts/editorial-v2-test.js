@@ -553,4 +553,26 @@ await test("insights: digest selection, weights and daily report text", async fu
   assert.ok(ins.topReasons(["Реклама", "реклама", "старое"], 2)[0].startsWith("реклама (2)"));
 });
 
+await test("adversarial review regressions (sources, report, Claude retry)", async function() {
+  const sq = await import("../lib/source-quality.js");
+  assert.equal(sq.sourcesNeeded([{ enabled: true }], 0), 0, "target 0 disables top-up");
+  assert.equal(sq.sourcesNeeded([{ enabled: true }], undefined), 39);
+  assert.notEqual(sq.sourceKey("https://habr.com/ru/companies/sberbank/news/"), sq.sourceKey("https://habr.com/ru/hubs/artificial_intelligence/news/"));
+  assert.equal(sq.freshCandidates([{ name: "Motor news", url: "https://motor.ru/news/" }], [{ url: "https://motor.ru/", enabled: true }], []).length, 0, "site connected by main page is not added again");
+  assert.equal(sq.freshCandidates([{ name: "Habr AI", url: "https://habr.com/ru/hubs/artificial_intelligence/news/" }], [], [sq.sourceKey("https://habr.com/ru/companies/sberbank/news/")]).length, 1, "removing one section does not block the whole site");
+
+  const ins = await import("../lib/insights.js");
+  const big = { date: "x", spendRub: 100, channels: Array.from({ length: 9 }, function(_, i){ return { name: "Канал " + i, published: 5, filtered: { prefilter: 1 }, topReasons: ["x".repeat(200)], best: { title: "y".repeat(90), views: 10 }, sourcesPaused: ["a".repeat(80)], problems: ["z".repeat(120)] }; }) };
+  const text = ins.buildDailyReportText(big);
+  assert.ok(text.length <= 3900);
+  assert.ok(/Расходы/.test(text.split("\n").slice(0, 3).join("\n")), "spend line is near the top");
+  assert.ok(/не поместилось/.test(text));
+
+  let calls = 0;
+  const refuse = async function() { calls += 1; return { ok: true, status: 200, json: async function(){ return { stop_reason: "refusal", content: [{ type: "text", text: "" }] }; } }; };
+  const c = createModelClients({ fetch: refuse, anthropicApiKey: "k", anthropicModel: "claude-sonnet-5-5" });
+  await assert.rejects(function(){ return c.callAnthropic("S", "{}", {}); }, /refusal/);
+  assert.equal(calls, 1, "no paid retry on refusal");
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));

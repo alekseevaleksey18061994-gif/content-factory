@@ -292,7 +292,7 @@ export function createModelClients(config) {
           "anthropic-version": "2023-06-01"
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(cfg.timeoutMs || 90000)
+        signal: AbortSignal.timeout(o.timeoutMs || cfg.timeoutMs || 90000)
       });
       const data = await response.json().catch(function(){ return {}; });
       return { response, data, body };
@@ -300,8 +300,10 @@ export function createModelClients(config) {
 
     // First choice: Anthropic Structured Outputs. This guarantees a JSON object
     // matching the checker schema on supported Claude models.
+    let temperatureOk = true;
     let result = await send({ structured: true, temperature: true });
     if (!result.response.ok && result.response.status === 400 && /temperature/i.test(errMsg(result.data))) {
+      temperatureOk = false;
       result = await send({ structured: true, temperature: false });
     }
 
@@ -320,6 +322,10 @@ export function createModelClients(config) {
       Object.assign({}, opts && opts.extra || {}, { structured: !structuredUnsupported }));
 
     let parsed = parseJsonLoose(anthropicText(result.data));
+    const stopReason = result.data && result.data.stop_reason || "";
+    if (!parsed && !structuredUnsupported && stopReason === "refusal") {
+      throw new Error("Claude отказался проверять пост (refusal)");
+    }
     if (!parsed && !structuredUnsupported) {
       // Structured output only breaks when the answer is cut off (max_tokens) or
       // refused. Log why and retry once with a larger budget.
@@ -330,11 +336,12 @@ export function createModelClients(config) {
       const prevOpts = opts;
       opts = retryOpts;
       try {
-        result = await send({ structured: true, temperature: true });
-        if (!result.response.ok && result.response.status === 400 && /temperature/i.test(errMsg(result.data))) {
-          result = await send({ structured: true, temperature: false });
+        result = await send({ structured: true, temperature: temperatureOk, timeoutMs: (cfg.timeoutMs || 90000) * 2 });
+        if (!result.response.ok && result.response.status === 400 && temperatureOk && /temperature/i.test(errMsg(result.data))) {
+          result = await send({ structured: true, temperature: false, timeoutMs: (cfg.timeoutMs || 90000) * 2 });
         }
       } finally { opts = prevOpts; }
+      if (!result.response.ok) throw new Error("Claude: повтор после обрезанного ответа не удался: " + (errMsg(result.data) || ("HTTP " + result.response.status)));
       if (result.response.ok) {
         reportUsage("anthropic", model, (opts && opts.purpose || "editorial_checker") + "_retry", result.data,
           Object.assign({}, opts && opts.extra || {}, { structured: true }));
