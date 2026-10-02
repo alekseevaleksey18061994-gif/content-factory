@@ -170,6 +170,7 @@ const COST_PRICING_CONFIG = resolveCostPricing(process.env.COST_PRICING_JSON || 
 const COST_PRICING_UPDATED_AT = COST_PRICING_CONFIG.updatedAt;
 const COST_PRICING = COST_PRICING_CONFIG.pricing;
 if (COST_PRICING_CONFIG.error) console.warn("COST_PRICING_JSON ignored:", COST_PRICING_CONFIG.error);
+for (const warning of (COST_PRICING_CONFIG.warnings || [])) console.warn("COST_PRICING_JSON:", warning);
 
 const CURATED_SOURCES = [
   { id: "openai", name: "OpenAI News", type: "web", group: "official", priority: 1, url: "https://openai.com/news/", enabled: true },
@@ -1285,30 +1286,55 @@ function providerLabel(value) {
   return map[String(value || "")] || String(value || "Другое");
 }
 
+// USD/RUB: CBR (cached 6 h) -> last known good CBR value (persisted in the network cost-budget
+// state, survives restarts) -> COST_USD_RUB_RATE -> built-in constant. It never returns 0/null:
+// a missing rate used to make budgets compute as 0 RUB and silently switch economy mode off.
+let usdRubFailedAt = 0;
+let usdRubFallbackLogged = "";
+let lastUsdRubInfo = { source: "none", at: 0 };
 async function getUsdRubRate() {
   const now = Date.now();
   if (cbrUsdRubCache.value && now - cbrUsdRubCache.at < 6 * 60 * 60 * 1000) return cbrUsdRubCache.value;
-  try {
-    const response = await fetch("https://www.cbr.ru/scripts/XML_daily.asp", {
-      headers: { "user-agent": "NewsFactory/1.0" },
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!response.ok) throw new Error("CBR HTTP " + response.status);
-    const xml = await response.text();
-    const block = xml.match(/<Valute[^>]*>[\s\S]*?<CharCode>USD<\/CharCode>[\s\S]*?<\/Valute>/i);
-    if (!block) throw new Error("USD not found");
-    const nominalMatch = block[0].match(/<Nominal>([^<]+)<\/Nominal>/i);
-    const valueMatch = block[0].match(/<Value>([^<]+)<\/Value>/i);
-    const nominal = Number(String(nominalMatch && nominalMatch[1] || "1").replace(",", "."));
-    const value = Number(String(valueMatch && valueMatch[1] || "").replace(",", "."));
-    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(nominal) || nominal <= 0) throw new Error("bad CBR rate");
-    const rate = value / nominal;
-    cbrUsdRubCache = { at: now, value: rate };
-    return rate;
-  } catch {
-    const fallback = Number(process.env.COST_USD_RUB_RATE || 0);
-    return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+  const retryAfterFailureMs = 5 * 60 * 1000;
+  if (!(usdRubFailedAt && now - usdRubFailedAt < retryAfterFailureMs)) {
+    try {
+      const response = await fetch("https://www.cbr.ru/scripts/XML_daily.asp", {
+        headers: { "user-agent": "NewsFactory/1.0" },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!response.ok) throw new Error("CBR HTTP " + response.status);
+      const rate = parseCbrUsdRate(await response.text());
+      cbrUsdRubCache = { at: now, value: rate };
+      usdRubFailedAt = 0;
+      usdRubFallbackLogged = "";
+      lastUsdRubInfo = { source: "cbr", at: now };
+      try {
+        const budget = networkCostBudgetState();
+        const stored = Number(budget.lastUsdRub && budget.lastUsdRub.value);
+        if (!(Math.abs(stored - rate) < 0.00001)) {
+          budget.lastUsdRub = { value: rate, at: new Date(now).toISOString() };
+          persistWorkspaceStore();
+        }
+      } catch (error) { console.warn("Cannot persist last known USD/RUB rate:", error.message); }
+      return rate;
+    } catch (error) {
+      usdRubFailedAt = now;
+      console.warn("CBR USD/RUB rate unavailable:", error && error.message || error);
+    }
   }
+  let stored = null;
+  try {
+    const saved = networkCostBudgetState().lastUsdRub;
+    if (saved && Number(saved.value) > 0) stored = { value: Number(saved.value), at: Date.parse(saved.at) || 0 };
+  } catch {}
+  const lastGood = cbrUsdRubCache.value ? { value: cbrUsdRubCache.value, at: cbrUsdRubCache.at } : stored;
+  const fb = resolveUsdRubFallback({ lastGood: lastGood, configured: process.env.COST_USD_RUB_RATE, defaultRate: DEFAULT_USD_RUB_RATE });
+  lastUsdRubInfo = { source: fb.source, at: fb.at };
+  if (usdRubFallbackLogged !== fb.source) {
+    usdRubFallbackLogged = fb.source; // log once per outage / source change
+    console.warn("USD/RUB: CBR unavailable, using " + fb.source + " rate " + fb.rate + " for cost budgets and economy mode");
+  }
+  return fb.rate;
 }
 
 function directoryBytes(dir) {
@@ -1410,7 +1436,8 @@ async function costBudgetSnapshot(knownRate) {
     dailyRatio: b.dailyRub ? todayRub / b.dailyRub : 0,
     economyMode: Boolean(b.economyMode),
     economyReason: String(b.economyReason || ""),
-    fxAvailable: Boolean(rate)
+    fxAvailable: Boolean(rate),
+    fxSource: lastUsdRubInfo.source
   };
 }
 
@@ -1491,6 +1518,11 @@ async function sendCostBudgetAlert(snapshot, threshold) {
 async function evaluateCostBudget(notify) {
   const b = networkCostBudgetState();
   const snap = await costBudgetSnapshot();
+  if (!snap.fxAvailable) {
+    // Defensive: with no rate every RUB figure is 0 and the ratios would switch economy mode off.
+    // Keep the previous decision instead.
+    return Object.assign({}, snap, { economyMode: Boolean(b.economyMode), economyReason: String(b.economyReason || "") });
+  }
   const dailyOver = snap.dailyBudgetRub > 0 && snap.dailyRatio >= 1;
   const monthlyOver = snap.monthlyBudgetRub > 0 && snap.monthlyRatio >= 1;
   const economy = Boolean(dailyOver || monthlyOver);
@@ -1502,20 +1534,17 @@ async function evaluateCostBudget(notify) {
 
   if (notify && snap.configured && snap.fxAvailable) {
     const mskDay = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0,10);
-    for (const threshold of [80,100]) {
-      const reached = (snap.dailyBudgetRub && snap.dailyRatio >= threshold/100) || (snap.monthlyBudgetRub && snap.monthlyRatio >= threshold/100);
-      const key = "last" + threshold + "Day";
-      if (reached && b.alerts[key] !== mskDay) {
-        try {
-          if (await sendCostBudgetAlert(snap, threshold)) {
-            b.alerts[key] = mskDay;
-            dirty = true;
-          }
-        } catch (error) {
-          console.warn("Cost budget Telegram alert failed:", error.message);
-        }
-      }
-    }
+    // The dedupe key is claimed BEFORE the Telegram await (concurrent evaluations and a failing
+    // 403/slow Telegram used to produce 6-8 identical sends); failures back off for 30 minutes.
+    const alertsDirty = await dispatchBudgetAlerts({
+      alerts: b.alerts,
+      day: mskDay,
+      thresholds: [80, 100],
+      reached: function(threshold) { return Boolean((snap.dailyBudgetRub && snap.dailyRatio >= threshold/100) || (snap.monthlyBudgetRub && snap.monthlyRatio >= threshold/100)); },
+      send: function(threshold) { return sendCostBudgetAlert(snap, threshold); },
+      onError: function(error) { console.warn("Cost budget Telegram alert failed:", error.message); }
+    });
+    if (alertsDirty) dirty = true;
   }
   if (dirty) persistWorkspaceStore();
   return Object.assign({}, snap, { economyMode: economy, economyReason: reason });

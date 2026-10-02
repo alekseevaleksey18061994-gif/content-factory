@@ -393,6 +393,138 @@ section("history trimming is consistent (300) in every handler", async function 
 });
 
 // =================================================================================================
+// 5, 6, 8. USD/RUB parsing + fallback, budget alert de-duplication
+// =================================================================================================
+const CBR_XML = '<?xml version="1.0" encoding="windows-1251"?><ValCurs Date="02.10.2026" name="Foreign Currency Market">\n' +
+  '<Valute ID="R01010"><NumCode>036</NumCode><CharCode>AUD</CharCode><Nominal>1</Nominal><Name>Австралийский доллар</Name><Value>52,5000</Value><VunitRate>52,5</VunitRate></Valute>\n' +
+  '<Valute ID="R01020A"><NumCode>944</NumCode><CharCode>AZN</CharCode><Nominal>1</Nominal><Name>Азербайджанский манат</Name><Value>47,0000</Value><VunitRate>47</VunitRate></Valute>\n' +
+  '<Valute ID="R01235"><NumCode>840</NumCode><CharCode>USD</CharCode><Nominal>1</Nominal><Name>Доллар США</Name><Value>80,1234</Value><VunitRate>80,1234</VunitRate></Valute>\n' +
+  '<Valute ID="R01820"><NumCode>392</NumCode><CharCode>JPY</CharCode><Nominal>100</Nominal><Name>Японских иен</Name><Value>55,0000</Value><VunitRate>0,55</VunitRate></Valute>\n</ValCurs>';
+
+section("parseCbrUsdRate picks the USD block even when AUD/JPY come first", async function () {
+  assert.equal(parseCbrUsdRate(CBR_XML), 80.1234, "was 52.5 (AUD) with the old regex");
+  const jpyFirst = CBR_XML.replace("<CharCode>AUD</CharCode><Nominal>1</Nominal>", "<CharCode>JPY</CharCode><Nominal>100</Nominal>");
+  assert.equal(parseCbrUsdRate(jpyFirst), 80.1234);
+  const usdNominal = CBR_XML.replace("<CharCode>USD</CharCode><Nominal>1</Nominal>", "<CharCode>USD</CharCode><Nominal>10</Nominal>").replace("80,1234</Value>", "801,2340</Value>");
+  assert.ok(Math.abs(parseCbrUsdRate(usdNominal) - 80.1234) < 1e-9, "Value / Nominal");
+  assert.throws(function () { parseCbrUsdRate(CBR_XML.replace(/USD/g, "USX")); }, /USD not found/);
+  assert.throws(function () { parseCbrUsdRate(CBR_XML.replace("80,1234</Value>", "abc</Value>")); }, /bad CBR/);
+  assert.throws(function () { parseCbrUsdRate(""); });
+});
+
+section("resolveUsdRubFallback: last known -> configured -> built-in constant, never 0", async function () {
+  assert.deepEqual(resolveUsdRubFallback({ lastGood: { value: 79, at: 5 }, configured: "95" }), { rate: 79, source: "last_known", at: 5 });
+  assert.equal(resolveUsdRubFallback({ configured: "95" }).source, "configured");
+  assert.equal(resolveUsdRubFallback({ configured: "95" }).rate, 95);
+  for (const bad of [undefined, "", "0", "-3", "abc", NaN]) {
+    const r = resolveUsdRubFallback({ configured: bad, lastGood: { value: bad }, defaultRate: 90 });
+    assert.equal(r.source, "default"); assert.equal(r.rate, 90);
+  }
+});
+
+section("dispatchBudgetAlerts: concurrent evaluations send once; failures do not spam", async function () {
+  // slow Telegram, 8 concurrent evaluations
+  let sends = 0;
+  const alerts = {};
+  const run = function (send) { return dispatchBudgetAlerts({ alerts, day: "2026-10-02", thresholds: [80, 100], reached: function (t) { return t === 80; }, send, nowMs: 1000, retryMs: 60000, onError() {} }); };
+  await Promise.all(Array.from({ length: 8 }, function () { return run(async function () { sends += 1; await sleep(50); return true; }); }));
+  assert.equal(sends, 1, "key claimed before the await: exactly one send, not 6-8");
+  assert.equal(alerts.last80Day, "2026-10-02");
+  await run(async function () { sends += 1; return true; });
+  assert.equal(sends, 1, "same day: no resend");
+  // Telegram 403: one attempt per cool-down window, claim rolled back so the alert is retried later
+  sends = 0;
+  const alerts2 = {};
+  const fail = function (nowMs) { return dispatchBudgetAlerts({ alerts: alerts2, day: "2026-10-02", thresholds: [100], reached: function () { return true; }, send: async function () { sends += 1; await sleep(20); throw new Error("403 Forbidden"); }, nowMs, retryMs: 30 * 60 * 1000, onError() {} }); };
+  await Promise.all(Array.from({ length: 8 }, function () { return fail(1000); }));
+  assert.equal(sends, 1, "8 concurrent evaluations + 403 -> a single attempt");
+  await fail(1000 + 5 * 60 * 1000);
+  assert.equal(sends, 1, "no retry inside the cool-down");
+  assert.equal(alerts2.last100Day, undefined, "failed alert is not marked as delivered");
+  await fail(1000 + 31 * 60 * 1000);
+  assert.equal(sends, 2, "retried after the cool-down");
+  // nothing to send (no chat configured) releases the claim
+  const alerts3 = {};
+  await dispatchBudgetAlerts({ alerts: alerts3, day: "d", thresholds: [80], reached: function () { return true; }, send: async function () { return false; } });
+  assert.equal(alerts3.last80Day, undefined);
+});
+
+section("server: CBR XML with AUD first -> USD rate used and persisted as last known good", async function () {
+  const dir = mkdir("srv-cbr"); const xml = path.join(dir, "cbr.xml");
+  fs.writeFileSync(xml, CBR_XML);
+  fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(makeStore(2)));
+  const srv = startServer(dir, { CBR_XML_FILE: xml });
+  try {
+    await srv.waitHealthy();
+    const login = await fetch("http://127.0.0.1:" + srv.port + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "local-smoke-password" }) });
+    const cookie = String(login.headers.get("set-cookie") || "").split(";")[0];
+    const r = await fetch("http://127.0.0.1:" + srv.port + "/api/costs/budget", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ dailyRub: 500 }) });
+    const json = await r.json();
+    assert.equal(json.budget.fxSource, "cbr");
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, "workspaces.json"), "utf8"));
+    assert.equal(saved.workspaces[0].state.costBudget.lastUsdRub.value, 80.1234);
+  } finally { await srv.stop(); }
+});
+
+section("server: CBR down -> economy/budget keep a non-zero rate (last known, then env constant, then built-in)", async function () {
+  async function budgetFx(extraEnv, lastUsdRub) {
+    const dir = mkdir("srv-fx");
+    const store = makeStore(2);
+    if (lastUsdRub) store.workspaces[0].state.costBudget = { monthlyRub: 0, dailyRub: 0, economyMode: true, economyReason: "daily", alerts: {}, updatedAt: "", lastUsdRub };
+    fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(store));
+    const srv = startServer(dir, extraEnv);
+    try {
+      await srv.waitHealthy();
+      const login = await fetch("http://127.0.0.1:" + srv.port + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "local-smoke-password" }) });
+      const cookie = String(login.headers.get("set-cookie") || "").split(";")[0];
+      const r = await fetch("http://127.0.0.1:" + srv.port + "/api/costs/budget", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ dailyRub: 500 }) });
+      const json = await r.json();
+      return { budget: json.budget, output: srv.output() };
+    } finally { await srv.stop(); }
+  }
+  let r = await budgetFx({}, { value: 77.5, at: "2026-10-01T10:00:00.000Z" });
+  assert.equal(r.budget.fxAvailable, true); assert.equal(r.budget.fxSource, "last_known");
+  assert.match(r.output, /using last_known rate 77\.5/);
+  r = await budgetFx({ COST_USD_RUB_RATE: "95" }, null);
+  assert.equal(r.budget.fxSource, "configured"); assert.match(r.output, /using configured rate 95/);
+  r = await budgetFx({}, null);
+  assert.equal(r.budget.fxSource, "default"); assert.equal(r.budget.fxAvailable, true);
+  assert.equal((r.output.match(/USD\/RUB: CBR unavailable/g) || []).length, 1, "logged once, not on every call");
+});
+
+// =================================================================================================
+// 7. COST_PRICING_JSON validation
+// =================================================================================================
+section("COST_PRICING_JSON: NaN/negative/garbage prices are rejected with warnings and never produce NaN costs", async function () {
+  const bad = JSON.stringify({
+    anthropic: { "claude-sonnet-5-5": { input: "2,0", output: -5, cacheRead: 0.3 }, "claude-new": { input: "oops" }, "claude-ok": { input: 3, output: "15" } },
+    openaiText: { "gpt-6-luna": { output: null, input: Infinity } },
+    railway: { cpuVcpuMonth: -1, memoryGbMonth: "abc", volumeGbMonth: 0.2 }
+  });
+  const r = resolveCostPricing(bad);
+  assert.ok(Array.isArray(r.warnings) && r.warnings.length >= 6, "warnings: " + JSON.stringify(r.warnings));
+  const sonnet = r.pricing.anthropic["claude-sonnet-5-5"];
+  assert.equal(sonnet.input, BUILTIN_COST_PRICING.anthropic["claude-sonnet-5-5"].input, "invalid override ignored, builtin kept");
+  assert.equal(sonnet.output, BUILTIN_COST_PRICING.anthropic["claude-sonnet-5-5"].output);
+  assert.equal(sonnet.cacheRead, 0.3, "valid override applied");
+  assert.equal(r.pricing.anthropic["claude-new"], undefined, "new model without any valid rate is skipped");
+  assert.deepEqual(r.pricing.anthropic["claude-ok"], { input: 3, output: 15 }, "numeric strings are accepted as numbers");
+  assert.equal(r.pricing.railway.cpuVcpuMonth, BUILTIN_COST_PRICING.railway.cpuVcpuMonth);
+  assert.equal(r.pricing.railway.volumeGbMonth, 0.2);
+  for (const sec of ["openaiText", "openaiImage", "anthropic"]) for (const rate of Object.values(r.pricing[sec])) for (const v of Object.values(rate)) assert.ok(Number.isFinite(v) && v >= 0, sec + " value " + v);
+  const cost = calculateUsageCost("anthropic", "claude-sonnet-5-5", { input_tokens: 1000, output_tokens: 100 }, "messages", r.pricing);
+  assert.ok(Number.isFinite(cost.costUsd) && cost.costUsd > 0);
+  // defence in depth: even a hand-built pricing object with a garbage string yields 0 + unknown, never NaN
+  const poisoned = JSON.parse(JSON.stringify(BUILTIN_COST_PRICING));
+  poisoned.anthropic["claude-sonnet-5-5"].input = "2,0";
+  const c2 = calculateUsageCost("anthropic", "claude-sonnet-5-5", { input_tokens: 1000, output_tokens: 100 }, "messages", poisoned);
+  assert.equal(c2.costUsd, 0); assert.equal(c2.pricingKnown, false);
+  // valid JSON unchanged, no warnings
+  const good = resolveCostPricing(JSON.stringify({ anthropic: { "claude-sonnet-5-5": { input: 2.5 } } }));
+  assert.equal(good.pricing.anthropic["claude-sonnet-5-5"].input, 2.5); assert.deepEqual(good.warnings || [], []);
+});
+
+// =================================================================================================
 const only = process.argv[2] ? new RegExp(process.argv[2], "i") : null;
 let failures = 0;
 for (const s of sections) {
