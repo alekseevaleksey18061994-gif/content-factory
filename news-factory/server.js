@@ -4579,20 +4579,22 @@ function assessMediaQuality(fp, candidate) {
   if (fp.width >= 1400 && fp.height >= 800) score += 14;
   else if (fp.width >= 1000 && fp.height >= 600) score += 8;
   else if (fp.width < 700 || fp.height < 400) { score -= 28; reasons.push("small"); }
-  if (looksLikeGraphic(fp)) { score -= 48; reasons.push("flat_graphic"); }
-  if (looksLikeScreenshot(fp)) { score -= 42; reasons.push("screenshot_like"); }
+  if (looksLikeGraphic(fp)) { score -= 60; reasons.push("flat_graphic"); }
+  if (looksLikeScreenshot(fp)) { score -= 60; reasons.push("screenshot_like"); }
   if (isLikelyThumbnailUrl(url)) { score -= 28; reasons.push("thumbnail"); }
   if (/(?:screenshot|screen-shot|screencap|twitter|x\.com|tweet|tgme|telegram|status\/|post\/)/i.test(url + " " + alt)) {
     score -= 22; reasons.push("social_screenshot");
   }
-  if (/(?:logo|emblem|coat.?of.?arms|flag|герб|флаг|логотип|icon|avatar)/i.test(url + " " + alt)) {
-    score -= 35; reasons.push("logo_or_flag");
+  const explicitLogoOrFlag = /(?:logo|emblem|coat.?of.?arms|flag|герб|флаг|логотип|icon|avatar)/i.test(url + " " + alt);
+  if (explicitLogoOrFlag) {
+    score -= 55; reasons.push("logo_or_flag");
   }
   const ratio = fp.height ? fp.width / fp.height : 0;
   if (ratio && (ratio < 0.58 || ratio > 2.25)) { score -= 12; reasons.push("awkward_ratio"); }
   if (fp.entropy >= 6.2 && fp.whiteRatio < 0.35) score += 6;
   score = Math.max(0, Math.min(100, Math.round(score)));
-  return { score: score, pass: score >= MEDIA_QUALITY_MIN_SCORE, reasons: reasons };
+  const hardReject = explicitLogoOrFlag || looksLikeScreenshot(fp);
+  return { score: score, pass: !hardReject && score >= MEDIA_QUALITY_MIN_SCORE, reasons: reasons, hardReject: hardReject };
 }
 
 // Final clean-up of a post's photo set, used everywhere a pack is (re)built:
@@ -5148,7 +5150,7 @@ async function getCollectorRuns(limit) {
   return r.rows;
 }
 
-async function editorialQueueReadyDepth() {
+function editorialQueueReadyDepth() {
   const now = Date.now();
   return (state.queue || []).filter(function(item) {
     if (!item || item.telegramPublished || item.status === "publish_failed" || item.status === "media_failed") return false;
@@ -5614,7 +5616,9 @@ async function collectOnce(trigger) {
         baseItem.metadata.qcModel = qc.model || "";
         baseItem.metadata.sourceRole = sourceRole;
 
-        const costTier = editorialCostTier(rewrite, editorialV2Meta, media);
+        // A held draft must never trigger paid image generation. It can keep a free
+        // local fallback until a later retry actually approves the post.
+        const costTier = qc.qcStatus === "hold" ? 3 : editorialCostTier(rewrite, editorialV2Meta, media);
         const finalMedia = await finalizeApprovedMedia(media, {
           id: id,
           newsId: id,
