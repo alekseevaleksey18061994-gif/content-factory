@@ -30,6 +30,7 @@ assert.equal(classifyContentBucket("games",{title:"Игроки нашли ба�
 assert.equal(classifyContentBucket("science",{title:"Учёные обнаружили новый вид динозавра"}), "animals");
 assert.equal(classifyContentBucket("sport",{title:"Hardcore: бой блогеров закончился конфликтом"}), "media_sport");
 assert.equal(classifyContentBucket("shopping",{title:"На маркетплейсе началась скидка 40%"}), "deal");
+assert.equal(classifyContentBucket("shopping",{title:"Новый товар без скидки появился на Ozon"}), "viral_product");
 assert.equal(classifyContentBucket("home",{title:"Как организовать хранение в маленькой квартире"}), "organization");
 
 const aiHistory = Array.from({length:12},(_,i)=>({contentBucket:"important_news",title:"Релиз модели "+i,publishedAt:new Date(Date.now()-i*3600000).toISOString()}));
@@ -40,6 +41,12 @@ assert.ok(newsMix.bonus < 0, "overrepresented AI news must get a penalty");
 
 const homeHistory = Array.from({length:10},(_,i)=>({contentBucket:"real_estate",title:"Недвижимость "+i}));
 assert.ok(contentMixBalance("home",{contentBucket:"real_estate"},homeHistory,24).bonus < 0, "home real estate must be capped by mix");
+
+const digestHeavy = [
+  ...Array.from({length:4},()=>({contentBucket:"important_news"})),
+  ...Array.from({length:20},()=>({isDigest:true,contentBucket:"viral_find"}))
+];
+assert.equal(contentMixBalance("ai",{contentBucket:"important_news"},digestHeavy,24).sampleSize,4);
 
 const explicit = normalizeChannelSignals({virality:15,utility:-3,discussion:7}, {});
 assert.equal(explicit.virality,10);
@@ -53,5 +60,6 @@ const gameCommunity = channelStrategyScore("games",
 );
 assert.ok(gameCommunity.totalBonus > 0, "games community/video story should get channel bonus");
 assert.equal(gameCommunity.sourceClass,"CREATOR");
+assert.equal(sourceClassFor({group:"creator",name:"МЕМАЧ (Telegram)",url:"https://t.me/s/memachh"}),"COMMUNITY");
 
 console.log("Channel DNA v2 smoke: OK");
