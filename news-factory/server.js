@@ -9308,6 +9308,7 @@ function editorialPipeline() {
       promptFile: EDITORIAL_V2_PROMPT_FILE,
       maxFixRounds: EDITORIAL_V2_MAX_FIX_ROUNDS,
       requireAllCheckers: EDITORIAL_V2_REQUIRE_ALL_CHECKERS,
+      claudeCheck: process.env.EDITORIAL_V2_CLAUDE_CHECK,
       config: {
         openaiApiKey: OPENAI_API_KEY,
         openaiModel: OPENAI_MODEL,

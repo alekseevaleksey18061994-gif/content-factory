@@ -175,6 +175,54 @@ await test("pipeline: primary OpenAI checker outage → hold unavailable", async
   assert.equal(out.verdict, "unavailable");
 });
 
+await test("claude cost: default mode calls Claude only for a draft GPT passed (one call across fix rounds)", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": [FIX, FIX, PASS], "anthropic:checker": PASS });
+  const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude, maxFixRounds: 2 });
+  const out = await p.run("auto", REQUEST);
+  assert.equal(out.status, "approved");
+  assert.equal(out.rounds, 2);
+  assert.equal(mock.calls.openai.filter(function(c){ return c.role === "checker"; }).length, 3);
+  assert.equal(mock.calls.anthropic.length, 1, "Claude must not check the drafts GPT sent back for fixes");
+});
+
+await test("claude cost: mode 'always' keeps the old behaviour (Claude on every draft)", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": [FIX, FIX, PASS], "anthropic:checker": PASS });
+  const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude, maxFixRounds: 2, claudeCheck: "always" });
+  const out = await p.run("auto", REQUEST);
+  assert.equal(out.status, "approved");
+  assert.equal(mock.calls.anthropic.length, 3);
+});
+
+await test("claude cost: unknown mode value falls back to the cheap default", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": [FIX, PASS], "anthropic:checker": PASS });
+  const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude, claudeCheck: "banana" });
+  await p.run("auto", REQUEST);
+  assert.equal(mock.calls.anthropic.length, 1);
+});
+
+await test("claude cost: GPT reject or GPT outage never costs a Claude call", async function() {
+  let mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": REJECT, "anthropic:checker": PASS });
+  let out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.verdict, "reject"); assert.equal(mock.calls.anthropic.length, 0);
+  mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": new Error("openai down"), "anthropic:checker": PASS });
+  out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.verdict, "unavailable"); assert.equal(mock.calls.anthropic.length, 0);
+});
+
+await test("claude cost: the second check still has teeth - Claude fix after a GPT pass sends the draft back", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": [PASS, PASS], "anthropic:checker": [FIX, PASS] });
+  const out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.status, "approved"); assert.equal(out.rounds, 1);
+  assert.equal(mock.calls.anthropic.length, 2, "the rewritten draft is checked by Claude again before approval");
+});
+
+await test("claude cost: runCheckers reports claudeSkipped when GPT asked for fixes", async function() {
+  const mock = mockClients({ "openai:checker": FIX, "anthropic:checker": PASS });
+  const r = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).runCheckers("auto", { title: "t", tgText: "x", vkText: "", cover: null, format: "f", legalFlags: [] }, REQUEST);
+  assert.equal(r.verdict, "fix"); assert.equal(r.claudeSkipped, true); assert.equal(r.degraded, false);
+  assert.equal(mock.calls.anthropic.length, 0);
+});
+
 await test("pipeline: no Anthropic key → GPT-only check", async function() {
   const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": PASS });
   const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: {} });

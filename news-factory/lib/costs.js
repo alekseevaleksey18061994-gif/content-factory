@@ -89,7 +89,8 @@ export const BUILTIN_COST_PRICING = Object.freeze({
   anthropic: {
     "claude-sonnet-5-5": { input: 2.00, cacheRead: 0.20, cacheWrite: 2.50, output: 10.00 },
     "claude-opus-5-5": { input: 4.00, cacheRead: 0.20, cacheWrite: 5.00, output: 20.00 },
-    "claude-haiku-4-5": { input: 1.00, cacheRead: 0.10, cacheWrite: 1.25, output: 5.00 }
+    "claude-haiku-4-5": { input: 1.00, cacheRead: 0.10, cacheWrite: 1.25, output: 5.00 },
+    "claude-haiku-4-5-20251001": { input: 1.00, cacheRead: 0.10, cacheWrite: 1.25, output: 5.00 }
   },
   railway: {
     memoryGbMonth: 10.00,

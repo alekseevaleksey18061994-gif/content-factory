@@ -601,6 +601,11 @@ export function createEditorialPipeline(options) {
   const maxFixRounds = Math.max(0, Math.min(3, Number(opt.maxFixRounds == null ? 2 : opt.maxFixRounds)));
   const requireAllCheckers = opt.requireAllCheckers !== false;
   const useClaude = function(){ return Boolean(opt.config && opt.config.anthropicApiKey) || Boolean(opt.forceClaude); };
+  // "final" (default): Claude is the second checker only for a draft that GPT has already passed, i.e. one that
+  // would really be published. A draft GPT sends back for fixes (or rejects) never costs a Claude call, and a fix
+  // round does not repeat the Claude check of the previous draft. "always": Claude checks every draft in parallel
+  // with GPT (the old behaviour, about 1.75 Claude calls per post).
+  const claudeCheckMode = String(opt.claudeCheck || "final").trim().toLowerCase() === "always" ? "always" : "final";
 
   async function runWriter(channelId, request) {
     const parsed = loadPrompt(promptFile);
@@ -631,21 +636,34 @@ export function createEditorialPipeline(options) {
       sources: request.sources,
       registry: request.registry
     });
-    const jobs = [
-      clients.callOpenAI(system, input, {
+    const openaiJob = function() {
+      return clients.callOpenAI(system, input, {
         maxTokens: 2500, temperature: 0.1, purpose: "editorial_checker_openai", extra: { news_id: String(request.news_id || "") }
       })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "openai", r.model); })
-        .catch(function(error){ return { provider: "openai", failed: true, error: String(error && error.message || error) }; })
-    ];
-    if (useClaude()) {
-      jobs.push(clients.callAnthropic(system, input, {
+        .catch(function(error){ return { provider: "openai", failed: true, error: String(error && error.message || error) }; });
+    };
+    const claudeJob = function() {
+      return clients.callAnthropic(system, input, {
         maxTokens: 8000, purpose: "editorial_checker_anthropic", extra: { news_id: String(request.news_id || "") }
       })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "anthropic", r.model); })
-        .catch(function(error){ return { provider: "anthropic", failed: true, error: String(error && error.message || error) }; }));
+        .catch(function(error){ return { provider: "anthropic", failed: true, error: String(error && error.message || error) }; });
+    };
+    let results;
+    let claudeSkipped = false;
+    if (useClaude() && claudeCheckMode === "always") {
+      results = await Promise.all([openaiJob(), claudeJob()]);
+    } else {
+      const first = await openaiJob();
+      results = [first];
+      if (useClaude()) {
+        // Claude only sees a draft GPT passed. If GPT failed, asked for fixes or rejected, the verdict is already
+        // decided (an OpenAI outage is "unavailable" whatever Claude says), so the call would be wasted.
+        if (!first.failed && first.verdict === "pass") results.push(await claudeJob());
+        else claudeSkipped = true;
+      }
     }
-    const results = await Promise.all(jobs);
     const failed = results.filter(function(r){ return r.failed; });
     const done = results.filter(function(r){ return !r.failed; });
     const merged = mergeVerdicts(done);
@@ -663,6 +681,7 @@ export function createEditorialPipeline(options) {
       errors: merged.errors,
       checkers: results,
       degraded,
+      claudeSkipped: claudeSkipped,
       failedProviders: failed.map(function(r){ return r.provider; })
     };
   }
