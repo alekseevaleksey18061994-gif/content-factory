@@ -53,7 +53,8 @@ const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
 const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
 // Default 2: one main photo plus at most one genuinely different large photo.
-const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MEDIA_DIRECTOR_MAX_IMAGES || 2)));
+// One media per post: video → photo → generated cover. Albums are off by default.
+const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MEDIA_DIRECTOR_MAX_IMAGES || 1)));
 // Extra (non-main) album photos must be at least this large: filters "read also" thumbnails.
 const MEDIA_EXTRA_MIN_WIDTH = 700;
 const MEDIA_EXTRA_MIN_HEIGHT = 400;
@@ -2931,9 +2932,11 @@ async function backfillQueueImageEnhancements(options) {
           continue;
         }
 
-        item.imageUrl = enhancedUrls[0];
-        item.enhancedImageUrl = enhancedUrls[0];
-        item.mediaPackUrls = enhancedUrls.slice(0, MEDIA_DIRECTOR_MAX_IMAGES);
+        const cleanPack = await sanitizeMediaPack(enhancedUrls, item.editorialV2 && item.editorialV2.album === false ? 1 : MEDIA_DIRECTOR_MAX_IMAGES);
+        item.imageUrl = cleanPack[0] || enhancedUrls[0];
+        item.enhancedImageUrl = item.imageUrl;
+        item.mediaPackUrls = cleanPack.length ? cleanPack : enhancedUrls.slice(0, 1);
+        if (!item.videoUrl) item.mediaType = item.mediaPackUrls.length > 1 ? "album" : "photo";
         item.mediaEnhancementLog = logs;
         item.mediaEnhancementBackfillVersion = "v3";
         item.mediaEnhancementError = logs.some(function(x){ return x.error; }) ? "Часть фотографий оставлена в исходном качестве" : "";
@@ -3198,14 +3201,45 @@ async function localImageFingerprint(mediaUrl) {
   try {
     const meta = await sharp(file).metadata();
     const raw = await sharp(file).resize(16, 16, { fit: "fill" }).grayscale().raw().toBuffer();
+    const stats = await sharp(file).stats();
     let sum = 0;
     for (const v of raw) sum += v;
     const avg = sum / raw.length;
     const bits = Array.from(raw, function(v){ return v >= avg ? 1 : 0; });
-    return { width: Number(meta.width || 0), height: Number(meta.height || 0), bits: bits };
+    return { width: Number(meta.width || 0), height: Number(meta.height || 0), bits: bits, entropy: Number(stats.entropy || 0) };
   } catch {
     return null;
   }
+}
+
+// Logos, brand cards and flat graphics have very low entropy (~0.5–4); real photos ~6.5–7.8.
+const MEDIA_MIN_PHOTO_ENTROPY = 5;
+function looksLikeGraphic(fp) { return Boolean(fp) && fp.entropy > 0 && fp.entropy < MEDIA_MIN_PHOTO_ENTROPY; }
+
+// Final clean-up of a post's photo set, used everywhere a pack is (re)built:
+// keeps order, puts a real photo first if the main one is a logo/graphic, and keeps
+// extras only if they are local, large, photo-like, not thumbnails and not a near
+// duplicate of a photo already kept.
+async function sanitizeMediaPack(urls, maxCount) {
+  const limit = Math.max(1, Number(maxCount || MEDIA_DIRECTOR_MAX_IMAGES));
+  const list = Array.from(new Set((Array.isArray(urls) ? urls : []).map(function(u){ return String(u || "").trim(); }).filter(Boolean)));
+  if (list.length <= 1) return list;
+  const entries = [];
+  for (const url of list) entries.push({ url: url, fp: await localImageFingerprint(url) });
+  if (looksLikeGraphic(entries[0].fp)) {
+    const photoIndex = entries.findIndex(function(e, i){ return i > 0 && e.fp && !looksLikeGraphic(e.fp) && e.fp.width >= MEDIA_EXTRA_MIN_WIDTH && !isLikelyThumbnailUrl(e.url); });
+    if (photoIndex > 0) entries.unshift(entries.splice(photoIndex, 1)[0]);
+  }
+  const kept = [entries[0]];
+  for (const e of entries.slice(1)) {
+    if (kept.length >= limit) break;
+    if (!e.fp || isLikelyThumbnailUrl(e.url)) continue;
+    if (e.fp.width < MEDIA_EXTRA_MIN_WIDTH || e.fp.height < MEDIA_EXTRA_MIN_HEIGHT) continue;
+    if (looksLikeGraphic(e.fp)) continue;
+    if (kept.some(function(k){ return imageFingerprintsSimilar(k.fp, e.fp); })) continue;
+    kept.push(e);
+  }
+  return kept.map(function(e){ return e.url; });
 }
 
 function imageFingerprintsSimilar(a, b) {
@@ -3287,7 +3321,7 @@ async function prepareMediaDirector(payload) {
       const fp = await localImageFingerprint(cached);
       if (isExtra) {
         // Extra photos must be large and genuinely different from the ones already chosen.
-        if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT) continue;
+        if (!fp || fp.width < MEDIA_EXTRA_MIN_WIDTH || fp.height < MEDIA_EXTRA_MIN_HEIGHT || looksLikeGraphic(fp)) continue;
         if (fingerprints.some(function(prev){ return imageFingerprintsSimilar(prev, fp); })) continue;
       }
       if (fp) fingerprints.push(fp);
@@ -7799,29 +7833,29 @@ async function tryMergeStoryQueueItem(newItem) {
 
   if (!composed || composed.sameStory === false) return null;
 
-  let mediaPack = [];
-  const existingPack = Array.from(new Set(
-    (Array.isArray(target.mediaPackUrls) ? target.mediaPackUrls : [])
-      .concat(Array.isArray(newItem.mediaPackUrls) ? newItem.mediaPackUrls : [])
-      .concat([target.imageUrl, newItem.imageUrl].filter(Boolean))
-  )).filter(Boolean).slice(0, STORY_MEDIA_PACK_COUNT);
-  if (existingPack.length < 2) {
+  // One media for the merged story with the usual priority: video → real photo → one
+  // generated cover (no generated multi-image packs).
+  const storyVideo = String(target.videoUrl || newItem.videoUrl || "").trim();
+  const storyPhoto = String(target.imageUrl || newItem.imageUrl || "").trim();
+  let storyGenerated = String(target.generatedImageUrl || newItem.generatedImageUrl || "").trim();
+  if (!storyVideo && !storyPhoto && !storyGenerated && GENERATE_COVER_IF_MISSING) {
     try {
-      mediaPack = await generateStoryMediaPack({
+      const cover = await generateNewsCover({
         id: "story_" + stableHashNumber(sources.map(function(x){ return x.url || x.newsId; }).join("|")),
         title: composed.title,
         text: composed.text,
         sourceName: sources.map(function(x){ return x.sourceName; }).join(", ")
-      }, STORY_MEDIA_PACK_COUNT);
+      });
+      storyGenerated = cover && cover.url || "";
     } catch (error) {
-      console.warn("Story media pack failed:", error.message);
+      console.warn("Story cover failed:", error.message);
     }
   }
-
-  const fallbackUrls = existingPack.concat([target.generatedImageUrl, newItem.generatedImageUrl].filter(Boolean));
-  const mediaPackUrls = Array.from(new Set(
-    fallbackUrls.concat(mediaPack.map(function(x){ return x.url; }))
-  )).slice(0, STORY_MEDIA_PACK_COUNT);
+  const mediaPack = [];
+  const existingPack = [storyPhoto].filter(Boolean);
+  const mediaPackUrls = [storyPhoto || storyGenerated].filter(Boolean);
+  const storyFromTarget = Boolean(target.videoUrl || target.imageUrl);
+  const storyMediaSource = storyFromTarget ? target : newItem;
 
   const storyId = String(target.storyCluster && target.storyCluster.id || ("story_" + crypto.randomBytes(6).toString("hex")));
   const sourceRefs = sources.map(function(source){ return { name: source.sourceName || "Источник", url: source.url || "" }; }).filter(function(x){ return x.url; });
@@ -7845,17 +7879,17 @@ async function tryMergeStoryQueueItem(newItem) {
       similarity: Math.round(match.similarity * 100) / 100,
       updatedAt: new Date().toISOString()
     },
-    imageUrl: "",
-    videoUrl: "",
-    originalImageUrl: "",
-    originalVideoUrl: "",
-    generatedImageUrl: mediaPackUrls[0] || target.generatedImageUrl || newItem.generatedImageUrl || "",
+    imageUrl: storyPhoto || (storyVideo ? String(storyMediaSource.imageUrl || "") : ""),
+    videoUrl: storyVideo,
+    originalImageUrl: String(storyMediaSource.originalImageUrl || ""),
+    originalVideoUrl: String(storyMediaSource.originalVideoUrl || storyVideo || ""),
+    generatedImageUrl: storyPhoto || storyVideo ? String(target.generatedImageUrl || "") : storyGenerated,
     mediaPackUrls: mediaPackUrls,
-    mediaPack: mediaPack.map(function(x, index){ return { url: x.url, model: x.model || "", visualIndex: index }; }),
-    mediaType: mediaPackUrls.length > 1 ? "album" : "generated",
-    mediaStatus: "generated",
-    mediaOrigin: "ai_generated",
-    mediaLicense: "unknown",
+    mediaPack: mediaPack,
+    mediaType: storyVideo ? "video" : (storyPhoto ? "photo" : "generated"),
+    mediaStatus: storyVideo ? "video_found" : (storyPhoto ? (storyMediaSource.mediaStatus || "photo_found") : "generated"),
+    mediaOrigin: storyVideo || storyPhoto ? "source_media" : "ai_generated",
+    mediaLicense: String(storyMediaSource.mediaLicense || "unknown"),
     copyrightSafe: true,
     copyrightPolicyVersion: "v1",
     copyrightMediaDecision: "multi_source_original_pack",
@@ -9454,6 +9488,42 @@ setTimeout(function() {
     }
   })();
 }, 1500);
+
+// One-time clean-up of photo sets already in the queue (duplicates, logos, thumbnails).
+setTimeout(function() {
+  (async function(){
+    const migration = "v0.34.0-single-media-cleanup";
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        let changed = 0;
+        for (const item of (state.queue || [])) {
+          if (!item) continue;
+          if (item.videoUrl) {
+            // Video has priority: no extra photos next to it.
+            if (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length > 1) { item.mediaPackUrls = item.mediaPackUrls.slice(0, 1); changed += 1; }
+            continue;
+          }
+          const pack = Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length ? item.mediaPackUrls : [item.imageUrl].filter(Boolean);
+          if (pack.length < 2 && !(pack.length === 1 && item.imageUrl && item.imageUrl !== pack[0])) continue;
+          const max = 1;
+          const clean = await sanitizeMediaPack(pack, max);
+          if (clean.join("|") !== pack.join("|") || item.imageUrl !== clean[0]) {
+            item.mediaPackUrls = clean;
+            item.imageUrl = clean[0] || item.imageUrl;
+            item.mediaType = clean.length > 1 ? "album" : "photo";
+            changed += 1;
+          }
+        }
+        state.migrations.push(migration);
+        saveState();
+        console.log("Queue media clean-up " + ws.id + ": " + JSON.stringify({ changed: changed }));
+      });
+    }
+  })().catch(function(error){ console.warn("Queue media clean-up failed:", error.message); });
+}, 60000);
 
 // One-time rebuild of the existing queue with the current editorial rules (v0.33.7).
 setTimeout(function() {
