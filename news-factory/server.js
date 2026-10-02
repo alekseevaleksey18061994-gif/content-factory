@@ -5470,18 +5470,41 @@ async function publishDynamicSlot(kind) {
   if (!queueId) {
     const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
     let lastChanceItem = dynamicAssignBest(day, time, laneKind);
-    if (!lastChanceItem && !isCollectorRunning() && emptySlotCollectorAllowed(schedulerState, slotKey)) {
+
+    if (!lastChanceItem && emptySlotCollectorAllowed(schedulerState, slotKey)) {
       schedulerState.lastEmptySlotKey = slotKey;
       schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
       saveState();
-      const lastChanceTrigger = publishKind === "blogger"
-        ? "blogger-slot-last-chance"
-        : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
-      await collectOnce(lastChanceTrigger);
-      // A secondary-checker outage may have left usable posts on hold. Re-run
-      // those through degraded-safe QC before declaring the slot empty.
-      await retryUnavailableEditorialQueueItems().catch(function(){});
+
+      // Fast path first: an Anthropic outage may already have left a strong,
+      // fully sourced story in the queue with qcStatus=hold. Repair at most two
+      // such items with primary OpenAI QC before doing a costly full source scan.
+      const rescue = await retryUnavailableEditorialQueueItems(2).catch(function(error){
+        return { checked: 0, repaired: 0, held: 0, skipped: 0, error: String(error && error.message || error) };
+      });
       lastChanceItem = dynamicAssignBest(day, time, laneKind);
+      if (lastChanceItem) {
+        console.log("SLOT_FAST_RESCUE " + JSON.stringify({
+          workspace: currentWorkspaceId(),
+          slot: slotKey,
+          queueId: lastChanceItem.id,
+          rescue: rescue
+        }));
+      }
+
+      if (!lastChanceItem && !isCollectorRunning()) {
+        const lastChanceTrigger = publishKind === "blogger"
+          ? "blogger-slot-last-chance"
+          : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
+        const collectorResult = await collectOnce(lastChanceTrigger);
+        lastChanceItem = dynamicAssignBest(day, time, laneKind);
+        console.log("SLOT_FULL_RESCUE " + JSON.stringify({
+          workspace: currentWorkspaceId(),
+          slot: slotKey,
+          queueId: lastChanceItem && lastChanceItem.id || "",
+          collector: collectorResult
+        }));
+      }
     }
     queueId = lastChanceItem && lastChanceItem.id || "";
   }
@@ -9268,7 +9291,7 @@ setInterval(function() {
   })().catch(function(error){ console.warn("Extras tick failed:", error.message); }).finally(function(){ extrasTickRunning = false; });
 }, 60000);
 
-async function retryUnavailableEditorialQueueItems() {
+async function retryUnavailableEditorialQueueItems(limit) {
   if (costEconomyMode()) return { checked: 0, repaired: 0, held: 0, skipped: 0, economyMode: true };
   if (!editorialV2Active()) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
 
@@ -9283,6 +9306,7 @@ async function retryUnavailableEditorialQueueItems() {
   }
 
   const marker = "structured-json-v2-degraded-safe";
+  const maxItems = Math.max(1, Math.min(6, Number(limit || 6)));
   const candidates = (state.queue || []).filter(function(item) {
     if (!item || !item.editorialV2) return false;
     if (item.editorialV2RetryVersion === marker) return false;
@@ -9290,7 +9314,7 @@ async function retryUnavailableEditorialQueueItems() {
     const checkerList = Array.isArray(item.editorialV2.checkers) ? item.editorialV2.checkers : [];
     const hadAnthropicFailure = checkerList.some(function(x){ return /^anthropic:error$/i.test(String(x || "")); });
     return verdict === "unavailable" || hadAnthropicFailure;
-  }).slice(0, 6);
+  }).slice(0, maxItems);
 
   let repaired = 0;
   let held = 0;
