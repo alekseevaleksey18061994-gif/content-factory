@@ -13790,8 +13790,10 @@ async function repairBrokenQueueImages() {
   const withImages = (state.queue || []).filter(function(q){ return q && q.newsId && !q.telegramPublished && (q.enhancedImageUrl || q.imageUrl); });
   let broken = 0;
   for (const q of withImages) {
-    const fp = await localImageFingerprint(q.enhancedImageUrl || q.imageUrl);
-    if (!(fp && fp.width >= 320 && fp.height >= 180)) broken += 1;
+    const image = q.enhancedImageUrl || q.imageUrl;
+    const fp = await localImageFingerprint(image);
+    const quality = assessMediaQuality(fp, { url: image, score: 80, reason: "queue_repair" });
+    if (!quality.pass) broken += 1;
   }
   if (withImages.length >= 6 && broken > withImages.length / 2) return { fixed: 0, failed: 0, skipped: "too_many_broken", broken: broken, total: withImages.length };
   for (const item of (state.queue || [])) {
@@ -13801,7 +13803,7 @@ async function repairBrokenQueueImages() {
     if (img) {
       // Only files in our /media folder count; remote URLs give no fingerprint.
       const fp = await localImageFingerprint(img);
-      ok = Boolean(fp && fp.width >= 320 && fp.height >= 180);
+      ok = assessMediaQuality(fp, { url: img, score: 80, reason: "queue_repair" }).pass;
     }
     if (ok) continue;
     if (!img && item.generatedImageUrl) continue;
