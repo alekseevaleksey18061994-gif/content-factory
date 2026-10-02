@@ -10857,6 +10857,9 @@ async function seedChannelSources(ws) {
 // start and every 15 minutes, so a channel created in the admin is picked up
 // without a restart.
 const SEED_LISTS_V0413 = new Set(["kino", "science", "sport"]);
+// «Что там в мире?» got a hand-made list of offbeat/culture sources in v0.41.5: AI discovery
+// found only 5 sources (general world news is out of its profile), below the 15 needed.
+const SEED_LISTS_V0415 = new Set(["world"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -10868,7 +10871,7 @@ function setupNewChannels() {
       if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
       // kino/science/sport got hand-made lists in v0.41.3 (their first run relied
       // on AI discovery, which hit the OpenAI rate limit) — seed them again.
-      const migration = (SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
+      const migration = (SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         if (!state.migrations.includes(migration)) {
