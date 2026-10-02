@@ -26,7 +26,8 @@ export function buildPrefilterPrompt(options) {
     return {
       n: index + 1,
       source: item.source || "",
-      type: item.group === "blogger" || item.group === "creator" ? "блогер" : (item.group === "official" ? "официальный сайт" : "СМИ"),
+      type: ({OFFICIAL:"официальный источник",MEDIA:"СМИ",CREATOR:"автор/блогер",COMMUNITY:"сообщество",SOCIAL:"соцсеть"})[String(item.sourceClass || "").toUpperCase()] ||
+        (item.group === "blogger" || item.group === "creator" ? "автор/блогер" : (item.group === "official" ? "официальный источник" : "СМИ")),
       date: item.date || "неизвестна",
       title: String(item.title || "").slice(0, 220),
       text: item.text ? String(item.text).slice(0, 280) : undefined
@@ -44,6 +45,7 @@ export function buildPrefilterPrompt(options) {
     "- старые новости: события, отчёты и выставки прошлых месяцев и лет; если дата неизвестна, а речь о прошедшем событии — тоже отсеивай;",
     "- не по теме канала;",
     "- служебные страницы: о компании, контакты, вакансии, подписка, рубрики.",
+    "Для типов «соцсеть» и «сообщество» не требуй журналистского стиля: вирусный ролик, пользовательская находка, мем с контекстом или заметный тренд могут быть полноценным материалом, если есть проверяемый факт и связь с темой канала.",
     "Оставляй (keep=true) настоящие новости и материалы по теме и фокусу канала и дай им оценку score от 1 до 10: насколько это интересно читателю канала.",
     "Ответь строго JSON без пояснений: {\"items\":[{\"n\":1,\"keep\":true,\"score\":7,\"reason\":\"коротко по-русски\"}]}.",
     "ITEMS: " + JSON.stringify(items)
