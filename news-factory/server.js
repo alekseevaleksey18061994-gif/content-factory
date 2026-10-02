@@ -2222,7 +2222,40 @@ async function enforceCopyrightSafeMedia(post) {
   out.copyrightMediaMode = COPYRIGHT_MEDIA_MODE;
   out.copyrightPolicyVersion = "v2";
   if (mediaLicenseAllowsReuse(license)) {
+    const candidatePack = Array.from(new Set(
+      [out.imageUrl].concat(Array.isArray(out.mediaPackUrls) ? out.mediaPackUrls : []).filter(Boolean)
+    ));
+    if (candidatePack.length) {
+      const clean = await sanitizeMediaPack(candidatePack, out.editorialV2 && out.editorialV2.album === true ? MEDIA_DIRECTOR_MAX_IMAGES : 1);
+      if (clean.length) {
+        out.imageUrl = clean[0];
+        out.mediaPackUrls = clean;
+      } else {
+        out.originalImageUrl = out.originalImageUrl || out.imageUrl || "";
+        out.imageUrl = "";
+        out.mediaPackUrls = [];
+        out.mediaQualityRejectedAtPublish = true;
+      }
+    }
+    if (!out.imageUrl && !out.videoUrl && !out.generatedImageUrl && GENERATE_COVER_IF_MISSING) {
+      const local = await renderEconomyTextCard({
+        id: out.newsId || out.postId || out.id || newId("media_gate"),
+        title: out.title || currentWorkspace().name || "News Factory",
+        text: out.text || "",
+        topicId: out.topicId || currentWorkspace().channelId || "",
+        cardNote: "Редакционная карточка"
+      });
+      out.generatedImageUrl = local.url;
+      out.generatedBy = local.model;
+      out.mediaType = "generated";
+      out.mediaStatus = "local_card";
+      out.mediaOrigin = "local_branded_card";
+      out.copyrightMediaDecision = "bad_source_media_replaced";
+    }
     if (!out.mediaOrigin && (out.videoUrl || out.imageUrl)) out.mediaOrigin = "source_media";
+    if (MEDIA_REQUIRED && !out.imageUrl && !out.videoUrl && !out.generatedImageUrl) {
+      throw new Error("Публикация запрещена: качественное медиа не подготовлено");
+    }
     return out;
   }
 
