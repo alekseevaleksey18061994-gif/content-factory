@@ -1376,14 +1376,22 @@ async function apiBalanceSnapshot(knownRate) {
     }
     const asOf = new Date(cfg.asOf);
     const recentFrom = new Date(Math.max(asOf.getTime(), now.getTime() - 7 * 24 * 60 * 60 * 1000));
-    const spentQ = await db.query(
-      "SELECT COALESCE(SUM(cost_usd),0)::float8 AS usd, COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced FROM cost_events WHERE provider=$1 AND at >= $2",
-      [provider, asOf.toISOString()]
-    );
-    const recentQ = await db.query(
-      "SELECT COALESCE(SUM(cost_usd),0)::float8 AS usd FROM cost_events WHERE provider=$1 AND at >= $2",
-      [provider, recentFrom.toISOString()]
-    );
+    let spentQ, recentQ;
+    try {
+      spentQ = await db.query(
+        "SELECT COALESCE(SUM(cost_usd),0)::float8 AS usd, COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced FROM cost_events WHERE provider=$1 AND at >= $2",
+        [provider, asOf.toISOString()]
+      );
+      recentQ = await db.query(
+        "SELECT COALESCE(SUM(cost_usd),0)::float8 AS usd FROM cost_events WHERE provider=$1 AND at >= $2",
+        [provider, recentFrom.toISOString()]
+      );
+    } catch (error) {
+      // Повреждённое сохранённое значение не должно ломать весь отчёт «Расходы».
+      console.warn("API balance calculation failed for " + provider + ":", error.message);
+      out.push(Object.assign(base, { configured: true, available: false, amountUsd: Number(cfg.amountUsd), asOf: cfg.asOf, lowUsd: Number(cfg.lowUsd || 0) }));
+      continue;
+    }
     const calc = computeApiBalance(cfg, spentQ.rows[0] && spentQ.rows[0].usd, recentQ.rows[0] && recentQ.rows[0].usd, now, COST_TRACKING_RETENTION_DAYS);
     out.push(Object.assign(base, calc, {
       configured: true,

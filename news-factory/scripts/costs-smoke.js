@@ -59,6 +59,15 @@ async function waitForHealth() {
   const keep = normalizeBalanceInput("anthropic", {amountUsd:3}, {lowUsd:20}, now);
   assert.equal(keep.value.lowUsd, 20, "previous threshold kept");
   assert.equal(normalizeBalanceInput("openai", {clear:true}, null, now).clear, true);
+  // regressions from adversarial review: out-of-range asOf poisoned /api/costs; sloppy coercion
+  for (const asOf of ["-000001-01-01T00:00:00Z", "-271821-04-20T00:00:00.000Z", "0000-01-01T00:00:00Z", "1970-01-01T00:00:00Z"]) {
+    assert.equal(normalizeBalanceInput("openai", {amountUsd:10, asOf}, null, now).ok, false, "old asOf rejected: " + asOf);
+  }
+  for (const asOf of [5, true, {}, []]) assert.equal(normalizeBalanceInput("openai", {amountUsd:10, asOf}, null, now).ok, false, "non-string asOf rejected");
+  for (const amountUsd of ["0x10", true, false, [], [7], null, "1e3", "1,000.5", " ", {}]) assert.equal(normalizeBalanceInput("openai", {amountUsd}, null, now).ok, false, "sloppy amount rejected: " + JSON.stringify(amountUsd));
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:10, lowUsd:true}, null, now).ok, false, "boolean threshold rejected");
+  assert.equal(normalizeBalanceInput(["openai"], {amountUsd:10}, null, now).ok, false, "array provider rejected");
+  assert.equal(normalizeBalanceInput("openai", {amountUsd:0}, null, now).ok, true, "zero balance allowed");
 
   const cfg = { amountUsd: 50, asOf: "2026-09-30T12:00:00Z", lowUsd: 10 };
   const a = computeApiBalance(cfg, 14, 14, now, 400);

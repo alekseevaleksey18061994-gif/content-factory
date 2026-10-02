@@ -342,25 +342,35 @@ export const BALANCE_PROVIDERS = Object.freeze(["openai", "anthropic"]);
 export const BALANCE_DEFAULT_LOW_USD = 5;
 const BALANCE_MAX_USD = 10000000;
 
+function parseBalanceNumber(raw) {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : NaN;
+  if (typeof raw !== "string") return NaN;
+  const text = raw.trim().replace(",", ".");
+  return /^\d+(\.\d+)?$/.test(text) ? Number(text) : NaN;
+}
+
+const BALANCE_MIN_ASOF_MS = Date.UTC(2020, 0, 1);
+
 export function normalizeBalanceInput(provider, body, previous, nowInput) {
-  const id = String(provider || "").toLowerCase();
-  if (!BALANCE_PROVIDERS.includes(id)) return { ok: false, error: "Неизвестный провайдер: " + id };
+  const id = typeof provider === "string" ? provider.toLowerCase() : "";
+  if (!BALANCE_PROVIDERS.includes(id)) return { ok: false, error: "Неизвестный провайдер" };
   const now = nowInput instanceof Date ? nowInput : new Date(nowInput || Date.now());
-  const b = body && typeof body === "object" ? body : {};
+  const b = body && typeof body === "object" && !Array.isArray(body) ? body : {};
   if (b.clear === true) return { ok: true, provider: id, clear: true };
-  const rawAmount = typeof b.amountUsd === "string" ? b.amountUsd.replace(",", ".").trim() : b.amountUsd;
-  if (rawAmount === "" || rawAmount === null || rawAmount === undefined) return { ok: false, error: "Укажите остаток в долларах" };
-  const amount = Number(rawAmount);
-  if (!Number.isFinite(amount) || amount < 0 || amount > BALANCE_MAX_USD) return { ok: false, error: "Остаток должен быть числом от 0 до " + BALANCE_MAX_USD };
+  const amount = parseBalanceNumber(b.amountUsd);
+  if (!Number.isFinite(amount)) return { ok: false, error: "Укажите остаток в долларах числом" };
+  if (amount < 0 || amount > BALANCE_MAX_USD) return { ok: false, error: "Остаток должен быть от 0 до " + BALANCE_MAX_USD };
   let asOf = now;
-  if (b.asOf) {
+  if (b.asOf !== undefined && b.asOf !== null && b.asOf !== "") {
+    if (typeof b.asOf !== "string") return { ok: false, error: "Некорректная дата остатка" };
     asOf = new Date(b.asOf);
     if (!Number.isFinite(asOf.getTime())) return { ok: false, error: "Некорректная дата остатка" };
     if (asOf.getTime() > now.getTime() + 5 * 60 * 1000) return { ok: false, error: "Дата остатка не может быть в будущем" };
+    if (asOf.getTime() < BALANCE_MIN_ASOF_MS) return { ok: false, error: "Дата остатка слишком давняя" };
   }
   let lowUsd = previous && Number.isFinite(Number(previous.lowUsd)) ? Number(previous.lowUsd) : BALANCE_DEFAULT_LOW_USD;
   if (b.lowUsd !== undefined && b.lowUsd !== null && b.lowUsd !== "") {
-    const low = Number(typeof b.lowUsd === "string" ? b.lowUsd.replace(",", ".") : b.lowUsd);
+    const low = parseBalanceNumber(b.lowUsd);
     if (!Number.isFinite(low) || low < 0 || low > BALANCE_MAX_USD) return { ok: false, error: "Порог предупреждения должен быть числом от 0" };
     lowUsd = low;
   }

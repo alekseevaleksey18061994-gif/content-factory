@@ -3665,6 +3665,7 @@ async function saveCostBudget(){
     renderCostBudget(j.budget||{});toast('Бюджет сохранён');await loadCosts(true);
   }catch(e){toast('Бюджет: '+e.message)}
 }
+function balanceUsd(v){var n=Number(v);if(!Number.isFinite(n))return '—';return (n<0?'−':'')+'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function renderCostBalances(list,force){
   var box=el('costBalances');if(!box)return;
   list=Array.isArray(list)?list:[];
@@ -3679,12 +3680,12 @@ function renderCostBalances(list,force){
     }else{
       state=x.status==='empty'?'empty':x.status==='low'?'low':'';
       var chip=x.status==='empty'?'Закончился':x.status==='low'?'Мало':'В порядке';
-      body='<div class="cost-balance-value">'+moneyUsd(x.remainingUsd)+'</div>'+
-        '<small>'+(x.remainingRub!=null?'≈ '+moneyRub(x.remainingRub)+' · ':'')+'введено '+moneyUsd(x.amountUsd)+' '+esc(new Date(x.asOf).toLocaleString('ru-RU'))+', потрачено с тех пор '+moneyUsd(x.spentUsd)+'</small>'+
-        '<small>'+(x.daysLeft!=null?'Хватит примерно на '+Math.max(1,Math.floor(x.daysLeft))+' дн. при текущем темпе ('+moneyUsd(x.avgDailyUsd)+'/день)':'Темп расхода пока не определён')+'</small>'+
+      body='<div class="cost-balance-value">'+balanceUsd(x.remainingUsd)+'</div>'+
+        '<small>'+(x.remainingRub!=null?'≈ '+moneyRub(x.remainingRub)+' · ':'')+'введено '+balanceUsd(x.amountUsd)+' '+esc(new Date(x.asOf).toLocaleString('ru-RU'))+', потрачено с тех пор '+balanceUsd(x.spentUsd)+'</small>'+
+        '<small>'+(x.daysLeft!=null?'Хватит примерно на '+Math.max(1,Math.floor(x.daysLeft))+' дн. при текущем темпе ('+balanceUsd(x.avgDailyUsd)+'/день)':'Темп расхода пока не определён')+'</small>'+
         (x.unpricedCalls?'<small>Вызовов без цены: '+Number(x.unpricedCalls)+' — остаток может быть завышен.</small>':'')+
         (x.spendIncomplete?'<small>Остаток введён давно, часть расходов уже удалена из учёта — введите актуальный.</small>':'')+
-        '<small>'+chip+' · предупреждение при остатке ≤ '+moneyUsd(x.lowUsd)+'</small>';
+        '<small>'+chip+' · предупреждение при остатке ≤ '+balanceUsd(x.lowUsd)+'</small>';
     }
     return '<div class="cost-balance '+state+'"><div class="cost-balance-head"><b>'+title+'</b></div>'+body+
       '<div class="cost-balance-form"><label>Остаток сейчас, $<input id="bal_'+p+'" type="number" min="0" step="0.01" inputmode="decimal"></label>'+
