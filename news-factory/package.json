@@ -15,7 +15,7 @@
     "test:seed-lists": "node scripts/seed-lists-test.js",
     "test:promotion-smoke": "node scripts/promotion-smoke.js",
     "test:scheduler-recovery": "node scripts/scheduler-recovery-smoke.js",
-    "test:channel-dna": "node scripts/channel-dna-v2-test.js"
+    "test:channel-dna": "node scripts/channel-dna-v2-test.js && node scripts/channel-dna-integration-smoke.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
