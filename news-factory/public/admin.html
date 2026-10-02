@@ -24,7 +24,7 @@ button{border:1px solid #303849;background:var(--panel2);color:var(--text);borde
 .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.kpi{background:#0d1016;border:1px solid #222937;border-radius:14px;padding:14px;min-height:92px}.kpi b{display:block;font-size:24px}.kpi span{display:block;color:var(--muted);font-size:11px;margin-top:5px}.kpi small{display:block;color:#708096;font-size:10px;margin-top:4px}
 .dash-two{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:14px}.panel-title{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}.panel-title h3{margin:0;font-size:16px}.panel-title p{margin:3px 0 0;color:var(--muted);font-size:11px}.feed-row,.attention-row,.pipeline-row{padding:11px 0;border-top:1px solid #232a36}.feed-row:first-child,.attention-row:first-child,.pipeline-row:first-child{border-top:0}.feed-row b,.attention-row b,.pipeline-row b{font-size:13px}.feed-row small,.attention-row small,.pipeline-row small{display:block;color:var(--muted);font-size:11px;margin-top:4px;line-height:1.4}.att-badge{display:inline-block;padding:4px 7px;border-radius:999px;font-size:9px;font-weight:800;margin-left:6px}.att-warn{background:rgba(255,190,85,.1);color:var(--amber);border:1px solid rgba(255,190,85,.2)}.att-bad{background:rgba(255,107,115,.1);color:#ff8d94;border:1px solid rgba(255,107,115,.2)}
 .quick{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.quick button,.quick a{display:flex;align-items:center;justify-content:center;min-height:54px;text-align:center;text-decoration:none;border:1px solid #303849;background:#111722;color:#fff;border-radius:13px;font-size:12px;font-weight:750}
-.news-list{display:grid;gap:12px}.news-card{border:1px solid var(--line);background:#0d1317;border-radius:16px;padding:14px;overflow:hidden}.news-card-body{display:grid;grid-template-columns:120px minmax(0,1fr);gap:14px;align-items:start}.news-thumb{width:120px;height:82px;border-radius:12px;object-fit:cover;background:#151b25;border:1px solid #293140}.news-placeholder,.queue-placeholder{display:grid;place-items:center;background:linear-gradient(135deg,#18233a,#382a67);border:1px solid #33405b;color:#d9e3ff;font-weight:900}.news-placeholder{width:120px;height:82px;border-radius:12px}.news-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.news-card h4{margin:0;font-size:14px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.news-card p{margin:8px 0 0;color:#c5ccd8;font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}.news-card .meta{margin-top:7px;word-break:normal}.news-status{flex:0 0 auto;border:1px solid #303849;border-radius:999px;padding:5px 8px;font-size:9px;font-weight:800;white-space:nowrap}.news-status.published{color:var(--green);border-color:rgba(75,208,139,.28)}.news-status.queued{color:var(--amber);border-color:rgba(255,190,85,.28)}.news-status.discovered{color:#9db5ff;border-color:rgba(157,181,255,.28)}.news-status.rewrite_error,.news-status.failed,.news-status.expired,.news-status.media_failed{color:#ff8d94;border-color:rgba(255,107,115,.28)}.news-status.editorial_skip{color:#8a94a6;border-color:rgba(138,148,166,.35)}.preview-skip-notice{margin:0;color:#6b7486;font-style:italic;line-height:1.5}
+.news-list{display:grid;gap:12px}.news-card{border:1px solid var(--line);background:#0d1317;border-radius:16px;padding:14px;overflow:hidden}.news-card-body{display:grid;grid-template-columns:120px minmax(0,1fr);gap:14px;align-items:start}.news-thumb{width:120px;height:82px;border-radius:12px;object-fit:cover;background:#151b25;border:1px solid #293140}.news-placeholder,.queue-placeholder{display:grid;place-items:center;background:linear-gradient(135deg,#18233a,#382a67);border:1px solid #33405b;color:#d9e3ff;font-weight:900}.news-placeholder{width:120px;height:82px;border-radius:12px}.news-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.news-card h4{margin:0;font-size:14px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.news-card p{margin:8px 0 0;color:#c5ccd8;font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}.news-card .meta{margin-top:7px;word-break:normal}.news-status{flex:0 0 auto;border:1px solid #303849;border-radius:999px;padding:5px 8px;font-size:9px;font-weight:800;white-space:nowrap}.news-status.published{color:var(--green);border-color:rgba(75,208,139,.28)}.news-status.queued{color:var(--amber);border-color:rgba(255,190,85,.28)}.news-status.discovered{color:#9db5ff;border-color:rgba(157,181,255,.28)}.news-status.rewrite_error,.news-status.failed,.news-status.expired,.news-status.media_failed{color:#ff8d94;border-color:rgba(255,107,115,.28)}.news-status.ready{color:#1a9a5b;border-color:rgba(26,154,91,.35)}.news-status.scheduled{color:#2f6fe0;border-color:rgba(47,111,224,.35)}.news-status.hold{color:#c0392b;border-color:rgba(192,57,43,.35)}.queue-decision-reason{margin:6px 0 2px;font-size:12px;line-height:1.45;color:#6b7486}.queue-decision-reason.hold{color:#b03a2e}.queue-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.importance-badge{font-weight:800}.news-status.editorial_skip{color:#8a94a6;border-color:rgba(138,148,166,.35)}.preview-skip-notice{margin:0;color:#6b7486;font-style:italic;line-height:1.5}
 .queue-list{display:grid;gap:12px}.queue-card{border:1px solid var(--line);background:#0d1317;border-radius:16px;padding:14px;overflow:hidden}.queue-card-main{display:grid;grid-template-columns:120px minmax(0,1fr);gap:14px;align-items:start}.queue-thumb{width:120px;height:82px;border-radius:12px;object-fit:cover;background:#151b25;border:1px solid #293140}.queue-placeholder{width:120px;height:82px;border-radius:12px}.queue-copy{min-width:0}.queue-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.queue-title{font-size:15px;font-weight:800;line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.queue-meta{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.4}.media-badge{display:inline-flex;align-items:center;gap:5px;margin-top:7px;border:1px solid #303849;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:800;color:#aeb7c7}.media-badge.found{color:var(--green);border-color:rgba(75,208,139,.28)}.media-badge.generated{color:#9db5ff;border-color:rgba(157,181,255,.28)}.media-badge.bad{color:#ff8d94;border-color:rgba(255,107,115,.28)}.queue-text{margin-top:9px;color:#c5ccd8;font-size:12px;line-height:1.55;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}.queue-actions{display:flex;gap:8px;margin-top:13px;padding-top:12px;border-top:1px solid #232a36;align-items:center;flex-wrap:wrap}.publish-targets{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.target-pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #303849;background:#111722;border-radius:999px;padding:7px 9px;font-size:11px;color:#cbd3df;cursor:pointer;user-select:none}.target-pill input{width:auto;margin:0;accent-color:#6f8cff}.target-pill.all{border-color:rgba(111,140,255,.45);color:#dce4ff}.publish-targets.manual{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:14px;background:#0d1016}.queue-actions .publish{flex:1}.queue-actions .remove{min-width:92px}.collector-head{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.collector-box{border:1px solid var(--line);background:#0d1016;border-radius:13px;padding:12px}.collector-box b{display:block;font-size:18px}.collector-box small{display:block;color:var(--muted);font-size:10px;margin-top:4px}
 .ai-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.ai-result{min-height:100%;display:flex;flex-direction:column}.ai-result textarea{min-height:260px}.ai-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.ai-meta{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.confidence-high{color:var(--green)}.confidence-medium{color:var(--amber)}.confidence-low{color:#ff8d94}.ai-empty{display:grid;place-items:center;min-height:280px;color:var(--muted);text-align:center;padding:24px;border:1px dashed #303849;border-radius:14px;background:#0b0f15}.ai-source textarea{min-height:300px}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.stat{background:#0d1016;border:1px solid #222937;border-radius:13px;padding:13px}.stat b{font-size:22px;display:block}.stat span{color:var(--muted);font-size:12px}
@@ -2527,6 +2527,17 @@ var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',cur
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+// One human-readable decision per queue card instead of several raw scores.
+function queueDecision(q){
+  if(q.status==='media_failed')return {label:'Ошибка медиа VK',cls:'media_failed',reason:'VK не принял медиа'+(q.vkError?': '+q.vkError:'')};
+  if(q.qcStatus==='hold'){
+    var reason=String(q.decisionSummary||'').replace(/^Пост отложен на ручную проверку:\s*/,'').replace(/^Пропущено при пересборке:\s*/,'Редакция пропустила: ');
+    if(!reason&&Array.isArray(q.qcIssues)&&q.qcIssues.length)reason=String(q.qcIssues[0]);
+    return {label:'На ручной проверке',cls:'hold',reason:reason?('Почему: '+reason+'. Можно опубликовать вручную или удалить.'):'Пост не прошёл автоматическую проверку.'};
+  }
+  if(q.preparedFor)return {label:'Запланирован · '+String(q.preparedFor).split(' ').pop(),cls:'scheduled',reason:''};
+  return {label:'Готов к публикации',cls:'ready',reason:''};
+}
 function statusRu(v){
   var map={
     queued:'В очереди',scheduled:'Запланировано',published:'Опубликовано',discovered:'Найдено',rewrite_error:'Ошибка AI',editorial_skip:'Пропущено редакцией',expired:'Устарело',media_failed:'Ошибка медиа VK',
@@ -2913,26 +2924,22 @@ function render(){
     var storyCount=(q.storySources&&q.storySources.length)||(q.storyCluster&&q.storyCluster.sourceCount)||0;
     var packCount=Array.isArray(q.mediaPackUrls)?q.mediaPackUrls.length:0;
     var storyNames=storyCount?(q.storySources||[]).map(function(s){return s.sourceName||s.name||''}).filter(Boolean).slice(0,5).join(' · '):'';
+    var v2=q.editorialV2||{};
+    var importance=Number.isFinite(Number(v2.importance))&&v2.importance!==null?Number(v2.importance):(Number.isFinite(aiScore)?Math.round(aiScore/10):null);
+    var decision=queueDecision(q);
+    var mediaChip=q.videoUrl?{label:'Видео',cls:'found'}:(sourceImage?{label:'Фото источника',cls:'found'}:(q.generatedImageUrl?{label:'AI-обложка',cls:'generated'}:{label:'Нет медиа',cls:'bad'}));
     return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
       '<div class="queue-card-main">'+media+
         '<div class="queue-copy">'+
-          '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status '+esc(q.status||'queued')+'">'+esc(statusRu(q.status||'queued'))+'</span></div>'+
+          '<div class="queue-head"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div><span class="news-status '+esc(decision.cls)+'">'+esc(decision.label)+'</span></div>'+
           '<div class="queue-meta">'+meta+'</div>'+
-          '<span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+
-          ((q.mediaStatus==='enhanced'||q.mediaStatus==='video_poster_enhanced')
-            ? '<span class="media-badge source-media-badge">✨ '+(q.videoUrl?'Обложка видео':'Фото')+' улучшено AI · оригинал сохранён</span>'
-            : ((q.videoUrl||sourceImage)?'<span class="media-badge source-media-badge">'+(q.videoUrl?'Видео':'Фото')+' источника · ссылка сохранена</span>':(q.generatedImageUrl?'<span class="media-badge ai-fallback-badge">AI fallback · исходного медиа нет</span>':(q.mediaStatus==='copyright_pending'?'<span class="media-badge copyright-media-badge">Медиа источника заблокировано</span>':''))))+
-          (aiLabel?'<span class="media-badge">'+esc(aiLabel)+'</span>':'')+
-          (qualityLabel?'<span class="media-badge quality-badge '+(q.qcStatus==='hold'?'hold':'')+'">'+esc(qualityLabel)+(q.qcStatus==='hold'?' · HOLD':'')+'</span>':'')+
-          (Number.isFinite(priorityScore)?'<span class="media-badge priority-badge">Приоритет '+Math.round(priorityScore)+'/100</span>':'')+
-          (q.storyUpdateOf?'<span class="media-badge update-badge">↻ Обновление сюжета</span>':'')+
-          (roleLabel?'<span class="media-badge role-badge">'+esc(roleLabel)+'</span>':'')+
-          (q.platformVariants?'<span class="media-badge">TG/VK версии</span>':'')+
-          (storyCount>1?'<span class="media-badge story-badge">🔥 Сюжет · '+storyCount+' источника</span>':'')+
-          (packCount>1?'<span class="media-badge story-badge">🖼 '+packCount+' фото</span>':'')+
-          (q.contentFormatLabel?'<span class="media-badge">'+esc(q.contentFormatLabel)+'</span>':'')+
-          (videoBonus?'<span class="media-badge video-score-badge">🎬 +'+videoBonus+' · итог '+effectiveScore+'/100</span>':'')+
-          (q.aiScoreReason?'<div class="queue-meta">AI: '+esc(q.aiScoreReason)+'</div>':'')+
+          (decision.reason?'<div class="queue-decision-reason '+esc(decision.cls)+'">'+esc(decision.reason)+'</div>':'')+
+          '<div class="queue-chips">'+
+            (importance!=null?'<span class="media-badge importance-badge">Важность '+importance+'/10</span>':'')+
+            '<span class="media-badge '+mediaChip.cls+'">'+esc(mediaChip.label)+'</span>'+
+            (storyCount>1?'<span class="media-badge story-badge">Сюжет · '+storyCount+' источника</span>':'')+
+            (q.storyUpdateOf?'<span class="media-badge update-badge">Обновление сюжета</span>':'')+
+          '</div>'+
           (storyNames?'<div class="story-source-line">Источники: '+esc(storyNames)+'</div>':'')+
           (q.status==='media_failed'?'<div class="queue-meta" style="color:#ff8d94">VK media_failed · '+esc(q.vkMediaAttempts||0)+' попытки'+(q.vkError?' · '+esc(q.vkError):'')+'</div>':'')+
           '<div class="queue-text">'+esc(stripEditorialMarks(parts.text||''))+'</div>'+
@@ -3558,12 +3565,10 @@ function renderPreview(item,platform){
   var variant=variants[platform]||null;
   var viewItem=variant?Object.assign({},item,{title:variant.title||item.title,text:variant.text||item.text}):item;
   var pp=postParts(viewItem),img=item.enhancedImageUrl||item.imageUrl||item.originalImageUrl||item.generatedImageUrl||'',video=item.videoUrl||'';
-  var pack=Array.isArray(item.mediaPackUrls)?item.mediaPackUrls.filter(Boolean).slice(0,4):[];
+  // One media per post, same priority as publishing: video → photo → generated cover.
   var media='';
   if(video){
     media='<video class="telegram-video" controls preload="metadata" src="'+esc(video)+'"></video>';
-  }else if(pack.length>1){
-    media='<div class="preview-media-grid">'+pack.map(function(url){return '<img src="'+esc(url)+'" alt="">'}).join('')+'</div>';
   }else if(img){
     media='<img class="telegram-media" src="'+esc(img)+'" alt="">';
   }
