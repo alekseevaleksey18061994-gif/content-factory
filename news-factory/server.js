@@ -26,7 +26,10 @@ import {
   calculateUsageCost as calculateApiUsageCost,
   moscowPeriodBounds,
   monthForecastCost,
-  percentChange
+  percentChange,
+  BALANCE_PROVIDERS,
+  normalizeBalanceInput,
+  computeApiBalance
 } from "./lib/costs.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -1349,6 +1352,50 @@ async function costBudgetSnapshot(knownRate) {
   };
 }
 
+function networkApiBalances() {
+  const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+  if (!ws.state.apiBalances || typeof ws.state.apiBalances !== "object") ws.state.apiBalances = {};
+  return ws.state.apiBalances;
+}
+
+async function apiBalanceSnapshot(knownRate) {
+  const stored = networkApiBalances();
+  const rate = Number(knownRate || 0) || await getUsdRubRate();
+  const now = new Date();
+  const out = [];
+  for (const provider of BALANCE_PROVIDERS) {
+    const cfg = stored[provider];
+    const base = { provider: provider, name: providerLabel(provider), configured: false };
+    if (!cfg || !Number.isFinite(Number(cfg.amountUsd)) || !cfg.asOf || !Number.isFinite(new Date(cfg.asOf).getTime())) {
+      out.push(base);
+      continue;
+    }
+    if (!db || !dbReady) {
+      out.push(Object.assign(base, { configured: true, available: false, amountUsd: Number(cfg.amountUsd), asOf: cfg.asOf, lowUsd: Number(cfg.lowUsd || 0) }));
+      continue;
+    }
+    const asOf = new Date(cfg.asOf);
+    const recentFrom = new Date(Math.max(asOf.getTime(), now.getTime() - 7 * 24 * 60 * 60 * 1000));
+    const spentQ = await db.query(
+      "SELECT COALESCE(SUM(cost_usd),0)::float8 AS usd, COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced FROM cost_events WHERE provider=$1 AND at >= $2",
+      [provider, asOf.toISOString()]
+    );
+    const recentQ = await db.query(
+      "SELECT COALESCE(SUM(cost_usd),0)::float8 AS usd FROM cost_events WHERE provider=$1 AND at >= $2",
+      [provider, recentFrom.toISOString()]
+    );
+    const calc = computeApiBalance(cfg, spentQ.rows[0] && spentQ.rows[0].usd, recentQ.rows[0] && recentQ.rows[0].usd, now, COST_TRACKING_RETENTION_DAYS);
+    out.push(Object.assign(base, calc, {
+      configured: true,
+      available: true,
+      unpricedCalls: Number(spentQ.rows[0] && spentQ.rows[0].unpriced || 0),
+      remainingRub: rate ? calc.remainingUsd * rate : null,
+      spentRub: rate ? calc.spentUsd * rate : null
+    }));
+  }
+  return out;
+}
+
 async function sendCostBudgetAlert(snapshot, threshold) {
   if (!BOT_TOKEN) return false;
   const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
@@ -1537,6 +1584,7 @@ async function buildCostsReport(days, scope, workspaceId, requestedPeriod) {
         services: infrastructure.services.map(function(s){ return Object.assign({}, s, { monthlyRub: convertRub(s.monthlyUsd) }); })
       }),
       budget: await costBudgetSnapshot(rate),
+      balances: await apiBalanceSnapshot(rate),
       freeServices: [],
       note: "PostgreSQL временно недоступен; новые события находятся в памяти и будут дозаписаны автоматически."
     };
@@ -1708,6 +1756,7 @@ async function buildCostsReport(days, scope, workspaceId, requestedPeriod) {
     wastedOnSkipped:{costUsd:wastedUsd,costRub:convertRub(wastedUsd),sharePct:selected.costUsd?wastedUsd/selected.costUsd*100:0},
     providers:providers, operations:operations, workspaces:workspaces, daily:daily,
     budget: await costBudgetSnapshot(rate),
+    balances: await apiBalanceSnapshot(rate),
     infrastructure:Object.assign({},infrastructure,{
       estimatedMonthlyRub:convertRub(infrastructure.estimatedMonthlyUsd),
       services:infrastructure.services.map(function(s){return Object.assign({},s,{monthlyRub:convertRub(s.monthlyUsd)});})
@@ -9789,6 +9838,17 @@ const server = http.createServer(async function(req, res) {
       b.updatedAt = new Date().toISOString();
       persistWorkspaceStore();
       return sendJson(res,200,{ok:true,budget:await evaluateCostBudget(true)});
+    }
+    if (req.method === "POST" && p === "/api/costs/balance") {
+      const body = await readJson(req);
+      const provider = String(body && body.provider || "").toLowerCase();
+      const stored = networkApiBalances();
+      const parsed = normalizeBalanceInput(provider, body, stored[provider], new Date());
+      if (!parsed.ok) return sendJson(res, 400, { ok: false, error: parsed.error });
+      if (parsed.clear) delete stored[provider];
+      else stored[provider] = parsed.value;
+      persistWorkspaceStore();
+      return sendJson(res, 200, { ok: true, balances: await apiBalanceSnapshot() }, { "cache-control": "no-store" });
     }
 
     if (req.method === "GET" && p === "/api/editorial/registry") {

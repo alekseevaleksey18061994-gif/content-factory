@@ -333,3 +333,62 @@ export function percentChange(current, previous) {
   if (!b) return a ? null : 0;
   return (a - b) / Math.abs(b) * 100;
 }
+
+// ---- Остаток предоплаченного баланса API (OpenAI / Anthropic) -------------
+// Ни OpenAI, ни Anthropic не отдают остаток баланса по обычному API-ключу, поэтому
+// пользователь вводит остаток из консоли провайдера, а дальше он уменьшается на
+// расходы, которые News Factory записала в cost_events после этого момента.
+export const BALANCE_PROVIDERS = Object.freeze(["openai", "anthropic"]);
+export const BALANCE_DEFAULT_LOW_USD = 5;
+const BALANCE_MAX_USD = 10000000;
+
+export function normalizeBalanceInput(provider, body, previous, nowInput) {
+  const id = String(provider || "").toLowerCase();
+  if (!BALANCE_PROVIDERS.includes(id)) return { ok: false, error: "Неизвестный провайдер: " + id };
+  const now = nowInput instanceof Date ? nowInput : new Date(nowInput || Date.now());
+  const b = body && typeof body === "object" ? body : {};
+  if (b.clear === true) return { ok: true, provider: id, clear: true };
+  const rawAmount = typeof b.amountUsd === "string" ? b.amountUsd.replace(",", ".").trim() : b.amountUsd;
+  if (rawAmount === "" || rawAmount === null || rawAmount === undefined) return { ok: false, error: "Укажите остаток в долларах" };
+  const amount = Number(rawAmount);
+  if (!Number.isFinite(amount) || amount < 0 || amount > BALANCE_MAX_USD) return { ok: false, error: "Остаток должен быть числом от 0 до " + BALANCE_MAX_USD };
+  let asOf = now;
+  if (b.asOf) {
+    asOf = new Date(b.asOf);
+    if (!Number.isFinite(asOf.getTime())) return { ok: false, error: "Некорректная дата остатка" };
+    if (asOf.getTime() > now.getTime() + 5 * 60 * 1000) return { ok: false, error: "Дата остатка не может быть в будущем" };
+  }
+  let lowUsd = previous && Number.isFinite(Number(previous.lowUsd)) ? Number(previous.lowUsd) : BALANCE_DEFAULT_LOW_USD;
+  if (b.lowUsd !== undefined && b.lowUsd !== null && b.lowUsd !== "") {
+    const low = Number(typeof b.lowUsd === "string" ? b.lowUsd.replace(",", ".") : b.lowUsd);
+    if (!Number.isFinite(low) || low < 0 || low > BALANCE_MAX_USD) return { ok: false, error: "Порог предупреждения должен быть числом от 0" };
+    lowUsd = low;
+  }
+  return { ok: true, provider: id, value: { amountUsd: amount, asOf: asOf.toISOString(), lowUsd: lowUsd, updatedAt: now.toISOString() } };
+}
+
+export function computeApiBalance(config, spentUsd, recentUsd, nowInput, retentionDays) {
+  const now = nowInput instanceof Date ? nowInput : new Date(nowInput || Date.now());
+  const asOfMs = new Date(config.asOf).getTime();
+  const amount = Number(config.amountUsd || 0);
+  const lowUsd = Number(config.lowUsd || 0);
+  const spent = Math.max(0, Number(spentUsd || 0));
+  const remaining = amount - spent;
+  const sinceMs = Math.max(0, now.getTime() - asOfMs);
+  const windowDays = Math.min(7, Math.max(1, sinceMs / 86400000));
+  const avgDailyUsd = Math.max(0, Number(recentUsd || 0)) / windowDays;
+  const daysLeft = remaining > 0 && avgDailyUsd > 0 ? remaining / avgDailyUsd : null;
+  const status = remaining <= 0 ? "empty" : remaining <= lowUsd ? "low" : "ok";
+  const retention = Number(retentionDays || 0);
+  return {
+    amountUsd: amount,
+    asOf: new Date(asOfMs).toISOString(),
+    lowUsd: lowUsd,
+    spentUsd: spent,
+    remainingUsd: remaining,
+    avgDailyUsd: avgDailyUsd,
+    daysLeft: daysLeft,
+    status: status,
+    spendIncomplete: retention > 0 && sinceMs > retention * 86400000
+  };
+}
