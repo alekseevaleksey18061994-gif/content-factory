@@ -330,8 +330,8 @@ export function createModelClients(config) {
       // Structured output only breaks when the answer is cut off (max_tokens) or
       // refused. Log why and retry once with a larger budget.
       const text = anthropicText(result.data);
-      console.warn("EDITORIAL_V2_CLAUDE_BAD_JSON " + JSON.stringify({ model: model, stop_reason: result.data && result.data.stop_reason || "", length: String(text || "").length, head: String(text || "").slice(0, 160), tail: String(text || "").slice(-120) }));
-      const bigger = Math.max(8000, ((opts && opts.maxTokens) || 3000) * 2);
+      console.warn("EDITORIAL_V2_CLAUDE_BAD_JSON " + JSON.stringify({ model: model, stop_reason: result.data && result.data.stop_reason || "", blocks: (Array.isArray(result.data && result.data.content) ? result.data.content : []).map(function(b){ return b && b.type; }), output_tokens: result.data && result.data.usage && result.data.usage.output_tokens || 0, length: String(text || "").length, head: String(text || "").slice(0, 160), tail: String(text || "").slice(-120) }));
+      const bigger = Math.max(16000, ((opts && opts.maxTokens) || 3000) * 2);
       const retryOpts = Object.assign({}, opts || {}, { maxTokens: bigger });
       const prevOpts = opts;
       opts = retryOpts;
@@ -540,7 +540,7 @@ export function createEditorialPipeline(options) {
     ];
     if (useClaude()) {
       jobs.push(clients.callAnthropic(system, input, {
-        maxTokens: 2500, purpose: "editorial_checker_anthropic", extra: { news_id: String(request.news_id || "") }
+        maxTokens: 8000, purpose: "editorial_checker_anthropic", extra: { news_id: String(request.news_id || "") }
       })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "anthropic", r.model); })
         .catch(function(error){ return { provider: "anthropic", failed: true, error: String(error && error.message || error) }; }));
