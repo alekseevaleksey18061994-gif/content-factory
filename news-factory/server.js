@@ -8801,6 +8801,262 @@ async function runEditorialV2(sources, options) {
 }
 
 // ---------------------------------------------------------------------------
+// Editorial QA: production dry-run for all channel profiles. It never publishes.
+// The run is asynchronous because a full network audit can take several minutes.
+// ---------------------------------------------------------------------------
+
+let editorialQaState = {
+  status: "idle",
+  startedAt: "",
+  finishedAt: "",
+  progress: { done: 0, total: 0 },
+  summary: null,
+  channels: [],
+  error: ""
+};
+
+function qaStyleCheck(channelId, title, body) {
+  const strategy = channelStrategy(channelId);
+  const text = (String(title || "") + " " + String(body || "")).toLowerCase();
+  const formal = [
+    /согласно пресс-релизу/g,
+    /в пресс-службе (?:сообщили|заявили)/g,
+    /компания сообщила о том, что/g,
+    /как отмечается в сообщении/g,
+    /по данным пресс-службы/g
+  ];
+  let formalHits = 0;
+  formal.forEach(function(re){ formalHits += (text.match(re) || []).length; });
+
+  if (strategy.type === "blogger") {
+    return {
+      pass: formalHits === 0,
+      note: formalHits ? "Есть канцелярская/пресс-релизная подача" : "Блогерский профиль без пресс-релизных маркеров",
+      formalHits
+    };
+  }
+  if (strategy.type === "trends") {
+    return {
+      pass: formalHits <= 1,
+      note: formalHits > 1 ? "Слишком официальная подача для трендового канала" : "Трендовый профиль без перегруза канцеляритом",
+      formalHits
+    };
+  }
+  return {
+    pass: formalHits <= 2,
+    note: formalHits > 2 ? "Слишком много пресс-релизных формулировок" : "Стиль соответствует новостному профилю",
+    formalHits
+  };
+}
+
+function publicationCoverageSnapshot() {
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  const day = moscowDateKey(now);
+  const time = String(hour).padStart(2, "0") + ":00";
+  const slotKey = day + " " + time;
+  const channels = workspaceStore.workspaces.map(function(ws){
+    const history = ws && ws.state && Array.isArray(ws.state.history) ? ws.state.history : [];
+    const hit = history.find(function(item){
+      return item && String(item.scheduledSlot || "") === slotKey && Boolean(item.messageId || item.telegramMessageId || item.vkPostId || item.publishedAt);
+    });
+    const assignment = ws && ws.state && ws.state.schedule && ws.state.schedule.assignments &&
+      ws.state.schedule.assignments[day] && ws.state.schedule.assignments[day][time] || "";
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      channelId: resolveChannelId(ws),
+      telegram: ws.telegramPublicUsername || String(ws.telegramChannel || "").replace(/^@/, ""),
+      published: Boolean(hit),
+      title: hit && hit.title || "",
+      publishedAt: hit && hit.publishedAt || "",
+      queueId: assignment || ""
+    };
+  });
+  return {
+    slot: slotKey,
+    published: channels.filter(function(x){ return x.published; }).length,
+    total: channels.length,
+    missing: channels.filter(function(x){ return !x.published; }).map(function(x){ return x.workspaceId; }),
+    channels
+  };
+}
+
+function qaSourceClassCounts() {
+  const counts = { OFFICIAL:0, MEDIA:0, CREATOR:0, COMMUNITY:0, SOCIAL:0 };
+  (state.sources || []).forEach(function(source){
+    if (!source || !source.enabled) return;
+    const cls = source.sourceClass || sourceClassFor(source);
+    if (Object.prototype.hasOwnProperty.call(counts, cls)) counts[cls] += 1;
+  });
+  return counts;
+}
+
+function qaRecentMix(channelId) {
+  const strategy = channelStrategy(channelId);
+  const mix = strategy.mix || {};
+  const recent = (state.history || []).filter(function(item){
+    return item && !item.isDigest && item.publicationOrigin !== "digest";
+  }).slice(0, 24);
+  const counts = {};
+  Object.keys(mix).forEach(function(k){ counts[k] = 0; });
+  recent.forEach(function(item){
+    const bucket = item.contentBucket || item.editorialV2 && item.editorialV2.contentBucket || "";
+    if (Object.prototype.hasOwnProperty.call(counts, bucket)) counts[bucket] += 1;
+  });
+  return { sampleSize: recent.length, counts, target: mix };
+}
+
+function qaScoreChecks(checks) {
+  const required = checks.filter(function(x){ return x.required !== false; });
+  const passed = required.filter(function(x){ return x.pass === true; }).length;
+  const percent = required.length ? Math.round(passed / required.length * 100) : 0;
+  return { passed, total: required.length, percent };
+}
+
+async function runEditorialQaForWorkspace(ws) {
+  return workspaceContext.run({ workspaceId: ws.id }, async function(){
+    const channelId = resolveChannelId(ws);
+    const strategy = channelStrategy(channelId);
+    const sourceClasses = qaSourceClassCounts();
+    const recentMix = qaRecentMix(channelId);
+    const sourceClassVariety = Object.values(sourceClasses).filter(function(n){ return n > 0; }).length;
+
+    const candidates = (state.queue || []).filter(function(item){
+      return item && String(item.sourceOriginalText || "").trim() && !item.telegramPublished && item.status !== "media_failed";
+    }).sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); });
+    const candidate = candidates[0] || null;
+
+    const checks = [
+      { key:"profile", label:"Channel DNA", pass:Boolean(channelId && Object.keys(strategy.mix || {}).length), note:channelId + " · " + strategy.type },
+      { key:"sources", label:"Классы источников", pass:sourceClassVariety >= 2, note:sourceClassVariety + " активных классов" },
+      { key:"candidate", label:"Контрольный материал", pass:Boolean(candidate), note:candidate ? String(candidate.sourceOriginalTitle || candidate.title || "").slice(0,120) : "Нет подходящего материала в очереди" }
+    ];
+
+    let sample = null;
+    let degraded = false;
+    let checkerError = "";
+    if (candidate) {
+      try {
+        const result = await runEditorialV2([{
+          name: String(candidate.sourceName || "Источник"),
+          url: String(candidate.sourceUrl || ""),
+          date: String(candidate.articlePublishedAt || candidate.createdAt || ""),
+          role: sourceRoleLabel(candidate.sourceRole || sourceEditorialRole(candidate)),
+          title: String(candidate.sourceOriginalTitle || candidate.title || ""),
+          text: String(candidate.sourceOriginalText || candidate.text || "").slice(0,7000),
+          photos: [candidate.originalImageUrl, candidate.imageUrl, candidate.generatedImageUrl].filter(Boolean).slice(0,3)
+        }], {
+          hasPhoto: Boolean(candidate.videoUrl || candidate.imageUrl || candidate.generatedImageUrl),
+          newsId: "qa_" + ws.id + "_" + Date.now()
+        });
+
+        const meta = result.meta || {};
+        const bucketKeys = Object.keys(strategy.mix || {});
+        const signals = meta.channelSignals || {};
+        const allSignals = ["virality","utility","discussion","visual","wow","local","deal"].every(function(k){ return Number.isFinite(Number(signals[k])); });
+        const style = qaStyleCheck(channelId, result.rewrite && result.rewrite.title, result.rewrite && result.rewrite.text);
+        degraded = Boolean(meta.degradedQc);
+        checkerError = degraded ? String((meta.failedProviders || []).join(", ")) : "";
+
+        checks.push(
+          { key:"bucket", label:"Тип контента", pass:bucketKeys.includes(String(meta.contentBucket || "")), note:String(meta.contentBucket || "не определён") },
+          { key:"signals", label:"Channel Score", pass:allSignals, note:allSignals ? "7/7 сигналов" : "Не все сигналы заполнены" },
+          { key:"style", label:"Стиль канала", pass:style.pass, note:style.note },
+          { key:"qc", label:"Фактчек", pass:meta.verdict === "pass", note:meta.verdict === "pass" ? (degraded ? "PASS · резервный режим" : "PASS") : String(meta.verdict || "нет результата") }
+        );
+
+        sample = {
+          sourceTitle: String(candidate.sourceOriginalTitle || candidate.title || "").slice(0,180),
+          title: String(result.rewrite && result.rewrite.title || "").slice(0,180),
+          text: String(result.rewrite && result.rewrite.text || "").slice(0,700),
+          contentBucket: meta.contentBucket || "",
+          channelSignals: signals,
+          verdict: meta.verdict || "",
+          degradedQc: degraded,
+          failedProviders: meta.failedProviders || [],
+          checkerModels: meta.checkers || []
+        };
+      } catch (error) {
+        checks.push({ key:"generation", label:"Контрольная генерация", pass:false, note:String(error && error.message || error).slice(0,220) });
+      }
+    }
+
+    const scored = qaScoreChecks(checks);
+    let status = scored.percent >= 85 ? "pass" : (scored.percent >= 60 ? "warn" : "fail");
+    if (degraded && status === "pass") status = "warn";
+
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      channelId,
+      type: strategy.type,
+      status,
+      percent: scored.percent,
+      checks,
+      sourceClasses,
+      recentMix,
+      sample,
+      degradedQc: degraded,
+      checkerError
+    };
+  });
+}
+
+async function runEditorialQaNetwork() {
+  if (editorialQaState.status === "running") return editorialQaState;
+  editorialQaState = {
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    progress: { done: 0, total: workspaceStore.workspaces.length },
+    summary: null,
+    channels: [],
+    error: ""
+  };
+
+  try {
+    for (const ws of workspaceStore.workspaces) {
+      let result;
+      try {
+        result = await runEditorialQaForWorkspace(ws);
+      } catch (error) {
+        result = {
+          workspaceId: ws.id,
+          name: ws.name,
+          channelId: resolveChannelId(ws),
+          status: "fail",
+          percent: 0,
+          checks: [{ key:"runtime", label:"Запуск QA", pass:false, note:String(error && error.message || error).slice(0,220) }],
+          sourceClasses: {},
+          recentMix: {},
+          sample: null
+        };
+      }
+      editorialQaState.channels.push(result);
+      editorialQaState.progress.done += 1;
+    }
+
+    const channels = editorialQaState.channels;
+    editorialQaState.summary = {
+      pass: channels.filter(function(x){ return x.status === "pass"; }).length,
+      warn: channels.filter(function(x){ return x.status === "warn"; }).length,
+      fail: channels.filter(function(x){ return x.status === "fail"; }).length,
+      averagePercent: channels.length ? Math.round(channels.reduce(function(sum,x){ return sum + Number(x.percent || 0); },0) / channels.length) : 0,
+      degraded: channels.filter(function(x){ return x.degradedQc; }).length
+    };
+    editorialQaState.status = "done";
+    editorialQaState.finishedAt = new Date().toISOString();
+  } catch (error) {
+    editorialQaState.status = "error";
+    editorialQaState.error = String(error && error.message || error);
+    editorialQaState.finishedAt = new Date().toISOString();
+  }
+  return editorialQaState;
+}
+
+// ---------------------------------------------------------------------------
 // Digests: evening «Главное за день» and Sunday «Топ недели» from published posts.
 const digestRunning = new Set();
 async function publishDigest(kind, force) {
@@ -10532,6 +10788,29 @@ const server = http.createServer(async function(req, res) {
       const result = await rebuildQueueWithEditorialV2();
       return sendJson(res, result.ok ? 200 : 409, result);
     }
+    if (req.method === "GET" && p === "/api/editorial/qa") {
+      return sendJson(res, 200, {
+        ok: true,
+        qa: editorialQaState,
+        publicationCoverage: publicationCoverageSnapshot()
+      });
+    }
+    if (req.method === "POST" && p === "/api/editorial/qa/run") {
+      if (editorialQaState.status === "running") {
+        return sendJson(res, 202, { ok: true, started: false, qa: editorialQaState });
+      }
+      runEditorialQaNetwork().catch(function(error){
+        editorialQaState.status = "error";
+        editorialQaState.error = String(error && error.message || error);
+        editorialQaState.finishedAt = new Date().toISOString();
+      });
+      return sendJson(res, 202, { ok: true, started: true });
+    }
+    if (req.method === "POST" && p === "/api/editorial/repair-current-slot") {
+      await catchUpCurrentRegularSlotAllWorkspaces();
+      return sendJson(res, 200, { ok: true, publicationCoverage: publicationCoverageSnapshot() });
+    }
+
     if (req.method === "GET" && p === "/api/editorial/status") {
       const recent = (state.queue || []).concat(state.history || []).filter(function(item){ return item && item.editorialV2; }).slice(0, 20);
       const anthropicHealth = ANTHROPIC_API_KEY ? await anthropicEditorialProbe(false) : { ok: false, error: "ANTHROPIC_API_KEY не задан" };
