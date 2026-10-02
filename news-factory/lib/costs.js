@@ -259,3 +259,77 @@ export function moscowCostDateKey(date) {
   for (const part of parts) map[part.type] = part.value;
   return map.year + "-" + map.month + "-" + map.day;
 }
+
+
+const MOSCOW_OFFSET_MS = 3 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function moscowParts(date) {
+  const d = date instanceof Date ? date : new Date(date || Date.now());
+  const shifted = new Date(d.getTime() + MOSCOW_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds()
+  };
+}
+
+function moscowMidnightUtc(year, month, day) {
+  return new Date(Date.UTC(year, month - 1, day, -3, 0, 0, 0));
+}
+
+export function moscowPeriodBounds(period, nowInput, fallbackDays) {
+  const now = nowInput instanceof Date ? nowInput : new Date(nowInput || Date.now());
+  const p = moscowParts(now);
+  const key = String(period || "").toLowerCase();
+  let start;
+  let label;
+  if (key === "today") {
+    start = moscowMidnightUtc(p.year, p.month, p.day);
+    label = "Сегодня";
+  } else if (key === "month") {
+    start = moscowMidnightUtc(p.year, p.month, 1);
+    label = "Этот месяц";
+  } else if (key === "year") {
+    start = moscowMidnightUtc(p.year, 1, 1);
+    label = "Этот год";
+  } else if (key === "7" || key === "30") {
+    const days = Number(key);
+    start = new Date(moscowMidnightUtc(p.year, p.month, p.day).getTime() - (days - 1) * DAY_MS);
+    label = days + " дней";
+  } else {
+    const days = Math.max(1, Number(fallbackDays || 30));
+    start = new Date(now.getTime() - days * DAY_MS);
+    label = days + " дней";
+  }
+  const duration = Math.max(1, now.getTime() - start.getTime());
+  return {
+    period: key || "custom",
+    label,
+    start,
+    end: now,
+    previousStart: new Date(start.getTime() - duration),
+    previousEnd: start,
+    moscowYear: p.year,
+    moscowMonth: p.month,
+    moscowDay: p.day,
+    daysInMonth: new Date(Date.UTC(p.year, p.month, 0)).getUTCDate()
+  };
+}
+
+export function monthForecastCost(monthToDate, nowInput) {
+  const value = Number(monthToDate || 0);
+  const p = moscowParts(nowInput instanceof Date ? nowInput : new Date(nowInput || Date.now()));
+  const daysInMonth = new Date(Date.UTC(p.year, p.month, 0)).getUTCDate();
+  return value / Math.max(1, p.day) * daysInMonth;
+}
+
+export function percentChange(current, previous) {
+  const a = Number(current || 0);
+  const b = Number(previous || 0);
+  if (!b) return a ? null : 0;
+  return (a - b) / Math.abs(b) * 100;
+}

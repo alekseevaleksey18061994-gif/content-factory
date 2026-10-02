@@ -20,7 +20,10 @@ import {
   collectLegacyCostRows,
   stripLegacyCostEvents,
   resolveCostPricing,
-  calculateUsageCost as calculateApiUsageCost
+  calculateUsageCost as calculateApiUsageCost,
+  moscowPeriodBounds,
+  monthForecastCost,
+  percentChange
 } from "./lib/costs.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -1218,28 +1221,96 @@ async function getInfrastructureEstimate() {
   };
 }
 
-async function buildCostsReport(days, scope, workspaceId) {
+
+async function costSummaryBetween(startAt, endAt, workspaceOnly, workspaceId) {
+  const params = [startAt.toISOString(), endAt.toISOString()];
+  let where = "WHERE at >= $1 AND at < $2";
+  if (workspaceOnly) {
+    params.push(workspaceId);
+    where += " AND workspace_id=$3";
+  }
+  const result = await db.query(
+    "SELECT COUNT(*)::int AS calls, " +
+    "COALESCE(SUM(cost_usd),0)::float8 AS cost_usd, " +
+    "COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, " +
+    "COALESCE(SUM(output_tokens),0)::float8 AS output_tokens, " +
+    "COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls, " +
+    "COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls " +
+    "FROM cost_events " + where,
+    params
+  );
+  const row = result.rows[0] || {};
+  return {
+    calls: Number(row.calls || 0),
+    costUsd: Number(row.cost_usd || 0),
+    inputTokens: Number(row.input_tokens || 0),
+    outputTokens: Number(row.output_tokens || 0),
+    unpricedCalls: Number(row.unpriced_calls || 0),
+    estimatedCalls: Number(row.estimated_calls || 0)
+  };
+}
+
+async function wastedCostBetween(startAt, endAt, workspaceOnly, workspaceId) {
+  const params = [startAt.toISOString(), endAt.toISOString(), ["editorial_skip","duplicate_story","rewrite_error"]];
+  let workspaceClause = "";
+  if (workspaceOnly) {
+    params.push(workspaceId);
+    workspaceClause = " AND c.workspace_id=$4";
+  }
+  const result = await db.query(
+    "SELECT COALESCE(SUM(c.cost_usd),0)::float8 AS cost_usd " +
+    "FROM cost_events c JOIN news_items n ON n.id=c.news_id AND n.workspace_id=c.workspace_id " +
+    "WHERE c.at >= $1 AND c.at < $2 AND n.status = ANY($3::text[])" + workspaceClause,
+    params
+  );
+  return Number(result.rows[0] && result.rows[0].cost_usd || 0);
+}
+
+function publishedCountsBetween(startAt, endAt, workspaceOnly, workspaceId) {
+  const out = new Map();
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state || (workspaceOnly && ws.id !== workspaceId)) continue;
+    let count = 0;
+    for (const item of (ws.state.history || [])) {
+      if (!item || !item.publishedAt) continue;
+      const ts = new Date(item.publishedAt).getTime();
+      if (Number.isFinite(ts) && ts >= startAt.getTime() && ts < endAt.getTime()) count += 1;
+    }
+    out.set(ws.id, count);
+  }
+  return out;
+}
+
+async function buildCostsReport(days, scope, workspaceId, requestedPeriod) {
+  const now = new Date();
   const safeDays = Math.max(1, Math.min(COST_TRACKING_RETENTION_DAYS, Number(days || 30)));
+  const workspaceOnly = scope === "workspace";
+  const requested = String(requestedPeriod || "").toLowerCase();
+  const period = ["today","7","30","month","year"].includes(requested) ? requested : "";
+  const bounds = moscowPeriodBounds(period, now, safeDays);
   const rate = await getUsdRubRate();
   const infrastructure = await getInfrastructureEstimate();
   const convertRub = function(usd){ return rate ? Number(usd || 0) * rate : null; };
-  const workspaceOnly = scope === "workspace";
-  const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000);
-  const params = workspaceOnly ? [cutoff.toISOString(), workspaceId] : [cutoff.toISOString()];
-  const where = "WHERE at >= $1" + (workspaceOnly ? " AND workspace_id=$2" : "");
+  const emptyMetric = function(){ return { costUsd: 0, costRub: rate ? 0 : null, calls: 0, changePct: 0 }; };
 
   if (!db || !dbReady) {
     return {
       ok: false,
       scope: workspaceOnly ? "workspace" : "network",
       days: safeDays,
+      selectedPeriod: { period: period || "custom", label: bounds.label, start: bounds.start.toISOString(), end: bounds.end.toISOString() },
       dbReady: false,
       bufferedEvents: costEventBuffer.length,
       trackingStartedAt: new Date().toISOString(),
       pricingUpdatedAt: COST_PRICING_UPDATED_AT,
       pricingOverridden: Boolean(COST_PRICING_CONFIG.overridden),
       currency: { usdRub: rate, source: rate ? "CBR" : "USD only" },
-      totals: { costUsd: 0, costRub: 0, calls: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0 },
+      totals: { costUsd: 0, costRub: rate ? 0 : null, calls: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0, estimatedCalls: 0 },
+      today: emptyMetric(),
+      monthToDate: emptyMetric(),
+      forecastMonth: emptyMetric(),
+      costPerPublishedPost: Object.assign(emptyMetric(), { publishedPosts: 0 }),
+      wastedOnSkipped: Object.assign(emptyMetric(), { sharePct: 0 }),
       providers: [], operations: [], workspaces: [], daily: [],
       infrastructure: Object.assign({}, infrastructure, {
         estimatedMonthlyRub: convertRub(infrastructure.estimatedMonthlyUsd),
@@ -1250,122 +1321,181 @@ async function buildCostsReport(days, scope, workspaceId) {
     };
   }
 
-  const totalQ = await db.query(
-    `SELECT
-      COUNT(*)::int AS calls,
-      COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens,
-      COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
-      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls,
-      MIN(at) AS started_at
-    FROM cost_events ${where}`, params
+  const selectedParams = [bounds.start.toISOString(), bounds.end.toISOString()];
+  let selectedWhere = "WHERE at >= $1 AND at < $2";
+  if (workspaceOnly) {
+    selectedParams.push(workspaceId);
+    selectedWhere += " AND workspace_id=$3";
+  }
+
+  const selected = await costSummaryBetween(bounds.start, bounds.end, workspaceOnly, workspaceId);
+  const previous = await costSummaryBetween(bounds.previousStart, bounds.previousEnd, workspaceOnly, workspaceId);
+  const wastedUsd = await wastedCostBetween(bounds.start, bounds.end, workspaceOnly, workspaceId);
+
+  const todayBounds = moscowPeriodBounds("today", now, 1);
+  const monthStart = new Date(Date.UTC(todayBounds.moscowYear, todayBounds.moscowMonth - 1, 1, -3, 0, 0, 0));
+  const previousMonthStart = new Date(Date.UTC(todayBounds.moscowYear, todayBounds.moscowMonth - 2, 1, -3, 0, 0, 0));
+  const previousMonthNominalEnd = new Date(previousMonthStart.getTime() + (now.getTime() - monthStart.getTime()));
+  const previousMonthEnd = previousMonthNominalEnd.getTime() > monthStart.getTime() ? monthStart : previousMonthNominalEnd;
+
+  const todaySummary = await costSummaryBetween(todayBounds.start, now, workspaceOnly, workspaceId);
+  const previousToday = await costSummaryBetween(
+    new Date(todayBounds.start.getTime() - 24*60*60*1000),
+    new Date(now.getTime() - 24*60*60*1000),
+    workspaceOnly, workspaceId
   );
+  const monthSummary = await costSummaryBetween(monthStart, now, workspaceOnly, workspaceId);
+  const previousMonthComparable = await costSummaryBetween(previousMonthStart, previousMonthEnd, workspaceOnly, workspaceId);
+
   const providerQ = await db.query(
-    `SELECT provider AS id, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
-      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
-    FROM cost_events ${where}
-    GROUP BY provider ORDER BY cost_usd DESC, calls DESC`, params
+    "SELECT provider AS id, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd, " +
+    "COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, " +
+    "COALESCE(SUM(output_tokens),0)::float8 AS output_tokens, COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls, " +
+    "COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls FROM cost_events " + selectedWhere +
+    " GROUP BY provider ORDER BY cost_usd DESC, calls DESC",
+    selectedParams
   );
   const operationQ = await db.query(
-    `SELECT provider, operation, model, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
-      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
-    FROM cost_events ${where}
-    GROUP BY provider, operation, model ORDER BY cost_usd DESC, calls DESC`, params
+    "SELECT provider, operation, model, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd, " +
+    "COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, " +
+    "COALESCE(SUM(output_tokens),0)::float8 AS output_tokens, COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls, " +
+    "COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls FROM cost_events " + selectedWhere +
+    " GROUP BY provider, operation, model ORDER BY cost_usd DESC, calls DESC",
+    selectedParams
   );
+
+  const workspaceStatuses = ["editorial_skip","duplicate_story","rewrite_error"];
+  const workspaceParams = selectedParams.slice();
+  workspaceParams.push(workspaceStatuses);
+  const statusParam = "$" + workspaceParams.length;
+  const workspaceWhere = "WHERE c.at >= $1 AND c.at < $2" + (workspaceOnly ? " AND c.workspace_id=$3" : "");
   const workspaceQ = await db.query(
-    `SELECT workspace_id AS id, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
-      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
-    FROM cost_events ${where}
-    GROUP BY workspace_id ORDER BY cost_usd DESC, calls DESC`, params
+    "SELECT c.workspace_id AS id, COUNT(*)::int AS calls, COALESCE(SUM(c.cost_usd),0)::float8 AS cost_usd, " +
+    "COALESCE(SUM(c.input_tokens + CASE WHEN c.provider='anthropic' THEN c.cache_read_tokens + c.cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, " +
+    "COALESCE(SUM(c.output_tokens),0)::float8 AS output_tokens, COUNT(*) FILTER (WHERE NOT c.pricing_known)::int AS unpriced_calls, " +
+    "COUNT(*) FILTER (WHERE c.estimated)::int AS estimated_calls, " +
+    "COALESCE(SUM(c.cost_usd) FILTER (WHERE n.status = ANY(" + statusParam + "::text[])),0)::float8 AS wasted_usd " +
+    "FROM cost_events c LEFT JOIN news_items n ON n.id=c.news_id AND n.workspace_id=c.workspace_id " + workspaceWhere +
+    " GROUP BY c.workspace_id ORDER BY cost_usd DESC, calls DESC",
+    workspaceParams
   );
+
+  const dailyBounds = moscowPeriodBounds("30", now, 30);
+  const dailyParams = [dailyBounds.start.toISOString(), now.toISOString()];
+  let dailyWorkspace = "";
+  if (workspaceOnly) {
+    dailyParams.push(workspaceId);
+    dailyWorkspace = " AND workspace_id=$3";
+  }
   const dailyQ = await db.query(
-    `SELECT to_char(at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') AS day,
-      COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
-      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
-    FROM cost_events ${where}
-    GROUP BY 1 ORDER BY 1`, params
+    "SELECT to_char(at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') AS day, COUNT(*)::int AS calls, " +
+    "COALESCE(SUM(cost_usd),0)::float8 AS cost_usd, " +
+    "COALESCE(SUM(cost_usd) FILTER (WHERE provider='openai'),0)::float8 AS openai_usd, " +
+    "COALESCE(SUM(cost_usd) FILTER (WHERE provider='anthropic'),0)::float8 AS anthropic_usd, " +
+    "COALESCE(SUM(cost_usd) FILTER (WHERE kind='image'),0)::float8 AS image_usd " +
+    "FROM cost_events WHERE at >= $1 AND at < $2" + dailyWorkspace + " GROUP BY 1 ORDER BY 1",
+    dailyParams
   );
 
-  const total = totalQ.rows[0] || {};
   const workspaceNames = new Map(workspaceStore.workspaces.map(function(ws){ return [ws.id, ws.name || ws.id]; }));
+  const published = publishedCountsBetween(bounds.start, bounds.end, workspaceOnly, workspaceId);
+  const previousPublished = publishedCountsBetween(bounds.previousStart, bounds.previousEnd, workspaceOnly, workspaceId);
+  const publishedTotal = Array.from(published.values()).reduce(function(a,b){ return a+b; },0);
+  const previousPublishedTotal = Array.from(previousPublished.values()).reduce(function(a,b){ return a+b; },0);
+  const currentCostPerPost = publishedTotal ? selected.costUsd / publishedTotal : 0;
+  const previousCostPerPost = previousPublishedTotal ? previous.costUsd / previousPublishedTotal : 0;
+
+  const byWorkspaceRow = new Map(workspaceQ.rows.map(function(row){ return [row.id, row]; }));
+  const workspaces = workspaceStore.workspaces
+    .filter(function(ws){ return ws && (!workspaceOnly || ws.id === workspaceId); })
+    .map(function(ws) {
+      const x = byWorkspaceRow.get(ws.id) || {};
+      const costUsd = Number(x.cost_usd || 0);
+      const wasted = Number(x.wasted_usd || 0);
+      const posts = Number(published.get(ws.id) || 0);
+      return {
+        id: ws.id, name: workspaceNames.get(ws.id) || ws.id, calls: Number(x.calls || 0),
+        costUsd: costUsd, costRub: convertRub(costUsd),
+        inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0),
+        unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0),
+        publishedPosts: posts,
+        costPerPublishedPostUsd: posts ? costUsd / posts : 0,
+        costPerPublishedPostRub: posts ? convertRub(costUsd / posts) : (rate ? 0 : null),
+        wastedUsd: wasted, wastedRub: convertRub(wasted), wastedSharePct: costUsd ? wasted / costUsd * 100 : 0
+      };
+    })
+    .sort(function(a,b){ return b.costUsd-a.costUsd; });
+
+  const providers = providerQ.rows.map(function(x) {
+    const costUsd = Number(x.cost_usd || 0);
+    return {
+      id:x.id, name:providerLabel(x.id), calls:Number(x.calls||0), costUsd:costUsd, costRub:convertRub(costUsd),
+      inputTokens:Number(x.input_tokens||0), outputTokens:Number(x.output_tokens||0),
+      unpricedCalls:Number(x.unpriced_calls||0), estimatedCalls:Number(x.estimated_calls||0)
+    };
+  });
+  const operations = operationQ.rows.map(function(x) {
+    const costUsd = Number(x.cost_usd || 0);
+    return {
+      provider:x.provider, providerName:providerLabel(x.provider), operation:x.operation,
+      operationLabel:operationLabel(x.operation), model:x.model, calls:Number(x.calls||0),
+      costUsd:costUsd, costRub:convertRub(costUsd), inputTokens:Number(x.input_tokens||0),
+      outputTokens:Number(x.output_tokens||0), unpricedCalls:Number(x.unpriced_calls||0),
+      estimatedCalls:Number(x.estimated_calls||0), sharePct:selected.costUsd ? costUsd/selected.costUsd*100 : 0
+    };
+  });
+
+  const dailyMap = new Map(dailyQ.rows.map(function(x){ return [x.day,x]; }));
+  const daily = [];
+  const currentMoscowMidnight = new Date(Date.UTC(todayBounds.moscowYear,todayBounds.moscowMonth-1,todayBounds.moscowDay,-3));
+  for (let i=29;i>=0;i-=1) {
+    const date = new Date(currentMoscowMidnight.getTime() - i*24*60*60*1000);
+    const shifted = new Date(date.getTime() + 3*60*60*1000);
+    const day = shifted.getUTCFullYear() + "-" + String(shifted.getUTCMonth()+1).padStart(2,"0") + "-" + String(shifted.getUTCDate()).padStart(2,"0");
+    const x = dailyMap.get(day) || {};
+    const costUsd=Number(x.cost_usd||0), openaiUsd=Number(x.openai_usd||0), anthropicUsd=Number(x.anthropic_usd||0), imageUsd=Number(x.image_usd||0);
+    daily.push({
+      day:day, calls:Number(x.calls||0), costUsd:costUsd, costRub:convertRub(costUsd),
+      openaiUsd:openaiUsd, openaiRub:convertRub(openaiUsd),
+      anthropicUsd:anthropicUsd, anthropicRub:convertRub(anthropicUsd),
+      imageUsd:imageUsd, imageRub:convertRub(imageUsd)
+    });
+  }
+
   const trackingStarts = workspaceStore.workspaces
-    .filter(function(ws){ return !workspaceOnly || ws.id === workspaceId; })
-    .map(function(ws){ return ensureCostTracking(ws.state).startedAt; })
-    .filter(Boolean)
-    .sort();
-  const trackingStartedAt = total.started_at || trackingStarts[0] || new Date().toISOString();
-
-  const providers = providerQ.rows.map(function(x){
-    const costUsd = Number(x.cost_usd || 0);
-    return {
-      id: x.id, name: providerLabel(x.id), calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
-      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
-    };
-  });
-  const operations = operationQ.rows.map(function(x){
-    const costUsd = Number(x.cost_usd || 0);
-    return {
-      provider: x.provider, providerName: providerLabel(x.provider), operation: x.operation,
-      operationLabel: operationLabel(x.operation), model: x.model, calls: Number(x.calls || 0),
-      costUsd: costUsd, costRub: convertRub(costUsd), inputTokens: Number(x.input_tokens || 0),
-      outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
-    };
-  });
-  const workspaces = workspaceQ.rows.map(function(x){
-    const costUsd = Number(x.cost_usd || 0);
-    return {
-      id: x.id, name: workspaceNames.get(x.id) || x.id, calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
-      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
-    };
-  });
-  const daily = dailyQ.rows.map(function(x){
-    const costUsd = Number(x.cost_usd || 0);
-    return {
-      day: x.day, calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
-      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
-    };
-  });
-
-  const totalUsd = Number(total.cost_usd || 0);
+    .filter(function(ws){ return !workspaceOnly || ws.id===workspaceId; })
+    .map(function(ws){ return ensureCostTracking(ws.state).startedAt; }).filter(Boolean).sort();
+  const forecastUsd = monthForecastCost(monthSummary.costUsd,now);
+  const forecastPreviousUsd = previousMonthComparable.costUsd;
   return {
-    ok: true,
-    scope: workspaceOnly ? "workspace" : "network",
-    days: safeDays,
-    dbReady: true,
-    bufferedEvents: costEventBuffer.length,
-    trackingStartedAt: trackingStartedAt,
-    pricingUpdatedAt: COST_PRICING_UPDATED_AT,
-      pricingOverridden: Boolean(COST_PRICING_CONFIG.overridden),
-    currency: { usdRub: rate, source: rate ? "CBR" : "USD only" },
-    totals: {
-      costUsd: totalUsd, costRub: convertRub(totalUsd), calls: Number(total.calls || 0),
-      inputTokens: Number(total.input_tokens || 0), outputTokens: Number(total.output_tokens || 0),
-      unpricedCalls: Number(total.unpriced_calls || 0),
-      estimatedCalls: Number(total.estimated_calls || 0)
+    ok:true,
+    scope:workspaceOnly?"workspace":"network",
+    days:safeDays,
+    selectedPeriod:{period:period||"custom",label:bounds.label,start:bounds.start.toISOString(),end:bounds.end.toISOString()},
+    trackingStartedAt:trackingStarts[0]||bounds.start.toISOString(),
+    pricingUpdatedAt:COST_PRICING_UPDATED_AT,
+    pricingOverridden:Boolean(COST_PRICING_CONFIG.overridden),
+    currency:{usdRub:rate,source:rate?"CBR":"USD only"},
+    totals:{
+      costUsd:selected.costUsd,costRub:convertRub(selected.costUsd),calls:selected.calls,inputTokens:selected.inputTokens,outputTokens:selected.outputTokens,
+      unpricedCalls:selected.unpricedCalls,estimatedCalls:selected.estimatedCalls,changePct:percentChange(selected.costUsd,previous.costUsd)
     },
-    providers: providers,
-    operations: operations,
-    workspaces: workspaces,
-    daily: daily,
-    infrastructure: Object.assign({}, infrastructure, {
-      estimatedMonthlyRub: convertRub(infrastructure.estimatedMonthlyUsd),
-      services: infrastructure.services.map(function(s){ return Object.assign({}, s, { monthlyRub: convertRub(s.monthlyUsd) }); })
+    today:{costUsd:todaySummary.costUsd,costRub:convertRub(todaySummary.costUsd),calls:todaySummary.calls,changePct:percentChange(todaySummary.costUsd,previousToday.costUsd)},
+    monthToDate:{costUsd:monthSummary.costUsd,costRub:convertRub(monthSummary.costUsd),calls:monthSummary.calls,changePct:percentChange(monthSummary.costUsd,previousMonthComparable.costUsd)},
+    forecastMonth:{costUsd:forecastUsd,costRub:convertRub(forecastUsd),changePct:percentChange(forecastUsd,forecastPreviousUsd)},
+    costPerPublishedPost:{costUsd:currentCostPerPost,costRub:convertRub(currentCostPerPost),publishedPosts:publishedTotal,changePct:percentChange(currentCostPerPost,previousCostPerPost)},
+    wastedOnSkipped:{costUsd:wastedUsd,costRub:convertRub(wastedUsd),sharePct:selected.costUsd?wastedUsd/selected.costUsd*100:0},
+    providers:providers, operations:operations, workspaces:workspaces, daily:daily,
+    infrastructure:Object.assign({},infrastructure,{
+      estimatedMonthlyRub:convertRub(infrastructure.estimatedMonthlyUsd),
+      services:infrastructure.services.map(function(s){return Object.assign({},s,{monthlyRub:convertRub(s.monthlyUsd)});})
     }),
-    freeServices: [
-      { name: "Telegram Bot API", costUsd: 0, note: "Отдельной платы за API-публикации нет" },
-      { name: "VK API", costUsd: 0, note: "Отдельной платы за API-публикации нет" },
-      { name: "Sharp", costUsd: 0, note: "Улучшение исходных фото выполняется локально; расход идёт только в Railway CPU/RAM" }
+    freeServices:[
+      {name:"Telegram Bot API",costUsd:0,note:"Отдельной платы за API-публикации нет"},
+      {name:"VK API",costUsd:0,note:"Отдельной платы за API-публикации нет"},
+      {name:"Sharp",costUsd:0,note:"Локальная обработка изображений; расход только в Railway CPU/RAM"}
     ],
-    note: "API-расходы хранятся в PostgreSQL; события старше " + COST_TRACKING_RETENTION_DAYS + " дней удаляются автоматически."
+    note:"API-расходы хранятся в PostgreSQL; события старше "+COST_TRACKING_RETENTION_DAYS+" дней удаляются автоматически."
   };
 }
 
@@ -8703,7 +8833,8 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/costs") {
       const days = Number(url.searchParams.get("days") || 30);
       const scope = String(url.searchParams.get("scope") || "network").toLowerCase() === "workspace" ? "workspace" : "network";
-      return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId()), { "cache-control": "no-store" });
+      const period = String(url.searchParams.get("period") || "").toLowerCase();
+      return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId(), period), { "cache-control": "no-store" });
     }
 
     if (req.method === "GET" && p === "/api/editorial/registry") {

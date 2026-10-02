@@ -8,7 +8,7 @@ import {
 } from "../lib/editorial-v2.js";
 import {
   COST_STATE_MIGRATION_ID, collectLegacyCostRows, stripLegacyCostEvents,
-  calculateUsageCost, resolveCostPricing, moscowCostDateKey
+  calculateUsageCost, resolveCostPricing, moscowCostDateKey, moscowPeriodBounds, monthForecastCost
 } from "../lib/costs.js";
 
 const PROMPT = fileURLToPath(new URL("../prompts/chto-tam.md", import.meta.url));
@@ -298,6 +298,18 @@ await test("costs: pricing JSON overrides built-ins and price date", function() 
 
 await test("costs: Moscow day handles UTC date boundary", function() {
   assert.equal(moscowCostDateKey(new Date("2026-10-01T22:30:00.000Z")), "2026-10-02");
+});
+
+await test("costs: month forecast uses elapsed Moscow calendar days", function() {
+  const now = new Date("2026-10-10T09:00:00.000Z");
+  assert.equal(monthForecastCost(100, now), 310);
+});
+
+await test("costs: today starts at Moscow midnight, not UTC midnight", function() {
+  const now = new Date("2026-10-01T22:30:00.000Z");
+  const bounds = moscowPeriodBounds("today", now, 1);
+  assert.equal(bounds.start.toISOString(), "2026-10-01T21:00:00.000Z");
+  assert.equal(bounds.label, "Сегодня");
 });
 
 await test("cost migration: legacy state events are idempotent and removed after transfer", function() {
