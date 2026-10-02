@@ -18,7 +18,9 @@ import {
 import {
   COST_STATE_MIGRATION_ID,
   collectLegacyCostRows,
-  stripLegacyCostEvents
+  stripLegacyCostEvents,
+  resolveCostPricing,
+  calculateUsageCost as calculateApiUsageCost
 } from "./lib/costs.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
@@ -124,26 +126,10 @@ try {
 const COST_TRACKING_VERSION = 2;
 const COST_TRACKING_RETENTION_DAYS = Math.max(30, Math.min(2000, Number(process.env.COST_TRACKING_RETENTION_DAYS || 400)));
 const COST_EVENT_BUFFER_MAX = 2000;
-const COST_PRICING_UPDATED_AT = "2026-10-02";
-const COST_PRICING = {
-  openaiText: {
-    "gpt-6-luna": { input: 0.10, cachedInput: 0.01, output: 0.50 },
-    "gpt-5.6-luna": { input: 0.20, cachedInput: 0.02, output: 1.20 }
-  },
-  openaiImage: {
-    "gpt-image-2.5-sunburst": { textInput: 5.00, imageInput: 8.00, cachedImageInput: 2.00, output: 30.00 },
-    "gpt-image-2": { textInput: 5.00, imageInput: 8.00, cachedImageInput: 2.00, output: 30.00 }
-  },
-  anthropic: {
-    "claude-sonnet-5-5": { input: 2.00, cacheRead: 0.20, cacheWrite: 2.50, output: 10.00 }
-  },
-  railway: {
-    memoryGbMonth: 10.00,
-    cpuVcpuMonth: 20.00,
-    volumeGbMonth: 0.15,
-    egressGb: 0.05
-  }
-};
+const COST_PRICING_CONFIG = resolveCostPricing(process.env.COST_PRICING_JSON || "");
+const COST_PRICING_UPDATED_AT = COST_PRICING_CONFIG.updatedAt;
+const COST_PRICING = COST_PRICING_CONFIG.pricing;
+if (COST_PRICING_CONFIG.error) console.warn("COST_PRICING_JSON ignored:", COST_PRICING_CONFIG.error);
 
 const CURATED_SOURCES = [
   { id: "openai", name: "OpenAI News", type: "web", group: "official", priority: 1, url: "https://openai.com/news/", enabled: true },
@@ -1044,6 +1030,30 @@ async function migrateLegacyCostEventsToPostgres() {
   return { workspaces: changed.workspaces, events: inserted };
 }
 
+async function refreshStoredCostPricing() {
+  if (!db || !dbReady) return { updated: 0 };
+  let updated = 0;
+  for (const [model, rate] of Object.entries(COST_PRICING.anthropic || {})) {
+    const result = await db.query(
+      `UPDATE cost_events SET
+        cost_usd=((input_tokens*$2)+(cache_read_tokens*$3)+(cache_write_tokens*$4)+(output_tokens*$5))/1000000.0,
+        pricing_known=TRUE, estimated=FALSE
+       WHERE provider='anthropic' AND model=$1`,
+      [model, Number(rate.input || 0), Number(rate.cacheRead || 0), Number(rate.cacheWrite || 0), Number(rate.output || 0)]
+    );
+    updated += Number(result.rowCount || 0);
+  }
+  const knownOpenAI = Object.keys(COST_PRICING.openaiText || {});
+  if (knownOpenAI.length) {
+    const unknown = await db.query(
+      "UPDATE cost_events SET pricing_known=FALSE, estimated=TRUE WHERE provider='openai' AND kind='text' AND NOT (model = ANY($1::text[]))",
+      [knownOpenAI]
+    );
+    updated += Number(unknown.rowCount || 0);
+  }
+  return { updated: updated };
+}
+
 async function cleanupCostEvents() {
   if (!db || !dbReady) return { deleted: 0 };
   const result = await db.query(
@@ -1062,98 +1072,13 @@ function scheduleCostRetentionCleanup() {
   if (costRetentionTimer && typeof costRetentionTimer.unref === "function") costRetentionTimer.unref();
 }
 
-function normalizeUsageNumber(value) {
-  const n = Number(value || 0);
-  return Number.isFinite(n) && n > 0 ? n : 0;
-}
-
-function calculateUsageCost(provider, model, usage, endpoint) {
-  const u = usage && typeof usage === "object" ? usage : {};
-  const p = String(provider || "").toLowerCase();
-  const m = String(model || "");
-  const ep = String(endpoint || "");
-  const input = normalizeUsageNumber(u.input_tokens != null ? u.input_tokens : u.prompt_tokens);
-  const output = normalizeUsageNumber(u.output_tokens != null ? u.output_tokens : u.completion_tokens);
-  const inputDetails = u.input_tokens_details && typeof u.input_tokens_details === "object"
-    ? u.input_tokens_details
-    : (u.prompt_tokens_details && typeof u.prompt_tokens_details === "object" ? u.prompt_tokens_details : {});
-  const cached = normalizeUsageNumber(inputDetails.cached_tokens);
-  const cacheRead = normalizeUsageNumber(u.cache_read_input_tokens);
-  const cacheWrite = normalizeUsageNumber(u.cache_creation_input_tokens);
-  let costUsd = 0;
-  let pricingKnown = true;
-  let kind = "text";
-
-  if (p === "openai" && ep === "images") {
-    kind = "image";
-    const rate = COST_PRICING.openaiImage[m];
-    if (!rate) pricingKnown = false;
-    const imageInput = normalizeUsageNumber(inputDetails.image_tokens);
-    let textInput = normalizeUsageNumber(inputDetails.text_tokens);
-    if (!textInput && !imageInput && input) textInput = input;
-    const cachedImage = normalizeUsageNumber(inputDetails.cached_tokens);
-    const imageOutput = output;
-    if (rate) {
-      costUsd = ((textInput * rate.textInput) +
-        (Math.max(0, imageInput - cachedImage) * rate.imageInput) +
-        (cachedImage * rate.cachedImageInput) +
-        (imageOutput * rate.output)) / 1000000;
-    }
-    return {
-      kind, inputTokens: input, outputTokens: output, cachedInputTokens: cachedImage,
-      cacheReadTokens: 0, cacheWriteTokens: 0,
-      imageInputTokens: imageInput, imageOutputTokens: imageOutput, textInputTokens: textInput,
-      costUsd, pricingKnown
-    };
-  }
-
-  if (p === "anthropic") {
-    const rate = COST_PRICING.anthropic[m];
-    if (!rate) pricingKnown = false;
-    if (rate) {
-      const normalInput = Math.max(0, input - cacheRead - cacheWrite);
-      costUsd = ((normalInput * rate.input) + (cacheRead * rate.cacheRead) + (cacheWrite * rate.cacheWrite) + (output * rate.output)) / 1000000;
-    }
-    return {
-      kind, inputTokens: input, outputTokens: output, cachedInputTokens: 0,
-      cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
-      imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
-      costUsd, pricingKnown
-    };
-  }
-
-  if (p === "openai") {
-    let rate = COST_PRICING.openaiText[m];
-    let estimated = false;
-    if (!rate) {
-      rate = COST_PRICING.openaiText["gpt-6-luna"];
-      estimated = true;
-    }
-    const normalInput = Math.max(0, input - cached);
-    costUsd = ((normalInput * rate.input) + (cached * rate.cachedInput) + (output * rate.output)) / 1000000;
-    return {
-      kind, inputTokens: input, outputTokens: output, cachedInputTokens: cached,
-      cacheReadTokens: 0, cacheWriteTokens: 0,
-      imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
-      costUsd, pricingKnown: true, estimated
-    };
-  }
-
-  return {
-    kind, inputTokens: input, outputTokens: output, cachedInputTokens: cached,
-    cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
-    imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
-    costUsd: 0, pricingKnown: false
-  };
-}
-
 function recordCostUsage(event) {
   const e = event && typeof event === "object" ? event : {};
   const provider = String(e.provider || "").toLowerCase();
   if (!provider) return null;
   const model = String(e.model || "unknown");
   const endpoint = String(e.endpoint || (provider === "anthropic" ? "messages" : "responses"));
-  const priced = calculateUsageCost(provider, model, e.usage || {}, endpoint);
+  const priced = calculateApiUsageCost(provider, model, e.usage || {}, endpoint, COST_PRICING);
   const extra = e.extra && typeof e.extra === "object" ? e.extra : {};
   const row = {
     id: "cost_" + crypto.randomBytes(10).toString("hex"),
@@ -1183,13 +1108,15 @@ function recordCostUsage(event) {
 }
 
 function recordOpenAIResponseUsage(model, operation, data, endpoint, extra) {
+  const details = extra && typeof extra === "object" ? extra : {};
   return recordCostUsage({
     provider: "openai",
-    model,
+    model: model,
     purpose: operation,
     endpoint: endpoint || "responses",
     usage: data && data.usage || {},
-    extra: extra || {}
+    newsId: details.news_id || details.newsId || "",
+    extra: details
   });
 }
 
@@ -1310,6 +1237,7 @@ async function buildCostsReport(days, scope, workspaceId) {
       bufferedEvents: costEventBuffer.length,
       trackingStartedAt: new Date().toISOString(),
       pricingUpdatedAt: COST_PRICING_UPDATED_AT,
+      pricingOverridden: Boolean(COST_PRICING_CONFIG.overridden),
       currency: { usdRub: rate, source: rate ? "CBR" : "USD only" },
       totals: { costUsd: 0, costRub: 0, calls: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0 },
       providers: [], operations: [], workspaces: [], daily: [],
@@ -1326,38 +1254,43 @@ async function buildCostsReport(days, scope, workspaceId) {
     `SELECT
       COUNT(*)::int AS calls,
       COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens,
+      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens,
       COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
       COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
+      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls,
       MIN(at) AS started_at
     FROM cost_events ${where}`, params
   );
   const providerQ = await db.query(
     `SELECT provider AS id, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
+      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
     FROM cost_events ${where}
     GROUP BY provider ORDER BY cost_usd DESC, calls DESC`, params
   );
   const operationQ = await db.query(
     `SELECT provider, operation, model, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
+      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
     FROM cost_events ${where}
     GROUP BY provider, operation, model ORDER BY cost_usd DESC, calls DESC`, params
   );
   const workspaceQ = await db.query(
     `SELECT workspace_id AS id, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
+      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
     FROM cost_events ${where}
     GROUP BY workspace_id ORDER BY cost_usd DESC, calls DESC`, params
   );
   const dailyQ = await db.query(
     `SELECT to_char(at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') AS day,
       COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd,
-      COALESCE(SUM(input_tokens),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
-      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls
+      COALESCE(SUM(input_tokens + CASE WHEN provider='anthropic' THEN cache_read_tokens + cache_write_tokens ELSE 0 END),0)::float8 AS input_tokens, COALESCE(SUM(output_tokens),0)::float8 AS output_tokens,
+      COUNT(*) FILTER (WHERE NOT pricing_known)::int AS unpriced_calls,
+      COUNT(*) FILTER (WHERE estimated)::int AS estimated_calls
     FROM cost_events ${where}
     GROUP BY 1 ORDER BY 1`, params
   );
@@ -1375,7 +1308,7 @@ async function buildCostsReport(days, scope, workspaceId) {
     const costUsd = Number(x.cost_usd || 0);
     return {
       id: x.id, name: providerLabel(x.id), calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
-      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
     };
   });
   const operations = operationQ.rows.map(function(x){
@@ -1384,21 +1317,21 @@ async function buildCostsReport(days, scope, workspaceId) {
       provider: x.provider, providerName: providerLabel(x.provider), operation: x.operation,
       operationLabel: operationLabel(x.operation), model: x.model, calls: Number(x.calls || 0),
       costUsd: costUsd, costRub: convertRub(costUsd), inputTokens: Number(x.input_tokens || 0),
-      outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+      outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
     };
   });
   const workspaces = workspaceQ.rows.map(function(x){
     const costUsd = Number(x.cost_usd || 0);
     return {
       id: x.id, name: workspaceNames.get(x.id) || x.id, calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
-      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
     };
   });
   const daily = dailyQ.rows.map(function(x){
     const costUsd = Number(x.cost_usd || 0);
     return {
       day: x.day, calls: Number(x.calls || 0), costUsd: costUsd, costRub: convertRub(costUsd),
-      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0)
+      inputTokens: Number(x.input_tokens || 0), outputTokens: Number(x.output_tokens || 0), unpricedCalls: Number(x.unpriced_calls || 0), estimatedCalls: Number(x.estimated_calls || 0)
     };
   });
 
@@ -1411,11 +1344,13 @@ async function buildCostsReport(days, scope, workspaceId) {
     bufferedEvents: costEventBuffer.length,
     trackingStartedAt: trackingStartedAt,
     pricingUpdatedAt: COST_PRICING_UPDATED_AT,
+      pricingOverridden: Boolean(COST_PRICING_CONFIG.overridden),
     currency: { usdRub: rate, source: rate ? "CBR" : "USD only" },
     totals: {
       costUsd: totalUsd, costRub: convertRub(totalUsd), calls: Number(total.calls || 0),
       inputTokens: Number(total.input_tokens || 0), outputTokens: Number(total.output_tokens || 0),
-      unpricedCalls: Number(total.unpriced_calls || 0)
+      unpricedCalls: Number(total.unpriced_calls || 0),
+      estimatedCalls: Number(total.estimated_calls || 0)
     },
     providers: providers,
     operations: operations,
@@ -2089,6 +2024,7 @@ async function initDb() {
     await runMigrations();
     dbReady = true;
     await migrateLegacyCostEventsToPostgres();
+    await refreshStoredCostPricing();
     await flushCostEventBuffer();
     await cleanupCostEvents();
     scheduleCostRetentionCleanup();
@@ -2799,7 +2735,9 @@ async function generateNewsCover(payload) {
         lastError = (data && data.error && data.error.message) || ("OpenAI Images HTTP " + response.status);
         continue;
       }
-      recordOpenAIResponseUsage(model, String(payload && payload.costPurpose || "image_generation"), data, "images", { quality: OPENAI_IMAGE_QUALITY, size: "1536x1024" });
+      recordOpenAIResponseUsage(model, String(payload && payload.costPurpose || "image_generation"), data, "images", {
+        quality: OPENAI_IMAGE_QUALITY, size: "1536x1024", news_id: payload && (payload.newsId || payload.id) || ""
+      });
       const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
       if (!b64) {
         lastError = "OpenAI Images не вернул изображение";
@@ -4000,7 +3938,10 @@ async function collectOnce(trigger) {
               title: originalTitle,
               text: originalText,
               photos: [media.imageUrl, media.originalImageUrl].concat(Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : []).filter(Boolean)
-            }], { hasPhoto: Boolean(media.imageUrl || media.generatedImageUrl || media.videoUrl || (Array.isArray(media.mediaPackUrls) && media.mediaPackUrls.length)) });
+            }], {
+              hasPhoto: Boolean(media.imageUrl || media.generatedImageUrl || media.videoUrl || (Array.isArray(media.mediaPackUrls) && media.mediaPackUrls.length)),
+              newsId: id
+            });
             state.stats.rewritten += 1;
           } catch (error) {
             baseItem.status = "rewrite_error";
@@ -4036,7 +3977,7 @@ async function collectOnce(trigger) {
           }
         } else {
           try {
-            rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "" });
+            rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "", newsId: id });
             state.stats.rewritten += 1;
           } catch (error) {
             baseItem.status = "rewrite_error";
@@ -4074,7 +4015,8 @@ async function collectOnce(trigger) {
           videoUrl: media.videoUrl || "",
           mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
           mediaOrigin: media.mediaOrigin || "",
-          mediaDirector: media.mediaDirector || null
+          mediaDirector: media.mediaDirector || null,
+          newsId: id
         });
         rewrite.title = qc.title || rewrite.title;
         rewrite.text = qc.text || rewrite.text;
@@ -6990,7 +6932,7 @@ async function callOpenAIRewrite(payload) {
         lastError = (data && data.error && data.error.message) || ("OpenAI HTTP " + response.status);
         continue;
       }
-      recordOpenAIResponseUsage(model, "legacy_rewrite", data, "responses");
+      recordOpenAIResponseUsage(model, "legacy_rewrite", data, "responses", { news_id: payload && payload.newsId || "" });
       const output = extractOpenAIText(data);
       if (!output) {
         lastError = "OpenAI вернул пустой ответ";
@@ -7233,6 +7175,7 @@ async function runEditorialV2(sources, options) {
   const sourceText = sources.map(function(s){ return String(s.title || "") + "\n" + String(s.text || ""); }).join("\n\n");
   const request = {
     now: new Date().toISOString(),
+    news_id: String(opts.newsId || opts.news_id || ""),
     mode: "post",
     time_slot: timeSlotFor(publishAt),
     signature: editorialSignature(),
@@ -7403,7 +7346,8 @@ async function retryUnavailableEditorialQueueItems() {
           .filter(Boolean)
           .slice(0, 5)
       }], {
-        hasPhoto: Boolean(item.videoUrl || item.enhancedImageUrl || item.imageUrl || item.generatedImageUrl || (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length))
+        hasPhoto: Boolean(item.videoUrl || item.enhancedImageUrl || item.imageUrl || item.generatedImageUrl || (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length)),
+        newsId: item.newsId || item.id
       });
 
       item.editorialV2RetryVersion = marker;
@@ -7492,7 +7436,10 @@ async function rebuildQueueWithEditorialV2() {
       });
       let v2;
       try {
-        v2 = await runEditorialV2(sources, { hasPhoto: Boolean(item.imageUrl || item.generatedImageUrl || item.videoUrl || (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length)) });
+        v2 = await runEditorialV2(sources, {
+          hasPhoto: Boolean(item.imageUrl || item.generatedImageUrl || item.videoUrl || (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length)),
+          newsId: item.newsId || item.id
+        });
       } catch (error) {
         summary.failed += 1;
         item.editorialRebuildError = String(error && error.message || error).slice(0, 300);
@@ -7661,7 +7608,7 @@ async function callOpenAIEditorialQC(payload) {
         lastError = data && data.error && data.error.message || ("OpenAI HTTP " + response.status);
         continue;
       }
-      recordOpenAIResponseUsage(model, "editorial_qc", data, "responses");
+      recordOpenAIResponseUsage(model, "editorial_qc", data, "responses", { news_id: p.newsId || p.news_id || "" });
       const output = extractOpenAIText(data);
       if (!output) { lastError = "QC вернул пустой ответ"; continue; }
       let parsed;
@@ -7778,7 +7725,7 @@ async function classifyPublishedStoryRelationship(item) {
     });
     const data = await response.json().catch(function(){ return {}; });
     if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
-    recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses");
+    recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
     const output = extractOpenAIText(data);
     const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
     const relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
@@ -7870,7 +7817,7 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
         lastError = data && data.error && data.error.message || ("OpenAI HTTP " + response.status);
         continue;
       }
-      recordOpenAIResponseUsage(model, "story_composer", data, "responses");
+      recordOpenAIResponseUsage(model, "story_composer", data, "responses", { news_id: incomingItem && (incomingItem.newsId || incomingItem.id) || "" });
       const output = extractOpenAIText(data);
       if (!output) { lastError = "OpenAI вернул пустой сюжет"; continue; }
       let parsed;
@@ -7953,7 +7900,7 @@ async function tryMergeStoryQueueItem(newItem) {
           text: source.text || "",
           photos: [source.originalImageUrl].filter(Boolean)
         };
-      }), { mergeCheck: true, hasPhoto: true });
+      }), { mergeCheck: true, hasPhoto: true, newsId: newItem.newsId || newItem.id });
     } catch (error) {
       console.warn("Story editorial v2 skipped:", error.message);
       return null;

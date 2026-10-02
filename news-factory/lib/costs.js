@@ -74,3 +74,188 @@ export function stripLegacyCostEvents(workspaces, migrationId) {
   }
   return { workspaces: changed, removedEvents: removedEvents };
 }
+
+
+export const BUILTIN_COST_PRICING_UPDATED_AT = "2026-10-02";
+export const BUILTIN_COST_PRICING = Object.freeze({
+  openaiText: {
+    "gpt-6-luna": { input: 0.10, cachedInput: 0.01, output: 0.50 },
+    "gpt-5.6-luna": { input: 0.20, cachedInput: 0.02, output: 1.20 }
+  },
+  openaiImage: {
+    "gpt-image-2.5-sunburst": { textInput: 5.00, imageInput: 8.00, cachedImageInput: 2.00, output: 30.00 },
+    "gpt-image-2": { textInput: 5.00, imageInput: 8.00, cachedImageInput: 2.00, output: 30.00 }
+  },
+  anthropic: {
+    "claude-sonnet-5-5": { input: 2.00, cacheRead: 0.20, cacheWrite: 2.50, output: 10.00 },
+    "claude-opus-5-5": { input: 4.00, cacheRead: 0.20, cacheWrite: 5.00, output: 20.00 },
+    "claude-haiku-4-5": { input: 1.00, cacheRead: 0.10, cacheWrite: 1.25, output: 5.00 }
+  },
+  railway: {
+    memoryGbMonth: 10.00,
+    cpuVcpuMonth: 20.00,
+    volumeGbMonth: 0.15,
+    egressGb: 0.05
+  }
+});
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function mergeRateMaps(base, override) {
+  const out = cloneJson(base || {});
+  if (!override || typeof override !== "object" || Array.isArray(override)) return out;
+  for (const key of Object.keys(override)) {
+    const incoming = override[key];
+    if (incoming && typeof incoming === "object" && !Array.isArray(incoming) &&
+        out[key] && typeof out[key] === "object" && !Array.isArray(out[key])) {
+      out[key] = Object.assign({}, out[key], incoming);
+    } else {
+      out[key] = incoming;
+    }
+  }
+  return out;
+}
+
+export function resolveCostPricing(rawJson) {
+  const pricing = cloneJson(BUILTIN_COST_PRICING);
+  const raw = String(rawJson || "").trim();
+  if (!raw) {
+    return { pricing, updatedAt: BUILTIN_COST_PRICING_UPDATED_AT, overridden: false, error: "" };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("ожидался JSON-объект");
+    for (const section of ["openaiText", "openaiImage", "anthropic"]) {
+      if (parsed[section] && typeof parsed[section] === "object" && !Array.isArray(parsed[section])) {
+        pricing[section] = mergeRateMaps(pricing[section], parsed[section]);
+      }
+    }
+    if (parsed.railway && typeof parsed.railway === "object" && !Array.isArray(parsed.railway)) {
+      pricing.railway = Object.assign({}, pricing.railway, parsed.railway);
+    }
+    return {
+      pricing,
+      updatedAt: String(parsed.updatedAt || parsed.pricingUpdatedAt || BUILTIN_COST_PRICING_UPDATED_AT).slice(0, 40),
+      overridden: true,
+      error: ""
+    };
+  } catch (error) {
+    return {
+      pricing,
+      updatedAt: BUILTIN_COST_PRICING_UPDATED_AT,
+      overridden: false,
+      error: String(error && error.message || error)
+    };
+  }
+}
+
+function usageNum(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+export function calculateUsageCost(provider, model, usage, endpoint, pricingInput) {
+  const pricing = pricingInput && pricingInput.openaiText ? pricingInput : BUILTIN_COST_PRICING;
+  const u = usage && typeof usage === "object" ? usage : {};
+  const p = String(provider || "").toLowerCase();
+  const m = String(model || "");
+  const ep = String(endpoint || "");
+  const input = usageNum(u.input_tokens != null ? u.input_tokens : u.prompt_tokens);
+  const output = usageNum(u.output_tokens != null ? u.output_tokens : u.completion_tokens);
+  const inputDetails = u.input_tokens_details && typeof u.input_tokens_details === "object"
+    ? u.input_tokens_details
+    : (u.prompt_tokens_details && typeof u.prompt_tokens_details === "object" ? u.prompt_tokens_details : {});
+  const cached = usageNum(inputDetails.cached_tokens);
+  const cacheRead = usageNum(u.cache_read_input_tokens);
+  const cacheWrite = usageNum(u.cache_creation_input_tokens);
+  let costUsd = 0;
+  let pricingKnown = true;
+  let estimated = false;
+  let kind = "text";
+
+  if (p === "openai" && ep === "images") {
+    kind = "image";
+    const rate = pricing.openaiImage && pricing.openaiImage[m];
+    if (!rate) pricingKnown = false;
+    const imageInput = usageNum(inputDetails.image_tokens);
+    let textInput = usageNum(inputDetails.text_tokens);
+    if (!textInput && !imageInput && input) textInput = input;
+    const cachedImage = usageNum(inputDetails.cached_tokens);
+    const imageOutput = output;
+    if (rate) {
+      costUsd = ((textInput * Number(rate.textInput || 0)) +
+        (Math.max(0, imageInput - cachedImage) * Number(rate.imageInput || 0)) +
+        (cachedImage * Number(rate.cachedImageInput || 0)) +
+        (imageOutput * Number(rate.output || 0))) / 1000000;
+    }
+    return {
+      kind, inputTokens: input, outputTokens: output, cachedInputTokens: cachedImage,
+      cacheReadTokens: 0, cacheWriteTokens: 0, imageInputTokens: imageInput,
+      imageOutputTokens: imageOutput, textInputTokens: textInput, reportInputTokens: input,
+      costUsd, pricingKnown, estimated
+    };
+  }
+
+  if (p === "anthropic") {
+    const rate = pricing.anthropic && pricing.anthropic[m];
+    if (!rate) pricingKnown = false;
+    // Anthropic input_tokens excludes cache creation/read tokens. Do NOT subtract them.
+    if (rate) {
+      costUsd = ((input * Number(rate.input || 0)) +
+        (cacheRead * Number(rate.cacheRead || 0)) +
+        (cacheWrite * Number(rate.cacheWrite || 0)) +
+        (output * Number(rate.output || 0))) / 1000000;
+    }
+    return {
+      kind, inputTokens: input, outputTokens: output, cachedInputTokens: 0,
+      cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
+      imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
+      reportInputTokens: input + cacheRead + cacheWrite,
+      costUsd, pricingKnown, estimated
+    };
+  }
+
+  if (p === "openai") {
+    let rate = pricing.openaiText && pricing.openaiText[m];
+    if (!rate) {
+      rate = pricing.openaiText && pricing.openaiText["gpt-6-luna"];
+      estimated = true;
+      pricingKnown = false;
+    }
+    if (rate) {
+      const normalInput = Math.max(0, input - cached);
+      costUsd = ((normalInput * Number(rate.input || 0)) +
+        (cached * Number(rate.cachedInput || 0)) +
+        (output * Number(rate.output || 0))) / 1000000;
+    }
+    return {
+      kind, inputTokens: input, outputTokens: output, cachedInputTokens: cached,
+      cacheReadTokens: 0, cacheWriteTokens: 0,
+      imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
+      reportInputTokens: input, costUsd, pricingKnown, estimated
+    };
+  }
+
+  return {
+    kind, inputTokens: input, outputTokens: output, cachedInputTokens: cached,
+    cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
+    imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
+    reportInputTokens: input + cacheRead + cacheWrite,
+    costUsd: 0, pricingKnown: false, estimated: false
+  };
+}
+
+export function moscowCostDateKey(date) {
+  const d = date instanceof Date ? date : new Date(date || Date.now());
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(d);
+  const map = {};
+  for (const part of parts) map[part.type] = part.value;
+  return map.year + "-" + map.month + "-" + map.day;
+}

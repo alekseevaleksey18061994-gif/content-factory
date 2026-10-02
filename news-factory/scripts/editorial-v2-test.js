@@ -7,7 +7,8 @@ import {
   normalizeWriterResult, normalizeCheckerResult, mergeVerdicts, legacyScores, resolveChannelId, timeSlotFor
 } from "../lib/editorial-v2.js";
 import {
-  COST_STATE_MIGRATION_ID, collectLegacyCostRows, stripLegacyCostEvents
+  COST_STATE_MIGRATION_ID, collectLegacyCostRows, stripLegacyCostEvents,
+  calculateUsageCost, resolveCostPricing, moscowCostDateKey
 } from "../lib/costs.js";
 
 const PROMPT = fileURLToPath(new URL("../prompts/chto-tam.md", import.meta.url));
@@ -258,6 +259,45 @@ await test("Claude falls back when structured outputs are unavailable", async fu
   assert.equal(result.structured, false);
   assert.equal(seen[0].output_config.format.type, "json_schema");
   assert.equal(seen[1].output_config, undefined);
+});
+
+await test("costs: Anthropic cache tokens are additive, not subtracted from input", function() {
+  const config = resolveCostPricing("").pricing;
+  const result = calculateUsageCost("anthropic", "claude-sonnet-5-5", {
+    input_tokens: 1000,
+    cache_read_input_tokens: 5000,
+    cache_creation_input_tokens: 0,
+    output_tokens: 300
+  }, "messages", config);
+  assert.equal(Number(result.costUsd.toFixed(6)), 0.006);
+  assert.equal(result.reportInputTokens, 6000);
+  assert.equal(result.pricingKnown, true);
+});
+
+await test("costs: unknown OpenAI model is estimated and not pricing-known", function() {
+  const config = resolveCostPricing("").pricing;
+  const result = calculateUsageCost("openai", "future-gpt-unknown", {
+    input_tokens: 1000, output_tokens: 100
+  }, "responses", config);
+  assert.equal(result.estimated, true);
+  assert.equal(result.pricingKnown, false);
+  assert.ok(result.costUsd > 0);
+});
+
+await test("costs: pricing JSON overrides built-ins and price date", function() {
+  const resolved = resolveCostPricing(JSON.stringify({
+    updatedAt: "2026-10-03",
+    anthropic: { "claude-sonnet-5-5": { input: 3 } }
+  }));
+  assert.equal(resolved.overridden, true);
+  assert.equal(resolved.updatedAt, "2026-10-03");
+  assert.equal(resolved.pricing.anthropic["claude-sonnet-5-5"].input, 3);
+  assert.equal(resolved.pricing.anthropic["claude-sonnet-5-5"].output, 10);
+  assert.equal(resolved.pricing.anthropic["claude-opus-5-5"].output, 20);
+});
+
+await test("costs: Moscow day handles UTC date boundary", function() {
+  assert.equal(moscowCostDateKey(new Date("2026-10-01T22:30:00.000Z")), "2026-10-02");
 });
 
 await test("cost migration: legacy state events are idempotent and removed after transfer", function() {

@@ -220,13 +220,15 @@ export function createModelClients(config) {
   const reportUsage = function(provider, model, purpose, data, extra) {
     if (typeof cfg.onUsage !== "function") return;
     try {
+      const details = extra && typeof extra === "object" ? extra : {};
       cfg.onUsage({
         provider: provider,
         model: model,
         purpose: String(purpose || "editorial"),
         usage: data && data.usage && typeof data.usage === "object" ? data.usage : {},
         endpoint: provider === "anthropic" ? "messages" : "responses",
-        extra: extra || {}
+        newsId: details.news_id || details.newsId || "",
+        extra: details
       });
     } catch {}
   };
@@ -245,7 +247,7 @@ export function createModelClients(config) {
         });
         const data = await response.json().catch(function(){ return {}; });
         if (!response.ok) { lastError = (data && data.error && data.error.message) || ("OpenAI HTTP " + response.status); continue; }
-        reportUsage("openai", model, opts && opts.purpose || "editorial", data);
+        reportUsage("openai", model, opts && opts.purpose || "editorial", data, opts && opts.extra);
         const text = openAIText(data);
         const parsed = parseJsonLoose(text);
         if (!parsed) { lastError = "OpenAI вернул не JSON"; continue; }
@@ -311,7 +313,8 @@ export function createModelClients(config) {
     }
 
     if (!result.response.ok) throw new Error(errMsg(result.data) || ("Anthropic HTTP " + result.response.status));
-    reportUsage("anthropic", model, opts && opts.purpose || "editorial_checker", result.data, { structured: !structuredUnsupported });
+    reportUsage("anthropic", model, opts && opts.purpose || "editorial_checker", result.data,
+      Object.assign({}, opts && opts.extra || {}, { structured: !structuredUnsupported }));
 
     let parsed = parseJsonLoose(anthropicText(result.data));
     if (!parsed && structuredUnsupported) {
@@ -355,7 +358,8 @@ export function createModelClients(config) {
         repairData = await repairResponse.json().catch(function(){ return {}; });
       }
       if (!repairResponse.ok) throw new Error(errMsg(repairData) || ("Anthropic HTTP " + repairResponse.status));
-      reportUsage("anthropic", model, (opts && opts.purpose || "editorial_checker") + "_repair", repairData, { structured: false });
+      reportUsage("anthropic", model, (opts && opts.purpose || "editorial_checker") + "_repair", repairData,
+        Object.assign({}, opts && opts.extra || {}, { structured: false }));
       parsed = parseJsonLoose(anthropicText(repairData));
     }
 
@@ -476,7 +480,9 @@ export function createEditorialPipeline(options) {
     const parsed = loadPrompt(promptFile);
     const system = buildSystemPrompt(parsed, "writer", channelId);
     const input = JSON.stringify(Object.assign({ role: "writer", channel_id: channelId }, request));
-    const res = await clients.callOpenAI(system, input, { maxTokens: 3500, purpose: "editorial_writer" });
+    const res = await clients.callOpenAI(system, input, {
+      maxTokens: 3500, purpose: "editorial_writer", extra: { news_id: String(request.news_id || "") }
+    });
     return { result: normalizeWriterResult(res.parsed, channelId), model: res.model };
   }
 
@@ -495,12 +501,16 @@ export function createEditorialPipeline(options) {
       registry: request.registry
     });
     const jobs = [
-      clients.callOpenAI(system, input, { maxTokens: 2500, purpose: "editorial_checker_openai" })
+      clients.callOpenAI(system, input, {
+        maxTokens: 2500, purpose: "editorial_checker_openai", extra: { news_id: String(request.news_id || "") }
+      })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "openai", r.model); })
         .catch(function(error){ return { provider: "openai", failed: true, error: String(error && error.message || error) }; })
     ];
     if (useClaude()) {
-      jobs.push(clients.callAnthropic(system, input, { maxTokens: 2500, purpose: "editorial_checker_anthropic" })
+      jobs.push(clients.callAnthropic(system, input, {
+        maxTokens: 2500, purpose: "editorial_checker_anthropic", extra: { news_id: String(request.news_id || "") }
+      })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "anthropic", r.model); })
         .catch(function(error){ return { provider: "anthropic", failed: true, error: String(error && error.message || error) }; }));
     }
