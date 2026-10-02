@@ -13,7 +13,7 @@
 // which keeps it unit-testable with a mocked fetch.
 
 import fs from "node:fs";
-import { createProviderBreaker, breakerError, classifyProviderFailure, failoverKind, tripsBreaker, callClaudeMessages } from "./llm-failover.js";
+import { createProviderBreaker, breakerError, classifyProviderFailure, failoverKind, failureKindOf, tripsBreaker, callClaudeMessages } from "./llm-failover.js";
 
 export const CHANNEL_IDS = [
   "ai", "auto", "money", "tech", "games", "kino", "science", "sport",
@@ -296,6 +296,14 @@ export function createModelClients(config) {
   // Shared with the rest of the app (see server.js): after a "no money / bad key" answer a provider is skipped for a
   // while instead of being hit again by every post.
   const breaker = cfg.breaker || createProviderBreaker({ onTrip: cfg.onProviderTrip });
+  // A switched-off provider is skipped only when the OTHER one can really take over (key present, not switched off too,
+  // failover enabled). Otherwise it is still asked, so a top-up is noticed at once and nothing gets stricter than before.
+  const skipProvider = function(provider) {
+    if (!breaker.isOpen(provider) || cfg.providerFailover === false) return false;
+    const otherKey = provider === "openai" ? cfg.anthropicApiKey : cfg.openaiApiKey;
+    const other = provider === "openai" ? "anthropic" : "openai";
+    return Boolean(otherKey) && !breaker.isOpen(other);
+  };
   // Mark an error with what kind of failure it was and trip the breaker when money/key is the problem.
   const annotate = function(error, provider, status) {
     const e = error instanceof Error ? error : new Error(String(error));
@@ -325,7 +333,7 @@ export function createModelClients(config) {
 
   async function callOpenAI(instructions, input, opts) {
     if (!cfg.openaiApiKey) throw new Error("OPENAI_API_KEY не настроен");
-    if (breaker.isOpen("openai")) throw breakerError("openai", breaker);
+    if (skipProvider("openai")) throw breakerError("openai", breaker);
     const models = [cfg.openaiModel, cfg.openaiFallbackModel].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
     let lastError = "";
     let lastStatus = 0;
@@ -511,7 +519,7 @@ export function createModelClients(config) {
   }
 
   async function callAnthropic(system, input, opts) {
-    if (cfg.anthropicApiKey && breaker.isOpen("anthropic")) throw breakerError("anthropic", breaker);
+    if (cfg.anthropicApiKey && skipProvider("anthropic")) throw breakerError("anthropic", breaker);
     try {
       const out = await callAnthropicRaw(system, input, opts);
       breaker.recordSuccess("anthropic");
@@ -525,7 +533,7 @@ export function createModelClients(config) {
   // be forced on a post), JSON is asked for in the prompt and parsed loosely like the OpenAI answer.
   async function callAnthropicWriter(system, input, opts) {
     if (!cfg.anthropicApiKey) throw new Error("ANTHROPIC_API_KEY не настроен");
-    if (breaker.isOpen("anthropic")) throw breakerError("anthropic", breaker);
+    if (skipProvider("anthropic")) throw breakerError("anthropic", breaker);
     const model = cfg.anthropicWriterModel || "claude-sonnet-5-5";
     try {
       const result = await callClaudeMessages({
@@ -683,7 +691,7 @@ export function createEditorialPipeline(options) {
     try {
       res = await clients.callOpenAI(system, input, callOpts);
     } catch (error) {
-      if (!failoverOn || !useClaude() || typeof clients.callAnthropicWriter !== "function") throw error;
+      if (!failoverOn || !useClaude() || typeof clients.callAnthropicWriter !== "function" || !failoverKind(failureKindOf(error))) throw error;
       const reason = String(error && error.message || error).slice(0, 200);
       try {
         res = await clients.callAnthropicWriter(system, input, callOpts);
@@ -719,7 +727,7 @@ export function createEditorialPipeline(options) {
         maxTokens: 2500, temperature: 0.1, purpose: "editorial_checker_openai", extra: { news_id: String(request.news_id || "") }
       })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "openai", r.model); })
-        .catch(function(error){ return { provider: "openai", failed: true, error: String(error && error.message || error) }; });
+        .catch(function(error){ return { provider: "openai", failed: true, error: String(error && error.message || error), failureKind: failureKindOf(error) }; });
     };
     const claudeJob = function() {
       return clients.callAnthropic(system, input, {
@@ -740,7 +748,7 @@ export function createEditorialPipeline(options) {
         // so the call would be wasted. If GPT could not answer at all (no money, outage), Claude takes over as the
         // only checker (provider failover); with failover off that stays "unavailable" and the post waits.
         if (!first.failed && first.verdict === "pass") results.push(await claudeJob());
-        else if (first.failed && failoverOn) results.push(await claudeJob());
+        else if (first.failed && failoverOn && failoverKind(first.failureKind)) results.push(await claudeJob());
         else claudeSkipped = true;
       }
     }
@@ -755,7 +763,8 @@ export function createEditorialPipeline(options) {
     // freeze every channel and create empty publication slots. If OpenAI itself
     // is unavailable, the result remains unavailable.
     // Failover: OpenAI could not check but Claude did -> Claude's verdict stands on its own.
-    const claudeSole = failoverOn && !openaiDone && done.some(function(r){ return r && r.provider === "anthropic"; });
+    const openaiFailedKind = (results.find(function(r){ return r && r.provider === "openai" && r.failed; }) || {}).failureKind;
+    const claudeSole = failoverOn && !openaiDone && failoverKind(openaiFailedKind) && done.some(function(r){ return r && r.provider === "anthropic"; });
     if (!done.length || (!openaiDone && !claudeSole)) verdict = "unavailable";
     const degraded = Boolean(failed.length && verdict !== "unavailable");
     if (claudeSole) {

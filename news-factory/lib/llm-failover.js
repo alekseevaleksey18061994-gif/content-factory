@@ -11,7 +11,7 @@
 //
 // No new dependencies; the Claude call is a plain Messages API request.
 
-export const BILLING_PATTERN = /no credits remaining|insufficient[_ ]quota|exceeded your current quota|credit balance is too low|billing[_ ]hard[_ ]limit|billing hard limit|payment required|insufficient funds|out of credits|plans & billing|account is not active|account has been deactivated/i;
+export const BILLING_PATTERN = /no credits remaining|insufficient[_ ]quota|exceeded your current quota|credit balance is too low|billing[_ ]hard[_ ]limit|billing hard limit|payment required|insufficient funds|out of credits|plans & billing|account is not active|account has been deactivated|reached (?:your|its|the) (?:specified )?(?:api )?usage limits?|usage limits? (?:have been|has been) reached/i;
 const AUTH_PATTERN = /invalid[_ ]api[_ ]key|incorrect api key|invalid x-api-key|authentication[_ ]error|api key.*(revoked|disabled|expired)|permission[_ ]error|organization.*disabled/i;
 
 // -> "billing" | "auth" | "outage" | "rate_limit" | "other"
@@ -23,6 +23,13 @@ export function classifyProviderFailure(input) {
   if (status === 429) return "rate_limit";
   if (status >= 500 || /fetch failed|network|timeout|timed out|aborted|ECONNRESET|ECONNREFUSED|ENOTFOUND|overloaded/i.test(message)) return "outage";
   return "other";
+}
+
+// The kind of a failure carried by an error / checker result: explicit failureKind first, otherwise from status + text.
+export function failureKindOf(error) {
+  if (!error) return "other";
+  if (error.failureKind) return error.failureKind;
+  return classifyProviderFailure({ status: error.status, message: error.message || error.error });
 }
 
 // Kinds that justify switching to the other provider.
@@ -54,7 +61,7 @@ export function createProviderBreaker(options) {
     },
     snapshot: function() {
       const out = {};
-      for (const [provider, s] of state) out[provider] = { open: s.until > now(), kind: s.kind, reason: s.reason.slice(0, 200), retryAt: new Date(s.until).toISOString() };
+      for (const [provider, s] of state) if (s.until > now()) out[provider] = { open: s.until > now(), kind: s.kind, reason: s.reason.slice(0, 200), retryAt: new Date(s.until).toISOString() };
       return out;
     }
   };
@@ -213,13 +220,18 @@ export function createResponsesFailover(config) {
       const result = await callClaudeMessages({
         fetch: fetchImpl, apiKey: cfg.anthropicApiKey, model: cfg.anthropicModel,
         system: translated.system, messages: translated.messages, maxTokens: translated.maxTokens,
-        temperature: translated.temperature, timeoutMs: cfg.timeoutMs
+        temperature: translated.temperature, timeoutMs: cfg.timeoutMs || 45000
       });
       breaker.recordSuccess("anthropic");
       if (typeof cfg.onUsage === "function") {
         try { cfg.onUsage({ provider: "anthropic", model: cfg.anthropicModel, purpose: "failover_responses", usage: result.usage, endpoint: "messages", newsId: "", extra: { failover_from: "openai", why: why } }); } catch {}
       }
-      const text = translated.expectsJson ? cleanJsonAnswer(result.text) : result.text;
+      // Claude likes fences or a lead-in sentence; every caller of this adapter parses JSON, so hand over clean JSON
+      // whenever the answer contains one (plain-text answers stay untouched).
+      const cleaned = cleanJsonAnswer(result.text);
+      let isJson = false;
+      try { JSON.parse(cleaned); isJson = true; } catch {}
+      const text = translated.expectsJson || isJson ? cleaned : result.text;
       if (typeof cfg.onFailover === "function") { try { cfg.onFailover({ from: "openai", to: "anthropic", why: why }); } catch {} }
       return jsonResponse(200, claudeAnswerAsResponses(text, cfg.anthropicModel));
     } catch (error) {
@@ -237,12 +249,11 @@ export function createResponsesFailover(config) {
     }
     wantsClaude = Boolean(translated);
 
-    if (breaker.isOpen("openai")) {
-      if (wantsClaude && claudeAvailable()) {
-        const viaC = await viaClaude(translated, "openai_switched_off");
-        if (viaC) return viaC;
-      }
-      return jsonResponse(402, { error: { message: breaker.reason("openai") || "OpenAI временно отключён", type: "insufficient_quota" } });
+    // OpenAI is switched off (no money): go straight to Claude. Only when Claude can really answer; otherwise OpenAI
+    // is still asked, so a top-up is noticed at once instead of after the cooldown.
+    if (breaker.isOpen("openai") && wantsClaude && claudeAvailable()) {
+      const viaC = await viaClaude(translated, "openai_switched_off");
+      if (viaC) return viaC;
     }
 
     let response;

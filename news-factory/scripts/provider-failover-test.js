@@ -176,9 +176,9 @@ test("F6 Responses failover: what must NOT switch", async () => {
   assert.equal(res.status, 429); assert.equal(net.calls.anthropic.length, 0);
 });
 
-test("F7 Responses failover: both out of money -> original error, both breakers open; recovery after cooldown", async () => {
+test("F7 Responses failover: both out of money -> original error; a top-up is noticed immediately, not after the cooldown", async () => {
   let t = 0;
-  const breaker = createProviderBreaker({ cooldownMs: 60000, now: () => t });
+  const breaker = createProviderBreaker({ cooldownMs: 600000, now: () => t });
   let openaiPaid = false;
   const net = fakeNet({ openai: () => openaiPaid ? openaiOk("{\"ok\":1}") : json(429, OPENAI_NO_MONEY), anthropic: () => json(400, CLAUDE_NO_MONEY) });
   const f = createResponsesFailover({ fetch: net.fetch, anthropicApiKey: "ak", anthropicModel: "c", breaker });
@@ -186,14 +186,13 @@ test("F7 Responses failover: both out of money -> original error, both breakers 
   let res = await f("https://api.openai.com/v1/responses", { method: "POST", body });
   assert.equal(res.ok, false); assert.equal(res.status, 429, "the caller still sees an error and handles it as before");
   assert.equal(breaker.isOpen("openai"), true); assert.equal(breaker.isOpen("anthropic"), true);
-  const before = { o: net.calls.openai.length, a: net.calls.anthropic.length };
+  const claudeCalls = net.calls.anthropic.length;
   res = await f("https://api.openai.com/v1/responses", { method: "POST", body });
-  assert.equal(res.ok, false); assert.match((await res.json()).error.message, /exceeded your current quota/i);
-  assert.deepEqual({ o: net.calls.openai.length, a: net.calls.anthropic.length }, before, "no calls at all while both are switched off");
-  t += 61000; openaiPaid = true;
+  assert.equal(res.status, 429); assert.equal(net.calls.anthropic.length, claudeCalls, "Claude is not asked while it is switched off");
+  openaiPaid = true; t += 1000;
   res = await f("https://api.openai.com/v1/responses", { method: "POST", body });
-  assert.equal(res.ok, true); assert.equal((await res.json()).output_text, "{\"ok\":1}");
-  assert.equal(breaker.isOpen("openai"), false, "OpenAI was topped up: back to normal on its own");
+  assert.equal(res.ok, true, "OpenAI was topped up: it is asked again at once because Claude cannot take over"); assert.equal((await res.json()).output_text, "{\"ok\":1}");
+  assert.equal(breaker.isOpen("openai"), false);
 });
 
 test("F8 Responses failover: network error to OpenAI also falls back; Claude temperature rejection is retried", async () => {
@@ -297,6 +296,66 @@ test("F17 Claude as checker still catches errors when it is the only checker", a
   assert.equal(out.status, "hold"); assert.equal(out.verdict, "reject");
 });
 
+// ---------------------------------------------------------------- regressions from the adversarial review
+
+test("R1 only money/key/outage switch providers: 429 rate limit, 400 and bad JSON from OpenAI never bring Claude in", async () => {
+  for (const [status, data] of [[429, { error: { message: "Rate limit reached for gpt in organization org-1" } }], [400, { error: { message: "Unsupported parameter: x" } }]]) {
+    const { net, p } = await pipeline({ openai: () => json(status, data), anthropic: smartClaude() });
+    await assert.rejects(() => p.run("auto", REQUEST), /Rate limit|Unsupported/);
+    assert.equal(net.calls.anthropic.length, 0, "writer: HTTP " + status);
+  }
+  // writer fine, OpenAI checker answers 200 with non-JSON: unavailable, Claude is not a replacement for a broken answer
+  const { net, p } = await pipeline({
+    openai: (b) => { const role = JSON.parse(b.input).role; return role === "writer" ? openaiOk(JSON.stringify(WRITER_OK)) : openaiOk("это не json"); },
+    anthropic: smartClaude()
+  });
+  const out = await p.run("auto", REQUEST);
+  assert.equal(out.verdict, "unavailable"); assert.equal(out.status, "hold"); assert.equal(net.calls.anthropic.length, 0);
+});
+
+test("R2 a provider with no alternative is never skipped: a top-up is noticed on the very next call", async () => {
+  for (const cfg of [{ anthropicApiKey: "" }, { anthropicApiKey: "ak", providerFailover: false }]) {
+    let paid = false;
+    const net = fakeNet({ openai: () => paid ? openaiOk(JSON.stringify(PASS)) : json(429, OPENAI_NO_MONEY), anthropic: () => claudeOk("{}") });
+    const clients = createModelClients(Object.assign({ fetch: net.fetch, openaiApiKey: "k", openaiModel: "m1" }, cfg));
+    await assert.rejects(() => clients.callOpenAI("s", "{}", {}), /quota/);
+    paid = true;
+    assert.equal((await clients.callOpenAI("s", "{}", {})).provider, "openai");
+    assert.equal(net.calls.openai.length, 2);
+    // Responses shim, flag off / no key
+    const f = createResponsesFailover({ fetch: net.fetch, anthropicApiKey: cfg.providerFailover === false ? "" : cfg.anthropicApiKey, breaker: createProviderBreaker() });
+    paid = false;
+    assert.equal((await f("https://api.openai.com/v1/responses", { method: "POST", body: JSON.stringify({ input: "x" }) })).status, 429);
+    paid = true;
+    assert.equal((await f("https://api.openai.com/v1/responses", { method: "POST", body: JSON.stringify({ input: "x" }) })).ok, true);
+  }
+});
+
+test("R3 Anthropic spend-limit message counts as no money", async () => {
+  assert.equal(classifyProviderFailure({ status: 400, message: "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC." }), "billing");
+  assert.equal(classifyProviderFailure({ status: 400, message: "Your workspace has reached its API usage limits" }), "billing");
+  assert.equal(classifyProviderFailure({ status: 429, message: "Number of request tokens has exceeded your per-minute rate limit" }), "rate_limit");
+});
+
+test("R4 adapter hands over clean JSON even when the call site did not ask for json_object", async () => {
+  const net = fakeNet({ openai: () => json(429, OPENAI_NO_MONEY), anthropic: () => claudeOk("Конечно! Вот оценки:\n```json\n{\"scores\":[{\"id\":\"a\"}]}\n```\nНадеюсь, помогло.") });
+  const f = createResponsesFailover({ fetch: net.fetch, anthropicApiKey: "ak", anthropicModel: "c", breaker: createProviderBreaker() });
+  const res = await f("https://api.openai.com/v1/responses", { method: "POST", body: JSON.stringify({ model: "gpt", input: "оцени", max_output_tokens: 2200 }) });
+  assert.equal((await res.json()).output_text, "{\"scores\":[{\"id\":\"a\"}]}");
+  const plain = fakeNet({ openai: () => json(429, OPENAI_NO_MONEY), anthropic: () => claudeOk("Просто текст без json") });
+  const f2 = createResponsesFailover({ fetch: plain.fetch, anthropicApiKey: "ak", anthropicModel: "c", breaker: createProviderBreaker() });
+  assert.equal((await (await f2("https://api.openai.com/v1/responses", { method: "POST", body: JSON.stringify({ input: "x" }) })).json()).output_text, "Просто текст без json");
+});
+
+test("R5 breaker snapshot lists only providers that are switched off right now", async () => {
+  let t = 0;
+  const b = createProviderBreaker({ cooldownMs: 1000, now: () => t });
+  b.trip("openai", "no money", "billing");
+  assert.deepEqual(Object.keys(b.snapshot()), ["openai"]);
+  t += 5000;
+  assert.deepEqual(b.snapshot(), {}, "expired entries are not shown as switched off");
+});
+
 // ---------------------------------------------------------------- the real server.js
 
 function installNet(handlers) {
@@ -384,6 +443,26 @@ test("S7 every OpenAI text call in server.js goes through the failover wrapper",
   const wrapped = src.match(/await llmResponsesFetch\("https:\/\/api\.openai\.com\/v1\/responses"/g) || [];
   assert.ok(wrapped.length >= 10, "expected the ten helper-model call sites, got " + wrapped.length);
   assert.equal(all.length, wrapped.length, "a raw fetch to /v1/responses bypasses the failover");
+});
+
+test("S8 server: Claude-answered helper call leaves no phantom OpenAI cost row; cover card is honest and obeys the failover flag", async () => {
+  const t = await loadServer({ channels: twoCh, env: { GENERATE_COVER_IF_MISSING: "true" } });
+  installNet({ responses: () => json(200, {}), images: () => json(429, OPENAI_NO_MONEY), anthropic: () => claudeOk("{}") });
+  assert.equal(t.recordOpenAIResponseUsage("gpt-6-luna", "x", { failover: { provider: "anthropic" }, usage: { input_tokens: 0, output_tokens: 0 } }, "responses"), null);
+  const cover = await t.generateNewsCover({ id: "c1", title: "Заголовок", text: "t" });
+  const fs = await import("node:fs");
+  const names = fs.readdirSync(t.dir + "/media").filter((n) => /\.webp$/.test(n));
+  assert.ok(names.length >= 1);
+  const sharp = (await import("sharp")).default;
+  const meta = await sharp(t.dir + "/media/" + names[0]).metadata();
+  assert.equal(meta.width, 1536);
+  assert.equal(cover.model, "local-budget-card");
+});
+
+test("S9 server: failover flag off -> no cover card, no Claude, errors as before", async () => {
+  const t = await loadServer({ channels: twoCh, env: { GENERATE_COVER_IF_MISSING: "true", EDITORIAL_V2_PROVIDER_FAILOVER: "false" } });
+  installNet({ responses: () => json(200, {}), images: () => json(429, OPENAI_NO_MONEY), anthropic: () => claudeOk("{}") });
+  await assert.rejects(() => t.generateNewsCover({ id: "x1", title: "t", text: "t" }), /quota/i);
 });
 
 async function main() {

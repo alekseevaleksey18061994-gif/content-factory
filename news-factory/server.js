@@ -1433,6 +1433,8 @@ function recordCostUsage(event) {
 }
 
 function recordOpenAIResponseUsage(model, operation, data, endpoint, extra) {
+  // Answered by Claude through the failover: that call has its own Anthropic cost row, no phantom OpenAI one.
+  if (data && data.failover && data.failover.provider === "anthropic") return null;
   const details = extra && typeof extra === "object" ? extra : {};
   return recordCostUsage({
     provider: "openai",
@@ -1836,7 +1838,7 @@ async function renderEconomyTextCard(payload) {
   const text = lines.slice(0,4).map(function(v,i){
     return '<text x="90" y="'+(360+i*100)+'" font-family="Arial,sans-serif" font-size="70" font-weight="700" fill="#15232d">'+esc(v)+'</text>';
   }).join("");
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024"><rect width="1536" height="1024" fill="#eef8f8"/><rect width="20" height="1024" fill="#1fc8c5"/><text x="90" y="170" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#159d9b">'+esc(currentWorkspace().name||"News Factory")+'</text>'+text+'<text x="90" y="915" font-family="Arial,sans-serif" font-size="30" fill="#61727c">Режим экономии · без AI-обложки</text></svg>';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024"><rect width="1536" height="1024" fill="#eef8f8"/><rect width="20" height="1024" fill="#1fc8c5"/><text x="90" y="170" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#159d9b">'+esc(currentWorkspace().name||"News Factory")+'</text>'+text+'<text x="90" y="915" font-family="Arial,sans-serif" font-size="30" fill="#61727c">'+esc(payload && payload.cardNote || "Режим экономии · без AI-обложки")+'</text></svg>';
   const fileName = "budget_card_" + String(payload && payload.id || crypto.randomBytes(5).toString("hex")).replace(/[^a-zA-Z0-9_-]/g,"_").slice(0,70) + "_" + Date.now() + ".webp";
   await sharp(Buffer.from(svg)).webp({quality:86}).toFile(path.join(MEDIA_DIR,fileName));
   return { url: mediaPublicUrl(fileName), model: "local-budget-card", economy: true };
@@ -3850,9 +3852,9 @@ async function generateNewsCover(payload) {
   let lastError = "";
   // OpenAI is out of money: a missing cover must not stop the post (MEDIA_REQUIRED), draw the local text card.
   const coverCardFallback = async function(reason) {
-    if (!PROVIDER_FAILOVER_COVER_CARD) return null;
+    if (!PROVIDER_FAILOVER_ENABLED || !PROVIDER_FAILOVER_COVER_CARD) return null;
     console.warn("COVER_FALLBACK_TEXT_CARD " + JSON.stringify({ workspace: currentWorkspaceId(), reason: String(reason || "").slice(0, 160) }));
-    return renderEconomyTextCard(payload);
+    return renderEconomyTextCard(Object.assign({}, payload, { cardNote: "Без AI-обложки" }));
   };
   if (providerBreaker.isOpen("openai")) {
     const card = await coverCardFallback(providerBreaker.reason("openai"));
@@ -9380,6 +9382,7 @@ function editorialPipeline() {
         anthropicApiKey: ANTHROPIC_API_KEY,
         anthropicModel: ANTHROPIC_MODEL,
         anthropicWriterModel: ANTHROPIC_FALLBACK_WRITER_MODEL,
+        providerFailover: PROVIDER_FAILOVER_ENABLED,
         breaker: providerBreaker,
         onUsage: recordCostUsage
       }
