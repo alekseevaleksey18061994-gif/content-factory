@@ -2340,6 +2340,27 @@ button{line-height:1.2!important}
 @media(max-width:980px){.qa-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:720px){#qaPage{padding:14px!important;border-radius:22px}.qa-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.qa-toolbar{width:100%}.qa-toolbar button{flex:1}.qa-channel-head{grid-template-columns:minmax(0,1fr) auto}.qa-channel-head .qa-state{grid-column:1/-1;width:max-content}}
 
+
+/* v0.45.0 — network dashboard, promotion and QA polish */
+.network-dashboard-button:hover,.network-dashboard-button:focus,.network-dashboard-button:active{color:#fff!important;background:linear-gradient(135deg,#27ddd9 0%,#159bff 62%,#655cff 100%)!important;border-color:rgba(255,255,255,.58)!important}
+body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.25),0 10px 28px rgba(22,140,255,.22)}
+.toast:not(.show){opacity:0;pointer-events:none}
+.kpi small.kpi-good{color:#12865c}.kpi small.kpi-warn{color:#a86b12}
+.kpi b.positive{color:#12865c}.kpi b.negative{color:#bd4450}
+.network-account.has-problem{border-color:rgba(231,154,39,.35);background:linear-gradient(150deg,#fff,rgba(255,248,236,.95))}
+.network-account-last{display:block;margin-top:10px;font-size:10.5px;color:#667797}
+.network-account-soft{display:block;margin-top:4px;font-size:10px;color:#8a97ad}
+.promo-since{display:block;font-size:10.5px;color:#12865c;margin-top:2px}
+.promotion-campaign-details>summary{cursor:pointer;list-style:none;font-weight:800;padding:10px 0;color:#159bff}
+.promotion-campaign-details>summary::-webkit-details-marker{display:none}
+.qa-slot-row.qa-slot-wait span{color:#a86b12}.qa-slot-row.qa-slot-off span{color:#8a97ad}
+.qa-hint{font-size:11px;color:#667797;margin-top:8px;line-height:1.4}
+@media(max-width:760px){
+  .shell{padding-bottom:calc(96px + env(safe-area-inset-bottom))}
+  #networkPage .page-head h2,#promotionPage .page-head h2,#qaPage .page-head h2{display:none}
+  .page-refresh-fab{width:48px;height:48px;min-height:48px}
+  .qa-kpis>.kpi:first-child{grid-column:1/-1}
+}
 </style>
 </head>
 <body>
@@ -2419,16 +2440,16 @@ button{line-height:1.2!important}
             <h2>Общий дашборд</h2>
             <p>Все каналы News Factory в одном месте: состояние, очередь, источники и публикации.</p>
           </div>
-          <button type="button" onclick="renderNetworkDashboard()">Обновить</button>
+          <button type="button" id="networkRefreshBtn" onclick="refreshNetworkDashboard()">Обновить</button>
         </div>
 
         <div class="network-kpis">
-          <div class="kpi"><b id="networkChannels">—</b><span>Каналов</span><small>Все аккаунты сети</small></div>
-          <div class="kpi"><b id="networkAuto">—</b><span>Автопубликация</span><small>Работают автоматически</small></div>
+          <div class="kpi"><b id="networkToday">—</b><span>Вышло сегодня</span><small id="networkPublished">Всего —</small></div>
+          <div class="kpi"><b id="networkAuto">—</b><span>Автопубликация</span><small id="networkChannels">Каналов —</small></div>
+          <div class="kpi"><b id="networkLast">—</b><span>Последний пост</span><small id="networkLastName">—</small></div>
+          <div class="kpi"><b id="networkIssues">—</b><span>Требуют внимания</span><small id="networkIssuesNote">Каналы с проблемами</small></div>
           <div class="kpi"><b id="networkQueue">—</b><span>В очереди</span><small>По всем каналам</small></div>
           <div class="kpi"><b id="networkSources">—</b><span>Источников</span><small>Активны сейчас</small></div>
-          <div class="kpi"><b id="networkPublished">—</b><span>Опубликовано</span><small>Суммарный счётчик</small></div>
-          <div class="kpi"><b id="networkIssues">—</b><span>Требует внимания</span><small>Каналы с настройками</small></div>
         </div>
 
         <div class="network-layout">
@@ -2442,7 +2463,7 @@ button{line-height:1.2!important}
 
           <div class="card network-attention-card">
             <div class="panel-title">
-              <div><h3>Требует внимания</h3><p>Настройки, которые мешают полноценной автоматической работе.</p></div>
+              <div><h3>Требует внимания</h3><p>Что мешает каналам выпускать посты. Фото канала сюда не входит.</p></div>
             </div>
             <div id="networkAttention"><div class="empty">Проверяю состояние…</div></div>
           </div>
@@ -2657,17 +2678,17 @@ button{line-height:1.2!important}
         </div>
 
         <div class="promotion-kpis">
-          <div class="kpi"><b id="promoSubscribers">—</b><span>Подписчики</span><small id="promoSubscribersMeta">Текущий канал</small></div>
-          <div class="kpi"><b id="promoDayGrowth">—</b><span>Рост за сутки</span><small>Telegram + VK</small></div>
-          <div class="kpi"><b id="promoWeekGrowth">—</b><span>Рост за 7 дней</span><small>Telegram + VK</small></div>
-          <div class="kpi"><b id="promoMonthGrowth">—</b><span>Рост за 30 дней</span><small>Telegram + VK</small></div>
-          <div class="kpi"><b id="promoSpend">—</b><span>Расходы на рост</span><small>Учтённые кампании</small></div>
-          <div class="kpi"><b id="promoCps">—</b><span>Цена подписчика</span><small>По атрибутированным кампаниям</small></div>
+          <div class="kpi"><b id="promoSubscribers">—</b><span>Подписчиков в сети</span><small id="promoSubscribersMeta">Все каналы</small></div>
+          <div class="kpi"><b id="promoSinceGrowth">—</b><span>Рост с начала учёта</span><small id="promoSinceLabel">Вся сеть</small></div>
+          <div class="kpi"><b id="promoDayGrowth">—</b><span>Рост за сутки</span><small class="promo-platform-label">Вся сеть</small></div>
+          <div class="kpi"><b id="promoWeekGrowth">—</b><span>Рост за 7 дней</span><small class="promo-platform-label">Вся сеть</small></div>
+          <div class="kpi"><b id="promoMonthGrowth">—</b><span>Рост за 30 дней</span><small class="promo-platform-label">Вся сеть</small></div>
+          <div class="kpi"><b id="promoSpend">—</b><span>Расходы на рост</span><small id="promoCps">Цена подписчика —</small></div>
         </div>
 
         <div class="promotion-two">
           <section class="card">
-            <div class="panel-title"><div><h3>Вся сеть каналов</h3><p id="promoNetworkSubtitle">Собираю аудиторию по аккаунтам…</p></div><span class="chip" id="promoTrackedChannels">—</span></div>
+            <div class="panel-title"><div><h3>Каналы по подписчикам</h3><p id="promoNetworkSubtitle">Собираю аудиторию по аккаунтам…</p></div><span class="chip" id="promoTrackedChannels">—</span></div>
             <div id="promoNetwork" class="promotion-network"><div class="empty">Загрузка…</div></div>
           </section>
 
@@ -2675,20 +2696,22 @@ button{line-height:1.2!important}
             <div class="panel-title"><div><h3>Текущий канал</h3><p id="promoCurrentName">—</p></div></div>
             <div class="promotion-platforms">
               <div class="promotion-platform"><span class="promotion-platform-icon">TG</span><div><b id="promoTgSubs">—</b><small>подписчиков Telegram</small></div><span id="promoTgWeek" class="promotion-delta">—</span></div>
-              <div class="promotion-platform"><span class="promotion-platform-icon vk">VK</span><div><b id="promoVkSubs">—</b><small>подписчиков VK</small></div><span id="promoVkWeek" class="promotion-delta">—</span></div>
+              <div class="promotion-platform" id="promoVkRow"><span class="promotion-platform-icon vk">VK</span><div><b id="promoVkSubs">—</b><small>подписчиков VK</small></div><span id="promoVkWeek" class="promotion-delta">—</span></div>
             </div>
             <div class="notice" id="promoTrackingNote" style="margin-top:12px">История роста начнёт заполняться автоматически.</div>
           </section>
         </div>
 
         <section class="card" style="margin-top:18px">
-          <div class="panel-title"><div><h3>Лучшие посты для продвижения</h3><p>Материалы с наибольшими просмотрами — кандидаты на посевы, Reels и Shorts.</p></div></div>
+          <div class="panel-title"><div><h3>Лучшие посты для продвижения</h3><p id="promoTopPostsSubtitle">Текущий канал: посты с наибольшими просмотрами — кандидаты на посевы, Reels и Shorts.</p></div></div>
           <div id="promoTopPosts" class="promotion-top-posts"><div class="empty">Загружаю лучшие публикации…</div></div>
         </section>
 
         <div class="promotion-two" style="margin-top:18px">
           <section class="card">
-            <div class="panel-title"><div><h3>Кампании</h3><p>Фиксируй посевы и рекламные размещения — News Factory посчитает стоимость подписчика.</p></div><span class="chip" id="promoCampaignCount">0</span></div>
+            <div class="panel-title"><div><h3>Кампании</h3><p>Посевы и реклама текущего канала — News Factory посчитает цену подписчика.</p></div><span class="chip" id="promoCampaignCount">0</span></div>
+            <div id="promoCampaigns" class="promotion-campaigns"><div class="empty">Кампаний пока нет</div></div>
+            <details class="promotion-campaign-details" style="margin-top:8px"><summary>+ Добавить кампанию</summary>
             <div class="promotion-campaign-form">
               <input id="promoCampaignName" placeholder="Название кампании">
               <input id="promoCampaignSource" placeholder="Источник: канал / блогер / площадка">
@@ -2711,8 +2734,8 @@ button{line-height:1.2!important}
               <label><span>Клики</span><input id="promoCampaignClicks" type="number" min="0" step="1" value="0"></label>
               <button class="primary" id="promoCampaignSaveBtn" onclick="addPromotionCampaign()">Добавить кампанию</button>
             </div>
-            <div class="notice" style="margin-top:12px">Источник подписки Telegram Bot API напрямую не показывает. Здесь фиксируется атрибуция по конкретному посеву/ссылке или данным рекламной площадки.</div>
-            <div id="promoCampaigns" class="promotion-campaigns" style="margin-top:12px"><div class="empty">Кампаний пока нет</div></div>
+            <div class="notice" style="margin-top:12px">Telegram не показывает, откуда пришёл подписчик. Укажите число по своей ссылке-приглашению или по данным площадки.</div>
+            </details>
           </section>
 
           <section class="card">
@@ -2725,19 +2748,20 @@ button{line-height:1.2!important}
 
       <section class="page" id="qaPage">
         <div class="page-head">
-          <div><h2>Редакционный QA</h2><p>Проверка всей сети без публикации: Channel DNA, стиль, тип контента, Channel Score, источники и фактчек.</p></div>
+          <div><h2>Редакционный QA</h2><p>Пробный прогон редакции по каждому каналу — без публикации: характер канала, стиль, тип контента, оценка, источники и фактчек.</p>
+            <p class="qa-hint">Проверка пишет по одному контрольному посту на канал (16 запросов к нейросетям, несколько минут). «Догнать текущий слот» — выпустить пост в каналах, где он не вышел в этот час.</p></div>
           <div class="qa-toolbar">
-            <button id="qaRepairBtn" onclick="repairCurrentSlot()">Догнать текущий слот</button>
             <button class="primary" id="qaRunBtn" onclick="startEditorialQa()">Проверить всю редакцию</button>
+            <button id="qaRepairBtn" onclick="repairCurrentSlot()">Догнать текущий слот</button>
           </div>
         </div>
 
         <div class="qa-kpis">
-          <div class="kpi"><b id="qaPass">—</b><span>Прошли</span><small>Все обязательные проверки</small></div>
-          <div class="kpi"><b id="qaWarn">—</b><span>Предупреждения</span><small>Работает, но есть деградация</small></div>
+          <div class="kpi"><b id="qaSlotCoverage">—</b><span id="qaSlotTitle">Вышло в этот час</span><small id="qaSlotLabel">—</small></div>
+          <div class="kpi"><b id="qaAverage">—</b><span>Средний балл</span><small id="qaLastRun">Проверка ещё не запускалась</small></div>
+          <div class="kpi"><b id="qaPass">—</b><span>Готовы</span><small>Все проверки пройдены</small></div>
+          <div class="kpi"><b id="qaWarn">—</b><span>Внимание</span><small>Работают, но есть замечания</small></div>
           <div class="kpi"><b id="qaFail">—</b><span>Ошибки</span><small>Нужно исправить</small></div>
-          <div class="kpi"><b id="qaAverage">—</b><span>Проверок пройдено</span><small>Среднее по сети</small></div>
-          <div class="kpi"><b id="qaSlotCoverage">—</b><span>Текущий слот</span><small id="qaSlotLabel">—</small></div>
         </div>
 
         <section class="card qa-status-card">
@@ -2750,12 +2774,12 @@ button{line-height:1.2!important}
         </section>
 
         <section class="card" style="margin-top:14px">
-          <div class="panel-title"><div><h3>Публикации текущего часа</h3><p>Какие каналы реально выпустили назначенный пост.</p></div><button onclick="loadEditorialQa(false)">Обновить</button></div>
+          <div class="panel-title"><div><h3>Публикации текущего часа</h3><p>Какие каналы уже выпустили пост в этот час. Сначала — те, где поста нет.</p></div><button onclick="loadEditorialQa(false)">Обновить</button></div>
           <div id="qaSlotRows" class="qa-slot-list"><div class="empty">Загрузка…</div></div>
         </section>
 
         <section class="card" style="margin-top:14px">
-          <div class="panel-title"><div><h3>Каналы</h3><p>Контрольная генерация и технические редакционные правила по каждому профилю.</p></div></div>
+          <div class="panel-title"><div><h3>Каналы</h3><p>Результат последней проверки: сначала каналы с ошибками.</p></div></div>
           <div id="qaChannels" class="qa-channel-list"><div class="empty">Нажмите «Проверить всю редакцию».</div></div>
         </section>
       </section>
@@ -3332,56 +3356,87 @@ function openWorkspaceFromNetwork(id){
   location.hash='#home';
   location.reload();
 }
+function ruChannels(n){n=Number(n||0);var m10=n%10,m100=n%100;return n+' '+(m10===1&&m100!==11?'канал':(m10>=2&&m10<=4&&(m100<12||m100>14)?'канала':'каналов'))}
+window.ruChannels=ruChannels;
+var NET_PROBLEM_LABELS={stale:'нет постов больше 3 часов',emptyQueue:'очередь пустая',notAuto:'автопубликация выключена'};
+function netProblems(item){
+  var s=item.summary||{};
+  var out=(s.problems||[]).map(function(k){return NET_PROBLEM_LABELS[k]||k});
+  wsMissing(item).forEach(function(k){if(k!=='avatar')out.push(k==='sources'?'мало источников (меньше 15)':'не заполнено: '+(WS_MISSING_LABELS[k]||k))});
+  return out;
+}
+function netTime(iso){
+  if(!iso)return '—';
+  var d=new Date(iso),now=new Date();
+  var sameDay=d.toDateString()===now.toDateString();
+  return sameDay?d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):d.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+async function refreshNetworkDashboard(){
+  var btn=el('networkRefreshBtn');if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
+  try{await loadWorkspaces();renderNetworkDashboard()}
+  catch(e){toast('Дашборд: '+e.message)}
+  finally{if(btn){btn.disabled=false;btn.textContent='Обновить'}}
+}
+window.refreshNetworkDashboard=refreshNetworkDashboard;
 function renderNetworkDashboard(){
   if(!Array.isArray(workspaces))return;
   var total=workspaces.length;
-  var autoCount=0,queue=0,sources=0,published=0,issues=0;
+  var autoCount=0,queue=0,sources=0,published=0,today=0,issues=0,last=null;
   workspaces.forEach(function(item){
     var s=item.summary||{};
     if(s.autoPublish)autoCount+=1;
     queue+=Number(s.queue||0);
     sources+=Number(s.sources||0);
     published+=Number(s.published||0);
-    if(wsMissing(item).length)issues+=1;
+    today+=Number(s.publishedToday||0);
+    if(s.lastPublishedAt&&(!last||new Date(s.lastPublishedAt)>new Date(last.at)))last={at:s.lastPublishedAt,name:item.name};
+    if(netProblems(item).length)issues+=1;
   });
-  if(el('networkChannels'))el('networkChannels').textContent=total;
-  if(el('networkAuto'))el('networkAuto').textContent=autoCount;
+  if(el('networkToday'))el('networkToday').textContent=today;
+  if(el('networkPublished'))el('networkPublished').textContent='Всего '+published;
+  if(el('networkAuto'))el('networkAuto').textContent=autoCount+'/'+total;
+  if(el('networkChannels'))el('networkChannels').textContent=autoCount===total?'Все каналы работают сами':ruChannels(total-autoCount)+' вручную или на паузе';
+  if(el('networkLast'))el('networkLast').textContent=last?netTime(last.at):'—';
+  if(el('networkLastName'))el('networkLastName').textContent=last?last.name:'Постов ещё не было';
   if(el('networkQueue'))el('networkQueue').textContent=queue;
   if(el('networkSources'))el('networkSources').textContent=sources;
-  if(el('networkPublished'))el('networkPublished').textContent=published;
   if(el('networkIssues'))el('networkIssues').textContent=issues;
-  if(el('networkAccountCount'))el('networkAccountCount').textContent=total+' '+(total===1?'канал':'каналов');
+  if(el('networkIssuesNote')){el('networkIssuesNote').textContent=issues?'Список ниже':'Всё работает';el('networkIssuesNote').className=issues?'kpi-warn':'kpi-good'}
+  if(el('networkAccountCount'))el('networkAccountCount').textContent=ruChannels(total);
 
+  var sorted=workspaces.slice().sort(function(a,b){return (netProblems(b).length?1:0)-(netProblems(a).length?1:0)});
   var accounts=el('networkAccounts');
   if(accounts){
-    accounts.innerHTML=total?workspaces.map(function(item){
+    accounts.innerHTML=total?sorted.map(function(item){
       var s=item.summary||{};
-      var missing=networkMissingLabels(item);
-      var status=s.autoPublish?'Авто':(String(s.mode||'').toUpperCase()==='PAUSED'?'Пауза':'Контроль');
-      var statusClass=s.autoPublish?'good':(String(s.mode||'').toUpperCase()==='PAUSED'?'bad':'warn');
-      return '<button class="network-account" type="button" onclick="openWorkspaceFromNetwork(\''+esc(item.id)+'\')">'+
+      var problems=netProblems(item);
+      var paused=String(s.mode||'').toUpperCase()==='PAUSED';
+      var status=s.autoPublish?'Авто':(paused?'Пауза':'Вручную');
+      var statusClass=s.autoPublish?'good':(paused?'bad':'warn');
+      return '<button class="network-account'+(problems.length?' has-problem':'')+'" type="button" onclick="openWorkspaceFromNetwork(\''+esc(item.id)+'\')">'+
         '<span class="network-account-head"><span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
         '<span class="network-account-copy"><b>'+esc(item.name||'Канал')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
         '<span class="network-state '+statusClass+'">'+esc(status)+'</span></span>'+
         '<span class="network-account-metrics">'+
+          '<span><b>'+Number(s.publishedToday||0)+'</b><small>сегодня</small></span>'+
           '<span><b>'+Number(s.queue||0)+'</b><small>очередь</small></span>'+
           '<span><b>'+Number(s.sources||0)+'</b><small>источники</small></span>'+
-          '<span><b>'+Number(s.published||0)+'</b><small>вышло</small></span>'+
         '</span>'+
-        (missing.length?'<span class="network-account-warning">Нужно настроить: '+esc(missing.slice(0,3).join(', '))+(missing.length>3?'…':'')+'</span>':'<span class="network-account-ok">Готов к работе</span>')+
+        '<span class="network-account-last">Последний пост: '+esc(netTime(s.lastPublishedAt))+' · всего '+Number(s.published||0)+'</span>'+
+        (problems.length?'<span class="network-account-warning">⚠️ '+esc(problems.slice(0,2).join(' · '))+(problems.length>2?'…':'')+'</span>':'<span class="network-account-ok">✓ Работает</span>')+
+        (wsMissing(item).indexOf('avatar')>=0?'<span class="network-account-soft">Нет фото канала в админке</span>':'')+
       '</button>';
     }).join(''):'<div class="empty">Каналы ещё не созданы</div>';
   }
 
   var attention=el('networkAttention');
   if(attention){
-    var problemItems=workspaces.filter(function(item){return wsMissing(item).length});
+    var problemItems=sorted.filter(function(item){return netProblems(item).length});
     attention.innerHTML=problemItems.length?problemItems.map(function(item){
-      var labels=networkMissingLabels(item);
       return '<button class="network-attention-row" type="button" onclick="openWorkspaceFromNetwork(\''+esc(item.id)+'\')">'+
-        '<span><b>'+esc(item.name||'Канал')+'</b><small>'+esc(labels.join(' · '))+'</small></span><span>→</span>'+
+        '<span><b>'+esc(item.name||'Канал')+'</b><small>'+esc(netProblems(item).join(' · '))+'</small></span><span>→</span>'+
       '</button>';
-    }).join(''):'<div class="network-all-good"><b>Все основные настройки заполнены</b><small>Критичных проблем по аккаунтам не найдено.</small></div>';
+    }).join(''):'<div class="network-all-good"><b>Все каналы работают</b><small>Посты выходят, очереди не пустые, источников хватает.</small></div>';
   }
 }
 window.openWorkspaceFromNetwork=openWorkspaceFromNetwork;
@@ -3590,7 +3645,8 @@ function goPage(id,options){
   if(id==='qaPage'){loadEditorialQa(false);}
   if(id==='costsPage'){loadCosts(false);}
   if(id==='accountPage'){renderWorkspaceChrome();}
-  if(id==='networkPage'){renderNetworkDashboard();}
+  document.body.classList.toggle('on-network',id==='networkPage');
+  if(id==='networkPage'){refreshNetworkDashboard();}
 }
 function openRouteFromHash(){
   var route=(location.hash||'#home').slice(1);
@@ -4018,8 +4074,11 @@ function renderEditorialQa(data){
   if(el('qaWarn'))el('qaWarn').textContent=sum.warn==null?'—':sum.warn;
   if(el('qaFail'))el('qaFail').textContent=sum.fail==null?'—':sum.fail;
   if(el('qaAverage'))el('qaAverage').textContent=sum.averagePercent==null?'—':sum.averagePercent+'%';
-  if(el('qaSlotCoverage'))el('qaSlotCoverage').textContent=(cov.published==null?'—':cov.published+'/'+cov.total);
-  if(el('qaSlotLabel'))el('qaSlotLabel').textContent=cov.slot||'Текущий час';
+  if(el('qaLastRun'))el('qaLastRun').textContent=qa.finishedAt?'Проверка '+new Date(qa.finishedAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):(qa.status==='running'?'Идёт проверка…':'Проверка ещё не запускалась');
+  var expected=cov.expected==null?cov.total:cov.expected;
+  if(el('qaSlotCoverage'))el('qaSlotCoverage').textContent=(cov.published==null?'—':(cov.publishedExpected==null?cov.published:cov.publishedExpected)+'/'+expected);
+  if(el('qaSlotTitle'))el('qaSlotTitle').textContent='Вышло в '+(cov.time||'этот час');
+  if(el('qaSlotLabel'))el('qaSlotLabel').textContent=ruChannels(expected)+' на автопубликации'+(cov.total>expected?' · '+(cov.total-expected)+' вручную':'');
 
   var progress=qa.progress||{done:0,total:0},pct=progress.total?Math.round(progress.done/progress.total*100):0;
   if(el('qaProgress'))el('qaProgress').textContent=progress.done+'/'+progress.total;
@@ -4035,15 +4094,21 @@ function renderEditorialQa(data){
       'Проверка ничего не публикует. Контрольные тексты генерируются только для QA.';
   }
 
-  var slotRows=cov.channels||[];
+  var early=Number(cov.minute||0)<10;
+  function slotState(x){return x.published?'ok':(x.expected===false?'off':(early?'wait':'miss'))}
+  var order={miss:0,wait:1,off:2,ok:3};
+  var slotRows=(cov.channels||[]).slice().sort(function(a,b){return order[slotState(a)]-order[slotState(b)]});
   if(el('qaSlotRows'))el('qaSlotRows').innerHTML=slotRows.length?slotRows.map(function(x){
-    return '<div class="qa-slot-row '+(x.published?'qa-slot-ok':'qa-slot-miss')+'">'+
+    var st=slotState(x);
+    return '<div class="qa-slot-row qa-slot-'+st+'">'+
       '<div><b>'+esc(x.name||x.workspaceId)+'</b><small>'+esc(x.telegram?'@'+String(x.telegram).replace(/^@/,''):'Telegram не настроен')+'</small></div>'+
-      '<span>'+(x.published?'Опубликовано':'Не вышло')+'</span>'+
+      '<span>'+({ok:'Опубликовано',wait:'Ждёт публикации',off:'Не на автопубликации',miss:'Не вышло'})[st]+'</span>'+
       (x.title?'<small class="qa-slot-title">'+esc(x.title)+'</small>':'')+
     '</div>';
   }).join(''):'<div class="empty">Нет данных по текущему слоту.</div>';
 
+  var qaOrder={fail:0,warn:1,pass:2};
+  channels=channels.slice().sort(function(a,b){return (qaOrder[a.status]==null?3:qaOrder[a.status])-(qaOrder[b.status]==null?3:qaOrder[b.status])});
   if(el('qaChannels'))el('qaChannels').innerHTML=channels.length?channels.map(function(x){
     var checks=x.checks||[],sample=x.sample||{};
     return '<div class="qa-channel '+qaStatusClass(x.status)+'">'+
@@ -4110,44 +4175,63 @@ async function loadPromotion(force){
     if(btn){btn.disabled=false;btn.textContent='Обновить'}
   }
 }
+function promoSinceText(x){
+  if(!x||x.delta==null||!x.since)return '';
+  return promoDelta(x.delta)+' с '+new Date(x.since).toLocaleDateString('ru-RU',{day:'numeric',month:'short'});
+}
+function promoSetGrowth(id,v){
+  var n=el(id);if(!n)return;
+  n.textContent=promoDelta(v);
+  n.className=v==null?'':promoDeltaClass(v);
+  var small=n.parentNode&&n.parentNode.querySelector('small');
+  if(small&&v==null)small.textContent='История ещё копится';
+}
 function renderPromotion(data){
-  var cur=data.current||{},growth=cur.growth||{},campaign=cur.campaignSummary||{},network=data.network||{};
-  if(el('promoSubscribers'))el('promoSubscribers').textContent=fmtMetric(cur.totalSubscribers||0);
-  if(el('promoSubscribersMeta'))el('promoSubscribersMeta').textContent=cur.name||'Текущий канал';
-  if(el('promoDayGrowth')){el('promoDayGrowth').textContent=promoDelta(growth.day);el('promoDayGrowth').className=promoDeltaClass(growth.day)}
-  if(el('promoWeekGrowth')){el('promoWeekGrowth').textContent=promoDelta(growth.week);el('promoWeekGrowth').className=promoDeltaClass(growth.week)}
-  if(el('promoMonthGrowth')){el('promoMonthGrowth').textContent=promoDelta(growth.month);el('promoMonthGrowth').className=promoDeltaClass(growth.month)}
+  var cur=data.current||{},growth=cur.growth||{},campaign=cur.campaignSummary||{},network=data.network||{},ng=network.growth||{};
+  var rows=(network.channels||[]).slice().sort(function(a,b){return Number(b.telegramSubscribers||0)-Number(a.telegramSubscribers||0)});
+  var platform=network.vkConnected?'Telegram + VK':'Telegram · вся сеть';
+  document.querySelectorAll('.promo-platform-label').forEach(function(n){n.textContent=platform});
+  if(el('promoSubscribers'))el('promoSubscribers').textContent=fmtMetric(network.totalSubscribers||0);
+  if(el('promoSubscribersMeta'))el('promoSubscribersMeta').textContent=(network.trackedChannels||0)+' из '+ruChannels(rows.length)+' с данными';
+  var since=network.sinceStart;
+  if(el('promoSinceGrowth')){el('promoSinceGrowth').textContent=since&&since.delta!=null?promoDelta(since.delta):'—';el('promoSinceGrowth').className=since?promoDeltaClass(since.delta):''}
+  if(el('promoSinceLabel'))el('promoSinceLabel').textContent=since&&since.since?'с '+new Date(since.since).toLocaleDateString('ru-RU',{day:'numeric',month:'long'}):'Учёт ещё не начался';
+  promoSetGrowth('promoDayGrowth',ng.day);
+  promoSetGrowth('promoWeekGrowth',ng.week);
+  promoSetGrowth('promoMonthGrowth',ng.month);
   if(el('promoSpend'))el('promoSpend').textContent=promoFmtRub(campaign.spendRub||0);
-  if(el('promoCps'))el('promoCps').textContent=campaign.costPerSubscriber==null?'—':promoFmtRub(campaign.costPerSubscriber);
-  if(el('promoCurrentName'))el('promoCurrentName').textContent=(cur.name||'Канал')+(cur.handle?' · '+cur.handle:'');
+  if(el('promoCps'))el('promoCps').textContent=campaign.costPerSubscriber==null?(cur.name||'Текущий канал')+' · цена подписчика —':'Подписчик по '+promoFmtRub(campaign.costPerSubscriber);
+  if(el('promoCurrentName'))el('promoCurrentName').textContent=(cur.name||'Канал')+(cur.handle?' · '+cur.handle:'')+(promoSinceText(cur.sinceStart)?' · '+promoSinceText(cur.sinceStart):'');
   if(el('promoTgSubs'))el('promoTgSubs').textContent=cur.telegramSubscribers==null?'—':fmtMetric(cur.telegramSubscribers);
+  if(el('promoVkRow'))el('promoVkRow').style.display=cur.vkAvailable?'':'none';
   if(el('promoVkSubs'))el('promoVkSubs').textContent=cur.vkSubscribers==null?'—':fmtMetric(cur.vkSubscribers);
   var tgGrowth=cur.telegramGrowth||{},vkGrowth=cur.vkGrowth||{};
-  if(el('promoTgWeek')){el('promoTgWeek').textContent=promoDelta(tgGrowth.week);el('promoTgWeek').className='promotion-delta '+promoDeltaClass(tgGrowth.week)}
+  if(el('promoTgWeek')){el('promoTgWeek').textContent=tgGrowth.week==null?'—':promoDelta(tgGrowth.week)+' за 7 дн';el('promoTgWeek').className='promotion-delta '+promoDeltaClass(tgGrowth.week)}
   if(el('promoVkWeek')){el('promoVkWeek').textContent=promoDelta(vkGrowth.week);el('promoVkWeek').className='promotion-delta '+promoDeltaClass(vkGrowth.week)}
-  if(el('promoTrackingNote'))el('promoTrackingNote').textContent=(data.tracking&&data.tracking.note)||'Рост аудитории отслеживается автоматически.';
-  if(el('promoTrackedChannels'))el('promoTrackedChannels').textContent=(network.trackedChannels||0)+'/'+((network.channels||[]).length||0);
-  if(el('promoNetworkSubtitle'))el('promoNetworkSubtitle').textContent='Всего '+fmtMetric(network.totalSubscribers||0)+' подписчиков'+(network.weekGrowth==null?'':' · '+promoDelta(network.weekGrowth)+' за 7 дней');
+  if(el('promoTrackingNote'))el('promoTrackingNote').textContent=(data.tracking&&data.tracking.dbReady===false)?'База данных недоступна — рост не сохраняется.':'Подписчики фиксируются автоматически. Рост за сутки, 7 и 30 дней появится, когда накопится история за этот срок; до этого смотрите «Рост с начала учёта».';
+  if(el('promoTrackedChannels'))el('promoTrackedChannels').textContent=ruChannels(rows.length);
+  if(el('promoNetworkSubtitle'))el('promoNetworkSubtitle').textContent='Всего '+fmtMetric(network.totalSubscribers||0)+' подписчиков · нажмите на канал, чтобы открыть его';
 
-  var rows=network.channels||[];
   if(el('promoNetwork'))el('promoNetwork').innerHTML=rows.length?rows.map(function(row){
-    var g=row.growth||{};
+    var g=row.growth||{},st=row.sinceStart||{};
+    var delta=g.day!=null?{v:g.day,l:'за сутки'}:(st.delta!=null?{v:st.delta,l:'с начала'}:{v:null,l:'рост'});
     return '<button class="promotion-network-row" type="button" onclick="openWorkspacePromotion(\''+esc(row.id)+'\')">'+
-      '<span class="promotion-network-main"><span class="promotion-mini-avatar">'+(row.avatarUrl?'<img src="'+esc(row.avatarUrl)+'" alt="">':esc(String(row.name||'NF').split(/\s+/).map(function(x){return x[0]||''}).join('').slice(0,2).toUpperCase()))+'</span><span><b>'+esc(row.name||'Канал')+'</b><small>'+esc(row.handle||'Telegram не настроен')+'</small></span></span>'+
-      '<span class="promotion-network-metric"><b>'+(row.telegramSubscribers==null?'—':fmtMetric(row.telegramSubscribers))+'</b><small>TG</small></span>'+
-      '<span class="promotion-network-metric"><b class="'+promoDeltaClass(g.week)+'">'+promoDelta(g.week)+'</b><small>7 дней</small></span>'+
+      '<span class="promotion-network-main"><span class="promotion-mini-avatar">'+(row.avatarUrl?'<img src="'+esc(row.avatarUrl)+'" alt="">':esc(String(row.name||'NF').replace(/^Что там\s*/i,'').split(/\s+/).map(function(x){return x[0]||''}).join('').slice(0,2).toUpperCase()))+'</span><span><b>'+esc(row.name||'Канал')+'</b><small>'+esc(row.handle||'Telegram не настроен')+'</small></span></span>'+
+      '<span class="promotion-network-metric"><b>'+(row.telegramSubscribers==null?'—':fmtMetric(row.telegramSubscribers))+'</b><small>подписч.</small></span>'+
+      '<span class="promotion-network-metric"><b class="'+promoDeltaClass(delta.v)+'">'+promoDelta(delta.v)+'</b><small>'+delta.l+'</small></span>'+
       '<span class="promotion-network-arrow">→</span>'+
     '</button>';
   }).join(''):'<div class="empty">Нет каналов для отслеживания</div>';
 
   var posts=cur.topPosts||[];
+  if(el('promoTopPostsSubtitle'))el('promoTopPostsSubtitle').textContent=(cur.name||'Текущий канал')+': посты с наибольшими просмотрами — кандидаты на посевы, Reels и Shorts.';
   if(el('promoTopPosts'))el('promoTopPosts').innerHTML=posts.length?posts.map(function(p,index){
     return '<div class="promotion-post">'+
       '<span class="promotion-rank">'+(index+1)+'</span>'+
-      '<div class="promotion-post-copy"><b>'+esc(p.title||'Публикация')+'</b><small>'+(p.platform==='vk'?'VK':'Telegram')+' · '+fmtMetric(p.views||0)+' просмотров · '+Number(p.engagementRate||0).toFixed(2)+'% ER</small></div>'+
+      '<div class="promotion-post-copy"><b>'+esc(p.title||'Публикация')+'</b><small>'+(p.platform==='vk'?'VK':'Telegram')+' · '+fmtMetric(p.views||0)+' просмотров · '+Number(p.engagementRate||0).toFixed(2)+'% вовлечённость</small></div>'+
       (p.url?'<a href="'+esc(p.url)+'" target="_blank" rel="noopener">Открыть</a>':'')+
     '</div>';
-  }).join(''):'<div class="empty">Пока недостаточно данных по публикациям.</div>';
+  }).join(''):'<div class="empty">Пока мало данных: статистика появится после первых публикаций с просмотрами.</div>';
 
   var campaigns=campaign.campaigns||[];
   if(el('promoCampaignCount'))el('promoCampaignCount').textContent=campaigns.length;
@@ -4155,7 +4239,7 @@ function renderPromotion(data){
     var cps=x.attributedSubscribers>0?x.spendRub/x.attributedSubscribers:null;
     return '<div class="promotion-campaign-row"><div><b>'+esc(x.name||'Кампания')+'</b><small>'+esc(x.sourceName||x.sourceType||'Источник не указан')+' · '+esc(String(x.platform||'').toUpperCase())+'</small></div>'+
       '<div><b>'+promoFmtRub(x.spendRub||0)+'</b><small>'+(x.attributedSubscribers||0)+' подписч.'+(cps==null?'':' · '+promoFmtRub(cps)+'/подп.')+'</small></div></div>';
-  }).join(''):'<div class="empty">Кампаний пока нет. Добавь первый посев или рекламное размещение.</div>';
+  }).join(''):'<div class="empty">Кампаний пока нет.</div>';
 }
 function openWorkspacePromotion(id){
   if(!id||id===activeWorkspaceId){goPage('promotionPage');return}

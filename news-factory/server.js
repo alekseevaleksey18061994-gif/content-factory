@@ -708,13 +708,39 @@ function workspaceSummary(ws) {
   if (!resolveChannelId(ws)) missing.push("profile");
   if (!String(ws.avatarUrl || "").trim()) missing.push("avatar");
   if (sources < 15) missing.push("sources");
+  const history = Array.isArray(st.history) ? st.history : [];
+  // Moscow day window computed once (no per-entry date formatting); invalid
+  // dates and test publications are ignored.
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const dayStartMs = now.getTime() - nowMinutes * 60000 - (now.getUTCSeconds() * 1000 + now.getUTCMilliseconds());
+  let publishedToday = 0, lastMs = 0;
+  for (const h of history) {
+    if (!h || !h.publishedAt || h.publicationOrigin === "test") continue;
+    const t = Date.parse(h.publishedAt);
+    if (!Number.isFinite(t)) continue;
+    if (t > lastMs) lastMs = t;
+    if (t >= dayStartMs) publishedToday += 1;
+  }
+  const lastPublishedAt = lastMs ? new Date(lastMs).toISOString() : "";
+  const queue = Array.isArray(st.queue) ? st.queue.length : 0;
+  // Operational problems (what stops posts from coming out), separate from
+  // cosmetic settings like the avatar.
+  const problems = [];
+  const hoursSincePost = lastMs ? (Date.now() - lastMs) / 3600000 : null;
+  if (autoPublish && nowMinutes >= 10 * 60 && (hoursSincePost == null || hoursSincePost > 3)) problems.push("stale");
+  if (autoPublish && queue === 0) problems.push("emptyQueue");
+  if (!autoPublish && String(st.mode || "") !== "PAUSED") problems.push("notAuto");
   return {
     mode: String(st.mode || ""),
     autoPublish: autoPublish,
-    queue: Array.isArray(st.queue) ? st.queue.length : 0,
+    queue: queue,
     sources: sources,
     published: Number(st.stats && st.stats.published || 0),
-    missing: missing
+    publishedToday: publishedToday,
+    lastPublishedAt: lastPublishedAt,
+    missing: missing,
+    problems: problems
   };
 }
 function persistWorkspaceStore() {
@@ -7804,8 +7830,18 @@ async function recordPromotionSnapshot(workspaceId, platform, totals) {
 
 async function promotionBaselineMaps(workspaceIds) {
   const ids = (workspaceIds || []).filter(Boolean);
-  const out = { day: new Map(), week: new Map(), month: new Map() };
+  const out = { day: new Map(), week: new Map(), month: new Map(), first: new Map() };
   if (!db || !dbReady || !ids.length) return out;
+  try {
+    const r = await db.query(
+      "SELECT DISTINCT ON (workspace_id, platform) workspace_id, platform, subscribers, recorded_at " +
+      "FROM promotion_snapshots WHERE workspace_id = ANY($1::text[]) ORDER BY workspace_id, platform, recorded_at ASC",
+      [ids]
+    );
+    for (const row of r.rows) out.first.set(row.workspace_id + ":" + row.platform, { subscribers: Number(row.subscribers), recordedAt: row.recorded_at });
+  } catch (error) {
+    console.warn("Promotion first snapshot failed:", error.message);
+  }
 
   for (const entry of [["day",1],["week",7],["month",30]]) {
     const key = entry[0], days = entry[1];
@@ -7958,6 +7994,8 @@ async function buildPromotionReport(force) {
       week: promotionDelta(row.telegramSubscribers, baselines.week.get(key)),
       month: promotionDelta(row.telegramSubscribers, baselines.month.get(key))
     };
+    const first = baselines.first.get(key);
+    row.sinceStart = first ? { delta: promotionDelta(row.telegramSubscribers, first), since: first.recordedAt } : null;
     row.totalSubscribers = (Number.isFinite(Number(row.telegramSubscribers)) ? Number(row.telegramSubscribers) : 0) +
       (Number.isFinite(Number(row.vkSubscribers)) ? Number(row.vkSubscribers) : 0);
   });
@@ -7995,6 +8033,15 @@ async function buildPromotionReport(force) {
   const campaigns = await promotionCampaignReport(selectedWorkspaceId);
   const networkTotalSubscribers = rows.reduce(function(sum,row){ return sum + Number(row.totalSubscribers || 0); }, 0);
   const networkWeekGrowthValues = rows.map(function(row){ return row.growth && row.growth.week; }).filter(function(v){ return v != null; });
+  const networkGrowth = function(period) {
+    const values = rows.map(function(row){ return row.growth && row.growth[period]; }).filter(function(v){ return v != null; });
+    return values.length ? values.reduce(function(a,b){ return a + b; }, 0) : null;
+  };
+  const sinceRows = rows.filter(function(row){ return row.sinceStart && row.sinceStart.delta != null; });
+  const networkSince = sinceRows.length ? {
+    delta: sinceRows.reduce(function(sum,row){ return sum + row.sinceStart.delta; }, 0),
+    since: sinceRows.map(function(row){ return row.sinceStart.since; }).sort()[0]
+  } : null;
 
   return {
     ok: true,
@@ -8012,6 +8059,8 @@ async function buildPromotionReport(force) {
       totalSubscribers: Number(currentRow.totalSubscribers || 0),
       growth: { day: sumGrowth("day"), week: sumGrowth("week"), month: sumGrowth("month") },
       telegramGrowth: currentRow.growth || { day: null, week: null, month: null },
+      sinceStart: currentRow.sinceStart || null,
+      vkAvailable: Boolean(currentRow.vkAvailable),
       vkGrowth: vkGrowth,
       campaignSummary: campaigns,
       topPosts: details.topPosts,
@@ -8021,6 +8070,9 @@ async function buildPromotionReport(force) {
       channels: rows,
       totalSubscribers: networkTotalSubscribers,
       weekGrowth: networkWeekGrowthValues.length ? networkWeekGrowthValues.reduce(function(a,b){ return a + b; }, 0) : null,
+      growth: { day: networkGrowth("day"), week: networkGrowth("week"), month: networkGrowth("month") },
+      sinceStart: networkSince,
+      vkConnected: rows.some(function(row){ return row.vkAvailable; }),
       trackedChannels: rows.filter(function(row){ return row.telegramAvailable || row.vkAvailable; }).length
     }
   };
@@ -8837,6 +8889,24 @@ let editorialQaState = {
   channels: [],
   error: ""
 };
+// The last QA result survives restarts (deploys happen several times a day).
+const EDITORIAL_QA_FILE = path.join(DATA_DIR, "editorial-qa.json");
+try {
+  if (fs.existsSync(EDITORIAL_QA_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(EDITORIAL_QA_FILE, "utf8"));
+    if (saved && typeof saved === "object" && Array.isArray(saved.channels)) {
+      editorialQaState = Object.assign({}, editorialQaState, saved);
+      if (editorialQaState.status === "running") {
+        editorialQaState.status = "error";
+        editorialQaState.error = "проверка прервалась из-за перезапуска сервера";
+      }
+    }
+  }
+} catch (error) { console.warn("Editorial QA state load failed:", error.message); }
+function saveEditorialQaState() {
+  try { ensureDataDir(); fs.writeFileSync(EDITORIAL_QA_FILE, JSON.stringify(editorialQaState), "utf8"); }
+  catch (error) { console.warn("Editorial QA state save failed:", error.message); }
+}
 
 function qaStyleCheck(channelId, title, body) {
   const strategy = channelStrategy(channelId);
@@ -8892,6 +8962,8 @@ function publicationCoverageSnapshot() {
       channelId: resolveChannelId(ws),
       telegram: ws.telegramPublicUsername || String(ws.telegramChannel || "").replace(/^@/, ""),
       published: Boolean(hit),
+      // Channels in manual or paused mode are not expected to post in the slot.
+      expected: Boolean(workspaceSummary(ws).autoPublish),
       title: hit && hit.title || "",
       publishedAt: hit && hit.publishedAt || "",
       queueId: assignment || ""
@@ -8899,8 +8971,12 @@ function publicationCoverageSnapshot() {
   });
   return {
     slot: slotKey,
+    time: time,
+    minute: nowMinutes % 60,
     published: channels.filter(function(x){ return x.published; }).length,
+    publishedExpected: channels.filter(function(x){ return x.published && x.expected; }).length,
     total: channels.length,
+    expected: channels.filter(function(x){ return x.expected; }).length,
     missing: channels.filter(function(x){ return !x.published; }).map(function(x){ return x.workspaceId; }),
     channels
   };
@@ -9038,6 +9114,8 @@ async function runEditorialQaNetwork() {
     channels: [],
     error: ""
   };
+  // Saved at start too: a restart mid-run is then reported, not shown as the old result.
+  saveEditorialQaState();
 
   try {
     for (const ws of workspaceStore.workspaces) {
@@ -9076,6 +9154,7 @@ async function runEditorialQaNetwork() {
     editorialQaState.error = String(error && error.message || error);
     editorialQaState.finishedAt = new Date().toISOString();
   }
+  saveEditorialQaState();
   return editorialQaState;
 }
 
