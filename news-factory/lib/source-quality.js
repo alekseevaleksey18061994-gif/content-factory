@@ -159,6 +159,13 @@ export function freshCandidates(candidates, sources, blockedHosts) {
 }
 
 export const RESERVE_SOURCES = {
+  money: [
+    { name: "Газета.ру — Бизнес", url: "https://www.gazeta.ru/business/news/", group: "media" },
+    { name: "Банкиру", url: "https://bankiros.ru/news", group: "media" },
+    { name: "Финмаркет", url: "https://www.finmarket.ru/news/", group: "media" },
+    { name: "Российская газета — Экономика", url: "https://rg.ru/tema/ekonomika", group: "media" },
+    { name: "Лента.ру — Экономика", url: "https://lenta.ru/rubrics/economics/", group: "media" }
+  ],
   auto: [
     { name: "Motor Trend", url: "https://www.motortrend.com/news/", group: "media" },
     { name: "Road & Track", url: "https://www.roadandtrack.com/news/", group: "media" },
@@ -219,3 +226,48 @@ export function parseDiscoveryResult(text) {
     };
   }).filter(function(x){ return x.name && /^https?:\/\//i.test(x.url); });
 }
+
+// Starter source lists for new channels of the network. Every entry is
+// validated by the server (page opens, has fresh items) before it is added.
+export const SEED_SOURCES = {
+  money: [
+    // Official: rates, taxes, laws
+    { name: "Банк России", url: "https://www.cbr.ru/news/", group: "official" },
+    { name: "Банк России (Telegram)", url: "https://t.me/s/centralbank_russia", group: "creator" },
+    { name: "Минфин России", url: "https://minfin.gov.ru/ru/press-center/", group: "official" },
+    { name: "Минфин (Telegram)", url: "https://t.me/s/minfin", group: "creator" },
+    { name: "ФНС России", url: "https://www.nalog.gov.ru/rn77/news/activities_fts/", group: "official" },
+    { name: "Росстат", url: "https://rosstat.gov.ru/folder/313/document/", group: "official" },
+    { name: "Мосбиржа", url: "https://www.moex.com/ru/news/", group: "official" },
+    { name: "АСВ (страхование вкладов)", url: "https://www.asv.org.ru/news/", group: "official" },
+    { name: "Госдума", url: "http://duma.gov.ru/news/", group: "official" },
+    { name: "Социальный фонд России", url: "https://sfr.gov.ru/press_center/news/", group: "official" },
+    // Business media
+    { name: "Интерфакс — экономика", url: "https://www.interfax.ru/business/", group: "media" },
+    { name: "ПРАЙМ", url: "https://1prime.ru/", group: "media" },
+    { name: "Коммерсантъ — экономика", url: "https://www.kommersant.ru/rubric/3", group: "media" },
+    { name: "РБК Финансы", url: "https://www.rbc.ru/finances/", group: "media" },
+    { name: "Ведомости — Финансы", url: "https://www.vedomosti.ru/finance", group: "media" },
+    { name: "Известия — Экономика", url: "https://iz.ru/rubric/ekonomika", group: "media" },
+    { name: "ТАСС — Экономика", url: "https://tass.ru/ekonomika", group: "media" },
+    { name: "РИА Новости — Экономика", url: "https://ria.ru/economy/", group: "media" },
+    { name: "Frank Media", url: "https://frankmedia.ru/", group: "media" },
+    { name: "Банки.ру — новости", url: "https://www.banki.ru/news/lenta/", group: "media" },
+    { name: "Сравни — новости", url: "https://www.sravni.ru/novost/", group: "media" },
+    // Personal finance
+    { name: "Т—Ж", url: "https://journal.tbank.ru/news/", group: "media" },
+    { name: "Финансовая культура (ЦБ)", url: "https://fincult.info/news/", group: "official" },
+    { name: "Выберу.ру — новости", url: "https://www.vbr.ru/news/", group: "media" },
+    // Telegram: faster than sites
+    { name: "Банки.ру (Telegram)", url: "https://t.me/s/bankiru", group: "creator" },
+    { name: "Т—Ж (Telegram)", url: "https://t.me/s/tinkoffjournal", group: "creator" },
+    { name: "Frank Media (Telegram)", url: "https://t.me/s/frank_media", group: "creator" },
+    { name: "MMI (Telegram)", url: "https://t.me/s/russianmacro", group: "creator" },
+    { name: "РБК (Telegram)", url: "https://t.me/s/rbc_news", group: "creator" },
+    { name: "Интерфакс (Telegram)", url: "https://t.me/s/interfaxonline", group: "creator" },
+    // World — only what moves the rouble and prices
+    { name: "Investing.com — экономика", url: "https://ru.investing.com/news/economy", group: "media" },
+    { name: "Финам — рынки", url: "https://www.finam.ru/publications/section/market/", group: "media" },
+    { name: "Интерфакс — мировые рынки", url: "https://www.interfax.ru/world/", group: "media" }
+  ]
+};

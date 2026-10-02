@@ -8,7 +8,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
-import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
+import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
   createModelClients,
@@ -2291,6 +2291,13 @@ function autoPauseWeakSources() {
 async function validateSourceCandidate(url) {
   try {
     const html = await fetchText(url, 15000);
+    if (/^https?:\/\/t\.me\/s\//i.test(url)) {
+      // Telegram public preview: needs recent posts.
+      const posts = extractTelegramSourcePosts(html, url);
+      const fresh = posts.filter(function(x){ return !x.publishedAt || Date.now() - new Date(x.publishedAt).getTime() < 14 * 24 * 3600000; });
+      if (posts.length < 3 || fresh.length < 1) return { ok: false, reason: "в канале нет свежих постов (" + posts.length + ")" };
+      return { ok: true, links: posts.length };
+    }
     const links = extractArticleLinks(html, url).filter(function(l){ return String(l.title || "").trim().length >= 25; });
     if (links.length < 6) return { ok: false, reason: "на странице мало новостей (" + links.length + ")" };
     return { ok: true, links: links.length };
@@ -2375,7 +2382,7 @@ async function replenishSources(reason) {
 
 // One cheap call over all fresh headlines before media and editorial work:
 // drops ads, listings, old press releases and off-topic links.
-const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "деньги и финансы", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "мировые новости", stars: "знаменитости", travel: "путешествия", shopping: "покупки и скидки", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "мировые новости", stars: "знаменитости", travel: "путешествия", shopping: "покупки и скидки", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
 async function prefilterCandidates(candidates, summary) {
   if (!candidates.length) return candidates;
   const now = new Date();
@@ -10773,6 +10780,64 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("Queue logo photos clean-up failed:", error.message); });
 }, 75000);
+
+// Starter set for a new channel of the network: removes the AI sources a new
+// workspace inherits by default, validates the channel's seed list on the
+// server and adds what opens. Runs once per workspace and channel profile.
+async function seedChannelSources(ws) {
+  const channelId = resolveChannelId(ws);
+  const seeds = SEED_SOURCES[channelId];
+  if (!seeds || channelId === "ai") return null;
+  if (!ws.channelId) ws.channelId = channelId;
+  const aiDefaultIds = new Set(CURATED_SOURCES.map(function(x){ return x.id; }));
+  const before = (state.sources || []).length;
+  state.sources = (state.sources || []).filter(function(x){ return x && !aiDefaultIds.has(x.id); });
+  const removedDefaults = before - state.sources.length;
+  // Trader-oriented feeds do not fit a personal-finance channel.
+  const removed = [];
+  if (channelId === "money") {
+    state.sources = state.sources.filter(function(x){
+      if (x && /cnbc\.com/i.test(String(x.url || ""))) { removed.push(x.name); return false; }
+      return true;
+    });
+    state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+    if (removed.length && !state.sourceBlockedHosts.includes("cnbc.com")) state.sourceBlockedHosts.push("cnbc.com");
+  }
+  const added = [];
+  const failed = [];
+  for (const c of freshCandidates(seeds, state.sources, state.sourceBlockedHosts || [])) {
+    const check = await validateSourceCandidate(c.url);
+    if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
+    state.sources.push({
+      id: "seed-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
+      name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
+      url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
+      autoAdded: { at: new Date().toISOString(), from: "seed", why: "стартовый набор канала", reason: "seed" }
+    });
+    added.push(c.name);
+  }
+  saveState();
+  return { channel: channelId, removedDefaults: removedDefaults, removed: removed, added: added, failed: failed, active: (state.sources || []).filter(function(x){ return x && x.enabled; }).length };
+}
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      const channelId = resolveChannelId(ws);
+      if (!SEED_SOURCES[channelId] || channelId === "ai") continue;
+      const migration = "v0.39.5-seed-" + channelId;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await seedChannelSources(ws);
+        state.migrations.push(migration);
+        saveState();
+        persistWorkspaceStore();
+        console.log("SOURCE_SEED " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+      });
+    }
+  })().catch(function(error){ console.warn("Source seed failed:", error.message); });
+}, 30000);
 
 // Top up sources to the target shortly after start (respects the throttle).
 setTimeout(function() {
