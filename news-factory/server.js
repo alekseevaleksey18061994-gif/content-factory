@@ -10960,8 +10960,9 @@ const server = http.createServer(async function(req, res) {
       return;
     }
     // Full detail stays in the server log; the client only gets a generic message (no paths, SQL, upstream bodies).
-    console.error("REQUEST_FAILED " + req.method + " " + String(req.url || "").split("?")[0] + ":", error);
-    if (!res.headersSent) sendJson(res, 500, { ok: false, error: "internal error" });
+    const errorId = crypto.randomBytes(4).toString("hex");
+    console.error("REQUEST_FAILED id=" + errorId + " " + req.method + " " + String(req.url || "").split("?")[0] + ":", error);
+    if (!res.headersSent) sendJson(res, 500, { ok: false, error: "Внутренняя ошибка сервера (код " + errorId + "), подробности в логах", errorId: errorId });
   }
 });
 
