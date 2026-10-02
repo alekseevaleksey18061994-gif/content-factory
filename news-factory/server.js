@@ -2632,6 +2632,7 @@ function buildSourceRankings() {
     else if (rating != null) status = "Сильный";
     return {
       id: source.id,
+      sourceClass: source.sourceClass || sourceClassFor(source),
       rating: rating,
       status: status,
       checks: checks,
@@ -4981,6 +4982,9 @@ async function collectOnce(trigger) {
             topicEntities: qc.topicEntities,
             platformVariants: qc.platformVariants,
             sourceRole: sourceRole,
+            sourceClass: sourceClassFor(source),
+            contentBucket: editorialV2Meta && editorialV2Meta.contentBucket || "",
+            channelSignals: editorialV2Meta && editorialV2Meta.channelSignals || {},
             decisionSummary: qc.decisionSummary,
             mediaPackUrls: Array.isArray(media.mediaPackUrls) ? media.mediaPackUrls : [],
             editorialV2: editorialV2Meta,
@@ -5047,6 +5051,9 @@ async function collectOnce(trigger) {
             topicEntities: qc.topicEntities,
             platformVariants: qc.platformVariants,
             sourceRole: sourceRole,
+            sourceClass: sourceClassFor(source),
+            contentBucket: editorialV2Meta && editorialV2Meta.contentBucket || "",
+            channelSignals: editorialV2Meta && editorialV2Meta.channelSignals || {},
             decisionSummary: qc.decisionSummary,
             editorialV2: editorialV2Meta
           };
@@ -5561,6 +5568,9 @@ async function publishDynamicSlot(kind) {
       topicEntities: normalizeTopicEntities(item.topicEntities),
       platformVariants: item.platformVariants || null,
       sourceRole: item.sourceRole || sourceEditorialRole(item),
+      sourceClass: item.sourceClass || sourceClassFor(item),
+      contentBucket: item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || "",
+      channelSignals: item.channelSignals || (item.editorialV2 && item.editorialV2.channelSignals) || {},
       decisionSummary: item.decisionSummary || "",
       decisionExplanation: buildDecisionExplanation(item),
       repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
@@ -5590,6 +5600,9 @@ async function publishDynamicSlot(kind) {
     historyItem.qcStatus = item.qcStatus || historyItem.qcStatus || "";
     historyItem.topicEntities = normalizeTopicEntities(item.topicEntities || historyItem.topicEntities);
     historyItem.platformVariants = item.platformVariants || historyItem.platformVariants || null;
+    historyItem.sourceClass = item.sourceClass || sourceClassFor(item);
+    historyItem.contentBucket = item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || historyItem.contentBucket || "";
+    historyItem.channelSignals = item.channelSignals || (item.editorialV2 && item.editorialV2.channelSignals) || historyItem.channelSignals || {};
     historyItem.decisionExplanation = buildDecisionExplanation(item);
     historyItem.publicationOrigin = publishKind === "blogger"
       ? "blogger-schedule"
@@ -9027,6 +9040,9 @@ async function retryUnavailableEditorialQueueItems() {
       item.aiScoreReason = rewrite.scoreReason || item.aiScoreReason || "";
       item.contentFormat = rewrite.contentFormat || item.contentFormat || "";
       item.contentFormatLabel = rewrite.contentFormatLabel || item.contentFormatLabel || "";
+      item.contentBucket = result.meta && result.meta.contentBucket || item.contentBucket || "";
+      item.channelSignals = result.meta && result.meta.channelSignals || item.channelSignals || {};
+      item.sourceClass = item.sourceClass || sourceClassFor(item);
       item.qualityScore = Number(qc.qualityScore || item.qualityScore || 0);
       item.qualityBreakdown = qc.qualityBreakdown || item.qualityBreakdown || {};
       item.qcStatus = qc.qcStatus || "hold";
@@ -9128,6 +9144,9 @@ async function rebuildQueueWithEditorialV2() {
         aiTier: v2.rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (v2.rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal"),
         contentFormat: v2.rewrite.contentFormat,
         contentFormatLabel: v2.rewrite.contentFormatLabel,
+        contentBucket: v2.meta && v2.meta.contentBucket || item.contentBucket || "",
+        channelSignals: v2.meta && v2.meta.channelSignals || item.channelSignals || {},
+        sourceClass: item.sourceClass || sourceClassFor(item),
         qualityScore: v2.qc.qualityScore,
         qualityBreakdown: v2.qc.qualityBreakdown,
         qcStatus: v2.qc.qcStatus,
