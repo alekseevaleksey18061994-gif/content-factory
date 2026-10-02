@@ -6012,6 +6012,79 @@ async function telegramApi(method, payload) {
   return data.result;
 }
 
+async function ensureTelegramPublishTarget(workspace, repair) {
+  const ws = workspace || currentWorkspace();
+  if (!ws) throw new Error("Telegram workspace is missing");
+  const configured = String(ws.telegramChannel || "").trim();
+  if (!configured) throw new Error("Telegram channel is not configured for this account");
+
+  let chat = await telegramApi("getChat", { chat_id: configured });
+  let repaired = false;
+
+  // If the configured username points to a discussion group, follow its linked
+  // broadcast channel instead of silently publishing into the wrong chat.
+  if (chat && chat.type !== "channel" && chat.linked_chat_id != null) {
+    try {
+      const linked = await telegramApi("getChat", { chat_id: chat.linked_chat_id });
+      if (linked && linked.type === "channel") {
+        chat = linked;
+        if (repair) {
+          ws.telegramChannel = linked.username ? ("@" + linked.username) : String(linked.id);
+          if (linked.username) {
+            ws.telegramPublicUsername = String(linked.username).replace(/^@/, "");
+            ws.slug = ws.telegramPublicUsername;
+          }
+          ws.updatedAt = new Date().toISOString();
+          persistWorkspaceStore();
+          repaired = true;
+        }
+      }
+    } catch {}
+  }
+
+  if (!chat || chat.type !== "channel") {
+    throw new Error("Telegram цель не является каналом: " + String(chat && chat.type || "unknown"));
+  }
+
+  const actualUsername = String(chat.username || "").replace(/^@/, "").toLowerCase();
+  const expectedUsername = String(ws.telegramPublicUsername || ws.slug || "").replace(/^@/, "").toLowerCase();
+
+  if (repair && actualUsername && expectedUsername !== actualUsername) {
+    ws.telegramPublicUsername = actualUsername;
+    ws.slug = actualUsername;
+    ws.telegramChannel = "@" + actualUsername;
+    ws.updatedAt = new Date().toISOString();
+    persistWorkspaceStore();
+    repaired = true;
+  }
+
+  return {
+    chat: chat,
+    chatId: chat.id,
+    username: actualUsername,
+    title: String(chat.title || ""),
+    repaired: repaired
+  };
+}
+
+function assertTelegramPublishResult(message, target) {
+  const chat = message && message.chat;
+  if (!chat || chat.id == null) throw new Error("Telegram не вернул чат опубликованного сообщения");
+  if (!target || target.chatId == null) throw new Error("Telegram target verification unavailable");
+  if (String(chat.id) !== String(target.chatId)) {
+    throw new Error("Telegram опубликовал сообщение не в тот канал");
+  }
+  if (chat.type !== "channel") {
+    throw new Error("Telegram публикация ушла не в канал: " + String(chat.type || "unknown"));
+  }
+  const expected = String(target.username || "").toLowerCase();
+  const actual = String(chat.username || "").replace(/^@/, "").toLowerCase();
+  if (expected && actual && expected !== actual) {
+    throw new Error("Telegram username не совпал после публикации");
+  }
+  return message;
+}
+
 function telegramUploadMeta(rawUrl, fallbackKind) {
   const value = String(rawUrl || "").trim();
   let ext = fallbackKind === "video" ? "mp4" : "jpg";
@@ -6104,8 +6177,8 @@ async function telegramMediaApi(method, payload, fieldName, mediaUrl, kind) {
 }
 
 async function sendTelegramPost(post) {
-  const telegramChannel = currentTelegramChannel();
-  if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
+  const target = await ensureTelegramPublishTarget(currentWorkspace(), true);
+  const telegramChannel = target.chatId;
   const html = formatTelegramPost(post);
   const mediaPackUrls = Array.from(new Set((Array.isArray(post.mediaPackUrls) ? post.mediaPackUrls : [])
     .map(function(url){ return String(url || "").trim(); })
@@ -6143,7 +6216,7 @@ async function sendTelegramPost(post) {
       if (Array.isArray(messages) && messages.length) {
         const first = messages[0];
         first.media_group_message_ids = messages.map(function(message){ return message.message_id; });
-        return first;
+        return assertTelegramPublishResult(first, target);
       }
     } catch (error) {
       console.warn("sendMediaGroup failed, falling back to one image:", error.message);
@@ -6157,12 +6230,12 @@ async function sendTelegramPost(post) {
 
   if (videoUrl) {
     try {
-      return await telegramMediaApi("sendVideo", {
+      return assertTelegramPublishResult(await telegramMediaApi("sendVideo", {
         chat_id: telegramChannel,
         caption: html.length <= 1000 ? html : (post.title ? "<b>" + escapeTelegramHtml(post.title) + "</b>" : undefined),
         parse_mode: "HTML",
         supports_streaming: true
-      }, "video", videoUrl, "video");
+      }, "video", videoUrl, "video"), target);
     } catch (error) {
       console.warn("sendVideo failed:", error.message);
       if (!imageUrl && GENERATE_COVER_IF_MISSING) {
@@ -6187,11 +6260,11 @@ async function sendTelegramPost(post) {
 
   if (imageUrl && html.length <= 950) {
     try {
-      return await telegramMediaApi("sendPhoto", {
+      return assertTelegramPublishResult(await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
         caption: html,
         parse_mode: "HTML"
-      }, "photo", imageUrl, "image");
+      }, "photo", imageUrl, "image"), target);
     } catch (error) {
       console.warn("sendPhoto failed:", error.message);
       if (GENERATE_COVER_IF_MISSING) {
@@ -6204,11 +6277,11 @@ async function sendTelegramPost(post) {
           });
           post.generatedImageUrl = generatedFallback.url;
           imageUrl = generatedFallback.url;
-          return await telegramMediaApi("sendPhoto", {
+          return assertTelegramPublishResult(await telegramMediaApi("sendPhoto", {
             chat_id: telegramChannel,
             caption: html,
             parse_mode: "HTML"
-          }, "photo", imageUrl, "image");
+          }, "photo", imageUrl, "image"), target);
         } catch (fallbackError) {
           console.warn("Telegram generated photo fallback failed:", fallbackError.message);
           if (MEDIA_REQUIRED) throw fallbackError;
@@ -6252,20 +6325,20 @@ async function sendTelegramPost(post) {
         disable_web_page_preview: true
       });
     }
-    return photo;
+    return assertTelegramPublishResult(photo, target);
   }
 
   throw new Error("Публикация запрещена: медиа не подготовлено");
 }
 
 async function sendTelegram(text) {
-  const telegramChannel = currentTelegramChannel();
-  if (!telegramChannel) throw new Error("Telegram channel is not configured for this account");
-  return telegramApi("sendMessage", {
-    chat_id: telegramChannel,
+  const target = await ensureTelegramPublishTarget(currentWorkspace(), true);
+  const result = await telegramApi("sendMessage", {
+    chat_id: target.chatId,
     text: String(text || ""),
     disable_web_page_preview: true
   });
+  return assertTelegramPublishResult(result, target);
 }
 
 async function discoverTelegramAlertChat() {
@@ -11565,11 +11638,15 @@ async function enableAutoPublishingAfterChecks(ws) {
   checks.enoughSources = checks.sources >= 15;
   let botCanPost = false;
   try {
-    const chat = await telegramApi("getChat", { chat_id: checks.telegramChannel });
+    const target = await ensureTelegramPublishTarget(ws, true);
+    const chat = target.chat;
     const me = await telegramApi("getMe", {});
     const member = await telegramApi("getChatMember", { chat_id: chat.id, user_id: me.id });
-    botCanPost = member && (member.status === "creator" || (member.status === "administrator" && member.can_post_messages !== false));
+    botCanPost = chat.type === "channel" && member && (member.status === "creator" || (member.status === "administrator" && member.can_post_messages !== false));
     checks.chatTitle = chat.title || "";
+    checks.chatType = chat.type || "";
+    checks.chatUsername = chat.username || "";
+    checks.targetRepaired = Boolean(target.repaired);
   } catch (error) { checks.telegramError = String(error.message || error).slice(0, 160); }
   checks.botCanPost = Boolean(botCanPost);
   const ok = checks.profile && checks.telegramChannel && checks.enoughSources && checks.botCanPost;
@@ -11783,6 +11860,45 @@ setTimeout(function() {
 }, 3 * 60 * 1000);
 await workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, async function(){ await discoverTelegramAlertChat(); });
 startCollectorScheduler();
+
+setTimeout(function(){
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.telegramChannel) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try {
+          const target = await ensureTelegramPublishTarget(ws, true);
+          let previewPosts = null;
+          if (target.username) {
+            try {
+              const response = await fetch("https://t.me/s/" + encodeURIComponent(target.username), {
+                headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegramHealth/1.0)" },
+                signal: AbortSignal.timeout(10000)
+              });
+              if (response.ok) previewPosts = parseTelegramPreview(await response.text()).posts.length;
+            } catch {}
+          }
+          console.log("TELEGRAM_TARGET_HEALTH " + JSON.stringify({
+            workspace: ws.id,
+            configured: ws.telegramChannel,
+            type: target.chat && target.chat.type || "",
+            chatId: target.chatId,
+            username: target.username,
+            title: target.title,
+            repaired: target.repaired,
+            previewPosts: previewPosts
+          }));
+        } catch (error) {
+          console.error("TELEGRAM_TARGET_HEALTH " + JSON.stringify({
+            workspace: ws.id,
+            configured: ws.telegramChannel,
+            error: String(error && error.message || error)
+          }));
+        }
+      });
+    }
+  })().catch(function(error){ console.warn("Telegram target health scan failed:", error.message); });
+}, 7000);
 
 setTimeout(function() {
   (async function(){
