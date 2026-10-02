@@ -407,10 +407,10 @@ test("S2 server: no money for covers -> local text card instead of a failed cove
   const t = await loadServer({ channels: twoCh, env: { GENERATE_COVER_IF_MISSING: "true" } });
   const calls = installNet({ responses: () => json(200, {}), images: () => json(429, OPENAI_NO_MONEY), anthropic: () => claudeOk("{}") });
   const cover = await t.generateNewsCover({ id: "x1", title: "Hongqi H5 подорожал на 200 000 ₽", text: "текст" });
-  assert.equal(cover.model, "local-budget-card"); assert.ok(cover.url);
+  assert.equal(cover.model, "local-branded-card-v2"); assert.ok(cover.url);
   assert.equal(calls.openaiImages.length, 1, "one failed attempt, no retry with the second image model");
   const again = await t.generateNewsCover({ id: "x2", title: "Другая новость", text: "текст" });
-  assert.equal(again.model, "local-budget-card"); assert.equal(calls.openaiImages.length, 1, "OpenAI is not asked again while switched off");
+  assert.equal(again.model, "local-branded-card-v2"); assert.equal(calls.openaiImages.length, 1, "OpenAI is not asked again while switched off");
 });
 
 test("S3 server: cover fallback can be switched off (error as before)", async () => {
@@ -474,7 +474,7 @@ test("S8 server: Claude-answered helper call leaves no phantom OpenAI cost row; 
   const sharp = (await import("sharp")).default;
   const meta = await sharp(t.dir + "/media/" + names[0]).metadata();
   assert.equal(meta.width, 1536);
-  assert.equal(cover.model, "local-budget-card");
+  assert.equal(cover.model, "local-branded-card-v2");
 });
 
 test("S9 server: failover flag off -> no cover card, no Claude, errors as before", async () => {
