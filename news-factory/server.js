@@ -2192,7 +2192,7 @@ function sourceMediaLicense(sourceOrItem) {
 }
 function isIndependentGeneratedUrl(value) {
   const v = String(value || "");
-  return /(?:^|\/)cover_[a-zA-Z0-9_-]+\.png(?:\?|$)/.test(v);
+  return /(?:^|\/)(?:cover_[a-zA-Z0-9_-]+\.png|budget_card_[a-zA-Z0-9_-]+\.webp)(?:\?|$)/.test(v);
 }
 function findVerbatimOverlap(sourceText, outputText, minWords) {
   const normalize = function(value) {
