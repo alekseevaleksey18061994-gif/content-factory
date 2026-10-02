@@ -10839,6 +10839,51 @@ setTimeout(function() {
   })().catch(function(error){ console.warn("Source seed failed:", error.message); });
 }, 30000);
 
+// Turn on automatic publishing for a new network channel only after checks:
+// Telegram channel set and reachable by the bot (can post), enough working
+// sources, editorial profile resolved. VK stays off (not connected).
+async function enableAutoPublishingAfterChecks(ws) {
+  const checks = {};
+  checks.channelId = resolveChannelId(ws);
+  checks.profile = Boolean(checks.channelId);
+  checks.telegramChannel = String(ws.telegramChannel || "").trim();
+  checks.sources = (state.sources || []).filter(function(x){ return x && x.enabled; }).length;
+  checks.enoughSources = checks.sources >= 15;
+  let botCanPost = false;
+  try {
+    const chat = await telegramApi("getChat", { chat_id: checks.telegramChannel });
+    const me = await telegramApi("getMe", {});
+    const member = await telegramApi("getChatMember", { chat_id: chat.id, user_id: me.id });
+    botCanPost = member && (member.status === "creator" || (member.status === "administrator" && member.can_post_messages !== false));
+    checks.chatTitle = chat.title || "";
+  } catch (error) { checks.telegramError = String(error.message || error).slice(0, 160); }
+  checks.botCanPost = Boolean(botCanPost);
+  const ok = checks.profile && checks.telegramChannel && checks.enoughSources && checks.botCanPost;
+  if (ok) {
+    state.mode = "AUTO";
+    state.topicSettings = state.topicSettings || {};
+    state.topicSettings.default = Object.assign({}, state.topicSettings.default || {}, { auto_publish_telegram: true, auto_publish_vk: false });
+    saveState();
+  }
+  return Object.assign({ enabled: Boolean(ok), mode: state.mode }, checks);
+}
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || ws.id !== "chtotamdengi") continue;
+      const migration = "v0.40.2-money-auto-publish";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await enableAutoPublishingAfterChecks(ws);
+        // Retried on the next start until all checks pass.
+        if (result.enabled) { state.migrations.push(migration); saveState(); }
+        console.log("AUTO_PUBLISH_SETUP " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+      });
+    }
+  })().catch(function(error){ console.warn("Auto publish setup failed:", error.message); });
+}, 70000);
+
 // Top up sources to the target shortly after start (respects the throttle).
 setTimeout(function() {
   (async function(){
