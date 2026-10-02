@@ -7794,7 +7794,7 @@ async function generatePromotionCreative() {
     "telegram_ad — рекламный пост на 350–550 знаков;",
     "short_video_hook — хук для Reels/Shorts на 1–2 предложения;",
     "cta — короткий призыв подписаться.",
-    "Верни строго JSON без markdown: {"headline":"...","telegram_ad":"...","short_video_hook":"...","cta":"..."}.",
+    'Верни строго JSON без markdown: {"headline":"...","telegram_ad":"...","short_video_hook":"...","cta":"..."}. ',
     "",
     "Недавние темы канала:",
     JSON.stringify(recent.slice(0, 6))
