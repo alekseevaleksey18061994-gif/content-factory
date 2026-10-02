@@ -2234,6 +2234,7 @@ button{line-height:1.2!important}
         <div class="page-head">
           <div><h2>Лента новостей</h2><p>Новости, которые News Factory нашёл и сохранил в PostgreSQL.</p></div>
           <button class="primary" id="collectorRunBtn" onclick="runCollector()">Собрать сейчас</button>
+          <button id="dailyReportBtn" onclick="sendDailyReportNow()">📊 Отчёт в Telegram</button>
         </div>
         <section class="card">
           <div class="collector-head">
@@ -2575,7 +2576,7 @@ function queueDecision(q,rating){
   var v=q.editorialV2||{};
   if(q.qcStatus==='hold'){
     if(v.verdict==='unavailable')return {label:'Перепроверка',cls:'reserve',reason:'Одна из нейросетей не ответила. Система сама повторит проверку каждые 15 минут.'};
-    var reason=String(q.decisionSummary||'').replace(/^Пост отложен на ручную проверку:\s*/,'').replace(/^Пропущено при пересборке:\s*/,'Редакция пропустила: ');
+    var reason=String(q.decisionSummary||'').replace(/^Пост (?:отложен на ручную проверку|не прошёл проверку):\s*/,'').replace(/^Пропущено при пересборке:\s*/,'Редакция пропустила: ');
     if(!reason&&Array.isArray(q.qcIssues)&&q.qcIssues.length)reason=String(q.qcIssues[0]);
     return {label:'Не выйдет',cls:'hold',reason:'Почему: '+(reason||'пост не прошёл проверку')+'. Система уберёт его из очереди сама.'};
   }
@@ -3837,6 +3838,17 @@ async function refreshNewsFeed(btn){
   }).catch(function(){});
 }
 
+async function sendDailyReportNow(){
+  var btn=el('dailyReportBtn');if(btn){btn.disabled=true;btn.textContent='Отправляю…'}
+  try{
+    var r=await fetch('/api/report/daily',{method:'POST',headers:{'content-type':'application/json','x-workspace-id':activeWorkspaceId||''}});
+    var j=await r.json().catch(function(){return {}});
+    if(j.ok)toast('Отчёт отправлен в Telegram');
+    else if(j.error==='no_chat')toast('Напишите боту канала /start в личные сообщения и нажмите ещё раз');
+    else toast('Отчёт: '+(j.error||'ошибка'));
+  }catch(e){toast(e.message)}
+  finally{if(btn){btn.disabled=false;btn.textContent='📊 Отчёт в Telegram'}}
+}
 async function runCollector(){
   var btn=el('collectorRunBtn');
   btn.disabled=true;btn.textContent='Собираю…';

@@ -529,4 +529,28 @@ await test("Claude retries with a bigger budget when the JSON is cut off", async
   assert.equal(bodies[1].output_config.format.type, "json_schema");
 });
 
+await test("insights: digest selection, weights and daily report text", async function() {
+  const ins = await import("../lib/insights.js");
+  const now = new Date("2026-10-02T18:30:00Z"); // 21:30 MSK
+  const history = [
+    { title: "A", publishedAt: "2026-10-02T07:00:00Z", performanceScore: 1 },
+    { title: "B", publishedAt: "2026-10-02T09:00:00Z", performanceScore: 5, editorialV2: { format: "Цифра", hookType: "Цифра" } },
+    { title: "Old", publishedAt: "2026-10-01T09:00:00Z", performanceScore: 9 },
+    { title: "Digest", publishedAt: "2026-10-02T10:00:00Z", isDigest: true },
+    { title: "Late night yesterday MSK", publishedAt: "2026-10-01T20:59:00Z" }
+  ];
+  assert.deepEqual(ins.pickDigestPosts(history, "evening", now).map(function(h){ return h.title; }), ["A", "B"]);
+  assert.equal(ins.pickDigestPosts(history, "sunday", now)[0].title, "Old");
+  assert.equal(ins.historyFormat(history[1]), "Цифра");
+  assert.equal(ins.moscowParts("2026-10-02T18:30:00Z").hhmm, "21:30");
+  const w = ins.bucketWeights({ "Цифра": { performance: 8, samples: 4 }, "Молния": { performance: -16, samples: 5 }, "Мало": { performance: 9, samples: 1 } }, 3);
+  assert.deepEqual(w, { "Цифра": 1.5, "Молния": 0.5 });
+  const text = ins.buildDailyReportText({ date: "02.10.2026", spendRub: 412.4, budgetRub: 1000, channels: [{ name: "Что там у тачек?", published: 9, digest: true, queueReady: 4, queueReserve: 2, filtered: { prefilter: 30, editorial: 6, duplicate: 3, autoRejected: 1 }, topReasons: ["реклама (5)"], best: { title: "BMW", views: 1520 }, sourcesPaused: ["Bulkin Drive"], sourcesAdded: [], problems: ["ждут повторной проверки нейросетью: 1"] }] });
+  assert.ok(/Вышло постов: 9 \+ дайджест/.test(text));
+  assert.ok(/Отсеяно: 40/.test(text));
+  assert.ok(/1\s?520 просмотров/.test(text));
+  assert.ok(/412 ₽ из 1\s?000 ₽/.test(text));
+  assert.ok(ins.topReasons(["Реклама", "реклама", "старое"], 2)[0].startsWith("реклама (2)"));
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));

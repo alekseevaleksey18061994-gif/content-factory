@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
+import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
@@ -69,6 +70,11 @@ const POST_RATING_MIN_AUTO = Math.max(0, Math.min(100, Number(process.env.POST_R
 // (published only when no better post is available), below
 // POST_RATING_DROP_BELOW it is removed from the queue automatically.
 const POST_RATING_DROP_BELOW = Math.max(0, Math.min(100, Number(process.env.POST_RATING_DROP_BELOW || 35)));
+const DIGEST_ENABLED = String(process.env.DIGEST_ENABLED || "true").toLowerCase() !== "false";
+const DIGEST_EVENING_TIME = String(process.env.DIGEST_EVENING_TIME || "21:15");
+const DIGEST_SUNDAY_TIME = String(process.env.DIGEST_SUNDAY_TIME || "20:15");
+const DAILY_REPORT_ENABLED = String(process.env.DAILY_REPORT_ENABLED || "true").toLowerCase() !== "false";
+const DAILY_REPORT_TIME = String(process.env.DAILY_REPORT_TIME || "22:50");
 const SOURCES_MIN_ACTIVE = Math.max(0, Math.min(200, Number(process.env.SOURCES_MIN_ACTIVE || 40)));
 const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 120));
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
@@ -7294,6 +7300,8 @@ async function refreshEditorialLearning(force) {
   const byFormat = {};
   const bySource = {};
   const byTopic = {};
+  const byHook = {};
+  const byHour = {};
   let samples = 0;
 
   for (const h of (state.history || []).slice(0, 120)) {
@@ -7301,6 +7309,8 @@ async function refreshEditorialLearning(force) {
     const values = [];
     const tg = tgPosts.get(Number(h.messageId));
     if (tg && Number(tg.views || 0) > 0) {
+      h.views = Number(tg.views || 0);
+      h.reactions = Number(tg.reactions || 0);
       const viewRatio = Number(tg.views || 0) / tgAvgViews;
       const interactionRate = Number(tg.views || 0) > 0 ? (Number(tg.reactions || 0) + Number(tg.comments || 0)) / Number(tg.views || 1) : 0;
       values.push(Math.max(-10, Math.min(10, (viewRatio - 1) * 5 + interactionRate * 120)));
@@ -7314,7 +7324,9 @@ async function refreshEditorialLearning(force) {
     if (!values.length) continue;
     const performance = values.reduce(function(sum,v){ return sum + v; }, 0) / values.length;
     h.performanceScore = Number(performance.toFixed(2));
-    addLearningSample(byFormat, h.contentFormat || h.contentFormatLabel, performance);
+    addLearningSample(byFormat, historyFormat(h), performance);
+    if (historyHook(h)) addLearningSample(byHook, historyHook(h), performance);
+    if (h.publishedAt && !isDigestHistory(h)) addLearningSample(byHour, String(moscowParts(h.publishedAt).hour), performance);
     addLearningSample(bySource, h.sourceName, performance);
     normalizeTopicEntities(h.topicEntities).forEach(function(entity){ addLearningSample(byTopic, entity, performance); });
     samples += 1;
@@ -7325,9 +7337,13 @@ async function refreshEditorialLearning(force) {
     sampleSize: samples,
     byFormat: byFormat,
     bySource: bySource,
-    byTopic: byTopic
+    byTopic: byTopic,
+    byHook: byHook,
+    byHour: byHour,
+    avgViews: tgAvgViews > 1 ? tgAvgViews : 0
   };
   saveState();
+  console.log("EDITORIAL_LEARNING " + JSON.stringify({ workspace: currentWorkspaceId(), samples: samples, avgViews: Math.round(tgAvgViews), formats: bucketWeights(byFormat, 3), hooks: bucketWeights(byHook, 3), bestHours: bestHours(byHour, 3).slice(0, 3).map(function(x){ return x.hour; }) }));
   return { ok: true, sampleSize: samples };
 }
 
@@ -7741,7 +7757,8 @@ function editorialRecentPosts(limit) {
         ending_type: v2.endingType || "",
         title_emoji: v2.titleEmoji || "",
         crosspromo_target: v2.crosspromoTarget || null,
-        entities: normalizeTopicEntities(item.topicEntities).slice(0, 4)
+        entities: normalizeTopicEntities(item.topicEntities).slice(0, 4),
+        audience: item.performanceScore == null ? undefined : (item.performanceScore >= 2 ? "выше среднего" : (item.performanceScore <= -2 ? "ниже среднего" : "средне"))
       };
     });
 }
@@ -7808,8 +7825,8 @@ async function runEditorialV2(sources, options) {
   const request = {
     now: new Date().toISOString(),
     news_id: String(opts.newsId || opts.news_id || ""),
-    mode: "post",
-    time_slot: timeSlotFor(publishAt),
+    mode: opts.mode === "digest" ? "digest" : "post",
+    time_slot: opts.timeSlot || timeSlotFor(publishAt),
     signature: editorialSignature(),
     posts_today: editorialPostsToday(),
     daily_limit: editorialDailyLimit(),
@@ -7832,6 +7849,15 @@ async function runEditorialV2(sources, options) {
   };
   const formatStats = editorialFormatStats();
   if (formatStats) request.format_stats = formatStats;
+  const learning = state.editorialLearning || {};
+  const hookStats = bucketWeights(learning.byHook, 3);
+  if (hookStats) request.hook_stats = hookStats;
+  const best = (state.history || [])
+    .filter(function(h){ return h && h.publishedAt && !isDigestHistory(h) && Number(h.performanceScore || 0) >= 2 && Date.now() - new Date(h.publishedAt).getTime() < 14 * 24 * 3600000; })
+    .sort(function(a, b){ return Number(b.performanceScore || 0) - Number(a.performanceScore || 0); })
+    .slice(0, 3)
+    .map(function(h){ return { title: String(h.title || "").slice(0, 120), format: historyFormat(h), hook_type: historyHook(h), views: h.views || undefined }; });
+  if (best.length) request.best_posts = best;
   if (opts.mergeCheck) request.merge_check = true;
 
   const outcome = await editorialPipeline().run(channelId, request);
@@ -7901,7 +7927,7 @@ async function runEditorialV2(sources, options) {
   const approved = outcome.status === "approved";
   const decision = approved
     ? "Пост прошёл проверку: " + checkerModels.join(", ") + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
-    : "Пост отложен на ручную проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "одна из нейросетей-проверщиков недоступна", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
+    : "Пост не прошёл проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "одна из нейросетей-проверщиков недоступна", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
 
   return {
     skip: false,
@@ -7936,6 +7962,188 @@ async function runEditorialV2(sources, options) {
     }
   };
 }
+
+// ---------------------------------------------------------------------------
+// Digests: evening «Главное за день» and Sunday «Топ недели» from published posts.
+async function publishDigest(kind) {
+  if (!editorialV2Active()) return { ok: false, skipped: "editorial_v2_off" };
+  if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) return { ok: true, skipped: "auto_disabled" };
+  const now = new Date();
+  const posts = pickDigestPosts(state.history, kind, now);
+  const min = kind === "sunday" ? 5 : 4;
+  if (posts.length < min) return { ok: true, skipped: "few_posts", count: posts.length };
+  const ws = currentWorkspace();
+  const username = currentTelegramPublicUsername();
+  const sources = posts.map(function(h) {
+    return {
+      name: ws && ws.name || "Канал",
+      url: username && h.messageId ? "https://t.me/" + username + "/" + h.messageId : "",
+      date: h.publishedAt,
+      role: "опубликованный пост канала" + (h.views ? ", просмотров: " + h.views : ""),
+      title: String(h.title || ""),
+      text: stripHtml(String(h.text || "")).slice(0, 1500)
+    };
+  });
+  const day = moscowParts(now).day;
+  const v2 = await runEditorialV2(sources, { mode: "digest", timeSlot: kind === "sunday" ? "sunday_digest" : "evening", newsId: "digest_" + kind + "_" + day, hasPhoto: true });
+  if (v2.skip) return { ok: true, skipped: "writer_skip", reason: v2.reason };
+  if (!v2.qc || v2.qc.qcStatus !== "pass") return { ok: true, skipped: "not_approved", verdict: v2.meta && v2.meta.verdict };
+  const cover = posts.find(function(h){ return h && (h.imageUrl || h.generatedImageUrl); }) || {};
+  const id = "digest_" + kind + "_" + day + "_" + crypto.randomBytes(3).toString("hex");
+  const result = await sendMultiPlatformPost({
+    id: id, postId: id, newsId: "", topicId: "default", allow_text_fallback: true,
+    title: v2.rewrite.title, text: v2.rewrite.text,
+    sourceName: ws && ws.name || "", sourceUrl: "",
+    imageUrl: cover.imageUrl || "", generatedImageUrl: cover.imageUrl ? "" : (cover.generatedImageUrl || ""),
+    mediaOrigin: cover.imageUrl ? "source_media" : (cover.generatedImageUrl ? "ai_generated" : ""),
+    platformVariants: v2.qc.platformVariants, qcStatus: "pass", qualityScore: v2.qc.qualityScore,
+    topicEntities: [], decisionSummary: v2.qc.decisionSummary
+  }, { telegram: true, vk: false });
+  if (!result.telegramPublished) return { ok: false, error: result.error || result.telegramError || "Telegram не принял дайджест" };
+  state.history = Array.isArray(state.history) ? state.history : [];
+  state.history.unshift({
+    id: newId("hist"), isDigest: true, digestKind: kind,
+    title: v2.rewrite.title, text: result.publishedText || v2.rewrite.text,
+    messageId: result.message_id || null, publishedAt: new Date().toISOString(),
+    sourceName: ws && ws.name || "", imageUrl: cover.imageUrl || "", generatedImageUrl: cover.imageUrl ? "" : (cover.generatedImageUrl || ""),
+    contentFormat: "Дайджест", contentFormatLabel: "Дайджест", editorialV2: v2.meta, publicationOrigin: "digest"
+  });
+  state.history = state.history.slice(0, 300);
+  saveState();
+  return { ok: true, published: true, kind: kind, posts: posts.length, messageId: result.message_id || null };
+}
+
+async function maybePublishDigest() {
+  if (!DIGEST_ENABLED) return;
+  const now = moscowParts(new Date());
+  state.digests = state.digests && typeof state.digests === "object" ? state.digests : {};
+  const jobs = [];
+  if (now.weekday === 0) jobs.push({ kind: "sunday", time: DIGEST_SUNDAY_TIME, key: "lastSunday" });
+  jobs.push({ kind: "evening", time: DIGEST_EVENING_TIME, key: "lastEvening" });
+  for (const job of jobs) {
+    if (state.digests[job.key] === now.day) continue;
+    if (now.hhmm < job.time || now.hhmm > addMinutesHHMM(job.time, 40)) continue;
+    // Sunday top replaces the evening digest on Sundays.
+    if (job.kind === "evening" && now.weekday === 0 && state.digests.lastSunday === now.day) { state.digests.lastEvening = now.day; continue; }
+    state.digests[job.key] = now.day;
+    saveState();
+    try {
+      const result = await publishDigest(job.kind);
+      console.log("DIGEST " + JSON.stringify(Object.assign({ workspace: currentWorkspaceId() }, result)));
+    } catch (error) {
+      console.warn("DIGEST_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), kind: job.kind, error: error.message }));
+    }
+    return;
+  }
+}
+
+function addMinutesHHMM(hhmm, minutes) {
+  const parts = String(hhmm || "00:00").split(":");
+  const total = Math.min(23 * 60 + 59, Number(parts[0] || 0) * 60 + Number(parts[1] || 0) + Number(minutes || 0));
+  return String(Math.floor(total / 60)).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0");
+}
+
+// ---------------------------------------------------------------------------
+// Daily report to the owner in Telegram (private chat with the bot).
+async function collectDailyReportForWorkspace() {
+  const ws = currentWorkspace();
+  const since = Date.now() - 24 * 3600000;
+  const recent = (state.history || []).filter(function(h){ return h && h.publishedAt && new Date(h.publishedAt).getTime() >= since; });
+  const regular = recent.filter(function(h){ return !isDigestHistory(h); });
+  const username = currentTelegramPublicUsername();
+  const best = regular.slice().sort(function(a, b){ return Number(b.views || 0) - Number(a.views || 0); })[0] || null;
+  const filtered = { prefilter: 0, editorial: 0, duplicate: 0, autoRejected: 0 };
+  const reasons = [];
+  if (db && dbReady) {
+    try {
+      const r = await db.query("SELECT status, metadata->>'prefilterReason' AS pr, metadata->>'editorialSkipReason' AS er, metadata->>'autoRejectReason' AS ar FROM news_items WHERE workspace_id=$1 AND detected_at > NOW() - INTERVAL '24 hours' AND status IN ('prefilter_skip','editorial_skip','duplicate_story','auto_rejected')", [currentWorkspaceId()]);
+      for (const row of r.rows) {
+        if (row.status === "prefilter_skip") { filtered.prefilter += 1; if (row.pr) reasons.push(row.pr); }
+        else if (row.status === "editorial_skip") { filtered.editorial += 1; if (row.er) reasons.push(row.er); }
+        else if (row.status === "duplicate_story") filtered.duplicate += 1;
+        else if (row.status === "auto_rejected") { filtered.autoRejected += 1; if (row.ar) reasons.push(row.ar); }
+      }
+    } catch (error) { console.warn("Daily report query failed:", error.message); }
+  }
+  const queue = (state.queue || []).filter(function(q){ return q && q.newsId; });
+  const ready = queue.filter(function(q){ return autoQualityEligible(q) && !ratingBelowAutoThreshold(q); }).length;
+  const reserve = queue.filter(function(q){ return autoQualityEligible(q) && ratingBelowAutoThreshold(q); }).length;
+  const waiting = queue.filter(function(q){ return q.editorialV2 && q.editorialV2.verdict === "unavailable"; }).length;
+  const problems = [];
+  if (waiting) problems.push("ждут повторной проверки нейросетью: " + waiting);
+  if (!regular.length) problems.push("за сутки не вышло ни одного поста");
+  const last = lastCollectorRuns.get(currentWorkspaceId());
+  if (last && last.ok === false) problems.push("сбор новостей завершился ошибкой: " + String(last.error || "").slice(0, 120));
+  return {
+    name: ws && ws.name || currentWorkspaceId(),
+    published: regular.length,
+    digest: recent.some(isDigestHistory),
+    queueReady: ready,
+    queueReserve: reserve,
+    filtered: filtered,
+    topReasons: topReasons(reasons, 3),
+    best: best ? { title: best.title, views: best.views || 0, url: username && best.messageId ? "https://t.me/" + username + "/" + best.messageId : "" } : null,
+    sourcesPaused: (state.sources || []).filter(function(x){ return x && x.autoPaused && new Date(x.autoPaused.at || 0).getTime() >= since; }).map(function(x){ return x.name; }),
+    sourcesAdded: (state.sources || []).filter(function(x){ return x && x.autoAdded && new Date(x.autoAdded.at || 0).getTime() >= since; }).map(function(x){ return x.name; }),
+    problems: problems
+  };
+}
+
+async function sendDailyReport(force) {
+  const defaultId = workspaceStore.defaultWorkspaceId || (workspaceStore.workspaces[0] && workspaceStore.workspaces[0].id);
+  const channels = [];
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    await workspaceContext.run({ workspaceId: ws.id }, async function(){ channels.push(await collectDailyReportForWorkspace()); });
+  }
+  let spend = null;
+  try { spend = await costBudgetSnapshot(); } catch {}
+  const text = buildDailyReportText({
+    date: moscowParts(new Date()).day.split("-").reverse().join("."),
+    channels: channels,
+    spendRub: spend && Number.isFinite(Number(spend.todayRub)) ? spend.todayRub : null,
+    budgetRub: spend && spend.dailyBudgetRub || 0
+  });
+  return await workspaceContext.run({ workspaceId: defaultId }, async function() {
+    if (!BOT_TOKEN) return { ok: false, error: "нет токена бота" };
+    await discoverTelegramAlertChat();
+    const chatId = TELEGRAM_ALERT_CHAT_ID || String(state.telegramAlertChatId || "").trim();
+    if (!chatId) {
+      console.warn("DAILY_REPORT_NO_CHAT напишите боту /start в личные сообщения, чтобы получать отчёты");
+      return { ok: false, error: "no_chat", text: text };
+    }
+    await telegramApi("sendMessage", { chat_id: chatId, text: text, disable_web_page_preview: true });
+    console.log("DAILY_REPORT_SENT " + JSON.stringify({ channels: channels.length, force: Boolean(force) }));
+    return { ok: true, text: text };
+  });
+}
+
+async function maybeSendDailyReport() {
+  if (!DAILY_REPORT_ENABLED) return;
+  const now = moscowParts(new Date());
+  const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+  if (!ws || !ws.state) return;
+  ws.state.dailyReport = ws.state.dailyReport && typeof ws.state.dailyReport === "object" ? ws.state.dailyReport : {};
+  if (ws.state.dailyReport.lastDay === now.day) return;
+  if (now.hhmm < DAILY_REPORT_TIME || now.hhmm > addMinutesHHMM(DAILY_REPORT_TIME, 60)) return;
+  ws.state.dailyReport.lastDay = now.day;
+  await workspaceContext.run({ workspaceId: ws.id }, async function(){ saveState(); });
+  const result = await sendDailyReport(false);
+  if (!result.ok) console.warn("DAILY_REPORT_FAILED " + JSON.stringify({ error: result.error }));
+}
+
+let extrasTickRunning = false;
+setInterval(function() {
+  if (extrasTickRunning || !COLLECTOR_ENABLED) return;
+  extrasTickRunning = true;
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){ await maybePublishDigest(); });
+    }
+    await maybeSendDailyReport();
+  })().catch(function(error){ console.warn("Extras tick failed:", error.message); }).finally(function(){ extrasTickRunning = false; });
+}, 60000);
 
 async function retryUnavailableEditorialQueueItems() {
   if (costEconomyMode()) return { checked: 0, repaired: 0, held: 0, skipped: 0, economyMode: true };
@@ -9769,6 +9977,16 @@ const server = http.createServer(async function(req, res) {
       state.sources.push({ id: newId("src"), name: name, type: "web", group: "custom", priority: 3, url: sourceUrl, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only" });
       saveState();
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && p === "/api/report/daily") {
+      const result = await sendDailyReport(true);
+      return sendJson(res, result.ok ? 200 : 409, result);
+    }
+    if (req.method === "POST" && p === "/api/digest/publish") {
+      const body = await readJson(req);
+      const result = await publishDigest(body.kind === "sunday" ? "sunday" : "evening");
+      return sendJson(res, result.ok ? 200 : 409, result);
     }
 
     if (req.method === "POST" && p === "/api/sources/target") {
