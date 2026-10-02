@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.46.2",
+  "version": "0.46.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -23,7 +23,8 @@
     "test:channel-dna": "node scripts/channel-dna-v2-test.js && node scripts/channel-dna-integration-smoke.js",
     "test:editorial-qa": "node scripts/editorial-qa-smoke.js",
     "test:workspace-recovery": "node scripts/workspace-recovery-test.js",
-    "test:data-protection": "node scripts/data-protection-test.js"
+    "test:data-protection": "node scripts/data-protection-test.js",
+    "test:vk-diagnostics": "node scripts/vk-diagnostics-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",

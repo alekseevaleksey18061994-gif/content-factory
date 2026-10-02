@@ -7468,6 +7468,23 @@ function autoPublishTargetsForPost(post) {
 // because VK failed: VK gets a bounded number of automatic retries, then the post leaves the queue.
 const VK_AUTO_RETRY_MAX = Math.max(1, Number(process.env.VK_AUTO_RETRY_MAX || 2));
 const PUBLISH_FAILURE_MAX = Math.max(1, Number(process.env.PUBLISH_FAILURE_MAX || 3));
+// Why VK would (not) publish for the current cabinet: boot log VK_AUTO_STATUS and VK_NOT_SELECTED use it. No secrets.
+function vkAutoStatus() {
+  const ws = currentWorkspace();
+  const topic = topicSettingsForPost({ topicId: "default" });
+  return {
+    workspace: ws && ws.id || "",
+    publishEnabled: VK_PUBLISH_ENABLED,
+    communityTokenSet: Boolean(VK_ACCESS_TOKEN),
+    userTokenSet: Boolean(VK_USER_TOKEN),
+    groupConfigured: Boolean(VK_GROUP_ID && VK_OWNER_ID),
+    workspaceAllowed: workspaceVkPublishingAllowed(ws),
+    autoPublishVk: topic.auto_publish_vk !== false,
+    allowTextFallback: topic.allow_text_fallback === true || topic.allowTextFallback === true,
+    defaultWorkspaceId: workspaceStore.defaultWorkspaceId
+  };
+}
+
 function pendingAutoTargets(item) {
   const t = autoPublishTargetsForPost(item);
   return {
@@ -8117,6 +8134,11 @@ async function sendMultiPlatformPost(post, targets) {
   let vkPrepared = postForPlatform(safeBase, "vk");
   if (selected.telegram) telegramPrepared = await preparePostForSingleTelegramCaption(telegramPrepared);
 
+  if (!selected.vk && VK_PUBLISH_ENABLED && workspaceVkPublishingAllowed(currentWorkspace())) {
+    // VK is configured for this cabinet but this post is not going there: say why (never a secret).
+    console.warn("VK_NOT_SELECTED " + JSON.stringify(Object.assign({ post_id: String(post && (post.id || post.newsId) || "") }, vkAutoStatus(), { requested: targets && typeof targets === "object" ? { telegram: targets.telegram, vk: targets.vk } : null })));
+  }
+
   const result = {
     message_id: null,
     vkPostId: null,
@@ -8231,11 +8253,28 @@ async function fetchVkAnalytics() {
       fields: "members_count"
     });
     const group = Array.isArray(groupResponse) ? groupResponse[0] : (groupResponse && Array.isArray(groupResponse.groups) ? groupResponse.groups[0] : null);
+    const subscribers = group && Number.isFinite(Number(group.members_count)) ? Number(group.members_count) : null;
+    // wall.get is refused for community tokens (error 27), so the per-post statistics need a user token
+    // (VK_USER_TOKEN, scope wall). Without it, report the audience size only instead of failing every call.
+    if (!VK_USER_TOKEN) {
+      return {
+        connected: true,
+        available: false,
+        platform: "vk",
+        groupId: VK_GROUP_ID,
+        groupName: group && group.name ? group.name : "Что там у ИИ?",
+        groupUrl: VK_PUBLIC_URL,
+        checkedAt: new Date().toISOString(),
+        totals: { posts: 0, views: 0, likes: 0, comments: 0, reposts: 0, subscribers: subscribers, avgViews: 0, engagementRate: 0 },
+        posts: [],
+        note: "Подписчики получены. Статистика по записям недоступна: ключ сообщества не читает стену ВК (нужен VK_USER_TOKEN с правом wall)."
+      };
+    }
     const wall = await vkApi("wall.get", {
       owner_id: VK_OWNER_ID,
       count: 100,
       filter: "owner"
-    });
+    }, { token: VK_USER_TOKEN, tokenKind: "user" });
     const items = wall && Array.isArray(wall.items) ? wall.items : [];
     const posts = items.map(function(item) {
       const views = Number(item && item.views && item.views.count || 0);
@@ -13582,6 +13621,7 @@ setTimeout(function() {
   })();
 }, 3 * 60 * 1000);
 await workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, async function(){ await discoverTelegramAlertChat(); });
+workspaceContext.run({ workspaceId: workspaceStore.defaultWorkspaceId }, function(){ console.log("VK_AUTO_STATUS " + JSON.stringify(vkAutoStatus())); });
 startCollectorScheduler();
 
 setTimeout(function(){
