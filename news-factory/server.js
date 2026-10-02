@@ -122,7 +122,7 @@ const COST_PRICING_UPDATED_AT = "2026-10-02";
 const COST_PRICING = {
   openaiText: {
     "gpt-6-luna": { input: 0.10, cachedInput: 0.01, output: 0.50 },
-    "gpt-5.6-luna": { input: 0.10, cachedInput: 0.01, output: 0.50 }
+    "gpt-5.6-luna": { input: 0.20, cachedInput: 0.02, output: 1.20 }
   },
   openaiImage: {
     "gpt-image-2.5-sunburst": { textInput: 5.00, imageInput: 8.00, cachedImageInput: 2.00, output: 30.00 },
