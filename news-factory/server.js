@@ -2646,7 +2646,14 @@ function buildSourceRankings() {
   return rows;
 }
 
-const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000 }) : null;
+const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000, connectionTimeoutMillis: 15000 }) : null;
+if (db) {
+  // Without an 'error' listener a dropped idle connection (DB restart, network blip) is an
+  // unhandled 'error' event and kills the process. Only the message is logged (never the URL).
+  db.on("error", function(error) {
+    console.error("PostgreSQL pool error (idle client):", error && error.message || error);
+  });
+}
 let dbReady = false;
 // Collector lock is per workspace: one channel's slow collection must not block
 // slot preparation of the other channels in the network.
@@ -2655,7 +2662,6 @@ function isCollectorRunning(workspaceId) { return collectorRunningWorkspaces.has
 const schedulerTickRunning = new Set();
 let collectorTimer = null;
 const lastCollectorRuns = new Map();
-let snapshotTimer = null;
 function saveState() {
   pruneQueueItems(state);
   state.updatedAt = new Date().toISOString();
@@ -2680,7 +2686,10 @@ async function runMigrations() {
       .filter(function(name){ return /\.sql$/i.test(name); })
       .sort();
   } catch (error) {
-    if (error && error.code === "ENOENT") return;
+    if (error && error.code === "ENOENT") {
+      console.error("DB migrations directory not found, no migrations were applied: " + migrationsDir);
+      return;
+    }
     throw error;
   }
 
@@ -2706,9 +2715,11 @@ async function runMigrations() {
   }
 }
 
-async function initDb() {
-  if (!db) return false;
-  try {
+// Serialises schema bootstrap + migrations between concurrently starting instances
+// (rolling deploys): the session-level advisory lock is held on a dedicated connection.
+const DB_INIT_ADVISORY_LOCK_KEY = 7242001;
+async function initDbAttempt() {
+  await withAdvisoryLock(db, DB_INIT_ADVISORY_LOCK_KEY, async function() {
     await db.query(`
       CREATE TABLE IF NOT EXISTS news_items (
         id TEXT PRIMARY KEY,
@@ -2755,6 +2766,8 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS app_snapshots_created_idx ON app_snapshots(created_at DESC);
     `);
     await runMigrations();
+  });
+  {
     dbReady = true;
     await migrateLegacyCostEventsToPostgres();
     await refreshStoredCostPricing();
@@ -2766,10 +2779,39 @@ async function initDb() {
     await saveStateSnapshot();
     console.log("PostgreSQL ready");
     return true;
+  }
+}
+
+// Bounded retry with exponential backoff (DB_INIT_MAX_ATTEMPTS, DB_INIT_RETRY_BASE_MS). If every
+// attempt fails the app keeps running without the DB, but a background retry round is scheduled
+// every DB_INIT_RECOVERY_MS so dbReady does not stay false forever after one outage.
+let dbInitRunning = false;
+let dbInitRecoveryTimer = null;
+async function initDb() {
+  if (!db) return false;
+  if (dbInitRunning) return dbReady;
+  dbInitRunning = true;
+  try {
+    await retryWithBackoff(initDbAttempt, {
+      attempts: Math.max(1, Math.min(10, Number(process.env.DB_INIT_MAX_ATTEMPTS || 5))),
+      baseMs: Math.max(0, Number(process.env.DB_INIT_RETRY_BASE_MS || 1000)),
+      maxMs: 15000,
+      onRetry: function(error, attempt, delay) {
+        dbReady = false;
+        console.warn("PostgreSQL init attempt " + attempt + " failed: " + (error && error.message || error) + "; retrying in " + delay + " ms");
+      }
+    });
+    return true;
   } catch (error) {
     dbReady = false;
-    console.error("PostgreSQL init failed:", error.message);
+    console.error("PostgreSQL init failed:", error && error.message || error);
+    const recoveryMs = Math.max(1000, Number(process.env.DB_INIT_RECOVERY_MS || 30000));
+    if (dbInitRecoveryTimer) clearTimeout(dbInitRecoveryTimer);
+    dbInitRecoveryTimer = setTimeout(function() { dbInitRecoveryTimer = null; initDb().catch(function(){}); }, recoveryMs);
+    if (dbInitRecoveryTimer.unref) dbInitRecoveryTimer.unref();
     return false;
+  } finally {
+    dbInitRunning = false;
   }
 }
 
@@ -2784,10 +2826,15 @@ async function saveStateSnapshot() {
   }
 }
 
+// One debounce timer per workspace: a single global timer made a save in workspace B
+// cancel the pending snapshot of workspace A. The callback re-enters the workspace context.
+const snapshotDebouncer = createKeyedDebouncer(1500, function(workspaceId) {
+  if (!getWorkspaceById(workspaceId)) return;
+  return workspaceContext.run({ workspaceId: workspaceId }, function(){ return saveStateSnapshot(); });
+});
 function scheduleStateSnapshot() {
   if (!db || !dbReady) return;
-  clearTimeout(snapshotTimer);
-  snapshotTimer = setTimeout(function(){ saveStateSnapshot(); }, 1500);
+  snapshotDebouncer.schedule(currentWorkspaceId());
 }
 
 function canonicalizeUrl(raw, base) {
@@ -10251,7 +10298,7 @@ const server = http.createServer(async function(req, res) {
       const marker = crypto.randomBytes(3).toString("hex");
       const result = await sendTelegram("✅ News Factory подключён\n\nАвтопубликация в «" + String(currentWorkspace().name || "текущий канал") + "» работает.\nТест: " + marker);
       state.history.unshift({ id: newId("hist"), title: "Тест News Factory", messageId: result.message_id, publishedAt: new Date().toISOString(), publicationOrigin: "test" });
-      state.history = state.history.slice(0, 100);
+      state.history = state.history.slice(0, 300);
       state.stats.published += 1;
       saveState();
       return sendJson(res, 200, {
@@ -10321,7 +10368,7 @@ const server = http.createServer(async function(req, res) {
         publicationOrigin: "manual"
       };
       state.history.unshift(historyItem);
-      state.history = state.history.slice(0, 100);
+      state.history = state.history.slice(0, 300);
       if (result.telegramPublished || result.vkPublished) state.stats.published += 1;
       saveState();
 
@@ -10700,7 +10747,7 @@ const server = http.createServer(async function(req, res) {
           manualPublishedFromSchedule: item.preparedFor || ""
         };
         state.history.unshift(historyItem);
-        state.history = state.history.slice(0, 100);
+        state.history = state.history.slice(0, 300);
         item.historyId = historyItem.id;
         state.stats.published += 1;
       } else if (historyItem) {

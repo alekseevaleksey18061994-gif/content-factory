@@ -89,14 +89,14 @@ globalThis.fetch = async function (input, init) {
 };
 `);
 
-function startServer(dataDir, extraEnv) {
+function startServer(dataDir, extraEnv, cwd) {
   const port = portCounter++;
   const env = Object.assign({}, process.env, {
     PORT: String(port), DATA_DIR: dataDir, DATABASE_URL: "", ADMIN_UI_PASSWORD: "local-smoke-password", ADMIN_UI_PASSWORD_SHA256: "",
     COLLECTOR_ENABLED: "false", AUTO_PUBLISH_ENABLED: "false", TELEGRAM_BOT_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",
     TELEGRAM_ALERT_CHAT_ID: "", COST_USD_RUB_RATE: ""
   }, extraEnv || {});
-  const child = spawn(process.execPath, ["--import", preloadFile, "server.js"], { cwd: appDir, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", preloadFile, "server.js"], { cwd: cwd || appDir, env, stdio: ["ignore", "pipe", "pipe"] });
   const out = [];
   child.stdout.on("data", function (x) { out.push(String(x)); });
   child.stderr.on("data", function (x) { out.push(String(x)); });
@@ -244,6 +244,152 @@ section("server: healthy start writes workspaces.json atomically and creates .ba
     assert.equal(listFiles(dir).filter(function (n) { return n.endsWith(".tmp"); }).length, 0, "no temp files left");
     JSON.parse(fs.readFileSync(path.join(dir, "workspaces.json"), "utf8"));
   } finally { await srv.stop(); }
+});
+
+// =================================================================================================
+// 2-4, 10. DB: per-workspace snapshot debounce, pool error handler, init retry + advisory lock,
+//          missing migrations directory
+// =================================================================================================
+const FAKE_DB_URL = "postgres://nfuser:s3cretpw-do-not-log@db.invalid:5432/nf";
+
+function readPgLog(file) {
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map(function (l) { return JSON.parse(l); });
+}
+async function waitForOutput(srv, re, timeoutMs) {
+  const until = Date.now() + (timeoutMs || 10000);
+  while (Date.now() < until && !re.test(srv.output())) await sleep(100);
+}
+
+section("createKeyedDebouncer: one timer per key, same key coalesces", async function () {
+  const fired = [];
+  const d = createKeyedDebouncer(40, function (key) { fired.push(key); });
+  d.schedule("a"); d.schedule("b"); d.schedule("c");
+  d.schedule("a"); d.schedule("a"); // coalesced
+  assert.deepEqual(d.pending().sort(), ["a", "b", "c"]);
+  await sleep(150);
+  assert.deepEqual(fired.slice().sort(), ["a", "b", "c"], "every workspace fires exactly once; none is dropped by another");
+  assert.deepEqual(d.pending(), []);
+});
+
+section("retryWithBackoff is bounded and backs off exponentially", async function () {
+  const delays = [];
+  let calls = 0;
+  const value = await retryWithBackoff(async function () { calls += 1; if (calls < 3) throw new Error("boom"); return "ok"; }, { attempts: 5, baseMs: 100, maxMs: 1000, sleep: async function (ms) { delays.push(ms); } });
+  assert.equal(value, "ok"); assert.equal(calls, 3); assert.deepEqual(delays, [100, 200]);
+  calls = 0;
+  await assert.rejects(retryWithBackoff(async function () { calls += 1; throw new Error("always"); }, { attempts: 4, baseMs: 10, maxMs: 25, sleep: async function (ms) { delays.push(ms); } }), /always/);
+  assert.equal(calls, 4, "gives up after the configured attempts");
+  assert.deepEqual(delays.slice(2), [10, 20, 25], "delay is capped at maxMs");
+});
+
+section("withAdvisoryLock releases the lock in finally (success, failure, failed unlock)", async function () {
+  function fakeDb(unlockFails) {
+    const log = [];
+    return { log, async connect() { return { async query(sql, p) { log.push(sql.replace(/\s+/g, " ") + (p ? " " + p[0] : "")); if (unlockFails && /unlock/.test(sql)) throw new Error("conn lost"); return { rows: [] }; }, release(destroy) { log.push("release:" + String(destroy)); } }; } };
+  }
+  let db = fakeDb(false);
+  assert.equal(await withAdvisoryLock(db, 42, async function () { db.log.push("work"); return 7; }), 7);
+  assert.deepEqual(db.log, ["SELECT pg_advisory_lock($1) 42", "work", "SELECT pg_advisory_unlock($1) 42", "release:undefined"]);
+  db = fakeDb(false);
+  await assert.rejects(withAdvisoryLock(db, 42, async function () { throw new Error("migration failed"); }), /migration failed/);
+  assert.deepEqual(db.log, ["SELECT pg_advisory_lock($1) 42", "SELECT pg_advisory_unlock($1) 42", "release:undefined"], "unlocked even though fn threw");
+  db = fakeDb(true);
+  await withAdvisoryLock(db, 42, async function () {});
+  assert.equal(db.log[db.log.length - 1], "release:true", "client with a failed unlock is destroyed, not returned to the pool");
+});
+
+section("server: pg pool 'error' event does not kill the process and the DB URL is never logged", async function () {
+  const dir = mkdir("srv-poolerr"); const pgLog = path.join(dir, "pg.jsonl");
+  fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(makeStore(2)));
+  const srv = startServer(dir, { DATABASE_URL: FAKE_DB_URL, FAKE_PG_LOG: pgLog, FAKE_PG_EMIT_ERROR_MS: "1500" });
+  try {
+    await srv.waitHealthy();
+    await sleep(2500);
+    assert.ok(readPgLog(pgLog).some(function (r) { return r.kind === "emit"; }), "fake pool emitted an error");
+    assert.equal(srv.exitCode, undefined, "process still alive after the pool error");
+    await srv.waitHealthy(3000);
+    assert.match(srv.output(), /PostgreSQL pool error \(idle client\): Connection terminated unexpectedly/);
+    assert.ok(!srv.output().includes("s3cretpw"), "no secrets in logs");
+  } finally { await srv.stop(); }
+});
+
+section("server: initDb retries with backoff and takes/releases the advisory lock around every attempt", async function () {
+  const dir = mkdir("srv-initretry"); const pgLog = path.join(dir, "pg.jsonl");
+  fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(makeStore(2)));
+  const srv = startServer(dir, { DATABASE_URL: FAKE_DB_URL, FAKE_PG_LOG: pgLog, FAKE_PG_FAIL_FIRST: "2", DB_INIT_RETRY_BASE_MS: "50" });
+  try {
+    await srv.waitHealthy();
+    assert.match(srv.output(), /PostgreSQL init attempt 1 failed/);
+    assert.match(srv.output(), /PostgreSQL init attempt 2 failed/);
+    assert.match(srv.output(), /PostgreSQL ready/, "third attempt succeeds, dbReady becomes true");
+    const rows = readPgLog(pgLog);
+    const locks = rows.filter(function (r) { return /pg_advisory_lock/.test(r.sql); }).length;
+    const unlocks = rows.filter(function (r) { return /pg_advisory_unlock/.test(r.sql); }).length;
+    assert.equal(locks, 3, "one lock per attempt");
+    assert.equal(unlocks, 3, "every lock released (also after the failed attempts)");
+    const firstLock = rows.findIndex(function (r) { return /pg_advisory_lock/.test(r.sql); });
+    const firstCreate = rows.findIndex(function (r) { return /CREATE TABLE IF NOT EXISTS news_items/.test(r.sql); });
+    assert.ok(firstLock >= 0 && firstLock < firstCreate, "schema bootstrap runs under the lock");
+    const migIdx = rows.findIndex(function (r) { return /INSERT INTO schema_migrations/.test(r.sql); });
+    const lastUnlock = rows.map(function (r) { return /pg_advisory_unlock/.test(r.sql); }).lastIndexOf(true);
+    assert.ok(migIdx >= 0 && migIdx < lastUnlock, "migrations are applied before the lock is released");
+  } finally { await srv.stop(); }
+});
+
+section("server: initDb gives up after bounded attempts, keeps serving and recovers in the background", async function () {
+  const dir = mkdir("srv-initgiveup"); const pgLog = path.join(dir, "pg.jsonl");
+  fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(makeStore(2)));
+  const srv = startServer(dir, { DATABASE_URL: FAKE_DB_URL, FAKE_PG_LOG: pgLog, FAKE_PG_FAIL_FIRST: "4", DB_INIT_MAX_ATTEMPTS: "3", DB_INIT_RETRY_BASE_MS: "20", DB_INIT_RECOVERY_MS: "1500" });
+  try {
+    await srv.waitHealthy();
+    assert.match(srv.output(), /PostgreSQL init failed/);
+    await waitForOutput(srv, /PostgreSQL ready/, 10000);
+    assert.match(srv.output(), /PostgreSQL ready/, "background retry round brings the DB up (dbReady no longer stuck false)");
+  } finally { await srv.stop(); }
+});
+
+section("server: missing migrations directory is logged as an error", async function () {
+  const copy = mkdir("srv-nomigrations");
+  for (const name of ["server.js", "package.json", "lib", "prompts", "public"]) {
+    if (fs.existsSync(path.join(appDir, name))) fs.cpSync(path.join(appDir, name), path.join(copy, name), { recursive: true });
+  }
+  fs.symlinkSync(path.join(appDir, "node_modules"), path.join(copy, "node_modules"), "dir");
+  const dir = mkdir("srv-nomigrations-data");
+  fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(makeStore(2)));
+  const srv = startServer(dir, { DATABASE_URL: FAKE_DB_URL }, copy);
+  try {
+    await srv.waitHealthy();
+    assert.match(srv.output(), /DB migrations directory not found/);
+  } finally { await srv.stop(); }
+});
+
+section("server: per-workspace snapshot debounce keeps every workspace's snapshot", async function () {
+  const dir = mkdir("srv-snap"); const pgLog = path.join(dir, "pg.jsonl");
+  fs.writeFileSync(path.join(dir, "workspaces.json"), JSON.stringify(makeStore(4)));
+  const srv = startServer(dir, { DATABASE_URL: FAKE_DB_URL, FAKE_PG_LOG: pgLog });
+  try {
+    await srv.waitHealthy();
+    await waitForOutput(srv, /PostgreSQL ready/, 10000);
+    await sleep(2000);
+    const login = await fetch("http://127.0.0.1:" + srv.port + "/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "local-smoke-password" }) });
+    const cookie = String(login.headers.get("set-cookie") || "").split(";")[0];
+    fs.writeFileSync(pgLog, "");
+    const ids = ["chan-1", "chan-2", "chan-3"];
+    const rs = await Promise.all(ids.map(function (id) {
+      return fetch("http://127.0.0.1:" + srv.port + "/api/sources", { method: "POST", headers: { "content-type": "application/json", cookie, "x-workspace-id": id }, body: JSON.stringify({ name: "s-" + id, url: "https://x-" + id + ".example.com/news" }) });
+    }));
+    for (const r of rs) assert.equal(r.status, 200, "source added");
+    await sleep(3500);
+    const inserted = readPgLog(pgLog).filter(function (r) { return /INSERT INTO app_snapshots/.test(r.sql); }).map(function (r) { return r.p0; });
+    for (const id of ids) assert.ok(inserted.includes(id), "snapshot saved for " + id + ", got " + JSON.stringify(inserted));
+  } finally { await srv.stop(); }
+});
+
+section("history trimming is consistent (300) in every handler", async function () {
+  const src = fs.readFileSync(path.join(appDir, "server.js"), "utf8");
+  assert.ok(!/history\s*=\s*state\.history\.slice\(0,\s*100\)/.test(src), "no history.slice(0, 100) left");
+  assert.ok((src.match(/state\.history\s*=\s*state\.history\.slice\(0,\s*300\)/g) || []).length >= 6);
 });
 
 // =================================================================================================
