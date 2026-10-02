@@ -8404,6 +8404,7 @@ async function sendMultiPlatformPost(post, targets) {
     message_id: null,
     vkPostId: null,
     telegramPublished: false,
+    telegramStatus: selected.telegram ? "pending" : "not_selected",
     vkPublished: false,
     vkStatus: selected.vk ? "pending" : "not_selected",
     vkMediaAttempts: 0,
@@ -8432,50 +8433,81 @@ async function sendMultiPlatformPost(post, targets) {
     }
   };
 
+  const tgJob = selected.telegram
+    ? sendTelegramPostWithRepair(telegramPrepared)
+    : Promise.resolve(null);
+  const vkJob = selected.vk
+    ? ((!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID)
+        ? Promise.reject(Object.assign(new Error("VK не настроен для публикации"), { vkErrorCode: "config_missing" }))
+        : publishVkPostWithRepair(vkPrepared))
+    : Promise.resolve(null);
+
+  // Important: both networks get their own attempt. A Telegram failure cannot prevent
+  // VK from posting, and a VK failure cannot roll back Telegram.
+  const settled = await Promise.allSettled([tgJob, vkJob]);
+  const tgSettled = settled[0];
+  const vkSettled = settled[1];
+
   if (selected.telegram) {
-    const tgAttempt = await sendTelegramPostWithRepair(telegramPrepared);
-    const tg = tgAttempt.result;
-    telegramPrepared = tgAttempt.post;
-    result.message_id = tg.message_id;
-    result.telegramPublished = true;
-    result.repairLog.push.apply(result.repairLog, tgAttempt.repairLog || []);
-    result.publishedText = telegramPrepared.text || result.publishedText;
-    result.publishedTitle = telegramPrepared.title || result.publishedTitle;
-    result.publishedTelegramText = telegramPrepared.text || "";
-    result.publishedTelegramTitle = telegramPrepared.title || "";
+    if (tgSettled.status === "fulfilled" && tgSettled.value) {
+      const tgAttempt = tgSettled.value;
+      const tg = tgAttempt.result;
+      telegramPrepared = tgAttempt.post;
+      result.message_id = tg.message_id;
+      result.telegramPublished = true;
+      result.telegramStatus = "published";
+      result.repairLog.push.apply(result.repairLog, tgAttempt.repairLog || []);
+      result.publishedText = telegramPrepared.text || result.publishedText;
+      result.publishedTitle = telegramPrepared.title || result.publishedTitle;
+      result.publishedTelegramText = telegramPrepared.text || "";
+      result.publishedTelegramTitle = telegramPrepared.title || "";
+    } else {
+      const error = tgSettled.reason || new Error("Telegram publish failed");
+      result.telegramStatus = "failed";
+      result.telegramError = String(error && error.message || error);
+      result.telegramPermanent = Boolean(error && (error.permanent || error.telegramPermanent));
+    }
   }
 
   if (selected.vk) {
-    if (!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
-      result.vkStatus = "failed";
-      result.vkError = "VK не настроен для публикации";
-    } else {
-      try {
-        const vkAttempt = await publishVkPostWithRepair(vkPrepared);
-        const vk = vkAttempt.result;
-        vkPrepared = vkAttempt.post;
-        result.repairLog.push.apply(result.repairLog, vkAttempt.repairLog || []);
-        result.publishedVkText = vkPrepared.text || "";
-        result.publishedVkTitle = vkPrepared.title || "";
-        if (vk && vk.post_id) {
-          result.vkPostId = vk.post_id;
-          result.vkPublished = true;
-          result.vkStatus = "published";
-          result.vkMediaMode = vk.mediaMode || "";
-          result.vkMediaAttempts = Number(vk.mediaAttempts || 0);
-          result.vkPreviewSlug = vk.previewSlug || "";
-          result.vkPreviewUrl = vk.previewUrl || "";
-          result.vkPreviewImageUrl = vk.previewImageUrl || "";
-        }
-      } catch (error) {
-        result.vkStatus = error && error.mediaFailed ? "media_failed" : "failed";
-        result.vkMediaAttempts = Number(error && error.mediaAttempts || 0);
-        result.vkErrorCode = error && error.vkErrorCode != null ? error.vkErrorCode : null;
-        result.vkError = String(error && (error.vkErrorMsg || error.message) || error);
-        result.vkPreviewSlug = String(error && error.previewSlug || "");
-        result.vkPreviewUrl = result.vkPreviewSlug ? previewPageUrl(result.vkPreviewSlug) : "";
+    if (vkSettled.status === "fulfilled" && vkSettled.value) {
+      const vkAttempt = vkSettled.value;
+      const vk = vkAttempt.result;
+      vkPrepared = vkAttempt.post;
+      result.repairLog.push.apply(result.repairLog, vkAttempt.repairLog || []);
+      result.publishedVkText = vkPrepared.text || "";
+      result.publishedVkTitle = vkPrepared.title || "";
+      if (vk && vk.post_id) {
+        result.vkPostId = vk.post_id;
+        result.vkPublished = true;
+        result.vkStatus = "published";
+        result.vkMediaMode = vk.mediaMode || "";
+        result.vkMediaAttempts = Number(vk.mediaAttempts || 0);
+        result.vkPreviewSlug = vk.previewSlug || "";
+        result.vkPreviewUrl = vk.previewUrl || "";
+        result.vkPreviewImageUrl = vk.previewImageUrl || "";
       }
+    } else {
+      const error = vkSettled.reason || new Error("VK publish failed");
+      result.vkStatus = error && error.mediaFailed ? "media_failed" : "failed";
+      result.vkMediaAttempts = Number(error && error.mediaAttempts || 0);
+      result.vkErrorCode = error && error.vkErrorCode != null ? error.vkErrorCode : null;
+      result.vkError = String(error && (error.vkErrorMsg || error.message) || error);
+      result.vkPreviewSlug = String(error && error.previewSlug || "");
+      result.vkPreviewUrl = result.vkPreviewSlug ? previewPageUrl(result.vkPreviewSlug) : "";
     }
+  }
+
+  // Preserve retry semantics only when neither network succeeded, but do it after
+  // both autonomous jobs had their chance.
+  if ((selected.telegram || selected.vk) && !result.telegramPublished && !result.vkPublished) {
+    const error = new Error([
+      result.telegramError ? "Telegram: " + result.telegramError : "",
+      result.vkError ? "VK: " + result.vkError : ""
+    ].filter(Boolean).join(" | ") || "Публикация не удалась ни в одной сети");
+    error.permanent = Boolean(result.telegramPermanent && (!selected.vk || result.vkErrorCode === "config_missing"));
+    error.partialResult = result;
+    throw error;
   }
 
   return result;
