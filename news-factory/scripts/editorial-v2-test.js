@@ -257,4 +257,13 @@ await test("Claude falls back when structured outputs are unavailable", async fu
   assert.equal(seen[1].output_config, undefined);
 });
 
+await test("admin page script parses (guards against broken admin UI deploys)", async function() {
+  const fs = await import("node:fs");
+  const html = fs.readFileSync(fileURLToPath(new URL("../public/admin.html", import.meta.url)), "utf8");
+  const scripts = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)).map(function(m){ return m[1]; });
+  assert.ok(scripts.length >= 1);
+  for (const code of scripts) new Function(code);
+  assert.equal((html.match(/<\/html>/g) || []).length, 1, "exactly one </html>");
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));
