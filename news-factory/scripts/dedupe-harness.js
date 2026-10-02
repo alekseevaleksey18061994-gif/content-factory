@@ -146,6 +146,9 @@ export async function loadServer(opts = {}) {
   }
   // NF_SERVER_SRC lets a test run against another copy of server.js (e.g. the pre-fix version) to prove it fails there.
   let src = fs.readFileSync(process.env.NF_SERVER_SRC || path.join(APP_DIR, "server.js"), "utf8");
+  // Third-party fetches go through safeFetch (real sockets); the harness serves them from the fake fetch instead.
+  src = src.replace('import { safeFetch, validateUrl as validateFetchUrl } from "./lib/safe-fetch.js";',
+    'import { validateUrl as validateFetchUrl } from "./lib/safe-fetch.js";\nconst safeFetch = (u, o) => globalThis.fetch(u, o);');
   src = src.replace(/^startCollectorScheduler\(\);$/m, "/* startCollectorScheduler(); disabled in harness */");
   src += "\nexport const __t = (function(){ const o = {}; for (const n of " + JSON.stringify(EXPORT_NAMES) +
     ") { Object.defineProperty(o, n, { enumerable: true, get() { try { return n === 'dbReadyFlag' ? dbReady : eval(n); } catch { return undefined; } } }); } return o; })();\n";
