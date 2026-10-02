@@ -124,6 +124,9 @@ const MEDIA_EXTRA_MIN_HEIGHT = 400;
 const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
 const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
 const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
+// Telegram Bot API: timeout of one JSON call, and the longest "retry_after" (429) we are willing to sit out once.
+const TELEGRAM_API_TIMEOUT_MS = Math.max(5000, Math.min(120000, Number(process.env.TELEGRAM_API_TIMEOUT_MS || 30000)));
+const TELEGRAM_RETRY_AFTER_MAX_SECONDS = Math.max(1, Math.min(120, Number(process.env.TELEGRAM_RETRY_AFTER_MAX_SECONDS || 30)));
 const SOURCE_IMAGE_ENHANCE_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.SOURCE_IMAGE_ENHANCE_CONCURRENCY || 1)));
 const IMAGE_ENHANCE_MIN_GAP_MS = Math.max(8000, Number(process.env.IMAGE_ENHANCE_MIN_GAP_MS || 13000));
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
@@ -699,7 +702,11 @@ function normalizeWorkspaceState(saved, freshnessFactor) {
 }
 function freshWorkspaceState() {
   const fresh = structuredClone(defaultState);
-  fresh.mode = "AUTO";
+  // Safe start: nothing is published automatically until enableAutoPublishingAfterChecks
+  // (Telegram reachable + bot can post + enough sources + profile) has passed and switched it to AUTO.
+  // A manual mode / auto-publish choice made in the admin before that clears the pending flag, so the gate never overrides it.
+  fresh.mode = "REVIEW";
+  fresh.autoGate = { pending: true, since: new Date().toISOString() };
   fresh.sources = [];
   fresh.sourceStats = {};
   fresh.queue = [];
@@ -720,6 +727,11 @@ function freshWorkspaceState() {
   return fresh;
 }
 
+// A public @username (not a numeric chat id like -1001234567890, which must never be shown as "@-100…").
+function telegramUsernameOrEmpty(value) {
+  const v = String(value || "").trim().replace(/^@/, "");
+  return /^[A-Za-z][A-Za-z0-9_]*$/.test(v) ? v : "";
+}
 function normalizeWorkspaceMeta(raw, fallbackId) {
   const id = String(raw && raw.id || fallbackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || DEFAULT_WORKSPACE_ID;
   const name = String(raw && raw.name || "Новый канал").trim().slice(0, 80) || "Новый канал";
@@ -727,7 +739,7 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const initialsRaw = String(raw && raw.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3);
   const initials = initialsRaw || name.split(/\s+/).filter(Boolean).slice(0, 2).map(function(x){ return x[0] || ""; }).join("").toUpperCase().slice(0, 3) || "NF";
   const telegramChannel = String(raw && raw.telegramChannel || "").trim();
-  const telegramPublicUsername = String(raw && raw.telegramPublicUsername || telegramChannel || slug || "").replace(/^@/, "").trim();
+  const telegramPublicUsername = telegramUsernameOrEmpty(raw && raw.telegramPublicUsername) || telegramUsernameOrEmpty(telegramChannel) || telegramUsernameOrEmpty(slug);
   const avatarUrl = String(raw && raw.avatarUrl || "").trim();
   const avatarFile = String(raw && raw.avatarFile || "").trim();
   const channelIdRaw = String(raw && raw.channelId || "").trim().toLowerCase();
@@ -778,14 +790,25 @@ function currentTelegramChannel() {
 function currentTelegramPublicUsername() {
   const ws = currentWorkspace();
   return ws
-    ? String(ws.telegramPublicUsername || ws.slug || ws.telegramChannel || "").replace(/^@/, "").trim()
-    : String(TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
+    ? (telegramUsernameOrEmpty(ws.telegramPublicUsername) || telegramUsernameOrEmpty(ws.slug) || telegramUsernameOrEmpty(ws.telegramChannel))
+    : (telegramUsernameOrEmpty(TELEGRAM_PUBLIC_USERNAME) || telegramUsernameOrEmpty(CHANNEL));
 }
 function workspaceVkPublishingAllowed(ws) {
   const target = ws || currentWorkspace();
   return Boolean(target && target.id === workspaceStore.defaultWorkspaceId);
 }
 function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", vkPublishingAllowed: workspaceVkPublishingAllowed(ws), channelId: ws.channelId || "", editorialChannelId: resolveChannelId(ws), createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+// Two cabinets posting into one Telegram chat would publish every post twice into it.
+function telegramChatKey(raw) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  return /^-?\d+$/.test(v) ? v : v.replace(/^@/, "").toLowerCase();
+}
+function findWorkspaceByTelegramChat(raw, exceptId) {
+  const key = telegramChatKey(raw);
+  if (!key) return null;
+  return workspaceStore.workspaces.find(function(ws){ return ws && ws.id !== exceptId && telegramChatKey(ws.telegramChannel) === key; }) || null;
+}
 function normalizeTelegramChannelInput(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
@@ -3049,16 +3072,17 @@ function extractMetaImage(html, pageUrl) {
   return "";
 }
 
-// Telegram sendVideo only plays MPEG-4: a .webm is delivered as a plain "logo.webm" file
-// attachment. Short decorative clips (animated logos, backgrounds, hero loops) found on
+// Telegram sendVideo only plays MPEG-4 (.mp4 / .m4v): a .webm is delivered as a plain "logo.webm" file
+// attachment, and a QuickTime .mov is not reliably accepted, so only MPEG-4 containers pass. Short decorative clips (animated logos, backgrounds, hero loops) found on
 // article pages are not news video either, so neither is accepted as a post video.
 function isUsableNewsVideoUrl(rawUrl) {
   const value = String(rawUrl || "").trim();
   if (!value) return false;
   let pathname = value;
   try { pathname = new URL(value, PUBLIC_BASE_URL).pathname; } catch {}
-  if (!/\.(mp4|m4v|mov)$/i.test(pathname)) return false;
-  const base = decodeURIComponent(pathname.split("/").pop() || "");
+  if (!/\.(mp4|m4v)$/i.test(pathname)) return false;
+  let base = pathname.split("/").pop() || "";
+  try { base = decodeURIComponent(base); } catch { return false; }
   if (/(^|[-_.\s])(logo|logotype|loop|intro|outro|bg|background|header|hero|banner|favicon|icon|sprite|placeholder|ambient|teaser-loop)([-_.\s\d]|$)/i.test(base)) return false;
   return true;
 }
@@ -6162,7 +6186,8 @@ function parseCookies(req) {
     if (!trimmed) return;
     const i = trimmed.indexOf("=");
     if (i === -1) return;
-    out[trimmed.slice(0, i)] = decodeURIComponent(trimmed.slice(i + 1));
+    const rawValue = trimmed.slice(i + 1);
+    try { out[trimmed.slice(0, i)] = decodeURIComponent(rawValue); } catch { out[trimmed.slice(0, i)] = rawValue; }
   });
   return out;
 }
@@ -6230,10 +6255,19 @@ function escapeTelegramAttr(value) {
 }
 
 function formatTelegramInline(value) {
-  let out = escapeTelegramHtml(value);
-  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  out = out.replace(/__([^_\n]+)__/g, "<i>$1</i>");
-  return out;
+  const escaped = escapeTelegramHtml(value);
+  const italic = function(part) { return part.replace(/__([^_\n]+)__/g, "<i>$1</i>"); };
+  // Bold spans first; italics are applied inside and outside them separately, so
+  // "**a __b** c__" can never produce crossed tags (<b>..<i>..</b>..</i>) that Telegram rejects.
+  let out = "";
+  let last = 0;
+  const boldRe = /\*\*([^*\n]+)\*\*/g;
+  let m;
+  while ((m = boldRe.exec(escaped)) !== null) {
+    out += italic(escaped.slice(last, m.index)) + "<b>" + italic(m[1]) + "</b>";
+    last = m.index + m[0].length;
+  }
+  return out + italic(escaped.slice(last));
 }
 
 function formatTelegramBody(value) {
@@ -6355,17 +6389,108 @@ function normalizePublishTargets(value) {
   };
 }
 
+// Telegram errors carry the Bot API error_code / description so callers can tell
+// "the channel will never accept this" (permanent) from "try again / fix the media".
+const TELEGRAM_PERMANENT_DESCRIPTION = /chat not found|chat_id is empty|peer_id_invalid|bot was kicked|bot is not a member|bot was blocked|not enough rights|have no rights|need administrator rights|chat_admin_required|chat_write_forbidden|channel_private|chat_restricted|user is deactivated|group chat was upgraded|bot can't initiate|forbidden/i;
+function classifyTelegramError(errorCode, description) {
+  const code = Number(errorCode) || 0;
+  const text = String(description || "");
+  return {
+    parseError: code === 400 && /can't parse entities|can't find end tag|unsupported start tag|unmatched end tag/i.test(text),
+    // 401 = bad token, 403 = forbidden / kicked / blocked, 404 = unknown bot token or method.
+    permanent: code === 401 || code === 403 || code === 404 || (code === 400 && TELEGRAM_PERMANENT_DESCRIPTION.test(text))
+  };
+}
+function createTelegramError(method, httpStatus, data, fallbackMessage) {
+  const body = data && typeof data === "object" ? data : {};
+  const code = Number(body.error_code) || Number(httpStatus) || 0;
+  const description = String(body.description || fallbackMessage || "Telegram API error");
+  const params = body.parameters && typeof body.parameters === "object" ? body.parameters : {};
+  const retryAfter = Number(params.retry_after);
+  const kind = classifyTelegramError(code, description);
+  const error = new Error(description);
+  error.telegram = true;
+  error.telegramMethod = method;
+  error.telegramErrorCode = code;
+  error.telegramDescription = description;
+  error.telegramRetryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0;
+  error.telegramRateLimited = code === 429;
+  error.telegramPermanent = kind.permanent;
+  error.telegramParseError = kind.parseError;
+  return error;
+}
+// Errors where another attempt (URL -> upload, generated cover, repair loop) cannot help:
+// the chat rejects us, or Telegram told us to slow down.
+function isTelegramFatalError(error) {
+  return Boolean(error && error.telegram && (error.telegramPermanent || error.telegramRateLimited));
+}
+
+function stripTelegramHtml(html) {
+  return String(html || "")
+    .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, function(_m, href, label) {
+      const url = String(href).replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      const text = String(label).replace(/<[^>]*>/g, "");
+      return text && text !== url ? text + " (" + url + ")" : url;
+    })
+    .replace(/<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|span|tg-emoji)(?:\s[^>]*)?>/gi, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+}
+// The same call without HTML parsing: used when Telegram answers "can't parse entities".
+function telegramPlainPayload(payload) {
+  const out = Object.assign({}, payload || {});
+  let changed = false;
+  if (String(out.parse_mode || "").toUpperCase() === "HTML") {
+    delete out.parse_mode;
+    changed = true;
+    ["caption", "text"].forEach(function(key) { if (typeof out[key] === "string") out[key] = stripTelegramHtml(out[key]); });
+  }
+  if (Array.isArray(out.media)) {
+    out.media = out.media.map(function(item) {
+      if (!item || String(item.parse_mode || "").toUpperCase() !== "HTML") return item;
+      changed = true;
+      const copy = Object.assign({}, item);
+      delete copy.parse_mode;
+      if (typeof copy.caption === "string") copy.caption = stripTelegramHtml(copy.caption);
+      return copy;
+    });
+  }
+  return changed ? out : null;
+}
+
+// One Telegram request with: timeout, error classification, one bounded 429 retry_after wait.
+async function telegramRequest(method, makeInit, timeoutMs) {
+  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
+  for (let attempt = 0; ; attempt += 1) {
+    const init = makeInit();
+    init.signal = AbortSignal.timeout(timeoutMs);
+    const response = await fetch(endpoint, init);
+    const data = await response.json().catch(function(){ return null; });
+    if (response.ok && data && data.ok) return data.result;
+    const error = createTelegramError(method, response.status, data, "Telegram " + method + " HTTP " + response.status);
+    if (error.telegramRateLimited && attempt === 0 && error.telegramRetryAfter > 0 && error.telegramRetryAfter <= TELEGRAM_RETRY_AFTER_MAX_SECONDS) {
+      console.warn("TELEGRAM_RATE_LIMITED " + JSON.stringify({ method: method, retry_after: error.telegramRetryAfter }));
+      await sleepMs(error.telegramRetryAfter * 1000 + 250);
+      continue;
+    }
+    throw error;
+  }
+}
+
 async function telegramApi(method, payload) {
   if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (!response.ok || !data.ok) throw new Error((data && data.description) || "Telegram API error");
-  return data.result;
+  try {
+    return await telegramRequest(method, function() {
+      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) };
+    }, TELEGRAM_API_TIMEOUT_MS);
+  } catch (error) {
+    // Invalid markup (e.g. crossed tags) must not keep a post from going out: send it as plain text.
+    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
+    if (!plain) throw error;
+    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
+    return await telegramRequest(method, function() {
+      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(plain) };
+    }, TELEGRAM_API_TIMEOUT_MS);
+  }
 }
 
 function telegramUploadMeta(rawUrl, fallbackKind) {
@@ -6433,31 +6558,52 @@ async function loadTelegramUpload(rawUrl, kind) {
 async function telegramMultipartApi(method, payload, fieldName, mediaUrl, kind) {
   if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
   const media = await loadTelegramUpload(mediaUrl, kind);
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
-  const form = new FormData();
-  Object.entries(payload || {}).forEach(function(entry) {
-    const key = entry[0], value = entry[1];
-    if (value === undefined || value === null || value === "") return;
-    form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
-  });
-  form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
-  const response = await fetch(endpoint, {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(kind === "video" ? 60000 : 45000)
-  });
-  const data = await response.json().catch(function(){ return {}; });
-  if (!response.ok || !data.ok) throw new Error((data && data.description) || ("Telegram multipart HTTP " + response.status));
-  return data.result;
+  const upload = async function(fields) {
+    return telegramRequest(method, function() {
+      const form = new FormData();
+      Object.entries(fields || {}).forEach(function(entry) {
+        const key = entry[0], value = entry[1];
+        if (value === undefined || value === null || value === "") return;
+        form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
+      });
+      form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
+      return { method: "POST", body: form };
+    }, kind === "video" ? 60000 : 45000);
+  };
+  try {
+    return await upload(payload);
+  } catch (error) {
+    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
+    if (!plain) throw error;
+    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
+    return await upload(plain);
+  }
 }
 
 async function telegramMediaApi(method, payload, fieldName, mediaUrl, kind) {
   try {
     return await telegramApi(method, Object.assign({}, payload, { [fieldName]: mediaUrl }));
   } catch (urlError) {
+    // The chat rejects us / rate limit: uploading the same file again cannot succeed (and would double the calls).
+    if (isTelegramFatalError(urlError)) throw urlError;
     console.warn(method + " URL mode failed, retrying upload:", urlError.message);
     return telegramMultipartApi(method, payload, fieldName, mediaUrl, kind);
   }
+}
+
+// A cover for a post whose media Telegram refused. At most one paid generation per post:
+// a cover created by an earlier attempt (or by the media director) is reused.
+async function telegramCoverFallback(post, failingUrl, idPrefix) {
+  const existing = String(post.generatedImageUrl || "").trim();
+  if (existing && existing !== String(failingUrl || "").trim() && isLocalMediaUrl(existing)) return { url: existing, reused: true };
+  const cover = await generateNewsCover({
+    id: post.id || newId(idPrefix),
+    title: post.title || currentWorkspace().name || "News Factory",
+    text: post.text || "",
+    sourceName: post.sourceName || "Telegram fallback"
+  });
+  post.generatedImageUrl = cover.url;
+  return cover;
 }
 
 async function sendTelegramPost(post) {
@@ -6504,6 +6650,7 @@ async function sendTelegramPost(post) {
       }
     } catch (error) {
       console.warn("sendMediaGroup failed, falling back to one image:", error.message);
+      if (isTelegramFatalError(error)) throw error;
       imageUrl = mediaPackUrls[0] || imageUrl;
     }
   }
@@ -6522,15 +6669,10 @@ async function sendTelegramPost(post) {
       }, "video", videoUrl, "video");
     } catch (error) {
       console.warn("sendVideo failed:", error.message);
+      if (isTelegramFatalError(error)) throw error;
       if (!imageUrl && GENERATE_COVER_IF_MISSING) {
         try {
-          const generatedFallback = await generateNewsCover({
-            id: post.id || newId("video_fallback"),
-            title: post.title || "Что там у ИИ?",
-            text: post.text || "",
-            sourceName: post.sourceName || "Telegram fallback"
-          });
-          post.generatedImageUrl = generatedFallback.url;
+          await telegramCoverFallback(post, "", "video_fallback");
         } catch (fallbackError) {
           throw new Error("Видео недоступно, а резервное фото не удалось подготовить: " + fallbackError.message);
         }
@@ -6540,7 +6682,7 @@ async function sendTelegramPost(post) {
     }
   }
 
-  imageUrl = String(post.imageUrl || post.generatedImageUrl || "").trim();
+  imageUrl = String(post.imageUrl || post.generatedImageUrl || imageUrl || "").trim();
 
   if (imageUrl && telegramCaptionFits(html)) {
     try {
@@ -6551,15 +6693,11 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto failed:", error.message);
+      // Chat rejected us / rate limit / bad markup: a new cover cannot fix it, do not pay for one.
+      if (isTelegramFatalError(error) || error.telegramParseError) throw error;
       if (GENERATE_COVER_IF_MISSING) {
         try {
-          const generatedFallback = await generateNewsCover({
-            id: post.id || newId("telegram_photo_fallback"),
-            title: post.title || currentWorkspace().name || "News Factory",
-            text: post.text || "",
-            sourceName: post.sourceName || "Telegram fallback"
-          });
-          post.generatedImageUrl = generatedFallback.url;
+          const generatedFallback = await telegramCoverFallback(post, imageUrl, "telegram_photo_fallback");
           imageUrl = generatedFallback.url;
           return await telegramMediaApi("sendPhoto", {
             chat_id: telegramChannel,
@@ -6586,14 +6724,8 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto long-caption media failed:", error.message);
-      if (!GENERATE_COVER_IF_MISSING) throw error;
-      const generatedFallback = await generateNewsCover({
-        id: post.id || newId("telegram_photo_fallback"),
-        title: post.title || currentWorkspace().name || "News Factory",
-        text: post.text || "",
-        sourceName: post.sourceName || "Telegram fallback"
-      });
-      post.generatedImageUrl = generatedFallback.url;
+      if (!GENERATE_COVER_IF_MISSING || isTelegramFatalError(error) || error.telegramParseError) throw error;
+      const generatedFallback = await telegramCoverFallback(post, imageUrl, "telegram_photo_fallback");
       imageUrl = generatedFallback.url;
       photo = await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
@@ -7463,6 +7595,8 @@ function postForPlatform(post, platform) {
 }
 
 function publishErrorLooksRepairable(error) {
+  // Permanent chat errors and rate limits are not media problems: repairing and re-sending only repeats them.
+  if (isTelegramFatalError(error)) return false;
   const text = String(error && (error.vkErrorMsg || error.message) || error || "").toLowerCase();
   return /media|photo|video|image|file|upload|caption|too long|400|413|preview|размер|фото|видео|медиа/.test(text);
 }
@@ -8396,7 +8530,7 @@ function editorialChannelId() {
 
 function editorialSignature(ws) {
   const target = ws || currentWorkspace();
-  const username = String(target && (target.telegramPublicUsername || target.slug) || "").replace(/^@/, "").trim();
+  const username = target ? (telegramUsernameOrEmpty(target.telegramPublicUsername) || telegramUsernameOrEmpty(target.slug)) : "";
   return username ? "@" + username : "";
 }
 
@@ -10280,7 +10414,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
-      const slug = decodeURIComponent(p.slice("/p/".length));
+      let slug = "";
+      try { slug = decodeURIComponent(p.slice("/p/".length)); } catch { return sendJson(res, 400, { ok: false, error: "invalid page path" }); }
       if (!slug || !/^[a-z0-9_-]{8,120}$/i.test(slug)) return sendJson(res, 404, { ok: false, error: "page not found" });
       const page = await getPublicPostPage(slug);
       if (!page) return sendJson(res, 404, { ok: false, error: "page not found" });
@@ -10295,7 +10430,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/media/")) {
-      const fileName = decodeURIComponent(p.slice("/media/".length));
+      let fileName = "";
+      try { fileName = decodeURIComponent(p.slice("/media/".length)); } catch { return sendJson(res, 400, { ok: false, error: "invalid media path" }); }
       if (!fileName || fileName !== path.basename(fileName)) return sendJson(res, 400, { ok: false, error: "invalid media path" });
       const filePath = path.join(MEDIA_DIR, fileName);
       try {
@@ -10571,6 +10707,8 @@ const server = http.createServer(async function(req, res) {
       if (!/^[A-Za-z0-9_-]+$/.test(slug)) slug = username;
       // id только из латиницы/цифр: normalizeWorkspaceMeta всё остальное вырезает, и id мог совпасть с существующим.
       const base = String(slug || username || name).toLowerCase().replace(/^@/, "").replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "channel";
+      const sharedChat = findWorkspaceByTelegramChat(tgChannel, "");
+      if (sharedChat) return sendJson(res, 409, { ok: false, error: "Этот Telegram-канал уже подключён к кабинету «" + sharedChat.name + "»", conflictWorkspaceId: sharedChat.id });
       let id = base, suffix = 2;
       while (getWorkspaceById(id)) id = base + "-" + suffix++;
       const workspace = normalizeWorkspaceMeta({
@@ -10590,6 +10728,11 @@ const server = http.createServer(async function(req, res) {
       const body = await readJsonObject(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      if (body.telegramChannel != null) {
+        const nextChannel = normalizeTelegramChannelInput(body.telegramChannel);
+        const sharedChat = telegramChatKey(nextChannel) !== telegramChatKey(workspace.telegramChannel) ? findWorkspaceByTelegramChat(nextChannel, workspace.id) : null;
+        if (sharedChat) return sendJson(res, 409, { ok: false, error: "Этот Telegram-канал уже подключён к кабинету «" + sharedChat.name + "»", conflictWorkspaceId: sharedChat.id });
+      }
       if (body.name != null) workspace.name = String(body.name || "").trim().slice(0, 80) || workspace.name;
       if (body.initials != null) workspace.initials = String(body.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3) || workspace.initials;
       if (body.slug != null) workspace.slug = String(body.slug || "").replace(/^@/, "").trim().slice(0, 80);
@@ -10811,6 +10954,7 @@ const server = http.createServer(async function(req, res) {
         return sendJson(res, 400, { ok: false, error: "invalid mode" });
       }
       state.mode = mode;
+      if (state.autoGate && state.autoGate.pending) state.autoGate = Object.assign({}, state.autoGate, { pending: false, manualAt: new Date().toISOString() });
       saveState();
       return sendJson(res, 200, { ok: true, mode: mode });
     }
@@ -10839,6 +10983,7 @@ const server = http.createServer(async function(req, res) {
       }
       if (Object.prototype.hasOwnProperty.call(body, "auto_publish_telegram")) {
         current.auto_publish_telegram = body.auto_publish_telegram !== false;
+        if (state.autoGate && state.autoGate.pending) state.autoGate = Object.assign({}, state.autoGate, { pending: false, manualAt: new Date().toISOString() });
       }
       if (Object.prototype.hasOwnProperty.call(body, "auto_publish_vk")) {
         current.auto_publish_vk = body.auto_publish_vk !== false;
@@ -11667,6 +11812,10 @@ function setupNewChannels() {
         const autoMigration = "v0.40.3-auto-publish";
         if (!state.migrations.includes(autoMigration) && !state.migrations.includes("v0.40.2-money-auto-publish")) {
           const auto = await enableAutoPublishingAfterChecks(ws);
+          if (auto.skippedManual) {
+            state.migrations.push(autoMigration);
+            saveState();
+          }
           if (auto.enabled) {
             state.migrations.push(autoMigration);
             saveState();
@@ -11691,6 +11840,13 @@ setInterval(setupNewChannels, 15 * 60 * 1000);
 // sources, editorial profile resolved. VK stays off (not connected).
 async function enableAutoPublishingAfterChecks(ws) {
   const checks = {};
+  // Never override an explicit manual choice: a REVIEW / PAUSED mode or auto_publish_telegram:false that is not the
+  // fresh-workspace default (autoGate.pending) was set by a person, so the gate leaves it alone.
+  const gatePending = Boolean(state.autoGate && state.autoGate.pending);
+  const currentTopic = state.topicSettings && state.topicSettings.default || {};
+  if (!gatePending && (state.mode !== "AUTO" || currentTopic.auto_publish_telegram === false)) {
+    return { enabled: false, skippedManual: true, mode: state.mode };
+  }
   checks.channelId = resolveChannelId(ws);
   checks.profile = Boolean(checks.channelId);
   checks.telegramChannel = String(ws.telegramChannel || "").trim();
@@ -11701,7 +11857,12 @@ async function enableAutoPublishingAfterChecks(ws) {
     const chat = await telegramApi("getChat", { chat_id: checks.telegramChannel });
     const me = await telegramApi("getMe", {});
     const member = await telegramApi("getChatMember", { chat_id: chat.id, user_id: me.id });
-    botCanPost = member && (member.status === "creator" || (member.status === "administrator" && member.can_post_messages !== false));
+    // Telegram omits can_post_messages for the creator only; an administrator must have it explicitly true.
+    // The news channels are broadcast channels, so any other chat type is rejected.
+    checks.chatType = String(chat.type || "");
+    botCanPost = Boolean(member) && checks.chatType === "channel" &&
+      (member.status === "creator" || (member.status === "administrator" && member.can_post_messages === true));
+    if (checks.chatType && checks.chatType !== "channel") checks.telegramError = "chat type is " + checks.chatType + ", expected channel";
     checks.chatTitle = chat.title || "";
   } catch (error) { checks.telegramError = String(error.message || error).slice(0, 160); }
   checks.botCanPost = Boolean(botCanPost);
@@ -11710,6 +11871,7 @@ async function enableAutoPublishingAfterChecks(ws) {
     state.mode = "AUTO";
     state.topicSettings = state.topicSettings || {};
     state.topicSettings.default = Object.assign({}, state.topicSettings.default || {}, { auto_publish_telegram: true, auto_publish_vk: false });
+    if (state.autoGate) state.autoGate = Object.assign({}, state.autoGate, { pending: false, enabledAt: new Date().toISOString() });
     saveState();
   }
   return Object.assign({ enabled: Boolean(ok), mode: state.mode }, checks);
@@ -11724,7 +11886,7 @@ setTimeout(function() {
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         const result = await enableAutoPublishingAfterChecks(ws);
         // Retried on the next start until all checks pass.
-        if (result.enabled) { state.migrations.push(migration); saveState(); }
+        if (result.enabled || result.skippedManual) { state.migrations.push(migration); saveState(); }
         console.log("AUTO_PUBLISH_SETUP " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
       });
     }
@@ -11966,102 +12128,6 @@ setTimeout(function() {
           }
         } catch (error) {
           console.warn("Car startup catch-up publish failed:", error.message);
-        }
-
-        const repairMarker = "v0.29.1-car-telegram-media-repair-test";
-        state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
-        if (!state.migrations.includes(repairMarker)) {
-          try {
-            let item = (state.queue || [])
-              .filter(function(q){ return q && q.id && q.telegramPublished !== true && !isBloggerSource(q); })
-              .sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); })[0] || null;
-            if (!item) {
-              await collectOnce("car-repair-test");
-              item = (state.queue || [])
-                .filter(function(q){ return q && q.id && q.telegramPublished !== true && !isBloggerSource(q); })
-                .sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); })[0] || null;
-            }
-            if (!item) throw new Error("Нет подходящей новости для контрольной публикации");
-
-            let media = {
-              imageUrl: item.imageUrl || "",
-              generatedImageUrl: item.generatedImageUrl || "",
-              videoUrl: item.videoUrl || ""
-            };
-            if (!(media.imageUrl || media.generatedImageUrl || media.videoUrl)) {
-              media = await ensureMediaForNews({
-                id: item.newsId || item.id,
-                title: item.title,
-                text: item.text,
-                sourceName: item.sourceName || "Контрольная публикация",
-                imageUrl: "",
-                videoUrl: "",
-                mediaLicense: sourceMediaLicense(item)
-              });
-              item.imageUrl = media.imageUrl || "";
-              item.generatedImageUrl = media.generatedImageUrl || "";
-              item.videoUrl = media.videoUrl || "";
-            }
-
-            const result = await sendMultiPlatformPost({
-              id: item.id,
-              postId: item.id,
-              newsId: item.newsId || "",
-              topicId: item.topicId || "default",
-              allow_text_fallback: false,
-              title: item.title,
-              text: item.text,
-              sourceName: item.sourceName || "",
-              sourceId: item.sourceId || "",
-              sourceUrl: item.sourceUrl || "",
-              imageUrl: item.imageUrl || media.imageUrl || "",
-              originalImageUrl: item.originalImageUrl || media.originalImageUrl || "",
-              originalVideoUrl: item.originalVideoUrl || media.originalVideoUrl || "",
-              generatedImageUrl: item.generatedImageUrl || media.generatedImageUrl || "",
-              videoUrl: item.videoUrl || media.videoUrl || "",
-              mediaStatus: item.mediaStatus || media.mediaStatus || "",
-              mediaOrigin: item.mediaOrigin || media.mediaOrigin || "",
-              mediaLicense: item.mediaLicense || media.mediaLicense || sourceMediaLicense(item)
-            }, { telegram: true, vk: false });
-
-            if (!result.telegramPublished) throw new Error("Telegram не подтвердил публикацию");
-            const publishedAt = new Date().toISOString();
-            item.telegramPublished = true;
-            item.telegramMessageId = result.message_id;
-            item.telegramPublishedAt = publishedAt;
-            item.published = item.vkPublished === true;
-            item.publishedAt = publishedAt;
-            state.history.unshift({
-              id: newId("hist"),
-              queueId: item.id,
-              newsId: item.newsId || "",
-              title: result.publishedTitle || item.title || "",
-              text: result.publishedText || item.text || "",
-              telegramPublished: true,
-              telegramMessageId: result.message_id,
-              telegramPublishedAt: publishedAt,
-              vkPublished: false,
-              sourceId: item.sourceId || "",
-              sourceName: item.sourceName || "",
-              sourceUrl: item.sourceUrl || "",
-              imageUrl: item.imageUrl || "",
-              generatedImageUrl: item.generatedImageUrl || "",
-              videoUrl: item.videoUrl || "",
-              publishedAt: publishedAt,
-              publicationOrigin: "repair-test"
-            });
-            state.stats.published = Number(state.stats.published || 0) + 1;
-            noteSourceEvent(item, "published");
-            state.migrations.push(repairMarker);
-            saveState();
-            console.log("CAR_TELEGRAM_REPAIR_TEST_SUCCESS " + JSON.stringify({
-              queue_id: item.id,
-              message_id: result.message_id,
-              title: item.title || ""
-            }));
-          } catch (error) {
-            console.error("CAR_TELEGRAM_REPAIR_TEST_FAILED " + String(error && error.message || error));
-          }
         }
       });
     }
