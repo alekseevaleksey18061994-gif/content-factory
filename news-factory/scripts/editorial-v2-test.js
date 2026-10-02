@@ -558,6 +558,7 @@ await test("adversarial review regressions (sources, report, Claude retry)", asy
   assert.equal(sq.sourcesNeeded([{ enabled: true }], 0), 0, "target 0 disables top-up");
   assert.equal(sq.sourcesNeeded([{ enabled: true }], undefined), 39);
   assert.notEqual(sq.sourceKey("https://habr.com/ru/companies/sberbank/news/"), sq.sourceKey("https://habr.com/ru/hubs/artificial_intelligence/news/"));
+  assert.notEqual(sq.sourceKey("https://t.me/s/minfin"), sq.sourceKey("https://t.me/s/bankiru"), "each Telegram channel is its own source");
   assert.equal(sq.freshCandidates([{ name: "Motor news", url: "https://motor.ru/news/" }], [{ url: "https://motor.ru/", enabled: true }], []).length, 0, "site connected by main page is not added again");
   assert.equal(sq.freshCandidates([{ name: "Habr AI", url: "https://habr.com/ru/hubs/artificial_intelligence/news/" }], [], [sq.sourceKey("https://habr.com/ru/companies/sberbank/news/")]).length, 1, "removing one section does not block the whole site");
 

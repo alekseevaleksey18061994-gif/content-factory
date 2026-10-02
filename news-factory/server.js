@@ -10825,7 +10825,7 @@ setTimeout(function() {
       if (!ws || !ws.state) continue;
       const channelId = resolveChannelId(ws);
       if (!SEED_SOURCES[channelId] || channelId === "ai") continue;
-      const migration = "v0.39.5-seed-" + channelId;
+      const migration = "v0.40.1-seed-" + channelId; // re-run: Telegram channels were merged into one key
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       if (ws.state.migrations.includes(migration)) continue;
       await workspaceContext.run({ workspaceId: ws.id }, async function(){

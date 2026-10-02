@@ -125,6 +125,9 @@ export function sourceKey(url) {
     const segs = u.pathname.split("/").filter(Boolean).map(function(x){ return x.toLowerCase(); });
     // Locale prefixes (/ru/, /en/) are not a section: habr.com/ru/hubs/... and
     // habr.com/ru/companies/... are different sections.
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    // Telegram: every channel is its own source (t.me/s/<channel>).
+    if (host === "t.me" || host === "telegram.me") return "t.me/" + (segs[0] === "s" ? segs[1] || "" : segs[0] || "");
     const section = segs[0] && /^[a-z]{2}(-[a-z]{2})?$/.test(segs[0]) ? segs.slice(0, 3).join("/") : (segs[0] || "");
     return u.hostname.replace(/^www\./i, "").toLowerCase() + "/" + section;
   } catch { return ""; }
@@ -265,6 +268,18 @@ export const SEED_SOURCES = {
     { name: "MMI (Telegram)", url: "https://t.me/s/russianmacro", group: "creator" },
     { name: "РБК (Telegram)", url: "https://t.me/s/rbc_news", group: "creator" },
     { name: "Интерфакс (Telegram)", url: "https://t.me/s/interfaxonline", group: "creator" },
+    { name: "ПРАЙМ (Telegram)", url: "https://t.me/s/prime1", group: "creator" },
+    { name: "Банкста (Telegram)", url: "https://t.me/s/banksta", group: "creator" },
+    { name: "Ведомости (Telegram)", url: "https://t.me/s/vedomosti", group: "creator" },
+    { name: "Коммерсантъ (Telegram)", url: "https://t.me/s/kommersant", group: "creator" },
+    { name: "ФНС России (Telegram)", url: "https://t.me/s/nalog_gov_ru", group: "creator" },
+    { name: "Росстат (Telegram)", url: "https://t.me/s/rosstat_official", group: "creator" },
+    { name: "Финансовая культура (Telegram)", url: "https://t.me/s/fincult_info", group: "creator" },
+    { name: "Социальный фонд (Telegram)", url: "https://t.me/s/sfr_official", group: "creator" },
+    { name: "Мосбиржа (Telegram)", url: "https://t.me/s/moex_official", group: "creator" },
+    { name: "Сравни (Telegram)", url: "https://t.me/s/sravni_ru", group: "creator" },
+    { name: "Финам (Telegram)", url: "https://t.me/s/finamalert", group: "creator" },
+    { name: "Твои деньги (Telegram)", url: "https://t.me/s/tvoidengi", group: "creator" },
     // World — only what moves the rouble and prices
     { name: "Investing.com — экономика", url: "https://ru.investing.com/news/economy", group: "media" },
     { name: "Финам — рынки", url: "https://www.finam.ru/publications/section/market/", group: "media" },
