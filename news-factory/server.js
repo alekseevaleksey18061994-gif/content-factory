@@ -2261,7 +2261,9 @@ async function enforceCopyrightSafeMedia(post) {
 
   const generatedIndependent =
     out.mediaStatus === "generated" ||
+    out.mediaStatus === "local_card" ||
     out.mediaOrigin === "ai_generated" ||
+    out.mediaOrigin === "local_branded_card" ||
     isIndependentGeneratedUrl(out.generatedImageUrl);
 
   out.originalImageUrl = out.originalImageUrl || out.imageUrl || "";
@@ -2277,18 +2279,19 @@ async function enforceCopyrightSafeMedia(post) {
       if (MEDIA_REQUIRED) throw new Error("Медиа этого источника запрещено настройками, а генерация резервной обложки отключена");
       return out;
     }
-    const generated = await generateNewsCover({
+    const generated = await renderEconomyTextCard({
       id: out.newsId || out.postId || out.id || newId("copyright"),
       title: out.title || currentWorkspace().name || "News Factory",
       text: out.text || "",
-      sourceName: out.sourceName || ""
+      topicId: out.topicId || currentWorkspace().channelId || "",
+      cardNote: "Редакционная карточка"
     });
     out.generatedImageUrl = generated.url;
     out.generatedBy = generated.model;
   }
   out.mediaType = "generated";
-  out.mediaStatus = "generated";
-  out.mediaOrigin = "ai_generated";
+  out.mediaStatus = out.mediaOrigin === "ai_generated" ? "generated" : "local_card";
+  out.mediaOrigin = generatedIndependent && out.mediaOrigin === "ai_generated" ? "ai_generated" : "local_branded_card";
   out.copyrightMediaDecision = "source_media_blocked";
   return out;
 }
