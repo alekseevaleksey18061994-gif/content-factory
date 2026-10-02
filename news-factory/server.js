@@ -2340,101 +2340,55 @@ function imageRetryDelayMs(response, data) {
   return 15000;
 }
 
+// Quality-only enhancement of a real news photo. Deliberately NOT generative: an image
+// model redraws the picture (invented details, changed sky, padded borders from a fixed
+// output size). Here the pixels of the scene stay the same — only technical quality:
+// EXIF orientation, moderate upscale of small photos, light denoise, gentle sharpening
+// and a very mild contrast lift. Same composition and aspect ratio.
+const ENHANCE_TARGET_WIDTH = 1600;
 async function enhanceNewsImage(payload) {
-  if (!OPENAI_API_KEY || !IMAGE_ENHANCEMENT_ENABLED) {
-    throw new Error("AI-улучшение изображений отключено");
-  }
+  if (!IMAGE_ENHANCEMENT_ENABLED) throw new Error("Улучшение изображений отключено");
 
   const imageUrl = String(payload.imageUrl || "").trim();
-  if (!/^https?:\/\//i.test(imageUrl)) throw new Error("Нет исходного изображения для улучшения");
-
-  const sourceResponse = await fetch(imageUrl, {
-    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryMedia/1.0)" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(30000)
-  });
-  if (!sourceResponse.ok) throw new Error("Не удалось скачать исходное фото: HTTP " + sourceResponse.status);
-
-  const contentType = String(sourceResponse.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-  if (!contentType.startsWith("image/")) throw new Error("Исходный файл не является изображением");
-
-  const bytes = Buffer.from(await sourceResponse.arrayBuffer());
-  if (!bytes.length) throw new Error("Исходное изображение пустое");
-  if (bytes.length > 12 * 1024 * 1024) throw new Error("Исходное изображение слишком большое для AI-улучшения");
-
-  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : contentType.includes("gif") ? "gif" : "jpg";
-  const channelName = String(currentWorkspace().name || "News Factory");
-  const prompt = [
-    "Restore and enhance this source image for the news brand «" + channelName + "». This is an editorial restoration/upscale task, NOT a re-creation.",
-    "ABSOLUTE FACT LOCK: preserve every real person, face, facial expression, body, vehicle, product, logo, screen, document, poster, object, background element and scene identity. No substitutions, no invented details and no changing who or what is shown.",
-    "Preserve all existing readable text exactly. Never rewrite, translate, redesign, add or remove lettering, captions, numbers, logos, signs or watermarks.",
-    "Improve only technical quality: deblur where possible, recover detail, reduce compression artifacts/noise, improve local sharpness, natural exposure, white balance and realistic contrast.",
-    "For faces and skin: preserve identity and natural texture. No beauty retouching, plastic skin, changed eyes/teeth/hair or reconstructed facial features.",
-    "For cars/products: preserve exact shape, trim, color, badges, wheels, proportions and details.",
-    "For screenshots, posters, memes and stage screens: keep composition and typography unchanged; use only gentle upscale/denoise/sharpening.",
-    "Do not add cinematic effects, neon, glow, fake bokeh, lens flare, dramatic relighting, new objects or advertising-style polish.",
-    "The output should look like the SAME real image captured/exported at higher quality, not like AI-generated art.",
-    "Keep the original composition and aspect ratio unless a tiny crop is required to remove empty corrupted borders.",
-    "Topic context: " + String(payload.title || "").slice(0, 500)
-  ].join("\n");
-
-  const models = [OPENAI_IMAGE_MODEL, "gpt-image-2"].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
-  let lastError = "";
-
-  for (const model of models) {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        await reserveImageEnhanceSlot();
-
-        const form = new FormData();
-        form.append("model", model);
-        form.append("image[]", new Blob([bytes], { type: contentType }), "source." + ext);
-        form.append("prompt", prompt);
-        form.append("size", "1536x1024");
-        form.append("quality", OPENAI_IMAGE_QUALITY);
-
-        const response = await fetch("https://api.openai.com/v1/images/edits", {
-          method: "POST",
-          headers: { authorization: "Bearer " + OPENAI_API_KEY },
-          body: form,
-          signal: AbortSignal.timeout(120000)
-        });
-        const data = await response.json().catch(function(){ return {}; });
-
-        if (!response.ok) {
-          lastError = (data && data.error && data.error.message) || ("OpenAI image edit HTTP " + response.status);
-          if (response.status === 429 && attempt < 3) {
-            const delay = imageRetryDelayMs(response, data);
-            console.warn("Image enhancement rate-limited; retrying in " + delay + "ms");
-            await sleepImageMs(delay);
-            continue;
-          }
-          break;
-        }
-
-        const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
-        if (!b64) {
-          lastError = "OpenAI image edit не вернул изображение";
-          break;
-        }
-
-        ensureDataDir();
-        const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
-        const fileName = "enhanced_" + safeId + "_" + Date.now() + ".png";
-        fs.writeFileSync(path.join(MEDIA_DIR, fileName), Buffer.from(b64, "base64"));
-        return { url: mediaPublicUrl(fileName), model: model, fileName: fileName };
-      } catch (error) {
-        lastError = String(error && error.message || error);
-        if (attempt < 3 && /429|rate limit|timeout|fetch failed|ECONNRESET/i.test(lastError)) {
-          await sleepImageMs(15000);
-          continue;
-        }
-        break;
-      }
-    }
+  let bytes = null;
+  const localFile = localMediaPathFromUrl(imageUrl);
+  if (localFile && fs.existsSync(localFile)) {
+    bytes = fs.readFileSync(localFile);
+  } else {
+    if (!/^https?:\/\//i.test(imageUrl)) throw new Error("Нет исходного изображения для улучшения");
+    const sourceResponse = await fetch(imageUrl, {
+      headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryMedia/1.0)" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!sourceResponse.ok) throw new Error("Не удалось скачать исходное фото: HTTP " + sourceResponse.status);
+    bytes = Buffer.from(await sourceResponse.arrayBuffer());
   }
+  if (!bytes || !bytes.length) throw new Error("Исходное изображение пустое");
+  if (bytes.length > 25 * 1024 * 1024) throw new Error("Исходное изображение слишком большое");
 
-  throw new Error(lastError || "Не удалось улучшить изображение");
+  let meta;
+  try { meta = await sharp(bytes).metadata(); } catch { throw new Error("Исходный файл не является изображением"); }
+  const width = Number(meta.width || 0);
+  if (!width) throw new Error("Не удалось определить размер изображения");
+
+  let pipeline = sharp(bytes, { failOn: "none" }).rotate();
+  if (width < ENHANCE_TARGET_WIDTH) {
+    // Upscale at most 2x: beyond that interpolation only adds blur.
+    pipeline = pipeline.resize({ width: Math.min(ENHANCE_TARGET_WIDTH, width * 2), kernel: "lanczos3", withoutEnlargement: false });
+  }
+  if (width < 1000) pipeline = pipeline.median(3);
+  pipeline = pipeline
+    .sharpen({ sigma: 0.8, m1: 0.6, m2: 1.6 })
+    .linear(1.04, -5)
+    .jpeg({ quality: 90, mozjpeg: true, chromaSubsampling: "4:4:4" });
+
+  const out = await pipeline.toBuffer();
+  ensureDataDir();
+  const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+  const fileName = "enhanced_" + safeId + "_" + Date.now() + ".jpg";
+  fs.writeFileSync(path.join(MEDIA_DIR, fileName), out);
+  return { url: mediaPublicUrl(fileName), model: "quality-only-v1", fileName: fileName };
 }
 
 
@@ -6937,6 +6891,96 @@ async function retryUnavailableEditorialQueueItems() {
   return { checked: candidates.length, repaired, held, skipped };
 }
 
+// Re-runs every not-yet-published queue item through the current editorial v2 rules
+// (writer + GPT/Claude check). Non-destructive: items the writer now skips are put on
+// hold with a reason instead of being deleted.
+async function rebuildQueueWithEditorialV2() {
+  if (!editorialV2Active()) return { ok: false, error: "Редакция v2 выключена" };
+  const wsId = currentWorkspaceId();
+  if (collectorRunningWorkspaces.has(wsId)) return { ok: false, error: "Идёт сбор новостей, попробуйте позже" };
+  collectorRunningWorkspaces.add(wsId);
+  const summary = { ok: true, workspace: wsId, total: 0, approved: 0, hold: 0, skipped: 0, failed: 0 };
+  try {
+    const items = (state.queue || []).filter(function(q) {
+      return q && !q.publishedAt && (String(q.sourceOriginalText || "").trim() || (Array.isArray(q.storySources) && q.storySources.length));
+    });
+    for (const item of items) {
+      summary.total += 1;
+      const rawSources = Array.isArray(item.storySources) && item.storySources.length
+        ? item.storySources
+        : [{
+            sourceName: item.sourceName, url: item.sourceUrl, publishedAt: item.articlePublishedAt || item.createdAt,
+            sourceRole: item.sourceRole, title: item.sourceOriginalTitle || item.title, text: item.sourceOriginalText || "",
+            originalImageUrl: item.originalImageUrl
+          }];
+      const sources = rawSources.map(function(source) {
+        return {
+          name: source.sourceName || "Источник",
+          url: source.url || "",
+          date: source.publishedAt || "",
+          role: sourceRoleLabel(source.sourceRole || sourceEditorialRole(source)),
+          title: source.title || "",
+          text: source.text || "",
+          photos: [source.originalImageUrl].filter(Boolean)
+        };
+      });
+      let v2;
+      try {
+        v2 = await runEditorialV2(sources, { hasPhoto: Boolean(item.imageUrl || item.generatedImageUrl || item.videoUrl || (Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length)) });
+      } catch (error) {
+        summary.failed += 1;
+        item.editorialRebuildError = String(error && error.message || error).slice(0, 300);
+        saveState();
+        continue;
+      }
+      item.editorialRebuiltAt = new Date().toISOString();
+      item.editorialRebuildError = "";
+      // Freshly re-checked: the separate "checker unavailable" retry must not redo it.
+      item.editorialV2RetryVersion = "structured-json-v1";
+      if (v2.skip) {
+        summary.skipped += 1;
+        Object.assign(item, {
+          qcStatus: "hold",
+          qualityScore: Math.min(Number(item.qualityScore) || 0, 40),
+          decisionSummary: "Пропущено при пересборке: " + v2.reason,
+          editorialV2: v2.meta
+        });
+        saveState();
+        continue;
+      }
+      Object.assign(item, {
+        title: v2.rewrite.title,
+        text: v2.rewrite.text,
+        aiScore: v2.rewrite.editorialScore,
+        aiScoreBreakdown: v2.rewrite.scoreBreakdown,
+        aiScoreReason: v2.rewrite.scoreReason,
+        aiTier: v2.rewrite.editorialScore >= AI_TOP_NEWS_SCORE ? "top" : (v2.rewrite.editorialScore >= AI_STRONG_NEWS_SCORE ? "strong" : "normal"),
+        contentFormat: v2.rewrite.contentFormat,
+        contentFormatLabel: v2.rewrite.contentFormatLabel,
+        qualityScore: v2.qc.qualityScore,
+        qualityBreakdown: v2.qc.qualityBreakdown,
+        qcStatus: v2.qc.qcStatus,
+        qcIssues: v2.qc.qcIssues,
+        qcRepaired: v2.qc.qcRepaired,
+        topicEntities: v2.qc.topicEntities,
+        platformVariants: v2.qc.platformVariants,
+        decisionSummary: v2.qc.decisionSummary,
+        editorialV2: v2.meta
+      });
+      if (!v2.meta.album && Array.isArray(item.mediaPackUrls) && item.mediaPackUrls.length > 1) {
+        item.mediaPackUrls = item.mediaPackUrls.slice(0, 1);
+        if (!item.videoUrl) item.mediaType = "photo";
+      }
+      if (v2.qc.qcStatus === "pass") summary.approved += 1; else summary.hold += 1;
+      saveState();
+    }
+  } finally {
+    collectorRunningWorkspaces.delete(wsId);
+  }
+  console.log("EDITORIAL_V2_REBUILD " + JSON.stringify(summary));
+  return summary;
+}
+
 function fallbackEditorialQC(payload) {
   const p = payload || {};
   const hasMedia = Boolean(p.videoUrl || p.imageUrl || p.generatedImageUrl || (Array.isArray(p.mediaPackUrls) && p.mediaPackUrls.length));
@@ -8148,6 +8192,10 @@ const server = http.createServer(async function(req, res) {
       });
       return sendJson(res, 200, { ok: true, registry: registry });
     }
+    if (req.method === "POST" && p === "/api/editorial/rebuild-queue") {
+      const result = await rebuildQueueWithEditorialV2();
+      return sendJson(res, result.ok ? 200 : 409, result);
+    }
     if (req.method === "GET" && p === "/api/editorial/status") {
       const recent = (state.queue || []).concat(state.history || []).filter(function(item){ return item && item.editorialV2; }).slice(0, 20);
       const anthropicHealth = ANTHROPIC_API_KEY ? await anthropicEditorialProbe(false) : { ok: false, error: "ANTHROPIC_API_KEY не задан" };
@@ -9023,6 +9071,35 @@ setTimeout(function() {
     }
   })();
 }, 1500);
+
+// One-time rebuild of the existing queue with the current editorial rules (v0.33.7).
+setTimeout(function() {
+  (async function(){
+    const migration = "v0.33.7-editorial-v2-rebuild-queue";
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try {
+          // First re-process queue photos from the originals with the quality-only
+          // enhancer (replaces earlier generative redraws), then rebuild the texts.
+          const photos = await backfillQueueImageEnhancements({ force: true }).catch(function(error){ return { error: error.message }; });
+          console.log("Queue photo re-enhancement " + ws.id + ":", JSON.stringify(photos));
+          const result = await rebuildQueueWithEditorialV2();
+          if (result.ok) {
+            state.migrations.push(migration);
+            saveState();
+          } else {
+            console.warn("Editorial v2 queue rebuild " + ws.id + " postponed:", result.error);
+          }
+        } catch (error) {
+          console.warn("Editorial v2 queue rebuild " + ws.id + " failed:", error.message);
+        }
+      });
+    }
+  })();
+}, 20000);
 
 setTimeout(function() {
   (async function(){
