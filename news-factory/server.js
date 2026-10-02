@@ -10248,7 +10248,23 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "POST" && p === "/api/queue/publish") {
       const body = await readJson(req);
       const item = state.queue.find(function(x){ return x.id === body.id; });
-      if (!item) return sendJson(res, 404, { ok: false, error: "Черновик не найден" });
+      if (!item) {
+        const published = (state.history || []).find(function(h){ return h && h.queueId === body.id; });
+        if (published) {
+          return sendJson(res, 200, {
+            ok: true,
+            alreadyPublished: true,
+            status: "published",
+            telegramPublished: Boolean(published.messageId || published.telegramMessageId),
+            vkPublished: Boolean(published.vkPostId),
+            messageId: published.messageId || published.telegramMessageId || null,
+            vkPostId: published.vkPostId || null,
+            publishedAt: published.publishedAt || "",
+            publicationOrigin: published.publicationOrigin || ""
+          });
+        }
+        return sendJson(res, 404, { ok: false, error: "Черновик не найден" });
+      }
 
       let media = {
         imageUrl: item.imageUrl || "",
