@@ -103,7 +103,8 @@ const EXPORT_NAMES = [
   "ensureScheduleShape", "moscowDateKey", "dynamicItemMaxAgeMs", "articleMaxAgeMs", "bumpSkipAttempt",
   "normalizeArticleUrl", "itemArticleKeys", "crossChannelIndex", "editorialRecentPosts", "crossChannelConflict", "channelFreshnessHours", "isApprovedQueueItem", "queueMaxAgeHoursFor", "dbReadyFlag",
   "recoverMissingWorkspaces", "persistWorkspaceStore", "pendingAutoTargets", "acquirePublishLock", "currentWorkspace", "dynamicUsedQueueIds", "enforceCopyrightSafeMedia", "server",
-  "runOffsiteBackup", "workspaceWatchdogTick", "readBackupStatus", "buildBackupPayload"
+  "runOffsiteBackup", "workspaceWatchdogTick", "readBackupStatus", "buildBackupPayload",
+  "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage"
 ];
 
 function bin(name) {
