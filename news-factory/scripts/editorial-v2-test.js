@@ -411,4 +411,18 @@ await test("post rating is out of 100 and its parts add up", async function() {
   assert.ok(/из 100/.test(lib.ratingBoxHtml(typical)));
 });
 
+await test("feed explains why a news item was skipped", async function() {
+  const fs = await import("node:fs");
+  const html = fs.readFileSync(fileURLToPath(new URL("../public/admin.html", import.meta.url)), "utf8");
+  const start = html.indexOf("function feedStatusReason(");
+  const end = html.indexOf("function statusRu(");
+  const fn = new Function(html.slice(start, end) + "; return feedStatusReason;")();
+  const skip = fn({ aiScoreReason: "Пропущено редакцией: промо собственного видео", metadata: { editorialSkipReason: "промо собственного видео" } }, "editorial_skip");
+  assert.equal(skip.title, "Почему пропущено:");
+  assert.equal(skip.text, "Промо собственного видео");
+  const dup = fn({ metadata: { storyRelation: { relation: "duplicate", publishedTitle: "BMW M5" } } }, "duplicate_story");
+  assert.ok(/BMW M5/.test(dup.text));
+  assert.equal(fn({ metadata: {} }, "queued"), null);
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));
