@@ -18,6 +18,16 @@ export const CHANNEL_IDS = [
   "world", "stars", "travel", "shopping", "home", "food", "business", "crypto"
 ];
 
+// Freshness window per channel profile (prompts/chto-tam.md, section 2, step 4): 24 hours by
+// default, 72 hours for the slower channels. The collector scales its own limits by this factor.
+export const CHANNEL_FRESHNESS_HOURS = { science: 72, world: 72, home: 72, food: 72 };
+
+export function channelFreshnessHours(channelId, defaultHours) {
+  const base = Number(defaultHours) > 0 ? Number(defaultHours) : 24;
+  const own = CHANNEL_FRESHNESS_HOURS[String(channelId || "")];
+  return own || base;
+}
+
 const VERDICT_RANK = { pass: 0, fix: 1, reject: 2 };
 
 // ---------------------------------------------------------------------------

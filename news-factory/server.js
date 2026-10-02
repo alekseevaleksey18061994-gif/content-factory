@@ -13,6 +13,7 @@ import {
   createEditorialPipeline,
   createModelClients,
   resolveChannelId,
+  channelFreshnessHours,
   timeSlotFor,
   legacyScores,
   loadPrompt as loadEditorialPrompt,
@@ -129,6 +130,15 @@ const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
 const QUEUE_MAX_AUTO_ITEMS = Math.max(5, Math.min(50, Number(process.env.QUEUE_MAX_AUTO_ITEMS || 20)));
+// Articles whose page carries no publication date are judged by fetch time, but only for this long.
+const UNDATED_ARTICLE_MAX_AGE_HOURS = Math.max(2, Math.min(48, Number(process.env.UNDATED_ARTICLE_MAX_AGE_HOURS || 12)));
+// A link that fails transiently (download, writer outage, DB write) is retried this many times in total, then recorded as seen.
+const SKIP_RETRY_MAX = Math.max(1, Math.min(6, Number(process.env.SKIP_RETRY_MAX || 3)));
+// After a skipped link (stale, too short, unreachable) the collector opens up to this many further unseen links of the same source in the same run.
+const EXTRA_LINKS_PER_SOURCE = Math.max(0, Math.min(8, Number(process.env.EXTRA_LINKS_PER_SOURCE || 3)));
+// The same article (normalized URL or content hash) queued/published by another channel is skipped for this long.
+const CROSS_CHANNEL_DEDUPE_ENABLED = String(process.env.CROSS_CHANNEL_DEDUPE_ENABLED || "true").toLowerCase() !== "false";
+const CROSS_CHANNEL_DEDUPE_HOURS = Math.max(1, Math.min(168, Number(process.env.CROSS_CHANNEL_DEDUPE_HOURS || 48)));
 const AI_STRONG_NEWS_SCORE_RAW = Number(process.env.AI_STRONG_NEWS_SCORE || 75);
 const AI_STRONG_NEWS_SCORE = Math.max(60, Math.min(95, Number.isFinite(AI_STRONG_NEWS_SCORE_RAW) ? AI_STRONG_NEWS_SCORE_RAW : 75));
 const AI_TOP_NEWS_SCORE_RAW = Number(process.env.AI_TOP_NEWS_SCORE || 88);
@@ -4375,7 +4385,25 @@ async function fetchText(url, timeoutMs) {
   return await response.text();
 }
 
+// Per-URL counter of transient failures (download, writer outage, DB write). Kept in the workspace
+// state so it survives restarts; after SKIP_RETRY_MAX attempts the link counts as seen.
+function bumpSkipAttempt(url, kind) {
+  state.skipAttempts = state.skipAttempts && typeof state.skipAttempts === "object" ? state.skipAttempts : {};
+  const entry = state.skipAttempts[url] || { n: 0 };
+  entry.n = Number(entry.n || 0) + 1;
+  entry.kind = String(kind || "");
+  entry.at = new Date().toISOString();
+  state.skipAttempts[url] = entry;
+  const keys = Object.keys(state.skipAttempts);
+  if (keys.length > 300) {
+    keys.sort(function(a, b){ return String(state.skipAttempts[a].at || "").localeCompare(String(state.skipAttempts[b].at || "")); })
+      .slice(0, keys.length - 300).forEach(function(k){ delete state.skipAttempts[k]; });
+  }
+  return entry.n;
+}
+
 async function seenOriginalUrl(url) {
+  if (state.skipAttempts && state.skipAttempts[url] && Number(state.skipAttempts[url].n) >= SKIP_RETRY_MAX) return true;
   if (db && dbReady) {
     const r = await db.query("SELECT 1 FROM news_items WHERE workspace_id=$1 AND original_url=$2 LIMIT 1", [currentWorkspaceId(), url]);
     return r.rowCount > 0;
@@ -4620,6 +4648,7 @@ async function collectOnce(trigger) {
       const source = candidate.source;
       const url = candidate.link.url;
 
+      let baseSaved = false;
       try {
         const articleHtml = await fetchText(url, 15000);
         const isBlogger = source.group === "blogger" || source.group === "creator";
@@ -4641,7 +4670,11 @@ async function collectOnce(trigger) {
           continue;
         }
         const contentHash = crypto.createHash("sha256").update(originalTitle + "\n" + originalText.slice(0, 6000)).digest("hex");
-        const id = "news_" + contentHash.slice(0, 20);
+        // The id is scoped to the workspace and the URL: the same article collected by two channels (or the
+        // same text under two URLs) used to collide on news_items_pkey, and the loser's post stayed queued
+        // without a DB row, so it was re-collected every tick. Rows written before this change keep their ids;
+        // all lookups go by (workspace_id, original_url).
+        const id = "news_" + crypto.createHash("sha256").update(currentWorkspaceId() + "\n" + contentHash + "\n" + url).digest("hex").slice(0, 20);
         // Cheap duplicate check on the source text BEFORE media preparation and the
         // writer/checker calls: an obvious repeat of a recently published post costs
         // one short classifier call instead of media + 3-6 LLM calls.
@@ -5044,29 +5077,35 @@ async function collectOnce(trigger) {
             saveState();
             continue;
           }
-          if (mergedStory) {
-            baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
-            baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
-            baseItem.metadata.storySourceCount = mergedStory.storySources && mergedStory.storySources.length || 0;
-          } else {
-            state.queue.unshift(queueItem);
-          }
           baseItem.metadata.storyRelation = {
             relation: storyRelation.relation,
             updateOf: queueItem.storyUpdateOf || "",
             updateTitle: queueItem.storyUpdateTitle || "",
             reason: storyRelation.reason || ""
           };
+          if (mergedStory) {
+            baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
+            baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
+            baseItem.metadata.storySourceCount = mergedStory.storySources && mergedStory.storySources.length || 0;
+          } else {
+            // DB row first: when the write fails (throws into the catch below) nothing is queued, so a post
+            // can never sit in the queue without a news_items row and be re-collected on every tick.
+            await saveNewsItem(baseItem);
+            baseSaved = true;
+            state.queue.unshift(queueItem);
+          }
           pruneQueueItems(state);
           summary.queued += 1;
           noteSourceEvent(source, "useful");
         }
 
-        await saveNewsItem(baseItem);
+        if (!baseSaved) await saveNewsItem(baseItem);
         saveState();
       } catch (error) {
         noteSourceEvent(source, "error");
         summary.errors.push(url + ": " + error.message);
+        // Bounded retry: after SKIP_RETRY_MAX failures the link counts as seen (see seenOriginalUrl).
+        bumpSkipAttempt(url, "error");
       }
     }
 

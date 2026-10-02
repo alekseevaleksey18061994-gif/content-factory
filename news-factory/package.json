@@ -12,7 +12,8 @@
     "test:editorial": "node scripts/editorial-v2-test.js",
     "test:costs-smoke": "node scripts/costs-smoke.js",
     "test:accounts-smoke": "node scripts/accounts-smoke.js",
-    "test:seed-lists": "node scripts/seed-lists-test.js"
+    "test:seed-lists": "node scripts/seed-lists-test.js",
+    "test:dedupe": "node scripts/dedupe-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
