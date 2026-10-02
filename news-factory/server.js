@@ -181,14 +181,14 @@ const CURATED_SOURCES = [
 ];
 
 const RUSSIAN_AI_SOURCES = [
-  { id: "ru-yandex-ai", name: "Yandex AI / Алиса AI", type: "web", group: "official", priority: 1, url: "https://www.yandex.ru/company/news?tag=yandex+ai+studio", enabled: true },
+  { id: "ru-yandex-ai", name: "Яндекс на Хабре", type: "web", group: "official", priority: 1, url: "https://habr.com/ru/companies/yandex/news/", enabled: true },
   { id: "ru-sber-ai", name: "Sber AI / GigaChat", type: "web", group: "official", priority: 1, url: "https://habr.com/ru/companies/sberbank/news/page1/", enabled: true },
   { id: "ru-mws-ai", name: "MWS AI", type: "web", group: "official", priority: 1, url: "https://mts.ai/news/", enabled: true },
   { id: "ru-vk-ai", name: "VK AI", type: "web", group: "official", priority: 1, url: "https://vk.company.ru/ru/press/releases/", enabled: true },
-  { id: "ru-tbank-ai", name: "T-Bank AI", type: "web", group: "official", priority: 1, url: "https://ai.tbank.ru/", enabled: true },
+  { id: "ru-habr-ai", name: "Хабр: ИИ (новости)", type: "web", group: "media", priority: 2, url: "https://habr.com/ru/hubs/artificial_intelligence/news/", enabled: true },
   { id: "ru-just-ai", name: "Just AI", type: "web", group: "official", priority: 1, url: "https://just-ai.com/blog/news", enabled: true },
-  { id: "ru-ntechlab", name: "NtechLab", type: "web", group: "official", priority: 1, url: "https://ntechlab.ru/news", enabled: true },
-  { id: "ru-airi", name: "Институт AIRI", type: "web", group: "official", priority: 1, url: "https://airi.net/ru/events/", enabled: true },
+  { id: "ru-vc-ai", name: "vc.ru: ИИ", type: "web", group: "media", priority: 2, url: "https://vc.ru/ai", enabled: true },
+  { id: "ru-airi", name: "Институт AIRI", type: "web", group: "creator", priority: 1, url: "https://t.me/s/airi_research_institute", enabled: true },
   { id: "ru-zheltyi-ai", name: "Жёлтый AI", type: "web", group: "creator", priority: 2, url: "https://t.me/s/zheltyi_ai", enabled: true },
   { id: "ru-ai-happens", name: "AI Happens", type: "web", group: "creator", priority: 2, url: "https://t.me/s/AIhappens", enabled: true }
 ];
@@ -704,6 +704,41 @@ function ensureConfiguredWorkspaces() {
       aiWorkspace.state.russianSourcesBootstrapPending = true;
       aiWorkspace.state.migrations.push(russianAiMigration);
       aiWorkspace.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+
+    // Russian AI sources that do not open from the server (fetch failed / captcha)
+    // are replaced by working pages: Habr company blogs, Habr AI hub, vc.ru, Telegram.
+    const ruFixMigration = "v0.39.3-ru-ai-sources-fix";
+    if (!aiWorkspace.state.migrations.includes(ruFixMigration)) {
+      const list = aiWorkspace.state.sources = Array.isArray(aiWorkspace.state.sources) ? aiWorkspace.state.sources : [];
+      const byId = function(id){ return list.find(function(x){ return x && x.id === id; }); };
+      const now = new Date().toISOString();
+      const yandex = byId("ru-yandex-ai");
+      if (yandex) { yandex.url = "https://habr.com/ru/companies/yandex/news/"; yandex.name = "Яндекс на Хабре"; yandex.enabled = true; delete yandex.autoPaused; delete yandex.preview; }
+      const airi = byId("ru-airi");
+      if (airi) { airi.url = "https://t.me/s/airi_research_institute"; airi.group = "creator"; airi.enabled = true; delete airi.autoPaused; delete airi.preview; }
+      for (const id of ["ru-ntechlab", "ru-tbank-ai"]) {
+        const src = byId(id);
+        if (src && src.enabled) { src.enabled = false; src.autoPaused = { reason: "сайт не открывается с сервера, заменён рабочим источником", at: now }; }
+      }
+      for (const add of [
+        { id: "ru-habr-ai", name: "Хабр: ИИ (новости)", type: "web", group: "media", priority: 2, url: "https://habr.com/ru/hubs/artificial_intelligence/news/", enabled: true },
+        { id: "ru-vc-ai", name: "vc.ru: ИИ", type: "web", group: "media", priority: 2, url: "https://vc.ru/ai", enabled: true }
+      ]) {
+        if (byId(add.id)) continue;
+        const sameUrl = list.find(function(x){ return x && String(x.url || "").replace(/\/+$/, "") === add.url.replace(/\/+$/, ""); });
+        if (sameUrl && String(sameUrl.id || "").startsWith("auto-")) {
+          // An auto-added copy becomes the Russian AI source (keeps its stats and on/off state).
+          const stats = aiWorkspace.state.sourceStats || {};
+          if (stats[sameUrl.id] && !stats[add.id]) { stats[add.id] = stats[sameUrl.id]; delete stats[sameUrl.id]; }
+          sameUrl.id = add.id; sameUrl.name = add.name; sameUrl.type = add.type; sameUrl.group = add.group; sameUrl.priority = add.priority;
+        } else if (!sameUrl) {
+          list.push(Object.assign({ mediaLicense: "unknown", copyrightMode: "facts_only" }, add));
+        }
+      }
+      aiWorkspace.state.migrations.push(ruFixMigration);
+      aiWorkspace.updatedAt = now;
       changed = true;
     }
 
@@ -4856,9 +4891,13 @@ async function collectOnce(trigger) {
           const storyRelation = (storyPrecheck && storyPrecheck.judged)
             ? storyPrecheck
             : await classifyPublishedStoryRelationship(queueItem);
-          if (storyRelation.relation === "duplicate") {
+          // A duplicate of a post still in the queue first tries the multi-source
+          // story merge (second source enriches the queued post); only if no merge
+          // happens is it dropped as a duplicate.
+          const queuedDuplicate = storyRelation.relation === "duplicate" && storyRelation.queued;
+          if (storyRelation.relation === "duplicate" && !queuedDuplicate) {
             baseItem.status = "duplicate_story";
-            baseItem.metadata.storyRelation = storyRelation;
+            baseItem.metadata.storyRelation = compactStoryRelation(storyRelation);
             baseItem.metadata.autoPublishBlocked = "duplicate_story";
             summary.skipped += 1;
             await saveNewsItem(baseItem);
@@ -4881,6 +4920,15 @@ async function collectOnce(trigger) {
           }
 
           const mergedStory = await tryMergeStoryQueueItem(queueItem);
+          if (!mergedStory && queuedDuplicate) {
+            baseItem.status = "duplicate_story";
+            baseItem.metadata.storyRelation = compactStoryRelation(storyRelation);
+            baseItem.metadata.autoPublishBlocked = "duplicate_story";
+            summary.skipped += 1;
+            await saveNewsItem(baseItem);
+            saveState();
+            continue;
+          }
           if (mergedStory) {
             baseItem.metadata.storyClusterId = mergedStory.storyCluster && mergedStory.storyCluster.id || "";
             baseItem.metadata.storyMergedIntoQueueId = mergedStory.id;
@@ -8608,19 +8656,72 @@ async function callOpenAIEditorialQC(payload) {
   return fallback;
 }
 
-async function classifyPublishedStoryRelationship(item) {
+function compactStoryRelation(rel) {
+  const r = rel || {};
+  const c = r.candidate || {};
+  return { relation: r.relation || "", reason: r.reason || "", queued: Boolean(r.queued), similarity: Number(r.similarity || 0), publishedTitle: c.title || "", candidateId: c.id || c.queueId || "" };
+}
+
+// One pass over the queue: a post that repeats an older queued or published
+// story is removed (same check new posts get at collection time).
+async function dedupeQueueOnce() {
+  const items = (state.queue || []).filter(function(q){ return q && q.newsId && !q.telegramPublished && !q.vkPublished && q.status !== "media_failed"; })
+    .sort(function(a, b){ return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime(); });
+  const removed = [];
+  let incomplete = false;
+  for (const item of items) {
+    if (!(state.queue || []).includes(item)) continue;
+    const olderQueue = (state.queue || []).filter(function(q){ return q !== item && new Date(q.createdAt || 0).getTime() <= new Date(item.createdAt || 0).getTime(); });
+    const rel = await classifyPublishedStoryRelationship(item, { queueItems: olderQueue });
+    if (rel && rel.similarity >= 0.16 && !rel.judged) incomplete = true;
+    // The scheduler may have published the post while the model was thinking.
+    if (!(state.queue || []).includes(item) || item.telegramPublished || item.vkPublished || item.status === "media_failed") continue;
+    if (rel && rel.relation === "duplicate") {
+      state.queue = (state.queue || []).filter(function(q){ return q !== item; });
+      removeQueueIdFromSchedule(state, item.id);
+      removed.push({ title: item.title, of: rel.candidate && rel.candidate.title || "" });
+      if (db && dbReady) {
+        try {
+          await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
+            [item.newsId, JSON.stringify({ storyRelation: compactStoryRelation(rel), autoPublishBlocked: "duplicate_story" }), currentWorkspaceId()]);
+        } catch (error) { console.warn("Queue dedupe status update failed:", error.message); }
+      }
+    }
+  }
+  if (removed.length) saveState();
+  removed.incomplete = incomplete;
+  return removed;
+}
+
+async function classifyPublishedStoryRelationship(item, options) {
+  const queueItems = options && Array.isArray(options.queueItems) ? options.queueItems : (state.queue || []);
   if (!item) return { relation: "new_story", candidate: null, reason: "" };
   const cutoff = Date.now() - STORY_UPDATE_WINDOW_HOURS * 60 * 60 * 1000;
   let best = null;
   let bestScore = 0;
 
+  const ownIds = new Set([item && item.id, item && item.queueId, item && item.newsId].filter(Boolean).map(String));
   for (const h of (state.history || [])) {
     if (!h || !h.publishedAt || new Date(h.publishedAt).getTime() < cutoff) continue;
+    // A queued post that is already partly published (Telegram yes, VK pending)
+    // must not be compared with its own history entry.
+    if (ownIds.has(String(h.queueId || "")) || ownIds.has(String(h.newsId || "")) || ownIds.has(String(h.id || ""))) continue;
     const score = storySimilarity(
       Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
       Object.assign({}, h, { sourceId: "published:" + String(h.sourceId || h.sourceName || "") })
     );
     if (score > bestScore) { bestScore = score; best = h; }
+  }
+  // Posts already waiting in the queue count too: the same story from two
+  // sources must not be published twice.
+  const selfIds = new Set([item.id, item.queueId, item.newsId].filter(Boolean).map(String));
+  for (const q of queueItems) {
+    if (!q || !q.newsId || selfIds.has(String(q.id)) || selfIds.has(String(q.newsId))) continue;
+    const score = storySimilarity(
+      Object.assign({}, item, { sourceId: "new:" + String(item.sourceId || item.sourceName || "") }),
+      Object.assign({}, q, { sourceId: "queued:" + String(q.sourceId || q.sourceName || "") })
+    );
+    if (score > bestScore) { bestScore = score; best = Object.assign({}, q, { __queued: true }); }
   }
   if (!best || bestScore < 0.16) return { relation: "new_story", candidate: null, reason: "" };
 
@@ -8654,10 +8755,14 @@ async function classifyPublishedStoryRelationship(item) {
     recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses", { news_id: item.newsId || item.id || "" });
     const output = extractOpenAIText(data);
     const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
-    const relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
+    let relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
+    // An "update" of a post that has not been published yet is the same story:
+    // the queued post goes out, the new one is dropped.
+    if (best.__queued && relation === "update") relation = "duplicate";
     return {
       relation: relation,
       candidate: relation === "new_story" ? null : best,
+      queued: Boolean(best.__queued),
       similarity: bestScore,
       judged: true,
       newFact: String(parsed.new_fact || "").trim(),
@@ -10674,6 +10779,25 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("Source replenish failed:", error.message); });
 }, 120000);
+
+// One-time removal of duplicate stories already waiting in the queue.
+setTimeout(function() {
+  (async function(){
+    const migration = "v0.39.3-queue-dedupe";
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const removed = await dedupeQueueOnce();
+        // If the model was unavailable for some comparison, try again on the next start.
+        if (!removed.incomplete && OPENAI_API_KEY) state.migrations.push(migration);
+        saveState();
+        console.log("QUEUE_DEDUPE " + JSON.stringify({ workspace: ws.id, removed: removed, incomplete: Boolean(removed.incomplete) }));
+      });
+    }
+  })().catch(function(error){ console.warn("Queue dedupe failed:", error.message); });
+}, 100000);
 
 // One-time clean-up of photo sets already in the queue (duplicates, logos, thumbnails).
 setTimeout(function() {

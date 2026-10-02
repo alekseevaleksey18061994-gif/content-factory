@@ -2720,7 +2720,7 @@ function feedStatusReason(n,status){
   if(status==='duplicate_story'){
     var rel=md.storyRelation||{};
     var t=rel.publishedTitle||(rel.candidate&&rel.candidate.title)||'';
-    return {cls:'skip',title:'Почему пропущено:',text:'Повтор уже опубликованного поста'+(t?' «'+t+'»':'')+(rel.reason?' — '+clean(rel.reason):'')};
+    return {cls:'skip',title:'Почему пропущено:',text:(rel.queued?'Этот сюжет уже ждёт публикации в очереди':'Повтор уже опубликованного поста')+(t?' «'+t+'»':'')+(rel.reason?' — '+clean(rel.reason):'')};
   }
   if(status==='auto_rejected')return {cls:'skip',title:'Почему не вышло:',text:clean(md.autoRejectReason)||'не прошёл автоматическую проверку'};
   if(status==='rewrite_error')return {cls:'bad',title:'Ошибка:',text:clean(md.rewriteError)||'нейросеть не смогла написать пост'};
