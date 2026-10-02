@@ -2649,6 +2649,11 @@ var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',cur
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
 function esc(v){return String(v==null||v===false?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+// JS string literal for use INSIDE an HTML attribute handler (onclick="fn('+ja(value)+')"): JSON-encode, then HTML-escape.
+// Never splice raw/esc()'d data between JS quotes: the HTML parser decodes &#39; back to ' before the JS engine runs.
+function ja(v){return esc(JSON.stringify(String(v==null?'':v)))}
+// Only absolute http(s) links are rendered as href/src from data (blocks javascript:/data: URLs stored earlier).
+function safeHref(v){var u=String(v==null?'':v).trim();return /^https?:\/\//i.test(u)?u:'#'}
 // One human-readable decision per queue card instead of several raw scores.
 function queueDecision(q,rating){
   if(q.status==='media_failed')return {label:'Ошибка медиа VK',cls:'media_failed',reason:'VK не принял медиа'+(q.vkError?': '+q.vkError:'')};
@@ -2828,10 +2833,16 @@ function scThumbError(img){
 }
 // Broken picture: try the generated cover, otherwise show a neutral placeholder.
 function thumbFallback(img,alt){
-  if(alt){img.onerror=function(){thumbFallback(img,'')};img.src=alt;return}
+  if(alt){img.removeAttribute('data-fb');img.src=alt;return}
   var ph=document.createElement('div');ph.className='queue-placeholder';ph.textContent='Фото недоступно';
   if(img.parentNode)img.parentNode.replaceChild(ph,img);
 }
+// <img data-thumb data-fb="fallback url">: 'error' does not bubble, so listen in the capture phase.
+document.addEventListener('error',function(ev){
+  var t=ev.target;
+  if(!t||t.tagName!=='IMG'||!t.hasAttribute('data-thumb'))return;
+  thumbFallback(t,t.getAttribute('data-fb')||'');
+},true);
 function toggleWhy(id){
   var node=el('why_'+id);if(node)node.classList.toggle('open');
 }
@@ -2991,7 +3002,7 @@ function renderWorkspaceMenu(){
   var items=workspaces.filter(function(x){return wsMatches(x,workspaces.length>6?wsMenuFilter:'')});
   menu.innerHTML=items.length?items.map(function(item){
     var active=item.id===activeWorkspaceId;
-    return '<button class="account-workspace-option '+(active?'active':'')+'" type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">'+
+    return '<button class="account-workspace-option '+(active?'active':'')+'" type="button" onclick="switchWorkspace('+ja(item.id)+')">'+
       '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
       '<span class="workspace-option-copy"><b>'+esc(item.name||'Кабинет')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
       '<span style="margin-left:auto">'+wsDot(item)+'</span>'+
@@ -3010,7 +3021,7 @@ function wsEditorHtml(item){
       '<label class="account-field"><span>Публичный username</span><input id="wsE_'+id+'_user" data-orig="'+esc(item.telegramPublicUsername||'')+'" placeholder="channel" value="'+esc(item.telegramPublicUsername||'')+'"></label>'+
       '<label class="account-field"><span>Профиль канала (тематика)</span><select id="wsE_'+id+'_profile" data-orig="'+esc(item.channelId||'')+'">'+opts+'</select></label>'+
     '</div>'+
-    '<div class="ws-edit-actions"><button class="primary" type="button" onclick="saveWorkspaceEdit(\''+id+'\')">Сохранить</button><button type="button" onclick="cancelWorkspaceEdit(\''+id+'\')">Отмена</button></div>'+
+    '<div class="ws-edit-actions"><button class="primary" type="button" onclick="saveWorkspaceEdit('+ja(id)+')">Сохранить</button><button type="button" onclick="cancelWorkspaceEdit('+ja(id)+')">Отмена</button></div>'+
   '</div>';
 }
 function wsCaptureDrafts(){
@@ -3049,10 +3060,10 @@ function renderWorkspaceList(){
         (miss.length?'<span class="ws-missing" style="display:block">Не заполнено: '+esc(miss.join(', '))+'</span>':'')+
       '</span>'+
       '<span class="workspace-card-actions">'+
-        (!active?'<button class="primary" type="button" onclick="switchWorkspace(\''+esc(item.id)+'\')">Открыть</button>':'<span class="chip">Активен</span>')+
-        '<button type="button" onclick="toggleWorkspaceEdit(\''+esc(item.id)+'\')">Изменить</button>'+
-        '<button type="button" onclick="chooseWorkspaceAvatar(\''+esc(item.id)+'\')">Фото</button>'+
-        ((!active&&workspaces.length>1)?'<button class="danger" type="button" onclick="removeWorkspace(\''+esc(item.id)+'\')">Удалить</button>':'')+
+        (!active?'<button class="primary" type="button" onclick="switchWorkspace('+ja(item.id)+')">Открыть</button>':'<span class="chip">Активен</span>')+
+        '<button type="button" onclick="toggleWorkspaceEdit('+ja(item.id)+')">Изменить</button>'+
+        '<button type="button" onclick="chooseWorkspaceAvatar('+ja(item.id)+')">Фото</button>'+
+        ((!active&&workspaces.length>1)?'<button class="danger" type="button" onclick="removeWorkspace('+ja(item.id)+')">Удалить</button>':'')+
       '</span>'+
       wsEditorHtml(item)+
     '</div>';
@@ -3203,7 +3214,7 @@ async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type
 async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderConnections(false).catch(function(e){toast(e.message)})}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
-  el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode(\''+m+'\')">'+labels[m]+'</button>'}).join('');
+  el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode('+ja(m)+')">'+labels[m]+'</button>'}).join('');
   ['discovered','rewritten','published','skipped'].forEach(function(k){el('s_'+k).textContent=(state.stats&&state.stats[k])||0});
   el('sourceCount').textContent=(state.sources||[]).length;
   var rankingMap={};(sourceRankings||[]).forEach(function(r){rankingMap[r.id]=r});
@@ -3241,7 +3252,7 @@ function render(){
     var metric=function(v,l,cls,title){return '<div class="sc-m'+(cls?' '+cls:'')+'"'+(title?' title="'+esc(title)+'"':'')+'><b>'+esc(v)+'</b><span>'+l+'</span></div>'};
     return '<div class="sc-card'+(!s.enabled?' sc-off':'')+'">'+
       '<div class="sc-head">'+sourceThumbHtml(s,r.rank)+'<div class="sc-name"><b>'+esc(s.name)+'</b><span>'+group+' · '+(s.enabled?'включён':'выключен')+' · '+esc(mediaLicenseLabel(s.mediaLicense).replace('Медиа источника · используем','медиа используем'))+'</span></div><span class="source-rating sc-rating '+cls+'">'+esc(rating)+'<small>/100</small><i>'+esc(r.status)+'</i></span></div>'+
-      '<a class="sc-url" href="'+esc(s.url)+'" target="_blank" rel="noopener">'+esc(String(s.url||'').replace(/^https?:\/\/(www\.)?/,''))+'</a>'+
+      '<a class="sc-url" href="'+esc(safeHref(s.url))+'" target="_blank" rel="noopener">'+esc(String(s.url||'').replace(/^https?:\/\/(www\.)?/,''))+'</a>'+
       (s.autoAdded?'<div class="source-added-note">Добавлен автоматически '+esc(safeDate(s.autoAdded.at))+(s.autoAdded.from==='ai'?' · найден AI-поиском':' · из резерва')+(s.autoAdded.why?' · '+esc(s.autoAdded.why):'')+'</div>':'')+
       (s.autoPaused&&!s.enabled?'<div class="source-paused-note">Выключен автоматически: '+esc(s.autoPaused.reason||'')+'. Можно включить вручную.</div>':'')+
       '<div class="sc-metrics">'+
@@ -3255,9 +3266,9 @@ function render(){
         (r.errors?metric(r.errors,'ошибок','bad'):metric(r.selected||0,'в плане','dim'))+
       '</div>'+
       '<div class="sc-actions">'+
-        '<button class="sc-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource(\''+s.id+'\')"><span class="switch-knob"></span>'+(s.enabled?'Вкл':'Выкл')+'</button>'+
-        '<select class="sc-license" onchange="setSourceMediaLicense(\''+s.id+'\',this.value)" aria-label="Медиа источника"><option value="unknown" '+((s.mediaLicense||'unknown')==='unknown'?'selected':'')+'>Медиа: авто</option><option value="allowed" '+(s.mediaLicense==='allowed'?'selected':'')+'>Медиа: можно</option><option value="forbidden" '+(s.mediaLicense==='forbidden'?'selected':'')+'>Медиа: нельзя</option></select>'+
-        '<button class="sc-remove" onclick="removeSource(\''+s.id+'\')" aria-label="Удалить источник" title="Удалить источник">✕</button>'+
+        '<button class="sc-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource('+ja(s.id)+')"><span class="switch-knob"></span>'+(s.enabled?'Вкл':'Выкл')+'</button>'+
+        '<select class="sc-license" onchange="setSourceMediaLicense('+ja(s.id)+',this.value)" aria-label="Медиа источника"><option value="unknown" '+((s.mediaLicense||'unknown')==='unknown'?'selected':'')+'>Медиа: авто</option><option value="allowed" '+(s.mediaLicense==='allowed'?'selected':'')+'>Медиа: можно</option><option value="forbidden" '+(s.mediaLicense==='forbidden'?'selected':'')+'>Медиа: нельзя</option></select>'+
+        '<button class="sc-remove" onclick="removeSource('+ja(s.id)+')" aria-label="Удалить источник" title="Удалить источник">✕</button>'+
       '</div>'+
     '</div>';
   }).join('');
@@ -3282,7 +3293,8 @@ function render(){
     var parts=postParts(q);
     var sourceImage=q.enhancedImageUrl||q.imageUrl||'';
     var effectiveImage=sourceImage||q.generatedImageUrl||'';
-    var thumbErr=' onerror="thumbFallback(this,\''+esc(sourceImage&&q.generatedImageUrl&&q.generatedImageUrl!==sourceImage?q.generatedImageUrl:'').replace(/'/g,'%27')+'\')"';
+    // No inline handler / string interpolation: the fallback URL is a data attribute handled by one delegated listener (see thumbFallback).
+    var thumbErr=' data-thumb="1" data-fb="'+esc(sourceImage&&q.generatedImageUrl&&q.generatedImageUrl!==sourceImage?q.generatedImageUrl:'')+'"';
     var media=q.videoUrl
       ? (effectiveImage?'<div class="queue-media-visual"><img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""'+thumbErr+'><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="queue-placeholder">▶ Видео</div>')
       : effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""'+thumbErr+'>':'<div class="queue-placeholder">Нет медиа</div>';
@@ -3310,7 +3322,7 @@ function render(){
     var queueRating=postRating({editorialV2:v2,aiScore:q.aiScore,qcStatus:q.qcStatus,status:q.status,articlePublishedAt:q.articlePublishedAt,foundAt:q.createdAt,mediaKind:q.videoUrl?'video':(sourceImage?'photo':(q.generatedImageUrl?'generated':'none')),sourceRole:q.sourceRole,sourceCount:storyCount});
     var decision=queueDecision(q,queueRating);
     var mediaChip=q.videoUrl?{label:'Видео',cls:'found'}:(sourceImage?{label:'Фото источника',cls:'found'}:(q.generatedImageUrl?{label:'AI-обложка',cls:'generated'}:{label:'Нет медиа',cls:'bad'}));
-    return '<article class="queue-card" onclick="openQueuePreview(\''+q.id+'\')">'+
+    return '<article class="queue-card" onclick="openQueuePreview('+ja(q.id)+')">'+
       '<div class="queue-card-main">'+media+
         '<div class="queue-copy">'+
           '<div class="queue-head card-head-stack"><div class="queue-title">'+esc(parts.title||'Без заголовка')+'</div></div>'+
@@ -3326,22 +3338,22 @@ function render(){
           (q.status==='media_failed'?'<div class="queue-meta" style="color:#ff8d94">VK media_failed · '+esc(q.vkMediaAttempts||0)+' попытки'+(q.vkError?' · '+esc(q.vkError):'')+'</div>':'')+
           '<div class="queue-text">'+esc(stripEditorialMarks(parts.text||''))+'</div>'+
           '<div class="card-click-note">Нажмите на карточку, чтобы посмотреть пост полностью</div>'+
-          (q.sourceUrl?'<div class="queue-meta"><a class="link" href="'+esc(q.sourceUrl)+'" target="_blank" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+
+          (q.sourceUrl?'<div class="queue-meta"><a class="link" href="'+esc(safeHref(q.sourceUrl))+'" target="_blank" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+
         '</div>'+
       '</div>'+
       '<div class="queue-actions qa" onclick="event.stopPropagation()">'+
         '<div class="qa-targets"><span class="qa-label">Куда</span>'+
-          '<label class="qa-target"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll(\''+q.id+'\')"><span class="qa-check"></span><span class="qa-target-text">Telegram</span></label>'+
-          '<label class="qa-target'+(vkAllowed?'':' off')+'"'+(vkAllowed?'':' onclick="toast(\'VK пока подключён только для основного канала. Для этого канала нужна своя группа VK и ключ\')"')+'><input id="vk_'+q.id+'" type="checkbox" '+(vkAllowed?'checked':'disabled')+' onchange="syncQueueAll(\''+q.id+'\')"><span class="qa-check"></span><span class="qa-target-text">VK'+(vkAllowed?'':'<small>не подключён</small>')+'</span></label>'+
+          '<label class="qa-target"><input id="tg_'+q.id+'" type="checkbox" checked onchange="syncQueueAll('+ja(q.id)+')"><span class="qa-check"></span><span class="qa-target-text">Telegram</span></label>'+
+          '<label class="qa-target'+(vkAllowed?'':' off')+'"'+(vkAllowed?'':' onclick="toast(\'VK пока подключён только для основного канала. Для этого канала нужна своя группа VK и ключ\')"')+'><input id="vk_'+q.id+'" type="checkbox" '+(vkAllowed?'checked':'disabled')+' onchange="syncQueueAll('+ja(q.id)+')"><span class="qa-check"></span><span class="qa-target-text">VK'+(vkAllowed?'':'<small>не подключён</small>')+'</span></label>'+
         '</div>'+
         '<div class="qa-main">'+
-          '<button class="primary publish qa-publish" onclick="publishQueue(\''+q.id+'\')">Опубликовать</button>'+
-          '<button class="danger remove qa-remove" onclick="removeQueue(\''+q.id+'\')" title="Удалить из очереди">Удалить</button>'+
+          '<button class="primary publish qa-publish" onclick="publishQueue('+ja(q.id)+')">Опубликовать</button>'+
+          '<button class="danger remove qa-remove" onclick="removeQueue('+ja(q.id)+')" title="Удалить из очереди">Удалить</button>'+
         '</div>'+
         '<div class="qa-tools">'+
-          '<button class="qa-tool" onclick="openQueuePreview(\''+q.id+'\')">Просмотр</button>'+
-          '<button class="qa-tool" onclick="toggleWhy(\''+q.id+'\')">Почему он?</button>'+
-          (q.videoUrl?'<span class="qa-tool qa-note">🎬 Видео</span>':((q.originalImageUrl||q.imageUrl||q.mediaStatus==='copyright_pending')?'<button class="qa-tool" onclick="enhanceQueuePhoto(\''+q.id+'\')">Обложка</button>':'<span class="qa-tool qa-note">Медиа готово</span>'))+
+          '<button class="qa-tool" onclick="openQueuePreview('+ja(q.id)+')">Просмотр</button>'+
+          '<button class="qa-tool" onclick="toggleWhy('+ja(q.id)+')">Почему он?</button>'+
+          (q.videoUrl?'<span class="qa-tool qa-note">🎬 Видео</span>':((q.originalImageUrl||q.imageUrl||q.mediaStatus==='copyright_pending')?'<button class="qa-tool" onclick="enhanceQueuePhoto('+ja(q.id)+')">Обложка</button>':'<span class="qa-tool qa-note">Медиа готово</span>'))+
         '</div>'+
         whyPostHtml(q)+
       '</div>'+
@@ -3452,7 +3464,7 @@ function renderCalendar(){
       title=pp.title||'Без заголовка';
       meta=(slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'')+(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
       status='Подготовлено';cls='wait';
-      actions='<div class="calendar-slot-actions"><button onclick="openQueuePreview(\''+item.id+'\')">Посмотреть</button><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Заменить</button><button class="danger" onclick="calendarRemove(\''+calendarDateKey+'\',\''+slot.time+'\')">Убрать</button></div>';
+      actions='<div class="calendar-slot-actions"><button onclick="openQueuePreview('+ja(item.id)+')">Посмотреть</button><button onclick="openCalendarPicker('+ja(calendarDateKey)+','+ja(slot.time)+')">Заменить</button><button class="danger" onclick="calendarRemove('+ja(calendarDateKey)+','+ja(slot.time)+')">Убрать</button></div>';
     }else if(todayCmp<0 || (isToday&&slotMin<nowMin-55)){
       title='Свежей новости не было';
       meta='К этому окну система не нашла подходящий материал';
@@ -3465,7 +3477,7 @@ function renderCalendar(){
         ?'Отдельный поиск по автоблогерам начнётся за 15 минут'
         :(slot.kind==='russian-ai'?'Отдельный поиск по российским AI-источникам начнётся за 15 минут':'Автопоиск начнётся за 15 минут до этого времени');
       status='Ожидание';cls='wait';
-      actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker(\''+calendarDateKey+'\',\''+slot.time+'\')">Выбрать</button><button onclick="calendarAuto(\''+calendarDateKey+'\',\''+slot.time+'\')">Автоподбор</button></div>';
+      actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker('+ja(calendarDateKey)+','+ja(slot.time)+')">Выбрать</button><button onclick="calendarAuto('+ja(calendarDateKey)+','+ja(slot.time)+')">Автоподбор</button></div>';
     }
 
     var slotClass=slot.kind==='blogger'?'blogger-slot':(slot.kind==='russian-ai'?'russian-ai-slot':'');
@@ -3494,7 +3506,7 @@ function renderDashboardCalendar(){
     var title=pp?pp.title:(slot.kind==='blogger'?'Ждём автоблогера':slot.kind==='russian-ai'?'Ждём российскую AI-новость':'Ждём свежую новость');
     var prefix=slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'';
     var meta=q?(prefix+(q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):(slot.kind==='russian-ai'?'Поиск российских AI-источников за 15 минут':'Автопоиск за 15 минут до слота');
-    return '<div class="dash-slot" onclick="'+(q?('openQueuePreview(\''+q.id+'\')'):"goPage('calendarPage')")+'"><div class="dash-slot-time">'+esc(slot.time)+'</div><div class="dash-slot-title">'+esc(title)+'</div><div class="dash-slot-meta">'+esc(meta)+'</div></div>';
+    return '<div class="dash-slot" onclick="'+(q?('openQueuePreview('+ja(q.id)+')'):"goPage('calendarPage')")+'"><div class="dash-slot-time">'+esc(slot.time)+'</div><div class="dash-slot-title">'+esc(title)+'</div><div class="dash-slot-meta">'+esc(meta)+'</div></div>';
   }).join('');
 }
 async function calendarRemove(date,time){
@@ -3514,7 +3526,7 @@ function openCalendarPicker(date,time){
   el('calendarPickerList').innerHTML=items.length?items.map(function(q){
     var pp=postParts(q),img=q.generatedImageUrl||q.imageUrl||'',used=assigned.has(q.id);
     var thumb=img?'<img class="picker-thumb" src="'+esc(img)+'" alt="">':'<div class="picker-thumb queue-placeholder">AI</div>';
-    return '<div class="picker-item">'+thumb+'<div><div class="picker-title">'+esc(pp.title||'Без заголовка')+'</div><div class="picker-meta">'+esc(q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')+(used?' · уже в календаре':'')+'</div></div><button class="'+(used?'':'primary')+'" onclick="assignCalendar(\''+q.id+'\')">'+(used?'Перенести сюда':'Выбрать')+'</button></div>';
+    return '<div class="picker-item">'+thumb+'<div><div class="picker-title">'+esc(pp.title||'Без заголовка')+'</div><div class="picker-meta">'+esc(q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')+(used?' · уже в календаре':'')+'</div></div><button class="'+(used?'':'primary')+'" onclick="assignCalendar('+ja(q.id)+')">'+(used?'Перенести сюда':'Выбрать')+'</button></div>';
   }).join(''):'<div class="empty">В очереди нет свежих новостей</div>';
   openModal('calendarPickerModal');
 }
@@ -3563,7 +3575,7 @@ function renderPlatformAnalytics(data){
   el('tgAnalyticsNote').textContent=tg.error?('Telegram: '+tg.error):(tg.note||'');
   var posts=tg.posts||[];
   el('tgPostStats').innerHTML=posts.length?posts.slice(0,30).map(function(p){
-    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||('Пост #'+p.messageId))+'</b><a href="'+esc(p.url||'#')+'" target="_blank">Открыть пост #'+esc(p.messageId)+'</a></div>'+
+    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||('Пост #'+p.messageId))+'</b><a href="'+esc(safeHref(p.url))+'" target="_blank">Открыть пост #'+esc(p.messageId)+'</a></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.views||0)+'</b><span>Просмотры</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.reactions||0)+'</b><span>Реакции</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.comments||0)+'</b><span>Комментарии</span></div>'+
@@ -3573,7 +3585,7 @@ function renderPlatformAnalytics(data){
   var vk=data.vk||{},vt=vk.totals||{};
   el('vkAnalyticsStatus').textContent=vk.available?'Данные получены':(vk.connected?'Подключено, нет данных':'Не подключено');
   el('vkAnalyticsSubtitle').innerHTML=vk.connected
-    ? ((vk.groupUrl?'<a class="link" target="_blank" href="'+esc(vk.groupUrl)+'">'+esc(vk.groupName||'Что там у ИИ?')+'</a>':esc(vk.groupName||'Сообщество подключено'))+(vk.checkedAt?' · обновлено '+new Date(vk.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):''))
+    ? ((vk.groupUrl?'<a class="link" target="_blank" href="'+esc(safeHref(vk.groupUrl))+'">'+esc(vk.groupName||'Что там у ИИ?')+'</a>':esc(vk.groupName||'Сообщество подключено'))+(vk.checkedAt?' · обновлено '+new Date(vk.checkedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):''))
     : 'VK пока не подключён';
   analyticsMetric('vkPosts',vt.posts);
   analyticsMetric('vkViews',vt.views);
@@ -3586,7 +3598,7 @@ function renderPlatformAnalytics(data){
   el('vkAnalyticsNote').textContent=vk.error?('VK: '+vk.error):(vk.note||'');
   var vkPosts=vk.posts||[];
   el('vkPostStats').innerHTML=vkPosts.length?vkPosts.map(function(p){
-    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||'VK пост')+'</b>'+(p.url?'<a href="'+esc(p.url)+'" target="_blank">Открыть пост #'+esc(p.postId||'')+'</a>':'')+'</div>'+
+    return '<div class="post-stat-row"><div class="post-stat-title"><b>'+esc(p.title||'VK пост')+'</b>'+(p.url?'<a href="'+esc(safeHref(p.url))+'" target="_blank">Открыть пост #'+esc(p.postId||'')+'</a>':'')+'</div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.views||0)+'</b><span>Просмотры</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.likes||0)+'</b><span>Лайки</span></div>'+
       '<div class="post-stat-cell"><b>'+fmtMetric(p.comments||0)+'</b><span>Комментарии</span></div>'+
@@ -3829,7 +3841,7 @@ function renderCostBalances(list,force){
     return '<div class="cost-balance '+state+'"><div class="cost-balance-head"><b>'+title+'</b></div>'+body+
       '<div class="cost-balance-form"><label>Остаток сейчас, $<input id="bal_'+p+'" type="number" min="0" step="0.01" inputmode="decimal"></label>'+
       '<label>Предупредить ≤, $<input id="balLow_'+p+'" type="number" min="0" step="0.5" inputmode="decimal" value="'+(x.configured&&x.lowUsd!=null?Number(x.lowUsd):5)+'"></label>'+
-      '<button onclick="saveApiBalance(\''+p+'\')">Сохранить</button></div></div>';
+      '<button onclick="saveApiBalance('+ja(p)+')">Сохранить</button></div></div>';
   }).join('')||'<div class="empty">Нет данных.</div>';
 }
 async function saveApiBalance(provider){
@@ -4012,8 +4024,8 @@ function renderPreview(item,platform){
   var storySources=Array.isArray(item.storySources)?item.storySources.filter(function(s){return s&&(s.url||s.sourceUrl)}):[];
   var source=item.sourceUrl||item.originalUrl||'';
   var sourceLinks=storySources.length>1
-    ? '<div class="story-source-links">'+storySources.slice(0,5).map(function(s,i){var url=s.url||s.sourceUrl||'';var name=s.sourceName||s.name||('Источник '+(i+1));return '<a href="'+esc(url)+'" target="_blank">🔗 '+esc(name)+'</a>'}).join('')+'</div>'
-    : (source?'<a class="telegram-source" href="'+esc(source)+'" target="_blank">🔗 Источник</a>':'');
+    ? '<div class="story-source-links">'+storySources.slice(0,5).map(function(s,i){var url=s.url||s.sourceUrl||'';var name=s.sourceName||s.name||('Источник '+(i+1));return '<a href="'+esc(safeHref(url))+'" target="_blank">🔗 '+esc(name)+'</a>'}).join('')+'</div>'
+    : (source?'<a class="telegram-source" href="'+esc(safeHref(source))+'" target="_blank">🔗 Источник</a>':'');
   el('previewMeta').textContent=(storySources.length>1?('Сюжет · '+storySources.length+' источника'):(item.sourceName||(currentWorkspaceMeta&&currentWorkspaceMeta.name)||'News Factory'))+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
   var body=pp.text?editorialBodyHtml(pp.text):(item.skipNotice?'<p class="preview-skip-notice">'+esc(item.skipNotice)+'</p>':editorialBodyHtml('Нет текста'));
   var tabs=(variants.telegram||variants.vk)?'<div class="preview-platform-tabs"><button class="'+(platform==='telegram'?'active':'')+'" onclick="switchPreviewPlatform(\'telegram\')">Telegram</button><button class="'+(platform==='vk'?'active':'')+'" onclick="switchPreviewPlatform(\'vk\')">VK</button></div>':'';
@@ -4084,8 +4096,8 @@ async function loadNews(){
       var scheduleMeta=n.scheduledSlot?'<div class="news-runtime-meta">Слот: '+esc(n.scheduledSlot)+'</div>':'';
       var why=feedStatusReason(n,status);
       var scoreReason=why?'<div class="feed-why '+esc(why.cls)+'"><b>'+esc(why.title)+'</b> '+esc(why.text)+'</div>':(n.aiScoreReason?'<div class="news-score-reason">AI: '+esc(n.aiScoreReason)+'</div>':'');
-      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><div class="news-badges"><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div>'+scheduleMeta+'</div></div>'+ratingStripHtml(rating,statusRu(status),status)+scoreReason+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview(\''+n.id+'\')">Посмотреть</button></div>';
-      return '<article class="news-card" onclick="openNewsPreview(\''+n.id+'\')"><div class="news-card-body">'+media+main+'</div></article>';
+      var main='<div><div class="news-card-head"><div><h4>'+esc(title)+'</h4><div class="meta">'+esc(n.sourceName||'Источник')+' · '+safeDate(n.detectedAt)+'</div><div class="news-badges"><span class="media-badge '+mcls+'">'+esc(statusRu(ms))+'</span>'+scoreBadge+'</div>'+scheduleMeta+'</div></div>'+ratingStripHtml(rating,statusRu(status),status)+scoreReason+(body?'<p>'+esc(body)+'</p>':'')+'<div class="card-click-note">Нажмите, чтобы посмотреть новость полностью</div>'+(n.originalUrl?'<div class="meta"><a class="link" target="_blank" href="'+esc(n.originalUrl)+'" onclick="event.stopPropagation()">Открыть источник</a></div>':'')+'<button class="preview-button" onclick="event.stopPropagation();openNewsPreview('+ja(n.id)+')">Посмотреть</button></div>';
+      return '<article class="news-card" onclick="openNewsPreview('+ja(n.id)+')"><div class="news-card-body">'+media+main+'</div></article>';
     }).join(''):'<div class="empty">Пока ничего не найдено. Нажмите «Собрать сейчас».</div>';
   }catch(e){el('newsList').innerHTML='<div class="empty">Ошибка: '+esc(e.message)+'</div>'}
 }
