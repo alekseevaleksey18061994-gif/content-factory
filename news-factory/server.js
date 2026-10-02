@@ -2636,6 +2636,7 @@ async function generateNewsCover(payload) {
         lastError = (data && data.error && data.error.message) || ("OpenAI Images HTTP " + response.status);
         continue;
       }
+      recordOpenAIResponseUsage(model, String(payload && payload.costPurpose || "image_generation"), data, "images", { quality: OPENAI_IMAGE_QUALITY, size: "1536x1024" });
       const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
       if (!b64) {
         lastError = "OpenAI Images не вернул изображение";
@@ -4927,6 +4928,7 @@ async function preparePostForSingleTelegramCaption(post) {
         });
         const data = await response.json().catch(function(){ return {}; });
         if (!response.ok) continue;
+        recordOpenAIResponseUsage(model, "telegram_caption_compact", data, "responses");
         const output = extractOpenAIText(data);
         if (!output) continue;
         const parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
@@ -6792,6 +6794,7 @@ async function callOpenAIRewrite(payload) {
         lastError = (data && data.error && data.error.message) || ("OpenAI HTTP " + response.status);
         continue;
       }
+      recordOpenAIResponseUsage(model, "legacy_rewrite", data, "responses");
       const output = extractOpenAIText(data);
       if (!output) {
         lastError = "OpenAI вернул пустой ответ";
@@ -7462,6 +7465,7 @@ async function callOpenAIEditorialQC(payload) {
         lastError = data && data.error && data.error.message || ("OpenAI HTTP " + response.status);
         continue;
       }
+      recordOpenAIResponseUsage(model, "editorial_qc", data, "responses");
       const output = extractOpenAIText(data);
       if (!output) { lastError = "QC вернул пустой ответ"; continue; }
       let parsed;
@@ -7578,6 +7582,7 @@ async function classifyPublishedStoryRelationship(item) {
     });
     const data = await response.json().catch(function(){ return {}; });
     if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+    recordOpenAIResponseUsage(OPENAI_MODEL, "story_relation", data, "responses");
     const output = extractOpenAIText(data);
     const parsed = JSON.parse(String(output || "").replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
     const relation = ["duplicate","update","new_story"].includes(String(parsed.relation)) ? String(parsed.relation) : "new_story";
@@ -7669,6 +7674,7 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
         lastError = data && data.error && data.error.message || ("OpenAI HTTP " + response.status);
         continue;
       }
+      recordOpenAIResponseUsage(model, "story_composer", data, "responses");
       const output = extractOpenAIText(data);
       if (!output) { lastError = "OpenAI вернул пустой сюжет"; continue; }
       let parsed;
@@ -7929,6 +7935,7 @@ async function translateTitlesToRussian(items) {
       });
       const data = await response.json().catch(function(){ return {}; });
       if (!response.ok) continue;
+      recordOpenAIResponseUsage(model, "title_translation", data, "responses");
       const output = extractOpenAIText(data);
       if (!output) continue;
       const parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
@@ -8003,6 +8010,7 @@ async function callOpenAIEditorialScoreBatch(items) {
       });
       const data = await response.json().catch(function(){ return {}; });
       if (!response.ok) continue;
+      recordOpenAIResponseUsage(model, "editorial_score_batch", data, "responses");
       const output = extractOpenAIText(data);
       if (!output) continue;
       const parsed = JSON.parse(output.replace(/^\s*```json\s*/i, "").replace(/\s*```\s*$/i, ""));
