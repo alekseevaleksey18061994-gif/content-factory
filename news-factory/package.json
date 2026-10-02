@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.42.1",
+  "version": "0.42.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "test:vk-community-photo": "node scripts/vk-community-photo-smoke.js",
     "test:editorial": "node scripts/editorial-v2-test.js",
     "test:costs-smoke": "node scripts/costs-smoke.js",
-    "test:accounts-smoke": "node scripts/accounts-smoke.js"
+    "test:accounts-smoke": "node scripts/accounts-smoke.js",
+    "test:seed-lists": "node scripts/seed-lists-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",

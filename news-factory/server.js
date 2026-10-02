@@ -10965,6 +10965,9 @@ const SEED_LISTS_V0413 = new Set(["kino", "science", "sport"]);
 // found only 5 sources (general world news is out of its profile), below the 15 needed.
 // «Что там у звёзд?» got one too: its discovery hit the OpenAI rate limit and found none.
 const SEED_LISTS_V0415 = new Set(["world", "stars"]);
+// travel/shopping/home: AI discovery hit the OpenAI rate limit (TPM) and found 0-5 sources each,
+// below the 15 needed, so they get hand-made lists in v0.42.2 (validated on the server at seed time).
+const SEED_LISTS_V0422 = new Set(["travel", "shopping", "home"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -10976,7 +10979,7 @@ function setupNewChannels() {
       if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
       // kino/science/sport got hand-made lists in v0.41.3 (their first run relied
       // on AI discovery, which hit the OpenAI rate limit) — seed them again.
-      const migration = (SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
+      const migration = (SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         if (!state.migrations.includes(migration)) {
