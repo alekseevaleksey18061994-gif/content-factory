@@ -353,6 +353,20 @@ await test("cost migration: legacy state events are idempotent and removed after
   assert.equal(collectLegacyCostRows(workspaces, COST_STATE_MIGRATION_ID).length, 0);
 });
 
+await test("Claude checker schema uses only keywords supported by structured outputs", async function() {
+  const mod = await import("../lib/editorial-v2.js");
+  const banned = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "minItems", "maxItems", "pattern", "multipleOf"];
+  const walk = function(node, path) {
+    if (!node || typeof node !== "object") return;
+    for (const key of Object.keys(node)) {
+      assert.ok(!banned.includes(key), "unsupported keyword " + key + " at " + path);
+      walk(node[key], path + "." + key);
+    }
+    if (node.type === "object") assert.equal(node.additionalProperties, false, "additionalProperties must be false at " + path);
+  };
+  walk(mod.CHECKER_OUTPUT_SCHEMA, "schema");
+});
+
 await test("admin page script parses (guards against broken admin UI deploys)", async function() {
   const fs = await import("node:fs");
   const html = fs.readFileSync(fileURLToPath(new URL("../public/admin.html", import.meta.url)), "utf8");

@@ -186,9 +186,11 @@ export const CHECKER_OUTPUT_SCHEMA = {
   additionalProperties: false,
   properties: {
     verdict: { type: "string", enum: ["pass", "fix", "reject"] },
+    // No maxItems/minimum/maxLength here: Claude structured outputs reject those
+    // keywords, which silently forced the free-text fallback. Limits are applied
+    // when the answer is normalized (normalizeCheckerResult keeps at most 20 errors).
     errors: {
       type: "array",
-      maxItems: 20,
       items: {
         type: "object",
         additionalProperties: false,
@@ -203,7 +205,7 @@ export const CHECKER_OUTPUT_SCHEMA = {
         required: ["severity", "type", "field", "quote", "problem", "fix"]
       }
     },
-    checked_claims: { type: "integer", minimum: 0 },
+    checked_claims: { type: "integer" },
     summary: { type: "string" }
   },
   required: ["verdict", "errors", "checked_claims", "summary"]
@@ -309,6 +311,7 @@ export function createModelClients(config) {
       /(output_config|json_schema|structured output|format)/i.test(errMsg(result.data));
 
     if (structuredUnsupported) {
+      console.warn("EDITORIAL_V2_CLAUDE_STRUCTURED_FALLBACK " + JSON.stringify({ model: model, error: errMsg(result.data).slice(0, 300) }));
       result = await send({ structured: false, temperature: false });
     }
 
