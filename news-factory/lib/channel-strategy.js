@@ -116,7 +116,8 @@ const BUCKET_RULES = {
     ["viral_product", /вирус|тренд|товар|находк|разлетел|tiktok|маркетплейс/],
     ["price_compare", /сравн|цена|дороже|дешевле|выгод/],
     ["buyer_rights", /возврат|гарант|пвз|доставк|прав потреб|роспотреб/],
-    ["scam", /мошенн|подделк|обман|фейк/]
+    ["scam", /мошенн|подделк|обман|фейк/],
+    ["viral_product", /.*/]
   ],
   home: [
     ["renovation", /ремонт|краск|обои|пол |плитк|сануз|кухн/],
@@ -201,7 +202,11 @@ export function contentMixBalance(channelId, candidate, recentHistory, windowSiz
     return { bucket, bonus: 0, target: null, actual: null, counts: {} };
   }
   const recent = (Array.isArray(recentHistory) ? recentHistory : [])
-    .filter(function(x){ return x && !x.isDigest; })
+    .filter(function(x){
+      if (!x || x.isDigest || x.publicationOrigin === "digest") return false;
+      const format = String(x.contentFormat || x.contentFormatLabel || (x.editorialV2 && x.editorialV2.format) || "").toLowerCase();
+      return format !== "дайджест";
+    })
     .slice(0, Math.max(4, Number(windowSize || 24)));
   if (recent.length < 4) {
     return { bucket, bonus: 0, target: mix[bucket], actual: null, counts: {} };
@@ -216,8 +221,8 @@ export function contentMixBalance(channelId, candidate, recentHistory, windowSiz
   const target = Number(mix[bucket] || 0);
   const deficit = target - actual;
   const bonus = deficit >= 0
-    ? Math.min(12, Math.round(deficit * 34))
-    : Math.max(-8, Math.round(deficit * 22));
+    ? Math.min(14, Math.round(deficit * 38))
+    : Math.max(-14, Math.round(deficit * 26));
   return { bucket, bonus, target, actual, counts, sampleSize: recent.length };
 }
 
@@ -255,7 +260,7 @@ export function channelStrategyScore(channelId, item, recentHistory, source) {
   const mix = contentMixBalance(channelId, item, recentHistory, 24);
   const fit = channelFit(channelId, item);
   const sourcePref = sourcePreferenceBonus(channelId, source || item);
-  const totalBonus = Math.max(-20, Math.min(24, mix.bonus + fit.bonus + sourcePref.bonus));
+  const totalBonus = Math.max(-24, Math.min(28, mix.bonus + fit.bonus + sourcePref.bonus));
   const reasons = [];
   if (mix.bonus) reasons.push("баланс " + mix.bucket + " " + (mix.bonus>0?"+":"") + mix.bonus);
   if (fit.bonus) reasons.push("Channel Score " + fit.score + "/10 " + (fit.bonus>0?"+":"") + fit.bonus);
