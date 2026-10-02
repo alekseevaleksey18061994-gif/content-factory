@@ -10859,7 +10859,8 @@ async function seedChannelSources(ws) {
 const SEED_LISTS_V0413 = new Set(["kino", "science", "sport"]);
 // «Что там в мире?» got a hand-made list of offbeat/culture sources in v0.41.5: AI discovery
 // found only 5 sources (general world news is out of its profile), below the 15 needed.
-const SEED_LISTS_V0415 = new Set(["world"]);
+// «Что там у звёзд?» got one too: its discovery hit the OpenAI rate limit and found none.
+const SEED_LISTS_V0415 = new Set(["world", "stars"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
