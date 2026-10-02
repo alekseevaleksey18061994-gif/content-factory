@@ -6935,8 +6935,10 @@ async function rebuildQueueWithEditorialV2() {
       }
       item.editorialRebuiltAt = new Date().toISOString();
       item.editorialRebuildError = "";
-      // Freshly re-checked: the separate "checker unavailable" retry must not redo it.
-      item.editorialV2RetryVersion = "structured-json-v1";
+      // Freshly re-checked: the separate "checker unavailable" retry must not redo it —
+      // unless this check itself could not reach a checker.
+      if (!(v2.meta && v2.meta.verdict === "unavailable")) item.editorialV2RetryVersion = "structured-json-v1";
+      else delete item.editorialV2RetryVersion;
       if (v2.skip) {
         summary.skipped += 1;
         Object.assign(item, {
@@ -9283,6 +9285,32 @@ setTimeout(function() {
     }
   })();
 }, 5000);
+
+// Items held because a checker was unreachable are re-checked every 15 minutes
+// (previously only once at startup). Cheap when there is nothing to retry.
+async function retryUnavailableEditorialAllWorkspaces() {
+  if (!EDITORIAL_V2_ENABLED || !ANTHROPIC_API_KEY) return;
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    const pending = (ws.state.queue || []).some(function(item) {
+      if (!item || !item.editorialV2) return false;
+      const checkers = Array.isArray(item.editorialV2.checkers) ? item.editorialV2.checkers : [];
+      return item.editorialV2.verdict === "unavailable" || checkers.some(function(x){ return /^anthropic:error$/i.test(String(x || "")); });
+    });
+    if (!pending) continue;
+    await workspaceContext.run({ workspaceId: ws.id }, async function() {
+      // Items held as "unavailable" must stay eligible for this retry.
+      for (const item of (state.queue || [])) {
+        if (item && item.editorialV2 && item.editorialV2.verdict === "unavailable") delete item.editorialV2RetryVersion;
+      }
+      const result = await retryUnavailableEditorialQueueItems();
+      if (result.checked || result.error) console.log("EDITORIAL_V2_RETRY " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+    });
+  }
+}
+setInterval(function() {
+  retryUnavailableEditorialAllWorkspaces().catch(function(error){ console.warn("EDITORIAL_V2_RETRY failed:", error.message); });
+}, 15 * 60 * 1000);
 
 server.listen(PORT, "0.0.0.0", function() {
   console.log("News Factory listening on :" + PORT);
