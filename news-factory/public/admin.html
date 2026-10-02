@@ -4009,9 +4009,25 @@ async function enhanceQueuePhoto(id){
 }
 async function publishQueue(id){
   var targets=queueTargets(id);if(!targets.telegram&&!targets.vk){toast('Выберите соцсеть');return}
-  toast('Готовлю медиа и публикацию…');
-  var j=await api('/api/queue/publish',{method:'POST',body:JSON.stringify({id:id,targets:targets})});
-  publishToast(j);await load()
+  var item=(state.queue||[]).find(function(q){return q&&q.id===id});
+  toast(item&&item.videoUrl?'Загружаю видео и публикую…':'Готовлю медиа и публикацию…');
+  try{
+    var j=await api('/api/queue/publish',{method:'POST',keepalive:true,body:JSON.stringify({id:id,targets:targets})});
+    publishToast(j);
+    await load();
+  }catch(e){
+    try{
+      await load();
+      var published=(state.history||[]).find(function(h){
+        return h&&h.queueId===id&&Boolean(h.messageId||h.telegramMessageId||h.vkPostId);
+      });
+      if(published){
+        toast('Опубликовано · статус синхронизирован');
+        return;
+      }
+    }catch(syncError){}
+    toast('Публикация: '+e.message);
+  }
 }
 async function removeQueue(id){await api('/api/queue/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function logout(){await api('/api/logout',{method:'POST',body:'{}'});location.href='/login'}
