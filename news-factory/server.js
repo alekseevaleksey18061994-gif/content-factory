@@ -694,7 +694,7 @@ function workspaceSummary(ws) {
   const st = ws && ws.state && typeof ws.state === "object" ? ws.state : {};
   const sources = Array.isArray(st.sources) ? st.sources.filter(function(x){ return x && x.enabled; }).length : 0;
   const topic = st.topicSettings && st.topicSettings.default || {};
-  const autoPublish = String(st.mode || "") === "AUTO" && topic.auto_publish_telegram !== false;
+  const autoPublish = AUTO_PUBLISH_ENABLED && String(st.mode || "") === "AUTO" && topic.auto_publish_telegram !== false;
   const missing = [];
   if (!String(ws.telegramChannel || "").trim()) missing.push("telegramChannel");
   if (!String(ws.telegramPublicUsername || ws.slug || "").trim()) missing.push("username");
@@ -9862,15 +9862,22 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const name = String(body.name || "").trim().slice(0, 80);
       if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название канала" });
-      const base = String(body.slug || body.telegramPublicUsername || name).toLowerCase().replace(/^@/, "").replace(/[^a-z0-9а-яё_-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "channel";
+      const tgChannel = normalizeTelegramChannelInput(body.telegramChannel || body.telegramPublicUsername || "");
+      const handle = /^@[A-Za-z0-9_]+$/.test(tgChannel) ? tgChannel.slice(1) : "";
+      let username = String(normalizeTelegramChannelInput(body.telegramPublicUsername || "")).replace(/^@/, "").trim();
+      if (!/^[A-Za-z0-9_]+$/.test(username)) username = handle;
+      let slug = String(body.slug || "").replace(/^@/, "").trim();
+      if (!/^[A-Za-z0-9_-]+$/.test(slug)) slug = username;
+      // id только из латиницы/цифр: normalizeWorkspaceMeta всё остальное вырезает, и id мог совпасть с существующим.
+      const base = String(slug || username || name).toLowerCase().replace(/^@/, "").replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "channel";
       let id = base, suffix = 2;
       while (getWorkspaceById(id)) id = base + "-" + suffix++;
       const workspace = normalizeWorkspaceMeta({
         id: id, name: name,
-        slug: String(body.slug || body.telegramPublicUsername || "").replace(/^@/, "").trim(),
+        slug: slug,
         initials: String(body.initials || "").trim(),
-        telegramChannel: normalizeTelegramChannelInput(body.telegramChannel || body.telegramPublicUsername || ""),
-        telegramPublicUsername: String(body.telegramPublicUsername || body.telegramChannel || "").replace(/^@/, "").trim(),
+        telegramChannel: tgChannel,
+        telegramPublicUsername: username,
         channelId: String(body.channelId || "").trim().toLowerCase(),
         state: freshWorkspaceState()
       }, id);

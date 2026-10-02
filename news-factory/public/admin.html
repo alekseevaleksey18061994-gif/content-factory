@@ -2956,10 +2956,10 @@ function renderWorkspaceChrome(){
 var WS_PROFILE_LABELS={ai:'ИИ',auto:'Авто',money:'Деньги',tech:'Технологии',games:'Игры',kino:'Кино',science:'Наука',sport:'Спорт',world:'В мире',stars:'Звёзды',travel:'Путешествия',shopping:'Покупки',home:'Для дома',food:'Еда',business:'Бизнес',crypto:'Крипта'};
 var WS_MISSING_LABELS={telegramChannel:'Telegram-канал',username:'username',profile:'профиль канала',avatar:'фото',sources:'источники (меньше 15)'};
 var WS_CRITICAL=['telegramChannel','username','profile'];
-var wsProfiles=[],wsFilter='',wsMenuFilter='',wsOpenEdit='';
+var wsProfiles=[],wsFilter='',wsMenuFilter='',wsOpenEdit='',wsDrafts={},wsSkipCapture=false;
 function wsMatches(item,q){
   q=String(q||'').trim().toLowerCase();if(!q)return true;
-  return [item.name,item.id,item.telegramChannel,item.telegramPublicUsername,item.slug,WS_PROFILE_LABELS[item.editorialChannelId]].join(' ').toLowerCase().indexOf(q)>=0;
+  return [item.name,item.id,item.telegramChannel,item.telegramPublicUsername,item.slug,workspaceHandle(item),WS_PROFILE_LABELS[item.editorialChannelId]].join(' ').toLowerCase().indexOf(q)>=0;
 }
 function wsMissing(item){return (item.summary&&item.summary.missing)||[]}
 function wsCriticalMissing(item){return wsMissing(item).filter(function(k){return WS_CRITICAL.indexOf(k)>=0})}
@@ -2989,17 +2989,29 @@ function wsEditorHtml(item){
     (wsProfiles||[]).map(function(pid){return '<option value="'+esc(pid)+'"'+(item.channelId===pid?' selected':'')+'>'+esc(WS_PROFILE_LABELS[pid]||pid)+'</option>'}).join('');
   return '<div class="ws-edit'+(wsOpenEdit===item.id?' open':'')+'" id="wsEdit_'+id+'">'+
     '<div class="account-form-grid">'+
-      '<label class="account-field"><span>Название</span><input id="wsE_'+id+'_name" value="'+esc(item.name||'')+'"></label>'+
-      '<label class="account-field"><span>Инициалы</span><input id="wsE_'+id+'_initials" maxlength="3" value="'+esc(item.initials||'')+'"></label>'+
-      '<label class="account-field"><span>Telegram-канал (@username или ссылка t.me/…)</span><input id="wsE_'+id+'_tg" placeholder="@channel" value="'+esc(item.telegramChannel||'')+'"></label>'+
-      '<label class="account-field"><span>Публичный username</span><input id="wsE_'+id+'_user" placeholder="channel" value="'+esc(item.telegramPublicUsername||'')+'"></label>'+
-      '<label class="account-field"><span>Профиль канала (тематика)</span><select id="wsE_'+id+'_profile">'+opts+'</select></label>'+
+      '<label class="account-field"><span>Название</span><input id="wsE_'+id+'_name" data-orig="'+esc(item.name||'')+'" value="'+esc(item.name||'')+'"></label>'+
+      '<label class="account-field"><span>Инициалы</span><input id="wsE_'+id+'_initials" data-orig="'+esc(item.initials||'')+'" maxlength="3" value="'+esc(item.initials||'')+'"></label>'+
+      '<label class="account-field"><span>Telegram-канал (@username или ссылка t.me/…)</span><input id="wsE_'+id+'_tg" data-orig="'+esc(item.telegramChannel||'')+'" placeholder="@channel" value="'+esc(item.telegramChannel||'')+'"></label>'+
+      '<label class="account-field"><span>Публичный username</span><input id="wsE_'+id+'_user" data-orig="'+esc(item.telegramPublicUsername||'')+'" placeholder="channel" value="'+esc(item.telegramPublicUsername||'')+'"></label>'+
+      '<label class="account-field"><span>Профиль канала (тематика)</span><select id="wsE_'+id+'_profile" data-orig="'+esc(item.channelId||'')+'">'+opts+'</select></label>'+
     '</div>'+
-    '<div class="ws-edit-actions"><button class="primary" type="button" onclick="saveWorkspaceEdit(\''+id+'\')">Сохранить</button><button type="button" onclick="toggleWorkspaceEdit(\''+id+'\')">Отмена</button></div>'+
+    '<div class="ws-edit-actions"><button class="primary" type="button" onclick="saveWorkspaceEdit(\''+id+'\')">Сохранить</button><button type="button" onclick="cancelWorkspaceEdit(\''+id+'\')">Отмена</button></div>'+
   '</div>';
+}
+function wsCaptureDrafts(){
+  document.querySelectorAll('#workspaceList .ws-edit [data-orig]').forEach(function(n){
+    if(n.value!==n.getAttribute('data-orig'))wsDrafts[n.id]=n.value;else delete wsDrafts[n.id];
+  });
+}
+function wsRestoreDrafts(){
+  Object.keys(wsDrafts).forEach(function(id){var n=el(id);if(n)n.value=wsDrafts[id];});
+}
+function wsClearDrafts(wsId){
+  Object.keys(wsDrafts).forEach(function(k){if(k.indexOf('wsE_'+wsId+'_')===0)delete wsDrafts[k];});
 }
 function renderWorkspaceList(){
   var list=el('workspaceList');if(!list)return;
+  if(wsSkipCapture)wsSkipCapture=false;else wsCaptureDrafts();
   var total=workspaces.length,ready=workspaces.filter(function(x){return !wsCriticalMissing(x).length}).length;
   if(el('workspaceFillInfo'))el('workspaceFillInfo').textContent='Заполнено '+ready+' из '+total+(ready<total?' · не хватает Telegram, username или профиля':'');
   var open=document.activeElement&&document.activeElement.closest?document.activeElement.closest('.ws-edit'):null;
@@ -3030,6 +3042,10 @@ function renderWorkspaceList(){
       wsEditorHtml(item)+
     '</div>';
   }).join(''):'<div class="empty">Ничего не найдено</div>';
+  wsRestoreDrafts();
+}
+function cancelWorkspaceEdit(id){
+  wsClearDrafts(id);wsSkipCapture=true;wsOpenEdit='';renderWorkspaceList();
 }
 function toggleWorkspaceEdit(id){
   wsOpenEdit=(wsOpenEdit===id)?'':id;
@@ -3038,12 +3054,22 @@ function toggleWorkspaceEdit(id){
   if(node)node.classList.toggle('open',wsOpenEdit===id);
 }
 async function saveWorkspaceEdit(id){
+  wsCaptureDrafts();
   var v=function(k){var n=el('wsE_'+id+'_'+k);return n?n.value.trim():''};
-  var body={id:id,name:v('name'),initials:v('initials'),telegramChannel:v('tg'),telegramPublicUsername:v('user').replace(/^@/,''),channelId:v('profile')};
+  var item=workspaces.find(function(x){return x.id===id})||{};
+  var body={id:id,name:v('name'),initials:v('initials'),telegramChannel:v('tg'),telegramPublicUsername:v('user').replace(/^@/,'')};
+  // Если канал сменили, а username не трогали и он был производным от старого канала — обновляем и его.
+  var oldHandle=String(item.telegramChannel||'').replace(/^@/,'');
+  var newHandle=body.telegramChannel.replace(/^(?:https?:\/\/)?(?:t\.me|telegram\.me)\//i,'').replace(/^@/,'').replace(/[\/?].*$/,'');
+  if(body.telegramChannel&&body.telegramChannel!==item.telegramChannel&&body.telegramPublicUsername===String(item.telegramPublicUsername||'')&&oldHandle&&oldHandle===body.telegramPublicUsername&&/^[A-Za-z0-9_]{5,32}$/.test(newHandle)){
+    body.telegramPublicUsername=newHandle;
+  }
+  var sel=el('wsE_'+id+'_profile');
+  if(sel&&sel.options.length>1)body.channelId=sel.value; // список профилей не загрузился — не трогаем закреплённый профиль
   if(!body.name){toast('Укажите название канала');return}
   try{
     await api('/api/workspaces/update',{method:'POST',body:JSON.stringify(body)});
-    wsOpenEdit='';await loadWorkspaces();renderWorkspaceChrome();toast('Канал сохранён');
+    wsClearDrafts(id);wsSkipCapture=true;wsOpenEdit='';await loadWorkspaces();renderWorkspaceChrome();toast('Канал сохранён');
   }catch(e){toast(e.message||'Не удалось сохранить')}
 }
 async function autoFillWorkspaces(){
@@ -3056,10 +3082,12 @@ async function autoFillWorkspaces(){
   });
   if(!plan.length){toast('Автозаполнять нечего. Остальное нужно ввести вручную: Telegram-каналы и фото.');return}
   if(!confirm('Будет заполнено:\n\n'+plan.map(function(p){return '• '+p.name+': '+p.notes.join(', ')}).join('\n')+'\n\nTelegram-каналы и фото система не придумывает. Продолжить?'))return;
+  var done=0,failure='';
   try{
-    for(var i=0;i<plan.length;i++){await api('/api/workspaces/update',{method:'POST',body:JSON.stringify(Object.assign({id:plan[i].id},plan[i].patch))})}
-    await loadWorkspaces();renderWorkspaceChrome();toast('Заполнено каналов: '+plan.length);
-  }catch(e){toast(e.message||'Не удалось заполнить')}
+    for(var i=0;i<plan.length;i++){await api('/api/workspaces/update',{method:'POST',body:JSON.stringify(Object.assign({id:plan[i].id},plan[i].patch))});done++}
+  }catch(e){failure=e.message||'ошибка'}
+  try{await loadWorkspaces();renderWorkspaceChrome()}catch(e){}
+  toast(failure?'Заполнено '+done+' из '+plan.length+', остановилось на ошибке: '+failure:'Заполнено каналов: '+done);
 }
 function switchWorkspace(id){
   if(!id||id===activeWorkspaceId){toggleAccountMenu(false);return}

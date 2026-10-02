@@ -44,6 +44,16 @@ try {
   const created = await call("POST", "/api/workspaces", { name: "Тестовый канал", telegramChannel: "https://t.me/s/test_channel_x" });
   assert.equal(created.status, 201);
   assert.equal(created.json.workspace.telegramChannel, "@test_channel_x", "t.me link normalised");
+  assert.equal(created.json.workspace.telegramPublicUsername, "test_channel_x", "username derived from t.me link, not stored raw");
+  assert.equal(created.json.workspace.slug, "test_channel_x", "slug derived from t.me link");
+  // regression: Cyrillic-only name used to produce a duplicate id of an existing workspace
+  const cyr1 = await call("POST", "/api/workspaces", { name: "Что там у кино?" });
+  const cyr2 = await call("POST", "/api/workspaces", { name: "Что там у еды?" });
+  const ids = (await call("GET", "/api/workspaces")).json.workspaces.map(function (w) { return w.id; });
+  assert.equal(new Set(ids).size, ids.length, "workspace ids stay unique: " + ids.join(","));
+  assert.notEqual(cyr1.json.workspace.id, cyr2.json.workspace.id);
+  // the global AUTO_PUBLISH_ENABLED=false switch must be reflected in the status
+  assert.ok((await call("GET", "/api/workspaces")).json.workspaces.every(function (w) { return w.summary.autoPublish === false; }), "autoPublish respects AUTO_PUBLISH_ENABLED");
   const id = created.json.workspace.id;
 
   const cases = [
