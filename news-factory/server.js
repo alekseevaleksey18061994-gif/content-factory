@@ -12,6 +12,7 @@ import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPassw
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451 } from "./lib/channel-dna.js";
+import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
@@ -13147,6 +13148,62 @@ setTimeout(function runInternetSourceFixV0451() {
     }
   })().catch(function(error){ console.warn("Internet source fix failed:", error.message); });
 }, 100000);
+
+// One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
+let workspaceRecoveryRunning = false;
+async function recoverMissingWorkspaces() {
+  if (workspaceRecoveryRunning) return { skipped: "running" };
+  workspaceRecoveryRunning = true;
+  try {
+    const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
+    if (!defaultWorkspace || !defaultWorkspace.state) return { skipped: "no_default_workspace" };
+    defaultWorkspace.state.migrations = Array.isArray(defaultWorkspace.state.migrations) ? defaultWorkspace.state.migrations : [];
+    if (defaultWorkspace.state.migrations.includes(WORKSPACE_RECOVERY_MIGRATION)) return { skipped: "done" };
+    if (!db || !dbReady) return { skipped: "db_not_ready" };
+    const missing = RECOVERY_CHANNELS.filter(function(entry){ return !getWorkspaceById(entry.id); });
+    const restored = [];
+    const fresh = [];
+    for (const entry of missing) {
+      let snapshot = null;
+      try {
+        const result = await db.query("SELECT state, created_at FROM app_snapshots WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 1", [entry.id]);
+        if (result.rows[0] && isUsableSnapshotState(result.rows[0].state)) snapshot = result.rows[0];
+      } catch (error) {
+        // A DB error is not "no snapshot": stop and retry later instead of creating empty channels.
+        return { skipped: "db_error", error: String(error && error.message || error).slice(0, 160), restored: restored.length };
+      }
+      if (getWorkspaceById(entry.id)) continue;
+      const nowIso = new Date().toISOString();
+      const record = recoveredWorkspaceRecord(entry, snapshot ? snapshot.state : freshWorkspaceState(), nowIso);
+      workspaceStore.workspaces.push(normalizeWorkspaceMeta(record, entry.id));
+      (snapshot ? restored : fresh).push(entry.id);
+      console.warn("WORKSPACE_RECOVERED " + JSON.stringify({ workspace: entry.id, from: snapshot ? "app_snapshots" : "fresh", snapshotAt: snapshot ? new Date(snapshot.created_at).toISOString() : "", sources: snapshot ? snapshot.state.sources.length : 0, queue: snapshot && Array.isArray(snapshot.state.queue) ? snapshot.state.queue.length : 0 }));
+    }
+    if (restored.length || fresh.length) persistWorkspaceStore();
+    await workspaceContext.run({ workspaceId: defaultWorkspace.id }, async function(){
+      state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+      if (!state.migrations.includes(WORKSPACE_RECOVERY_MIGRATION)) state.migrations.push(WORKSPACE_RECOVERY_MIGRATION);
+      saveState();
+    });
+    return { restored: restored, fresh: fresh, total: workspaceStore.workspaces.length };
+  } finally {
+    workspaceRecoveryRunning = false;
+  }
+}
+(function scheduleWorkspaceRecovery() {
+  if (String(process.env.WORKSPACE_RECOVERY_ENABLED || "true").toLowerCase() === "false") return;
+  let tries = 0;
+  (function tick() {
+    tries += 1;
+    recoverMissingWorkspaces().then(function(result){
+      if (result && (result.skipped === "db_not_ready" || result.skipped === "db_error") && tries < 30) return void setTimeout(tick, 10000);
+      console.log("WORKSPACE_RECOVERY " + JSON.stringify(result));
+    }).catch(function(error){
+      console.error("WORKSPACE_RECOVERY failed:", error && error.message || error);
+      if (tries < 30) setTimeout(tick, 15000);
+    });
+  })();
+})();
 
 setTimeout(setupNewChannels, 30000);
 setInterval(setupNewChannels, 15 * 60 * 1000);
