@@ -115,6 +115,30 @@ try {
   APP_VERSION = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")).version || APP_VERSION;
 } catch {}
 
+const COST_TRACKING_VERSION = 1;
+const COST_TRACKING_RETENTION_DAYS = Math.max(7, Math.min(180, Number(process.env.COST_TRACKING_RETENTION_DAYS || 62)));
+const COST_TRACKING_MAX_EVENTS = Math.max(1000, Math.min(100000, Number(process.env.COST_TRACKING_MAX_EVENTS || 25000)));
+const COST_PRICING_UPDATED_AT = "2026-10-02";
+const COST_PRICING = {
+  openaiText: {
+    "gpt-6-luna": { input: 0.10, cachedInput: 0.01, output: 0.50 },
+    "gpt-5.6-luna": { input: 0.10, cachedInput: 0.01, output: 0.50 }
+  },
+  openaiImage: {
+    "gpt-image-2.5-sunburst": { textInput: 5.00, imageInput: 8.00, cachedImageInput: 2.00, output: 30.00 },
+    "gpt-image-2": { textInput: 5.00, imageInput: 8.00, cachedImageInput: 2.00, output: 30.00 }
+  },
+  anthropic: {
+    "claude-sonnet-5-5": { input: 2.00, cacheRead: 0.20, cacheWrite: 2.50, output: 10.00 }
+  },
+  railway: {
+    memoryGbMonth: 10.00,
+    cpuVcpuMonth: 20.00,
+    volumeGbMonth: 0.15,
+    egressGb: 0.05
+  }
+};
+
 const CURATED_SOURCES = [
   { id: "openai", name: "OpenAI News", type: "web", group: "official", priority: 1, url: "https://openai.com/news/", enabled: true },
   { id: "anthropic", name: "Anthropic News", type: "web", group: "official", priority: 1, url: "https://www.anthropic.com/news", enabled: true },
@@ -271,6 +295,11 @@ const defaultState = {
   newsVisibleAfter: "",
   history: [],
   stats: { discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 },
+  costTracking: {
+    version: COST_TRACKING_VERSION,
+    startedAt: new Date().toISOString(),
+    events: []
+  },
   migrations: [],
   updatedAt: new Date().toISOString()
 };
@@ -431,6 +460,10 @@ function loadLegacyState() {
     loaded.migrations = Array.isArray(saved.migrations) ? saved.migrations : [];
     loaded.stats = Object.assign({ discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 }, saved.stats || {});
     loaded.queue = Array.isArray(saved.queue) ? saved.queue : [];
+    loaded.costTracking = saved.costTracking && typeof saved.costTracking === "object"
+      ? Object.assign(structuredClone(defaultState.costTracking), saved.costTracking)
+      : structuredClone(defaultState.costTracking);
+    loaded.costTracking.events = Array.isArray(loaded.costTracking.events) ? loaded.costTracking.events : [];
     loaded.topicSettings = Object.assign(
       structuredClone(defaultState.topicSettings),
       saved.topicSettings && typeof saved.topicSettings === "object" ? saved.topicSettings : {}
@@ -541,6 +574,11 @@ function normalizeWorkspaceState(saved) {
   loaded.stats = Object.assign({ discovered: 0, rewritten: 0, published: 0, skipped: 0, expired: 0 }, source.stats || {});
   loaded.queue = Array.isArray(source.queue) ? source.queue : [];
   loaded.history = Array.isArray(source.history) ? source.history : [];
+  loaded.costTracking = source.costTracking && typeof source.costTracking === "object"
+    ? Object.assign(structuredClone(defaultState.costTracking), source.costTracking)
+    : structuredClone(defaultState.costTracking);
+  loaded.costTracking.events = Array.isArray(loaded.costTracking.events) ? loaded.costTracking.events : [];
+  loaded.costTracking.startedAt = String(loaded.costTracking.startedAt || new Date().toISOString());
   loaded.topicSettings = Object.assign(structuredClone(defaultState.topicSettings), source.topicSettings && typeof source.topicSettings === "object" ? source.topicSettings : {});
   loaded.topicSettings.default = Object.assign({ allow_text_fallback: false, auto_publish_telegram: true, auto_publish_vk: true }, loaded.topicSettings.default || {});
   loaded.publicationSchedule = Object.assign(structuredClone(defaultState.publicationSchedule), loaded.publicationSchedule || {});
@@ -910,6 +948,333 @@ const state = new Proxy({}, {
   has: function(_target, prop){ return prop in currentWorkspace().state; },
   getOwnPropertyDescriptor: function(_target, prop){ const d = Object.getOwnPropertyDescriptor(currentWorkspace().state, prop); return d || { configurable: true, enumerable: true, writable: true, value: currentWorkspace().state[prop] }; }
 });
+
+let costPersistTimer = null;
+let cbrUsdRubCache = { at: 0, value: null };
+let infraSizeCache = { at: 0, mediaBytes: 0, dbBytes: 0 };
+
+function ensureCostTracking(targetState) {
+  if (!targetState.costTracking || typeof targetState.costTracking !== "object") {
+    targetState.costTracking = { version: COST_TRACKING_VERSION, startedAt: new Date().toISOString(), events: [] };
+  }
+  if (!Array.isArray(targetState.costTracking.events)) targetState.costTracking.events = [];
+  if (!targetState.costTracking.startedAt) targetState.costTracking.startedAt = new Date().toISOString();
+  const cutoff = Date.now() - COST_TRACKING_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  targetState.costTracking.events = targetState.costTracking.events.filter(function(e) {
+    const ts = new Date(e && e.at || 0).getTime();
+    return ts && ts >= cutoff;
+  }).slice(-COST_TRACKING_MAX_EVENTS);
+  return targetState.costTracking;
+}
+
+function scheduleCostPersist() {
+  if (costPersistTimer) return;
+  costPersistTimer = setTimeout(function() {
+    costPersistTimer = null;
+    try { persistWorkspaceStore(); } catch (error) { console.warn("Cost ledger persist failed:", error.message); }
+  }, 1200);
+}
+
+function normalizeUsageNumber(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function calculateUsageCost(provider, model, usage, endpoint) {
+  const u = usage && typeof usage === "object" ? usage : {};
+  const p = String(provider || "").toLowerCase();
+  const m = String(model || "");
+  const ep = String(endpoint || "");
+  const input = normalizeUsageNumber(u.input_tokens != null ? u.input_tokens : u.prompt_tokens);
+  const output = normalizeUsageNumber(u.output_tokens != null ? u.output_tokens : u.completion_tokens);
+  const inputDetails = u.input_tokens_details && typeof u.input_tokens_details === "object"
+    ? u.input_tokens_details
+    : (u.prompt_tokens_details && typeof u.prompt_tokens_details === "object" ? u.prompt_tokens_details : {});
+  const cached = normalizeUsageNumber(inputDetails.cached_tokens);
+  const cacheRead = normalizeUsageNumber(u.cache_read_input_tokens);
+  const cacheWrite = normalizeUsageNumber(u.cache_creation_input_tokens);
+  let costUsd = 0;
+  let pricingKnown = true;
+  let kind = "text";
+
+  if (p === "openai" && ep === "images") {
+    kind = "image";
+    const rate = COST_PRICING.openaiImage[m];
+    if (!rate) pricingKnown = false;
+    const imageInput = normalizeUsageNumber(inputDetails.image_tokens);
+    let textInput = normalizeUsageNumber(inputDetails.text_tokens);
+    if (!textInput && !imageInput && input) textInput = input;
+    const cachedImage = normalizeUsageNumber(inputDetails.cached_tokens);
+    const imageOutput = output;
+    if (rate) {
+      costUsd = ((textInput * rate.textInput) +
+        (Math.max(0, imageInput - cachedImage) * rate.imageInput) +
+        (cachedImage * rate.cachedImageInput) +
+        (imageOutput * rate.output)) / 1000000;
+    }
+    return {
+      kind, inputTokens: input, outputTokens: output, cachedInputTokens: cachedImage,
+      cacheReadTokens: 0, cacheWriteTokens: 0,
+      imageInputTokens: imageInput, imageOutputTokens: imageOutput, textInputTokens: textInput,
+      costUsd, pricingKnown
+    };
+  }
+
+  if (p === "anthropic") {
+    const rate = COST_PRICING.anthropic[m];
+    if (!rate) pricingKnown = false;
+    if (rate) {
+      const normalInput = Math.max(0, input - cacheRead - cacheWrite);
+      costUsd = ((normalInput * rate.input) + (cacheRead * rate.cacheRead) + (cacheWrite * rate.cacheWrite) + (output * rate.output)) / 1000000;
+    }
+    return {
+      kind, inputTokens: input, outputTokens: output, cachedInputTokens: 0,
+      cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
+      imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
+      costUsd, pricingKnown
+    };
+  }
+
+  if (p === "openai") {
+    let rate = COST_PRICING.openaiText[m];
+    let estimated = false;
+    if (!rate) {
+      rate = COST_PRICING.openaiText["gpt-6-luna"];
+      estimated = true;
+    }
+    const normalInput = Math.max(0, input - cached);
+    costUsd = ((normalInput * rate.input) + (cached * rate.cachedInput) + (output * rate.output)) / 1000000;
+    return {
+      kind, inputTokens: input, outputTokens: output, cachedInputTokens: cached,
+      cacheReadTokens: 0, cacheWriteTokens: 0,
+      imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
+      costUsd, pricingKnown: true, estimated
+    };
+  }
+
+  return {
+    kind, inputTokens: input, outputTokens: output, cachedInputTokens: cached,
+    cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite,
+    imageInputTokens: 0, imageOutputTokens: 0, textInputTokens: input,
+    costUsd: 0, pricingKnown: false
+  };
+}
+
+function recordCostUsage(event) {
+  const e = event && typeof event === "object" ? event : {};
+  const provider = String(e.provider || "").toLowerCase();
+  if (!provider) return null;
+  const model = String(e.model || "unknown");
+  const endpoint = String(e.endpoint || (provider === "anthropic" ? "messages" : "responses"));
+  const priced = calculateUsageCost(provider, model, e.usage || {}, endpoint);
+  const tracking = ensureCostTracking(currentWorkspace().state);
+  const row = {
+    id: "cost_" + crypto.randomBytes(6).toString("hex"),
+    at: new Date().toISOString(),
+    workspaceId: currentWorkspaceId(),
+    provider, model,
+    operation: String(e.purpose || e.operation || "api_call").slice(0, 80),
+    endpoint, kind: priced.kind,
+    inputTokens: priced.inputTokens,
+    outputTokens: priced.outputTokens,
+    cachedInputTokens: priced.cachedInputTokens,
+    cacheReadTokens: priced.cacheReadTokens,
+    cacheWriteTokens: priced.cacheWriteTokens,
+    imageInputTokens: priced.imageInputTokens,
+    imageOutputTokens: priced.imageOutputTokens,
+    textInputTokens: priced.textInputTokens,
+    costUsd: Number(priced.costUsd || 0),
+    pricingKnown: Boolean(priced.pricingKnown),
+    estimated: Boolean(priced.estimated),
+    extra: e.extra && typeof e.extra === "object" ? e.extra : {}
+  };
+  tracking.events.push(row);
+  if (tracking.events.length > COST_TRACKING_MAX_EVENTS) tracking.events.splice(0, tracking.events.length - COST_TRACKING_MAX_EVENTS);
+  scheduleCostPersist();
+  return row;
+}
+
+function recordOpenAIResponseUsage(model, operation, data, endpoint, extra) {
+  return recordCostUsage({
+    provider: "openai",
+    model,
+    purpose: operation,
+    endpoint: endpoint || "responses",
+    usage: data && data.usage || {},
+    extra: extra || {}
+  });
+}
+
+function operationLabel(value) {
+  const labels = {
+    editorial_writer: "Редакция v2 · написание поста",
+    editorial_checker_openai: "Редакция v2 · проверка GPT",
+    editorial_checker_anthropic: "Редакция v2 · проверка Claude",
+    editorial_checker_anthropic_repair: "Claude · повтор JSON-проверки",
+    editorial_health: "Claude · проверка подключения",
+    telegram_caption_compact: "Telegram · сокращение подписи",
+    legacy_rewrite: "Старая редакция · рерайт",
+    editorial_qc: "Финальный QC",
+    story_relation: "Проверка дубля/обновления",
+    story_composer: "Объединение нескольких источников",
+    title_translation: "Перевод заголовков",
+    editorial_score_batch: "Пакетный рейтинг новостей",
+    image_generation: "AI-обложка / fallback"
+  };
+  return labels[String(value || "")] || String(value || "Другое");
+}
+
+function providerLabel(value) {
+  const map = { openai: "OpenAI", anthropic: "Anthropic Claude" };
+  return map[String(value || "")] || String(value || "Другое");
+}
+
+async function getUsdRubRate() {
+  const now = Date.now();
+  if (cbrUsdRubCache.value && now - cbrUsdRubCache.at < 6 * 60 * 60 * 1000) return cbrUsdRubCache.value;
+  try {
+    const response = await fetch("https://www.cbr.ru/scripts/XML_daily.asp", {
+      headers: { "user-agent": "NewsFactory/1.0" },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) throw new Error("CBR HTTP " + response.status);
+    const xml = await response.text();
+    const block = xml.match(/<Valute[^>]*>[\s\S]*?<CharCode>USD<\/CharCode>[\s\S]*?<\/Valute>/i);
+    if (!block) throw new Error("USD not found");
+    const nominalMatch = block[0].match(/<Nominal>([^<]+)<\/Nominal>/i);
+    const valueMatch = block[0].match(/<Value>([^<]+)<\/Value>/i);
+    const nominal = Number(String(nominalMatch && nominalMatch[1] || "1").replace(",", "."));
+    const value = Number(String(valueMatch && valueMatch[1] || "").replace(",", "."));
+    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(nominal) || nominal <= 0) throw new Error("bad CBR rate");
+    const rate = value / nominal;
+    cbrUsdRubCache = { at: now, value: rate };
+    return rate;
+  } catch {
+    const fallback = Number(process.env.COST_USD_RUB_RATE || 0);
+    return Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+  }
+}
+
+function directoryBytes(dir) {
+  let total = 0;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    try {
+      if (entry.isDirectory()) total += directoryBytes(full);
+      else if (entry.isFile()) total += fs.statSync(full).size;
+    } catch {}
+  }
+  return total;
+}
+
+async function getInfrastructureEstimate() {
+  const now = Date.now();
+  if (now - infraSizeCache.at > 5 * 60 * 1000) {
+    let dbBytes = infraSizeCache.dbBytes || 0;
+    if (db && dbReady) {
+      try {
+        const r = await db.query("SELECT pg_database_size(current_database())::bigint AS bytes");
+        dbBytes = Number(r.rows && r.rows[0] && r.rows[0].bytes || 0);
+      } catch {}
+    }
+    infraSizeCache = { at: now, mediaBytes: directoryBytes(MEDIA_DIR), dbBytes };
+  }
+  const uptimeSec = Math.max(1, process.uptime());
+  const cpu = process.cpuUsage();
+  const avgVcpu = Math.max(0, (Number(cpu.user || 0) + Number(cpu.system || 0)) / 1000000 / uptimeSec);
+  const rssGb = process.memoryUsage().rss / 1000000000;
+  const mediaGb = infraSizeCache.mediaBytes / 1000000000;
+  const dbGb = infraSizeCache.dbBytes / 1000000000;
+  const appCpuMonthly = avgVcpu * COST_PRICING.railway.cpuVcpuMonth;
+  const appMemoryMonthly = rssGb * COST_PRICING.railway.memoryGbMonth;
+  const mediaStorageMonthly = mediaGb * COST_PRICING.railway.volumeGbMonth;
+  const dbStorageMonthly = dbGb * COST_PRICING.railway.volumeGbMonth;
+  return {
+    estimatedMonthlyUsd: appCpuMonthly + appMemoryMonthly + mediaStorageMonthly + dbStorageMonthly,
+    partial: true,
+    note: "Оценка run-rate: CPU/RAM news-factory-api + объём media и БД. Compute Postgres, egress и тариф Railway в эту оценку не входят.",
+    services: [
+      { id: "news-factory-api", name: "Railway · news-factory-api", monthlyUsd: appCpuMonthly + appMemoryMonthly, detail: "CPU ≈ " + avgVcpu.toFixed(4) + " vCPU · RAM ≈ " + rssGb.toFixed(3) + " GB" },
+      { id: "media-volume", name: "Railway · media volume", monthlyUsd: mediaStorageMonthly, detail: "Хранилище ≈ " + mediaGb.toFixed(3) + " GB" },
+      { id: "postgres-storage", name: "Railway · Postgres storage", monthlyUsd: dbStorageMonthly, detail: "База ≈ " + dbGb.toFixed(3) + " GB · compute не включён" }
+    ]
+  };
+}
+
+async function buildCostsReport(days, scope, workspaceId) {
+  const safeDays = Math.max(1, Math.min(COST_TRACKING_RETENTION_DAYS, Number(days || 30)));
+  const cutoff = Date.now() - safeDays * 24 * 60 * 60 * 1000;
+  const allEvents = [];
+  let startedAt = "";
+  for (const ws of workspaceStore.workspaces) {
+    if (scope === "workspace" && ws.id !== workspaceId) continue;
+    const tracking = ensureCostTracking(ws.state);
+    if (!startedAt || new Date(tracking.startedAt).getTime() < new Date(startedAt).getTime()) startedAt = tracking.startedAt;
+    for (const event of tracking.events) {
+      const ts = new Date(event && event.at || 0).getTime();
+      if (ts && ts >= cutoff) allEvents.push(Object.assign({}, event, { workspaceName: ws.name }));
+    }
+  }
+  const providers = new Map(), operations = new Map(), workspaces = new Map(), daysMap = new Map();
+  let totalUsd = 0, unpricedCalls = 0, totalCalls = 0, totalInputTokens = 0, totalOutputTokens = 0;
+
+  function addBucket(map, key, seed, event) {
+    if (!map.has(key)) map.set(key, Object.assign({ calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0 }, seed));
+    const b = map.get(key);
+    b.calls += 1;
+    b.costUsd += Number(event.costUsd || 0);
+    b.inputTokens += Number(event.inputTokens || 0);
+    b.outputTokens += Number(event.outputTokens || 0);
+    if (!event.pricingKnown) b.unpricedCalls += 1;
+  }
+
+  for (const event of allEvents) {
+    totalCalls += 1;
+    totalUsd += Number(event.costUsd || 0);
+    totalInputTokens += Number(event.inputTokens || 0);
+    totalOutputTokens += Number(event.outputTokens || 0);
+    if (!event.pricingKnown) unpricedCalls += 1;
+    addBucket(providers, event.provider, { id: event.provider, name: providerLabel(event.provider) }, event);
+    addBucket(operations, event.provider + "|" + event.operation + "|" + event.model, {
+      provider: event.provider, providerName: providerLabel(event.provider),
+      operation: event.operation, operationLabel: operationLabel(event.operation), model: event.model
+    }, event);
+    addBucket(workspaces, event.workspaceId, { id: event.workspaceId, name: event.workspaceName || event.workspaceId }, event);
+    const day = String(event.at || "").slice(0, 10);
+    if (day) addBucket(daysMap, day, { day }, event);
+  }
+
+  const rate = await getUsdRubRate();
+  const infrastructure = await getInfrastructureEstimate();
+  const toRows = function(map){ return Array.from(map.values()).sort(function(a,b){ return b.costUsd - a.costUsd || b.calls - a.calls; }); };
+  const convertRub = function(usd){ return rate ? usd * rate : null; };
+  return {
+    ok: true,
+    scope: scope === "workspace" ? "workspace" : "network",
+    days: safeDays,
+    trackingStartedAt: startedAt || new Date().toISOString(),
+    pricingUpdatedAt: COST_PRICING_UPDATED_AT,
+    currency: { usdRub: rate, source: rate ? "CBR" : "USD only" },
+    totals: { costUsd: totalUsd, costRub: convertRub(totalUsd), calls: totalCalls, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, unpricedCalls },
+    providers: toRows(providers).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
+    operations: toRows(operations).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
+    workspaces: toRows(workspaces).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
+    daily: Array.from(daysMap.values()).sort(function(a,b){ return a.day.localeCompare(b.day); }).map(function(x){ return Object.assign(x, { costRub: convertRub(x.costUsd) }); }),
+    infrastructure: Object.assign({}, infrastructure, {
+      estimatedMonthlyRub: convertRub(infrastructure.estimatedMonthlyUsd),
+      services: infrastructure.services.map(function(s){ return Object.assign({}, s, { monthlyRub: convertRub(s.monthlyUsd) }); })
+    }),
+    freeServices: [
+      { name: "Telegram Bot API", costUsd: 0, note: "Отдельной платы за API-публикации нет" },
+      { name: "VK API", costUsd: 0, note: "Отдельной платы за API-публикации нет" },
+      { name: "Sharp", costUsd: 0, note: "Улучшение исходных фото выполняется локально; расход идёт только в Railway CPU/RAM" }
+    ],
+    note: "API-расходы считаются по usage из ответов моделей с момента включения учёта. Исторические расходы до этой версии не восстанавливаются."
+  };
+}
+
 function findSourceForItem(item) {
   if (!item) return null;
   const sourceId = String(item.sourceId || "").trim();
@@ -6244,7 +6609,8 @@ async function anthropicEditorialProbe(force) {
     const clients = createModelClients({
       anthropicApiKey: ANTHROPIC_API_KEY,
       anthropicModel: ANTHROPIC_MODEL,
-      timeoutMs: 30000
+      timeoutMs: 30000,
+      onUsage: recordCostUsage
     });
     const result = await clients.callAnthropic(
       [
@@ -6259,7 +6625,7 @@ async function anthropicEditorialProbe(force) {
         sources: [{ name: "health", url: "https://example.com", date: new Date().toISOString(), role: "technical", title: "Проверка", text: "Служебная проверка API." }],
         registry: { banned_orgs: [], foreign_agents: [] }
       }),
-      { maxTokens: 250 }
+      { maxTokens: 250, purpose: "editorial_health" }
     );
     const parsed = result && result.parsed || {};
     const ok = ["pass", "fix", "reject"].includes(String(parsed.verdict || "").toLowerCase()) && Array.isArray(parsed.errors);
@@ -6556,7 +6922,8 @@ function editorialPipeline() {
         openaiModel: OPENAI_MODEL,
         openaiFallbackModel: OPENAI_FALLBACK_MODEL,
         anthropicApiKey: ANTHROPIC_API_KEY,
-        anthropicModel: ANTHROPIC_MODEL
+        anthropicModel: ANTHROPIC_MODEL,
+        onUsage: recordCostUsage
       }
     });
   }
@@ -8181,6 +8548,12 @@ const server = http.createServer(async function(req, res) {
     const requestedWorkspaceId = String(req.headers["x-workspace-id"] || url.searchParams.get("workspace") || "").trim();
     const selectedWorkspace = getWorkspaceById(requestedWorkspaceId) || getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
     workspaceContext.enterWith({ workspaceId: selectedWorkspace.id });
+
+    if (req.method === "GET" && p === "/api/costs") {
+      const days = Number(url.searchParams.get("days") || 30);
+      const scope = String(url.searchParams.get("scope") || "network").toLowerCase() === "workspace" ? "workspace" : "network";
+      return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId()), { "cache-control": "no-store" });
+    }
 
     if (req.method === "GET" && p === "/api/editorial/registry") {
       return sendJson(res, 200, { ok: true, registry: loadEditorialRegistry() });
