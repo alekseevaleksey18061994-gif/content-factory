@@ -2663,7 +2663,7 @@ button{line-height:1.2!important}
             <div class="panel-title"><div><h3>Текущий канал</h3><p id="promoCurrentName">—</p></div></div>
             <div class="promotion-platforms">
               <div class="promotion-platform"><span class="promotion-platform-icon">TG</span><div><b id="promoTgSubs">—</b><small>подписчиков Telegram</small></div><span id="promoTgWeek" class="promotion-delta">—</span></div>
-              <div class="promotion-platform"><span class="promotion-platform-icon vk">VK</span><div><b id="promoVkSubs">—</b><small>подписчиков VK</small></div><span class="promotion-delta">—</span></div>
+              <div class="promotion-platform"><span class="promotion-platform-icon vk">VK</span><div><b id="promoVkSubs">—</b><small>подписчиков VK</small></div><span id="promoVkWeek" class="promotion-delta">—</span></div>
             </div>
             <div class="notice" id="promoTrackingNote" style="margin-top:12px">История роста начнёт заполняться автоматически.</div>
           </section>
@@ -3998,7 +3998,9 @@ function renderPromotion(data){
   if(el('promoCurrentName'))el('promoCurrentName').textContent=(cur.name||'Канал')+(cur.handle?' · '+cur.handle:'');
   if(el('promoTgSubs'))el('promoTgSubs').textContent=cur.telegramSubscribers==null?'—':fmtMetric(cur.telegramSubscribers);
   if(el('promoVkSubs'))el('promoVkSubs').textContent=cur.vkSubscribers==null?'—':fmtMetric(cur.vkSubscribers);
-  if(el('promoTgWeek')){el('promoTgWeek').textContent=promoDelta(growth.week);el('promoTgWeek').className='promotion-delta '+promoDeltaClass(growth.week)}
+  var tgGrowth=cur.telegramGrowth||{},vkGrowth=cur.vkGrowth||{};
+  if(el('promoTgWeek')){el('promoTgWeek').textContent=promoDelta(tgGrowth.week);el('promoTgWeek').className='promotion-delta '+promoDeltaClass(tgGrowth.week)}
+  if(el('promoVkWeek')){el('promoVkWeek').textContent=promoDelta(vkGrowth.week);el('promoVkWeek').className='promotion-delta '+promoDeltaClass(vkGrowth.week)}
   if(el('promoTrackingNote'))el('promoTrackingNote').textContent=(data.tracking&&data.tracking.note)||'Рост аудитории отслеживается автоматически.';
   if(el('promoTrackedChannels'))el('promoTrackedChannels').textContent=(network.trackedChannels||0)+'/'+((network.channels||[]).length||0);
   if(el('promoNetworkSubtitle'))el('promoNetworkSubtitle').textContent='Всего '+fmtMetric(network.totalSubscribers||0)+' подписчиков'+(network.weekGrowth==null?'':' · '+promoDelta(network.weekGrowth)+' за 7 дней');
