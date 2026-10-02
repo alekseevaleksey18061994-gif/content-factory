@@ -3534,10 +3534,11 @@ async function prepareReusableSourceImage(imageUrl, id) {
   if (!sourceUrl) return { imageUrl: "", originalImageUrl: "" };
   try {
     const cached = await cacheSourceImage(sourceUrl, id);
-    return { imageUrl: cached || sourceUrl, originalImageUrl: sourceUrl, cached: Boolean(cached) };
+    return { imageUrl: cached || "", originalImageUrl: sourceUrl, cached: Boolean(cached) };
   } catch (error) {
     console.warn("Source image cache failed:", sourceUrl, error.message);
-    return { imageUrl: sourceUrl, originalImageUrl: sourceUrl, cached: false, cacheError: error.message };
+    // Not an image / not reachable: never publish or show the raw remote URL.
+    return { imageUrl: "", originalImageUrl: sourceUrl, cached: false, cacheError: error.message };
   }
 }
 
@@ -3568,7 +3569,8 @@ async function repairBalancedQueueMedia() {
       try {
         const prepared = await prepareReusableSourceImage(sourceImage, item.newsId || item.id);
         item.originalImageUrl = prepared.originalImageUrl || sourceImage;
-        item.imageUrl = prepared.imageUrl || sourceImage;
+        if (!prepared.imageUrl) throw new Error(prepared.cacheError || "фото источника недоступно");
+        item.imageUrl = prepared.imageUrl;
         if (!item.videoUrl) {
           item.mediaType = "photo";
           item.mediaStatus = "photo_found";
@@ -4072,6 +4074,11 @@ async function prepareMediaDirector(payload) {
       const cached = String(prepared.imageUrl || "").trim();
       if (!cached) continue;
       const fp = await localImageFingerprint(cached);
+      if (!isExtra && (!fp || fp.width < 320 || fp.height < 180)) {
+        // Tracking pixels, icons and broken files are not a news photo.
+        console.log("MEDIA_MAIN_TOO_SMALL " + JSON.stringify({ source: p.sourceName || "", news: p.id || "", width: fp && fp.width || 0, height: fp && fp.height || 0 }));
+        continue;
+      }
       if (!isExtra && fp && (looksLikeGraphic(fp) || isSourcePlaceholderImage(p.sourceName, p.articleUrl || p.id, fp))) {
         // Main photo is a logo / brand card / the source's default share image
         // (e.g. the VK logo on every VK press release): not a news photo.
@@ -10779,6 +10786,63 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("Source replenish failed:", error.message); });
 }, 120000);
+
+// Queue posts whose picture is a remote URL, a missing/tiny file or not an
+// image get a generated cover instead (video posts keep the video).
+async function repairBrokenQueueImages() {
+  let fixed = 0, failed = 0;
+  if (!PUBLIC_BASE_URL) return { fixed: 0, failed: 0, skipped: "no_public_base_url" };
+  // Safety: if most of the queue looks broken, something else is wrong (paths,
+  // volume) — do not replace everything with generated covers.
+  const withImages = (state.queue || []).filter(function(q){ return q && q.newsId && !q.telegramPublished && (q.enhancedImageUrl || q.imageUrl); });
+  let broken = 0;
+  for (const q of withImages) {
+    const fp = await localImageFingerprint(q.enhancedImageUrl || q.imageUrl);
+    if (!(fp && fp.width >= 320 && fp.height >= 180)) broken += 1;
+  }
+  if (withImages.length >= 6 && broken > withImages.length / 2) return { fixed: 0, failed: 0, skipped: "too_many_broken", broken: broken, total: withImages.length };
+  for (const item of (state.queue || [])) {
+    if (!item || !item.newsId || item.telegramPublished) continue;
+    const img = String(item.enhancedImageUrl || item.imageUrl || "").trim();
+    let ok = false;
+    if (img) {
+      // Only files in our /media folder count; remote URLs give no fingerprint.
+      const fp = await localImageFingerprint(img);
+      ok = Boolean(fp && fp.width >= 320 && fp.height >= 180);
+    }
+    if (ok) continue;
+    if (!img && item.generatedImageUrl) continue;
+    if (!img && item.videoUrl) continue;
+    try {
+      if (item.videoUrl) { item.imageUrl = ""; item.enhancedImageUrl = ""; fixed += 1; continue; }
+      const generated = await generateNewsCover({ id: item.newsId || item.id, title: item.title, text: item.text, sourceName: item.sourceName || "" });
+      if (img && !item.originalImageUrl) item.originalImageUrl = img;
+      item.imageUrl = "";
+      item.enhancedImageUrl = "";
+      item.mediaPackUrls = [];
+      item.generatedImageUrl = generated.url;
+      item.mediaType = "generated";
+      item.mediaStatus = "generated";
+      item.mediaOrigin = "ai_generated";
+      item.generatedBy = generated.model;
+      item.generatedAt = new Date().toISOString();
+      fixed += 1;
+    } catch (error) { failed += 1; console.warn("Broken queue image repair failed:", item.id, error.message); }
+  }
+  if (fixed) saveState();
+  return { fixed: fixed, failed: failed };
+}
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await repairBrokenQueueImages();
+        console.log("QUEUE_IMAGE_REPAIR " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
+      });
+    }
+  })().catch(function(error){ console.warn("Queue image repair failed:", error.message); });
+}, 50000);
 
 // One-time removal of duplicate stories already waiting in the queue.
 setTimeout(function() {

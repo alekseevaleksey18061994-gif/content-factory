@@ -53,7 +53,7 @@ export function postRating(x){
 export function queueItemRatingInput(q) {
   q = q || {};
   const storyCount = (q.storySources && q.storySources.length) || (q.storyCluster && q.storyCluster.sourceCount) || 0;
-  const sourceImage = q.enhancedImageUrl || q.imageUrl || q.originalImageUrl || "";
+  const sourceImage = q.enhancedImageUrl || q.imageUrl || "";
   return {
     editorialV2: q.editorialV2 || {},
     aiScore: q.aiScore,

@@ -2789,6 +2789,12 @@ function scThumbError(img){
   if(icon){img.setAttribute('data-icon','');img.classList.add('sc-thumb-icon');img.src=icon;return}
   var box=img.parentNode;if(box)box.classList.add('sc-thumb-empty');img.remove();
 }
+// Broken picture: try the generated cover, otherwise show a neutral placeholder.
+function thumbFallback(img,alt){
+  if(alt){img.onerror=function(){thumbFallback(img,'')};img.src=alt;return}
+  var ph=document.createElement('div');ph.className='queue-placeholder';ph.textContent='Фото недоступно';
+  if(img.parentNode)img.parentNode.replaceChild(ph,img);
+}
 function toggleWhy(id){
   var node=el('why_'+id);if(node)node.classList.toggle('open');
 }
@@ -3103,18 +3109,15 @@ function render(){
   }).join('');
   el('queueCount').textContent=(state.queue||[]).length;
   var qp=state.queuePolicy||{};
-  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Редакторский контур оценивает и саму новость, и качество готового поста. AUTO публикует посты с QC не ниже '+((state.editorialPolicy&&state.editorialPolicy.autoQualityMin)||72)+'/100, учитывает разнообразие ленты, медиа и статистику аудитории. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
+  if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Очередь отсортирована по рейтингу: сверху лучшие. В слот выходит лучший пост; с рейтингом ниже '+ratingMinAuto+' — запасные, ниже '+ratingDropBelow+' система убирает сама. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
+  // Queue order = 100-point rating, best first (same rating the scheduler uses).
+  var queueScore=function(q){
+    var storyCount=(q&&q.storySources&&q.storySources.length)||(q&&q.storyCluster&&q.storyCluster.sourceCount)||0;
+    var img=q&&(q.enhancedImageUrl||q.imageUrl)||'';
+    return postRating({editorialV2:q&&q.editorialV2||{},aiScore:q&&q.aiScore,qcStatus:q&&q.qcStatus,status:q&&q.status,articlePublishedAt:q&&q.articlePublishedAt,foundAt:q&&q.createdAt,mediaKind:q&&q.videoUrl?'video':(img?'photo':(q&&q.generatedImageUrl?'generated':'none')),sourceRole:q&&q.sourceRole,sourceCount:storyCount}).total;
+  };
   var sortedQueue=(state.queue||[]).slice().sort(function(a,b){
-    function score(q){
-      var priority=Number(q&&q.priorityScore);
-      if(Number.isFinite(priority))return priority;
-      var base=Number(q&&q.aiScore);
-      if(!Number.isFinite(base))return -1;
-      var direct=!!(q&&q.videoUrl),embedded=!!(q&&q.hasEmbeddedVideo);
-      var bonus=direct?(base>=55?10:4):(embedded?(base>=55?5:2):0);
-      return Math.min(100,Math.round(base)+bonus);
-    }
-    var as=score(a),bs=score(b);
+    var as=queueScore(a),bs=queueScore(b);
     if(bs!==as)return bs-as;
     var at=new Date((a&&a.articlePublishedAt)||(a&&a.createdAt)||0).getTime()||0;
     var bt=new Date((b&&b.articlePublishedAt)||(b&&b.createdAt)||0).getTime()||0;
@@ -3123,11 +3126,12 @@ function render(){
   var vkAllowed=!!(currentWorkspaceMeta&&currentWorkspaceMeta.vkPublishingAllowed);
   el('queue').innerHTML=sortedQueue.length?sortedQueue.map(function(q){
     var parts=postParts(q);
-    var sourceImage=q.enhancedImageUrl||q.imageUrl||q.originalImageUrl||'';
+    var sourceImage=q.enhancedImageUrl||q.imageUrl||'';
     var effectiveImage=sourceImage||q.generatedImageUrl||'';
+    var thumbErr=' onerror="thumbFallback(this,\''+esc(sourceImage&&q.generatedImageUrl&&q.generatedImageUrl!==sourceImage?q.generatedImageUrl:'').replace(/'/g,'%27')+'\')"';
     var media=q.videoUrl
-      ? (effectiveImage?'<div class="queue-media-visual"><img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="queue-placeholder">▶ Видео</div>')
-      : effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt="">':'<div class="queue-placeholder">Нет медиа</div>';
+      ? (effectiveImage?'<div class="queue-media-visual"><img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""'+thumbErr+'><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="queue-placeholder">▶ Видео</div>')
+      : effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""'+thumbErr+'>':'<div class="queue-placeholder">Нет медиа</div>';
     var freshnessDate=q.articlePublishedAt||q.createdAt||'';
     var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
     var ms=(q.mediaStatus==='enhanced'||q.mediaStatus==='video_poster_enhanced')
