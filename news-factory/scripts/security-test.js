@@ -416,6 +416,190 @@ test("F-3 password modes: scrypt preferred, legacy SHA-256 still works", async (
   });
 });
 
+// ---------------------------------------------------------------- F-4: VK OAuth routes
+test("F-4 VK OAuth start/capture/handoff require authorisation; the state is never handed to anonymous callers", async () => {
+  await withApp({ VK_APP_ID: "12345", VK_GROUP_ID: "777", VK_OAUTH_HANDOFF_SECRET: "handoff-secret-for-test" }, async function(app) {
+    const anon = await app.req("GET", "/api/vk/oauth/start");
+    assert.equal(anon.status, 401);
+    assert.ok(!(anon.headers.get("location") || "").includes("state="));
+    assert.equal((await app.req("GET", "/api/vk/oauth/start", { headers: { "x-oauth-handoff-secret": "wrong" } })).status, 401);
+    const { cookie } = await app.login();
+    // legitimate start (admin cookie) still redirects to VK ID with a state
+    const ok = await app.req("GET", "/api/vk/oauth/start", { cookie });
+    assert.equal(ok.status, 302);
+    const loc = ok.headers.get("location") || "";
+    assert.ok(loc.startsWith("https://id.vk.ru/authorize?"), loc);
+    const state = (loc.match(/[?&]state=([^&]+)/) || [])[1];
+    assert.ok(state && state.length >= 20);
+    // an anonymous second start cannot overwrite the session...
+    assert.equal((await app.req("GET", "/api/vk/oauth/start")).status, 401);
+    // ...and capture needs auth even when the state is known
+    const capAnon = await app.req("POST", "/api/vk/oauth/capture", { json: { accessToken: "ATTACKER-TOKEN", state, userId: "1" } });
+    assert.equal(capAnon.status, 401);
+    assert.ok(!capAnon.text.includes("ATTACKER-TOKEN"));
+    // authorised capture with a wrong state is refused by the state check
+    const capBad = await app.req("POST", "/api/vk/oauth/capture", { cookie, json: { accessToken: "x", state: "wrong", userId: "1" } });
+    assert.equal(capBad.status, 400);
+    assert.match(capBad.json.error, /state/i);
+    // the handoff secret also works for start (machine flow), via constant-time compare
+    assert.equal((await app.req("GET", "/api/vk/oauth/start", { headers: { "x-oauth-handoff-secret": "handoff-secret-for-test" } })).status, 302);
+    // callback is reachable without a cookie (VK redirects the browser cross-site) but needs the live state
+    const cbBad = await app.req("GET", "/api/vk/oauth/callback?code=c&device_id=d&state=bogus");
+    assert.equal(cbBad.status, 400);
+    // handoff secret guessing is rate limited
+    let last = 0;
+    for (let i = 0; i < 12; i++) last = (await app.req("GET", "/api/vk/oauth/handoff", { ip: "198.51.100.77", headers: { "x-oauth-handoff-secret": "guess" + i } })).status;
+    assert.equal(last, 429);
+  });
+});
+
+// ---------------------------------------------------------------- F-5 / F-7 / F-10: input validation
+test("F-5 calendar routes reject __proto__ / non-date keys and the process keeps working", async () => {
+  await withApp({}, async function(app) {
+    const { cookie } = await app.login();
+    for (const body of [{ date: "__proto__", time: "toString" }, { date: "constructor", time: "09:30" }, { date: "2026-01-01", time: "__proto__" }, { date: "2026-01-01", time: "toString" }, { date: "2026-13-1", time: "09:30" }]) {
+      assert.equal((await app.req("POST", "/api/calendar/remove", { cookie, json: body })).status, 400, JSON.stringify(body));
+      assert.equal((await app.req("POST", "/api/calendar/auto", { cookie, json: body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await app.req("POST", "/api/calendar/remove", { cookie, json: { date: "2026-01-01", time: "09:30" } })).status, 200);
+    // Object.prototype is intact and every route still answers
+    for (const url of ["/api/workspaces", "/api/dashboard", "/api/status", "/api/costs"]) assert.equal((await app.req("GET", url, { cookie })).status, 200, url);
+    assert.equal(({}).toString, Object.prototype.toString);
+  });
+});
+
+test("F-5 topic settings and workspace creation reject reserved / unknown keys", async () => {
+  await withApp({}, async function(app) {
+    const { cookie } = await app.login();
+    for (const topicId of ["__proto__", "constructor", "prototype", "a b", "x".repeat(80)]) {
+      assert.equal((await app.req("POST", "/api/topic-settings", { cookie, json: { topicId, allow_text_fallback: true } })).status, 400, topicId);
+    }
+    assert.equal((await app.req("POST", "/api/topic-settings", { cookie, json: { topicId: "default", allow_text_fallback: false } })).status, 200);
+    assert.equal((await app.req("POST", "/api/workspaces", { cookie, json: { name: "x", channelId: "__proto__" } })).status, 400);
+  });
+});
+
+test("F-7 POST /api/sources accepts only http(s) public URLs, name <= 200, url <= 2000", async () => {
+  await withApp({}, async function(app) {
+    const { cookie } = await app.login();
+    const add = function(name, url) { return app.req("POST", "/api/sources", { cookie, json: { name, url } }); };
+    for (const url of ["javascript:alert(1)", "data:text/html,<script>1</script>", "file:///etc/passwd", "ftp://example.com/x", "not a url", "http://127.0.0.1/", "http://169.254.169.254/latest/meta-data/", "http://[::1]/", "http://localhost/admin", "http://user:pw@example.com/", "http://example.com:6379/"]) {
+      assert.equal((await add("n", url)).status, 400, url);
+    }
+    assert.equal((await add("x".repeat(900000), "https://example.com/")).status, 400);
+    assert.equal((await add("x".repeat(201), "https://example.com/")).status, 400);
+    assert.equal((await add("ok", "https://example.com/" + "a".repeat(2001))).status, 400);
+    assert.equal((await add("x".repeat(200), "https://example.com/news")).status, 200);
+    const dash = await app.req("GET", "/api/dashboard", { cookie });
+    assert.ok(!dash.text.includes("javascript:alert"));
+  });
+});
+
+test("F-10 null / array / scalar / malformed JSON bodies answer 400, not 500; 500s are generic", async () => {
+  await withApp({}, async function(app) {
+    const { cookie } = await app.login();
+    const routes = ["/api/queue", "/api/sources", "/api/sources/toggle", "/api/sources/remove", "/api/calendar/remove", "/api/calendar/auto", "/api/calendar/assign", "/api/topic-settings", "/api/workspaces", "/api/workspaces/update", "/api/costs/budget", "/api/costs/balance", "/api/editorial/registry", "/api/digest/publish", "/api/queue/publish", "/api/queue/remove"];
+    for (const route of routes) {
+      for (const raw of ["null", "[]", "123", '"str"', "{bad json", "true"]) {
+        const r = await app.req("POST", route, { cookie, raw });
+        assert.ok(r.status === 400 || r.status === 404, route + " " + raw + " -> " + r.status + " " + r.text.slice(0, 120));
+        assert.ok(!/at .*\.js:\d+|TypeError|SyntaxError|Unexpected token/.test(r.text), route + " leaks internals: " + r.text.slice(0, 120));
+      }
+    }
+    assert.equal((await app.req("POST", "/api/login", { raw: "null" })).status, 400);
+    assert.equal((await app.req("POST", "/publish", { headers: { "x-admin-key": ADMIN_KEY_FOR_TESTS }, raw: "null" })).status, 400);
+    // oversize body
+    const big = await app.req("POST", "/api/queue", { cookie, raw: JSON.stringify({ text: "x".repeat(2 * 1024 * 1024) }) });
+    assert.equal(big.status, 413);
+  });
+});
+
+// ---------------------------------------------------------------- F-8 / F-11: headers, origin, health
+test("F-8 security headers on admin, login, API and public routes", async () => {
+  await withApp({}, async function(app) {
+    const { cookie } = await app.login();
+    const admin = await app.req("GET", "/admin", { cookie });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(admin.headers.get("x-frame-options"), "DENY");
+    assert.ok(admin.headers.get("referrer-policy"));
+    const csp = admin.headers.get("content-security-policy") || "";
+    for (const part of ["default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'", "connect-src 'self'"]) assert.ok(csp.includes(part), part);
+    const login = await app.req("GET", "/login");
+    assert.equal(login.status, 200);
+    assert.ok((login.headers.get("content-security-policy") || "").includes("frame-ancestors 'none'"));
+    const api = await app.req("GET", "/api/workspaces", { cookie });
+    assert.equal(api.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(api.headers.get("x-frame-options"), "DENY");
+    const unauth = await app.req("GET", "/api/workspaces");
+    assert.equal(unauth.status, 401);
+    assert.equal(unauth.headers.get("x-content-type-options"), "nosniff");
+    const health = await app.req("GET", "/health");
+    assert.equal(health.headers.get("x-content-type-options"), "nosniff");
+  });
+});
+
+test("F-8 Origin check: cross-origin state-changing requests are refused, same-origin / no-Origin work", async () => {
+  await withApp({}, async function(app) {
+    const { cookie } = await app.login();
+    const host = app.base.replace("http://", "");
+    const post = function(origin, extra) { return app.req("POST", "/api/topic-settings", { cookie, headers: Object.assign(origin === undefined ? {} : { origin }, extra || {}), json: { topicId: "default" } }); };
+    assert.equal((await post("https://evil.example")).status, 403);
+    assert.equal((await post("null")).status, 403);
+    assert.equal((await post("http://" + host + ".evil.example")).status, 403);
+    assert.equal((await post(undefined, { "sec-fetch-site": "cross-site" })).status, 403);
+    assert.equal((await post("http://" + host)).status, 200);
+    assert.equal((await post(undefined)).status, 200, "non-browser clients send no Origin");
+    // safe methods are not restricted
+    assert.equal((await app.req("GET", "/api/workspaces", { cookie, headers: { origin: "https://evil.example" } })).status, 200);
+    // login is covered too
+    assert.equal((await app.req("POST", "/api/login", { headers: { origin: "https://evil.example" }, json: { password: PASSWORD } })).status, 403);
+  });
+});
+
+test("F-11 /health exposes only ok / service / version", async () => {
+  await withApp({ OPENAI_API_KEY: "sk-test-not-real" }, async function(app) {
+    const r = await app.req("GET", "/health");
+    assert.equal(r.status, 200);
+    assert.deepEqual(Object.keys(r.json).sort(), ["ok", "service", "version"]);
+    assert.ok(!/gpt|openai|model|count/i.test(r.text.replace(/"service":"news-factory"/, "")));
+  });
+});
+
+test("F-11 repo hygiene: .env ignored, adversarial-review workflow does not interpolate inputs into the script", () => {
+  const root = path.resolve(APP_DIR, "..");
+  assert.match(fs.readFileSync(path.join(APP_DIR, ".gitignore"), "utf8"), /^\.env$/m);
+  assert.match(fs.readFileSync(path.join(root, ".gitignore"), "utf8"), /^\.env$/m);
+  const wf = fs.readFileSync(path.join(root, ".github/workflows/adversarial-review.yml"), "utf8");
+  const runBlocks = wf.split(/\n\s+run: \|/).slice(1).map(function(b) { return b.split(/\n\s+- (name|uses):/)[0]; }).join("\n");
+  assert.ok(!/\$\{\{\s*github\.event\.inputs/.test(runBlocks), "inputs must not appear inside run scripts");
+  assert.match(wf, /SINCE_INPUT: \$\{\{ github\.event\.inputs\.since \}\}/);
+  assert.match(wf, /grep -Eq/);
+});
+
+// ---------------------------------------------------------------- F-6: admin.html inline handlers
+test("F-6 admin.html: no data interpolated between quotes of inline handlers, thumbnail fallback uses a data attribute", () => {
+  const html = fs.readFileSync(path.join(APP_DIR, "public/admin.html"), "utf8");
+  assert.ok(!/thumbFallback\(this/.test(html), "thumbFallback(this, '<data>') inline handler is gone");
+  assert.ok(!/onerror="thumbFallback/.test(html));
+  // pattern: \'' + expr + '\'  (a JS string literal spliced into an on*= handler)
+  const offenders = html.split("\n").map(function(line, i) { return [i + 1, line]; }).filter(function(x) { return /\\''\+/.test(x[1]) && /on[a-z]+=/.test(x[1]); });
+  assert.deepEqual(offenders.map(function(x) { return x[0]; }), [], "raw string interpolation inside inline handlers");
+  assert.match(html, /function ja\(v\)\{return esc\(JSON\.stringify/);
+  assert.match(html, /addEventListener\('error'/);
+  // behaviour of ja() with a hostile value: the decoded attribute must be exactly one JS string literal
+  const esc = function(v) { return String(v == null || v === false ? "" : v).replace(/[&<>"']/g, function(c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); };
+  const ja = function(v) { return esc(JSON.stringify(String(v == null ? "" : v))); };
+  const hostile = "x');window.__pwn=1;('\"</script>\\";
+  const decoded = ja(hostile).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  assert.equal(JSON.parse(decoded), hostile);
+  const calls = [];
+  new Function("f", "f(" + decoded + ")")(function(arg) { calls.push(arg); });
+  assert.deepEqual(calls, [hostile]);
+  // remote hrefs from data go through safeHref
+  assert.ok(!/href="'\+esc\((s\.url|q\.sourceUrl|source)\)/.test(html));
+});
+
 // ---------------------------------------------------------------- runner
 (async function main() {
   let failed = 0;

@@ -5,8 +5,9 @@ import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { safeFetch } from "./lib/safe-fetch.js";
+import { safeFetch, validateUrl as validateFetchUrl } from "./lib/safe-fetch.js";
 import { assertSafeRaster, SAFE_INPUT_PIXELS } from "./lib/image-guard.js";
+import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-security.js";
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
@@ -2326,11 +2327,17 @@ function sourceStatKey(sourceOrItem) {
   return found ? String(found.id) : "";
 }
 
+// Keys that would reach Object.prototype when used as an object property name.
+function isReservedKey(key) {
+  const k = String(key);
+  return k === "__proto__" || k === "constructor" || k === "prototype";
+}
+
 function ensureSourceStat(sourceOrItem) {
   state.sourceStats = state.sourceStats && typeof state.sourceStats === "object" ? state.sourceStats : {};
   const key = sourceStatKey(sourceOrItem);
-  if (!key) return null;
-  if (!state.sourceStats[key]) {
+  if (!key || isReservedKey(key)) return null;
+  if (!Object.prototype.hasOwnProperty.call(state.sourceStats, key)) {
     state.sourceStats[key] = {
       checks: 0, candidates: 0, discovered: 0, scored: 0, strong: 0, top: 0,
       selected: 0, published: 0, errors: 0, scoreSum: 0,
@@ -4072,6 +4079,7 @@ function isSourcePlaceholderImage(sourceName, newsId, fp) {
   if (!fp || !Array.isArray(fp.bits) || !sourceName) return false;
   state.sourceImagePrints = state.sourceImagePrints && typeof state.sourceImagePrints === "object" ? state.sourceImagePrints : {};
   const key = String(sourceName);
+  if (isReservedKey(key)) return false;
   const list = Array.isArray(state.sourceImagePrints[key]) ? state.sourceImagePrints[key] : [];
   const id = String(newsId || "");
   const bits = fp.bits.join("");
@@ -5720,7 +5728,7 @@ function sendHtmlFile(res, fileName) {
   const file = path.join(PUBLIC_DIR, fileName);
   try {
     const body = fs.readFileSync(file, "utf8");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": ADMIN_CSP });
     res.end(body);
   } catch {
     sendJson(res, 500, { ok: false, error: "UI file missing" });
@@ -6315,9 +6323,16 @@ function base64Url(buffer) {
 }
 
 function secretMatches(provided, expected) {
-  const a = Buffer.from(String(provided || ""));
-  const b = Buffer.from(String(expected || ""));
-  return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+  return String(provided || "").length > 0 && String(expected || "").length > 0 && safeEqual(provided, expected);
+}
+
+// Who may start / capture a VK OAuth session: a logged-in admin cookie, the handoff secret, or the admin key.
+// The VK callback itself cannot carry our SameSite=Strict cookie (cross-site redirect), so it is protected by
+// the one-time random state that only an authorised start call ever hands out.
+function vkOAuthCallerAuthorized(req) {
+  if (isAuthed(req)) return true;
+  if (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET)) return true;
+  return safeEqual(req.headers["x-admin-key"], ADMIN_KEY);
 }
 
 function createVkPkcePair() {
@@ -9756,20 +9771,16 @@ const server = http.createServer(async function(req, res) {
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = url.pathname;
 
+    const secHeaders = baseSecurityHeaders(p);
+    for (const name of Object.keys(secHeaders)) res.setHeader(name, secHeaders[name]);
+    // CSRF defence in depth on top of SameSite=Strict: a state-changing request from a browser must come from this site.
+    if (!originAllowed(req, [new URL(PUBLIC_BASE_URL).host])) {
+      return sendJson(res, 403, { ok: false, error: "cross-origin request refused" });
+    }
+
     if (req.method === "GET" && p === "/health") {
-      return sendJson(res, 200, {
-        ok: true,
-        service: "news-factory",
-        telegramConfigured: Boolean(BOT_TOKEN && workspaceStore.workspaces.some(function(ws){ return Boolean(ws.telegramChannel); })),
-        workspaceCount: workspaceStore.workspaces.length,
-        uiConfigured: Boolean(ADMIN_UI_PASSWORD),
-        openaiConfigured: Boolean(OPENAI_API_KEY),
-        openaiModel: OPENAI_MODEL,
-        mediaRequired: MEDIA_REQUIRED,
-        imageEnhancementEnabled: IMAGE_ENHANCEMENT_ENABLED,
-        imageModel: OPENAI_IMAGE_MODEL,
-        version: APP_VERSION
-      });
+      // Public: liveness + version only (no model names, counts or configuration flags). Details live behind /api/status.
+      return sendJson(res, 200, { ok: true, service: "news-factory", version: APP_VERSION });
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
@@ -9920,6 +9931,13 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/api/vk/oauth/capture") {
+      const captureIp = requestClientIp(req);
+      const captureGate = authFailureLimiter.check(captureIp);
+      if (!captureGate.allowed) return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(captureGate.retryAfterSec) });
+      if (!vkOAuthCallerAuthorized(req)) {
+        if (req.headers["x-admin-key"] || req.headers["x-oauth-handoff-secret"]) authFailureLimiter.fail(captureIp);
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
         const body = await readJsonObject(req);
         await captureVkOAuthToken(body.accessToken, body.state, body.userId);
@@ -9932,7 +9950,13 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/vk/oauth/handoff") {
       if (!VK_OAUTH_HANDOFF_SECRET) return sendJson(res, 503, { ok: false, error: "handoff is not configured" });
       const provided = String(req.headers["x-oauth-handoff-secret"] || "");
-      if (!secretMatches(provided, VK_OAUTH_HANDOFF_SECRET)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      const handoffIp = requestClientIp(req);
+      const handoffGate = authFailureLimiter.check(handoffIp);
+      if (!handoffGate.allowed) return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(handoffGate.retryAfterSec) });
+      if (!secretMatches(provided, VK_OAUTH_HANDOFF_SECRET)) {
+        authFailureLimiter.fail(handoffIp);
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       if (!vkOAuthHandoff || !vkOAuthHandoff.accessToken || Date.now() - Number(vkOAuthHandoff.createdAt || 0) > VK_OAUTH_TTL_MS) {
         vkOAuthHandoff = null;
         return sendJson(res, 404, { ok: false, ready: false });
@@ -9952,6 +9976,11 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/start") {
+      // Starting a session overwrites the global OAuth state and reveals the state value: authorised callers only.
+      if (!vkOAuthCallerAuthorized(req)) {
+        if (req.headers["x-admin-key"] || req.headers["x-oauth-handoff-secret"]) authFailureLimiter.fail(requestClientIp(req));
+        return sendJson(res, 401, { ok: false, error: "unauthorized" });
+      }
       try {
         return redirect(res, buildVkOAuthUrl());
       } catch (error) {
@@ -10036,6 +10065,8 @@ const server = http.createServer(async function(req, res) {
       const body = await readJsonObject(req);
       const name = String(body.name || "").trim().slice(0, 80);
       if (!name) return sendJson(res, 400, { ok: false, error: "Укажите название канала" });
+      const requestedProfile = String(body.channelId || "").trim().toLowerCase();
+      if (requestedProfile && !EDITORIAL_CHANNEL_IDS.includes(requestedProfile)) return sendJson(res, 400, { ok: false, error: "Неизвестный профиль канала: " + requestedProfile.slice(0, 40) });
       const tgChannel = normalizeTelegramChannelInput(body.telegramChannel || body.telegramPublicUsername || "");
       const handle = /^@[A-Za-z0-9_]+$/.test(tgChannel) ? tgChannel.slice(1) : "";
       let username = String(normalizeTelegramChannelInput(body.telegramPublicUsername || "")).replace(/^@/, "").trim();
@@ -10179,6 +10210,9 @@ const server = http.createServer(async function(req, res) {
       const body = await readJsonObject(req);
       const day = String(body.date || "");
       const time = String(body.time || "");
+      // date/time become object keys below: only YYYY-MM-DD / HH:MM (blocks "__proto__", "constructor", ...)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
+      if (!/^\d{2}:\d{2}$/.test(time)) return sendJson(res, 400, { ok: false, error: "Некорректное время" });
       const schedule = ensureScheduleShape(state);
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
@@ -10191,6 +10225,8 @@ const server = http.createServer(async function(req, res) {
       const body = await readJsonObject(req);
       const day = String(body.date || moscowDateKey(new Date()));
       const time = String(body.time || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
+      if (!/^\d{2}:\d{2}$/.test(time)) return sendJson(res, 400, { ok: false, error: "Некорректное время" });
       const schedule = ensureScheduleShape(state);
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       delete schedule.suppressed[day][time];
@@ -10293,6 +10329,7 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "POST" && p === "/api/topic-settings") {
       const body = await readJsonObject(req);
       const topicId = String(body.topicId || body.topic_id || "default").trim() || "default";
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(topicId) || isReservedKey(topicId)) return sendJson(res, 400, { ok: false, error: "Некорректный topicId" });
       if (!state.topicSettings || typeof state.topicSettings !== "object") {
         state.topicSettings = structuredClone(defaultState.topicSettings);
       }
@@ -10416,6 +10453,10 @@ const server = http.createServer(async function(req, res) {
       const name = String(body.name || "").trim();
       const sourceUrl = String(body.url || "").trim();
       if (!name || !sourceUrl) return sendJson(res, 400, { ok: false, error: "Заполните название и ссылку" });
+      if (name.length > 200) return sendJson(res, 400, { ok: false, error: "Название не длиннее 200 символов" });
+      if (sourceUrl.length > 2000) return sendJson(res, 400, { ok: false, error: "Ссылка не длиннее 2000 символов" });
+      try { validateFetchUrl(sourceUrl); } // http(s) only, no credentials, allowed ports, no internal addresses
+      catch (error) { return sendJson(res, 400, { ok: false, error: "Некорректная ссылка: " + (error && error.message || "разрешены только http/https") }); }
       state.sources.push({ id: newId("src"), name: name, type: "web", group: "custom", priority: 3, url: sourceUrl, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only" });
       saveState();
       return sendJson(res, 200, { ok: true });
@@ -10482,7 +10523,7 @@ const server = http.createServer(async function(req, res) {
         if (!state.sourceBlockedHosts.includes(removedHost)) state.sourceBlockedHosts.push(removedHost);
       }
       state.sources = state.sources.filter(function(x){ return x.id !== body.id; });
-      if (state.sourceStats && body.id) delete state.sourceStats[body.id];
+      if (state.sourceStats && body.id && !isReservedKey(body.id)) delete state.sourceStats[String(body.id)];
       saveState();
       return sendJson(res, 200, { ok: true });
     }
