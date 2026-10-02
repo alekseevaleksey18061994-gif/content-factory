@@ -14,6 +14,8 @@ import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
+import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
+import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
@@ -11924,6 +11926,16 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, workspace: publicWorkspaceMeta(workspace) });
     }
 
+    if (req.method === "GET" && p === "/api/backup/status") {
+      const cfg = backupConfig();
+      return sendJson(res, 200, { ok: true, configured: Boolean(cfg), problem: backupConfigProblem(cfg), intervalHours: cfg ? cfg.intervalHours : null, encrypted: Boolean(cfg && cfg.passphrase), status: readBackupStatus(), watchdog: workspaceWatchdogLast });
+    }
+
+    if (req.method === "POST" && p === "/api/backup/run") {
+      const result = await runOffsiteBackup("manual");
+      return sendJson(res, result.ok ? 200 : 502, Object.assign({ ok: false }, result));
+    }
+
     if (req.method === "POST" && p === "/api/workspaces/remove") {
       const body = await readJsonObject(req), id = String(body.id || "");
       if (!id || id === workspaceStore.defaultWorkspaceId) return sendJson(res, 400, { ok: false, error: "Основной кабинет удалить нельзя" });
@@ -11932,6 +11944,8 @@ const server = http.createServer(async function(req, res) {
       removeWorkspaceAvatar(deletingWorkspace);
       workspaceStore.workspaces = workspaceStore.workspaces.filter(function(ws){ return ws.id !== id; });
       persistWorkspaceStore();
+      // A deliberate removal must not trigger the "workspace vanished" alert.
+      if (db && dbReady) db.query("UPDATE workspace_registry SET removed_at=NOW() WHERE id=$1", [id]).catch(function(error){ console.warn("workspace_registry update failed:", error.message); });
       statusCache.delete(id); analyticsCache.delete(id);
       return sendJson(res, 200, { ok: true });
     }
@@ -13203,6 +13217,120 @@ async function recoverMissingWorkspaces() {
       if (tries < 30) setTimeout(tick, 15000);
     });
   })();
+})();
+
+// ---------------------------------------------------------------------------
+// Data protection: channel-list watchdog + off-site backup (see lib/workspace-watchdog.js, lib/offsite-backup.js)
+// ---------------------------------------------------------------------------
+function sendOwnerAlert(text) {
+  if (!BOT_TOKEN) return Promise.resolve(false);
+  const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
+  const chatId = TELEGRAM_ALERT_CHAT_ID || String(ws && ws.state && ws.state.telegramAlertChatId || "").trim();
+  if (!chatId) return Promise.resolve(false);
+  return telegramApi("sendMessage", { chat_id: chatId, text: text, disable_web_page_preview: true }).then(function(){ return true; }).catch(function(error){
+    console.warn("Owner alert failed:", error && error.message || error);
+    return false;
+  });
+}
+
+const workspaceAlertThrottle = createAlertThrottle(3 * 3600000);
+let workspaceWatchdogLast = null;
+async function workspaceWatchdogTick() {
+  if (!db || !dbReady) return { skipped: "db_not_ready" };
+  const live = workspaceStore.workspaces.map(function(ws){ return ws.id; });
+  for (const ws of workspaceStore.workspaces) {
+    await db.query(
+      "INSERT INTO workspace_registry(id, name) VALUES($1,$2) ON CONFLICT (id) DO UPDATE SET last_seen=NOW(), name=EXCLUDED.name, removed_at=NULL",
+      [ws.id, String(ws.name || "")]
+    );
+  }
+  const known = (await db.query("SELECT id, name FROM workspace_registry WHERE removed_at IS NULL")).rows;
+  const missing = missingWorkspaces(known, live);
+  workspaceWatchdogLast = { at: new Date().toISOString(), live: live.length, missing: missing.map(function(row){ return row.id; }) };
+  if (missing.length) {
+    console.error("WORKSPACE_MISSING " + JSON.stringify(workspaceWatchdogLast));
+    const key = missing.map(function(row){ return row.id; }).sort().join(",");
+    if (workspaceAlertThrottle(key)) await sendOwnerAlert(missingAlertText(missing, live.length));
+  }
+  return workspaceWatchdogLast;
+}
+(function scheduleWorkspaceWatchdog() {
+  if (/^(0|false|no|off)$/i.test(String(process.env.WORKSPACE_WATCHDOG_ENABLED || ""))) return;
+  // The first tick waits for the boot-time recovery, so the registry only learns the post-recovery set of channels.
+  setTimeout(function tick() {
+    workspaceWatchdogTick().catch(function(error){ console.warn("Workspace watchdog failed:", error && error.message || error); });
+    setTimeout(tick, 5 * 60 * 1000).unref();
+  }, 120000).unref();
+})();
+
+const BACKUP_STATUS_FILE = path.join(DATA_DIR, "offsite-backup-status.json");
+const BACKUP_ADVISORY_LOCK_KEY = 7242002;
+let offsiteBackupRunning = false;
+function readBackupStatus() {
+  try { return JSON.parse(fs.readFileSync(BACKUP_STATUS_FILE, "utf8")) || {}; } catch { return {}; }
+}
+function writeBackupStatus(patch) {
+  const next = Object.assign({}, readBackupStatus(), patch);
+  try { ensureDataDir(); atomicWriteFileSync(BACKUP_STATUS_FILE, JSON.stringify(next, null, 2)); } catch (error) { console.warn("Backup status write failed:", error.message); }
+  return next;
+}
+async function buildBackupPayload() {
+  let snapshots = [];
+  if (db && dbReady) {
+    const rows = (await db.query("SELECT DISTINCT ON (workspace_id) workspace_id, created_at, state FROM app_snapshots ORDER BY workspace_id, created_at DESC")).rows;
+    snapshots = rows.map(function(row){ return { workspaceId: row.workspace_id, createdAt: new Date(row.created_at).toISOString(), state: row.state }; });
+  }
+  return { format: 1, app: "news-factory", version: APP_VERSION, createdAt: new Date().toISOString(), workspaceStore: workspaceStore, snapshots: snapshots };
+}
+async function runOffsiteBackup(reason) {
+  const cfg = backupConfig();
+  const problem = backupConfigProblem(cfg);
+  if (problem) return { skipped: problem };
+  if (offsiteBackupRunning) return { skipped: "running" };
+  offsiteBackupRunning = true;
+  let lockClient = null;
+  try {
+    // Only one instance at a time (rolling deploys): non-blocking advisory lock.
+    if (db && dbReady) {
+      lockClient = await db.connect();
+      const got = (await lockClient.query("SELECT pg_try_advisory_lock($1) AS ok", [BACKUP_ADVISORY_LOCK_KEY])).rows[0];
+      if (!got || !got.ok) return { skipped: "locked_by_other_instance" };
+    }
+    const payload = await buildBackupPayload();
+    const packed = packBackup(payload, cfg.passphrase);
+    const key = backupObjectKey(cfg.prefix, new Date(), packed.ext);
+    const uploaded = await uploadBackup(cfg, key, packed.buffer);
+    const status = writeBackupStatus({ lastSuccessAt: new Date().toISOString(), lastAttemptAt: new Date().toISOString(), lastKey: key, lastBytes: uploaded.bytes, encrypted: packed.encrypted, workspaces: payload.workspaceStore.workspaces.length, consecutiveFailures: 0, lastError: "" });
+    console.log("OFFSITE_BACKUP_OK " + JSON.stringify({ reason: reason, key: key, bytes: uploaded.bytes, workspaces: status.workspaces, encrypted: packed.encrypted }));
+    return { ok: true, key: key, bytes: uploaded.bytes, workspaces: status.workspaces, encrypted: packed.encrypted };
+  } catch (error) {
+    const prev = readBackupStatus();
+    const failures = Number(prev.consecutiveFailures || 0) + 1;
+    writeBackupStatus({ lastAttemptAt: new Date().toISOString(), consecutiveFailures: failures, lastError: String(error && error.message || error).slice(0, 300) });
+    console.error("OFFSITE_BACKUP_FAILED " + JSON.stringify({ reason: reason, failures: failures, error: String(error && error.message || error).slice(0, 300) }));
+    if (failures === 2 || failures % 12 === 0) await sendOwnerAlert("⚠️ News Factory: внешний бэкап не удался " + failures + " раз(а) подряд.\n" + String(error && error.message || error).slice(0, 200));
+    return { error: String(error && error.message || error).slice(0, 300) };
+  } finally {
+    offsiteBackupRunning = false;
+    if (lockClient) {
+      try { await lockClient.query("SELECT pg_advisory_unlock($1)", [BACKUP_ADVISORY_LOCK_KEY]); lockClient.release(); } catch { try { lockClient.release(true); } catch {} }
+    }
+  }
+}
+(function scheduleOffsiteBackup() {
+  const cfg = backupConfig();
+  if (!cfg) return;
+  const problem = backupConfigProblem(cfg);
+  if (problem) { console.error("OFFSITE_BACKUP_DISABLED " + JSON.stringify({ problem: problem })); return; }
+  console.log("OFFSITE_BACKUP_ENABLED " + JSON.stringify({ bucket: cfg.bucket, prefix: cfg.prefix, intervalHours: cfg.intervalHours, encrypted: Boolean(cfg.passphrase) }));
+  setTimeout(function tick() {
+    const status = readBackupStatus();
+    const recentFailure = status.consecutiveFailures > 0 && Date.now() - Date.parse(status.lastAttemptAt || "") < 30 * 60000;
+    if (backupDue(status.lastSuccessAt, cfg.intervalHours) && !recentFailure) {
+      runOffsiteBackup("scheduled").catch(function(error){ console.error("OFFSITE_BACKUP_FAILED " + (error && error.message || error)); });
+    }
+    setTimeout(tick, 10 * 60 * 1000).unref();
+  }, 180000).unref();
 })();
 
 setTimeout(setupNewChannels, 30000);

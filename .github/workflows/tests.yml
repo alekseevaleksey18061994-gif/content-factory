@@ -1,0 +1,54 @@
+name: News Factory Tests
+
+# Every pull request and every push to main runs the whole test matrix (except the VK media tests,
+# which need live VK). A red run must block the merge: see docs/DATA_PROTECTION.md for the branch protection rule.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    defaults:
+      run:
+        working-directory: news-factory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-audit --no-fund
+      - name: Syntax check
+        run: |
+          for f in server.js lib/*.js scripts/*.js; do node --check "$f"; done
+      - name: Test matrix
+        run: |
+          failed=0
+          for t in $(node -e 'console.log(Object.keys(require("./package.json").scripts).filter(k=>k.startsWith("test:")&&!k.startsWith("test:vk-")).join(" "))'); do
+            echo "::group::$t"
+            if npm run -s "$t"; then echo "PASS $t"; else echo "::error::FAIL $t"; failed=1; fi
+            echo "::endgroup::"
+          done
+          exit $failed
