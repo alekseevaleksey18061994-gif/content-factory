@@ -94,6 +94,9 @@ const MEDIA_EXTRA_MIN_HEIGHT = 400;
 const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
 const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
 const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
+// Telegram Bot API: timeout of one JSON call, and the longest "retry_after" (429) we are willing to sit out once.
+const TELEGRAM_API_TIMEOUT_MS = Math.max(5000, Math.min(120000, Number(process.env.TELEGRAM_API_TIMEOUT_MS || 30000)));
+const TELEGRAM_RETRY_AFTER_MAX_SECONDS = Math.max(1, Math.min(120, Number(process.env.TELEGRAM_RETRY_AFTER_MAX_SECONDS || 30)));
 const SOURCE_IMAGE_ENHANCE_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.SOURCE_IMAGE_ENHANCE_CONCURRENCY || 1)));
 const IMAGE_ENHANCE_MIN_GAP_MS = Math.max(8000, Number(process.env.IMAGE_ENHANCE_MIN_GAP_MS || 13000));
 const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
@@ -5821,10 +5824,19 @@ function escapeTelegramAttr(value) {
 }
 
 function formatTelegramInline(value) {
-  let out = escapeTelegramHtml(value);
-  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  out = out.replace(/__([^_\n]+)__/g, "<i>$1</i>");
-  return out;
+  const escaped = escapeTelegramHtml(value);
+  const italic = function(part) { return part.replace(/__([^_\n]+)__/g, "<i>$1</i>"); };
+  // Bold spans first; italics are applied inside and outside them separately, so
+  // "**a __b** c__" can never produce crossed tags (<b>..<i>..</b>..</i>) that Telegram rejects.
+  let out = "";
+  let last = 0;
+  const boldRe = /\*\*([^*\n]+)\*\*/g;
+  let m;
+  while ((m = boldRe.exec(escaped)) !== null) {
+    out += italic(escaped.slice(last, m.index)) + "<b>" + italic(m[1]) + "</b>";
+    last = m.index + m[0].length;
+  }
+  return out + italic(escaped.slice(last));
 }
 
 function formatTelegramBody(value) {
@@ -5948,17 +5960,108 @@ function normalizePublishTargets(value) {
   };
 }
 
+// Telegram errors carry the Bot API error_code / description so callers can tell
+// "the channel will never accept this" (permanent) from "try again / fix the media".
+const TELEGRAM_PERMANENT_DESCRIPTION = /chat not found|chat_id is empty|peer_id_invalid|bot was kicked|bot is not a member|bot was blocked|not enough rights|have no rights|need administrator rights|chat_admin_required|chat_write_forbidden|channel_private|chat_restricted|user is deactivated|group chat was upgraded|bot can't initiate|forbidden/i;
+function classifyTelegramError(errorCode, description) {
+  const code = Number(errorCode) || 0;
+  const text = String(description || "");
+  return {
+    parseError: code === 400 && /can't parse entities|can't find end tag|unsupported start tag|unmatched end tag/i.test(text),
+    // 401 = bad token, 403 = forbidden / kicked / blocked, 404 = unknown bot token or method.
+    permanent: code === 401 || code === 403 || code === 404 || (code === 400 && TELEGRAM_PERMANENT_DESCRIPTION.test(text))
+  };
+}
+function createTelegramError(method, httpStatus, data, fallbackMessage) {
+  const body = data && typeof data === "object" ? data : {};
+  const code = Number(body.error_code) || Number(httpStatus) || 0;
+  const description = String(body.description || fallbackMessage || "Telegram API error");
+  const params = body.parameters && typeof body.parameters === "object" ? body.parameters : {};
+  const retryAfter = Number(params.retry_after);
+  const kind = classifyTelegramError(code, description);
+  const error = new Error(description);
+  error.telegram = true;
+  error.telegramMethod = method;
+  error.telegramErrorCode = code;
+  error.telegramDescription = description;
+  error.telegramRetryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0;
+  error.telegramRateLimited = code === 429;
+  error.telegramPermanent = kind.permanent;
+  error.telegramParseError = kind.parseError;
+  return error;
+}
+// Errors where another attempt (URL -> upload, generated cover, repair loop) cannot help:
+// the chat rejects us, or Telegram told us to slow down.
+function isTelegramFatalError(error) {
+  return Boolean(error && error.telegram && (error.telegramPermanent || error.telegramRateLimited));
+}
+
+function stripTelegramHtml(html) {
+  return String(html || "")
+    .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, function(_m, href, label) {
+      const url = String(href).replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      const text = String(label).replace(/<[^>]*>/g, "");
+      return text && text !== url ? text + " (" + url + ")" : url;
+    })
+    .replace(/<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|span|tg-emoji)(?:\s[^>]*)?>/gi, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+}
+// The same call without HTML parsing: used when Telegram answers "can't parse entities".
+function telegramPlainPayload(payload) {
+  const out = Object.assign({}, payload || {});
+  let changed = false;
+  if (String(out.parse_mode || "").toUpperCase() === "HTML") {
+    delete out.parse_mode;
+    changed = true;
+    ["caption", "text"].forEach(function(key) { if (typeof out[key] === "string") out[key] = stripTelegramHtml(out[key]); });
+  }
+  if (Array.isArray(out.media)) {
+    out.media = out.media.map(function(item) {
+      if (!item || String(item.parse_mode || "").toUpperCase() !== "HTML") return item;
+      changed = true;
+      const copy = Object.assign({}, item);
+      delete copy.parse_mode;
+      if (typeof copy.caption === "string") copy.caption = stripTelegramHtml(copy.caption);
+      return copy;
+    });
+  }
+  return changed ? out : null;
+}
+
+// One Telegram request with: timeout, error classification, one bounded 429 retry_after wait.
+async function telegramRequest(method, makeInit, timeoutMs) {
+  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
+  for (let attempt = 0; ; attempt += 1) {
+    const init = makeInit();
+    init.signal = AbortSignal.timeout(timeoutMs);
+    const response = await fetch(endpoint, init);
+    const data = await response.json().catch(function(){ return null; });
+    if (response.ok && data && data.ok) return data.result;
+    const error = createTelegramError(method, response.status, data, "Telegram " + method + " HTTP " + response.status);
+    if (error.telegramRateLimited && attempt === 0 && error.telegramRetryAfter > 0 && error.telegramRetryAfter <= TELEGRAM_RETRY_AFTER_MAX_SECONDS) {
+      console.warn("TELEGRAM_RATE_LIMITED " + JSON.stringify({ method: method, retry_after: error.telegramRetryAfter }));
+      await sleepMs(error.telegramRetryAfter * 1000 + 250);
+      continue;
+    }
+    throw error;
+  }
+}
+
 async function telegramApi(method, payload) {
   if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (!response.ok || !data.ok) throw new Error((data && data.description) || "Telegram API error");
-  return data.result;
+  try {
+    return await telegramRequest(method, function() {
+      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) };
+    }, TELEGRAM_API_TIMEOUT_MS);
+  } catch (error) {
+    // Invalid markup (e.g. crossed tags) must not keep a post from going out: send it as plain text.
+    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
+    if (!plain) throw error;
+    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
+    return await telegramRequest(method, function() {
+      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(plain) };
+    }, TELEGRAM_API_TIMEOUT_MS);
+  }
 }
 
 function telegramUploadMeta(rawUrl, fallbackKind) {
@@ -6025,31 +6128,52 @@ async function loadTelegramUpload(rawUrl, kind) {
 async function telegramMultipartApi(method, payload, fieldName, mediaUrl, kind) {
   if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
   const media = await loadTelegramUpload(mediaUrl, kind);
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
-  const form = new FormData();
-  Object.entries(payload || {}).forEach(function(entry) {
-    const key = entry[0], value = entry[1];
-    if (value === undefined || value === null || value === "") return;
-    form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
-  });
-  form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
-  const response = await fetch(endpoint, {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(kind === "video" ? 60000 : 45000)
-  });
-  const data = await response.json().catch(function(){ return {}; });
-  if (!response.ok || !data.ok) throw new Error((data && data.description) || ("Telegram multipart HTTP " + response.status));
-  return data.result;
+  const upload = async function(fields) {
+    return telegramRequest(method, function() {
+      const form = new FormData();
+      Object.entries(fields || {}).forEach(function(entry) {
+        const key = entry[0], value = entry[1];
+        if (value === undefined || value === null || value === "") return;
+        form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
+      });
+      form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
+      return { method: "POST", body: form };
+    }, kind === "video" ? 60000 : 45000);
+  };
+  try {
+    return await upload(payload);
+  } catch (error) {
+    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
+    if (!plain) throw error;
+    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
+    return await upload(plain);
+  }
 }
 
 async function telegramMediaApi(method, payload, fieldName, mediaUrl, kind) {
   try {
     return await telegramApi(method, Object.assign({}, payload, { [fieldName]: mediaUrl }));
   } catch (urlError) {
+    // The chat rejects us / rate limit: uploading the same file again cannot succeed (and would double the calls).
+    if (isTelegramFatalError(urlError)) throw urlError;
     console.warn(method + " URL mode failed, retrying upload:", urlError.message);
     return telegramMultipartApi(method, payload, fieldName, mediaUrl, kind);
   }
+}
+
+// A cover for a post whose media Telegram refused. At most one paid generation per post:
+// a cover created by an earlier attempt (or by the media director) is reused.
+async function telegramCoverFallback(post, failingUrl, idPrefix) {
+  const existing = String(post.generatedImageUrl || "").trim();
+  if (existing && existing !== String(failingUrl || "").trim() && isLocalMediaUrl(existing)) return { url: existing, reused: true };
+  const cover = await generateNewsCover({
+    id: post.id || newId(idPrefix),
+    title: post.title || currentWorkspace().name || "News Factory",
+    text: post.text || "",
+    sourceName: post.sourceName || "Telegram fallback"
+  });
+  post.generatedImageUrl = cover.url;
+  return cover;
 }
 
 async function sendTelegramPost(post) {
@@ -6096,6 +6220,7 @@ async function sendTelegramPost(post) {
       }
     } catch (error) {
       console.warn("sendMediaGroup failed, falling back to one image:", error.message);
+      if (isTelegramFatalError(error)) throw error;
       imageUrl = mediaPackUrls[0] || imageUrl;
     }
   }
@@ -6114,15 +6239,10 @@ async function sendTelegramPost(post) {
       }, "video", videoUrl, "video");
     } catch (error) {
       console.warn("sendVideo failed:", error.message);
+      if (isTelegramFatalError(error)) throw error;
       if (!imageUrl && GENERATE_COVER_IF_MISSING) {
         try {
-          const generatedFallback = await generateNewsCover({
-            id: post.id || newId("video_fallback"),
-            title: post.title || "Что там у ИИ?",
-            text: post.text || "",
-            sourceName: post.sourceName || "Telegram fallback"
-          });
-          post.generatedImageUrl = generatedFallback.url;
+          await telegramCoverFallback(post, "", "video_fallback");
         } catch (fallbackError) {
           throw new Error("Видео недоступно, а резервное фото не удалось подготовить: " + fallbackError.message);
         }
@@ -6132,7 +6252,7 @@ async function sendTelegramPost(post) {
     }
   }
 
-  imageUrl = String(post.imageUrl || post.generatedImageUrl || "").trim();
+  imageUrl = String(post.imageUrl || post.generatedImageUrl || imageUrl || "").trim();
 
   if (imageUrl && html.length <= 950) {
     try {
@@ -6143,15 +6263,11 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto failed:", error.message);
+      // Chat rejected us / rate limit / bad markup: a new cover cannot fix it, do not pay for one.
+      if (isTelegramFatalError(error) || error.telegramParseError) throw error;
       if (GENERATE_COVER_IF_MISSING) {
         try {
-          const generatedFallback = await generateNewsCover({
-            id: post.id || newId("telegram_photo_fallback"),
-            title: post.title || currentWorkspace().name || "News Factory",
-            text: post.text || "",
-            sourceName: post.sourceName || "Telegram fallback"
-          });
-          post.generatedImageUrl = generatedFallback.url;
+          const generatedFallback = await telegramCoverFallback(post, imageUrl, "telegram_photo_fallback");
           imageUrl = generatedFallback.url;
           return await telegramMediaApi("sendPhoto", {
             chat_id: telegramChannel,
@@ -6178,14 +6294,8 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     } catch (error) {
       console.warn("sendPhoto long-caption media failed:", error.message);
-      if (!GENERATE_COVER_IF_MISSING) throw error;
-      const generatedFallback = await generateNewsCover({
-        id: post.id || newId("telegram_photo_fallback"),
-        title: post.title || currentWorkspace().name || "News Factory",
-        text: post.text || "",
-        sourceName: post.sourceName || "Telegram fallback"
-      });
-      post.generatedImageUrl = generatedFallback.url;
+      if (!GENERATE_COVER_IF_MISSING || isTelegramFatalError(error) || error.telegramParseError) throw error;
+      const generatedFallback = await telegramCoverFallback(post, imageUrl, "telegram_photo_fallback");
       imageUrl = generatedFallback.url;
       photo = await telegramMediaApi("sendPhoto", {
         chat_id: telegramChannel,
@@ -7029,6 +7139,8 @@ function postForPlatform(post, platform) {
 }
 
 function publishErrorLooksRepairable(error) {
+  // Permanent chat errors and rate limits are not media problems: repairing and re-sending only repeats them.
+  if (isTelegramFatalError(error)) return false;
   const text = String(error && (error.vkErrorMsg || error.message) || error || "").toLowerCase();
   return /media|photo|video|image|file|upload|caption|too long|400|413|preview|размер|фото|видео|медиа/.test(text);
 }
