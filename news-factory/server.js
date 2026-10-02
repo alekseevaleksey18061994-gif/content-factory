@@ -5415,6 +5415,19 @@ async function prepareRussianAiSlot(time) {
   return { ok: true, slot: slotTime, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
 }
 
+function slotHasSuccessfulPublication(slotKey) {
+  return (state.history || []).some(function(item){
+    if (!item || String(item.scheduledSlot || "") !== String(slotKey || "")) return false;
+    return Boolean(item.messageId || item.telegramMessageId || item.vkPostId || item.publishedAt);
+  });
+}
+
+function emptySlotCollectorAllowed(schedulerState, slotKey) {
+  const same = String(schedulerState.lastEmptySlotKey || "") === String(slotKey || "");
+  const at = new Date(schedulerState.lastEmptySlotAttemptAt || 0).getTime();
+  return !same || !Number.isFinite(at) || Date.now() - at >= 2 * 60 * 1000;
+}
+
 async function publishDynamicSlot(kind) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
   const now = new Date();
@@ -5437,7 +5450,11 @@ async function publishDynamicSlot(kind) {
     : (publishKind === "russian-ai" ? state.russianAiScheduler : state.dynamicScheduler);
 
   if (schedulerState.lastPublishedSlot === slotKey) {
-    return { ok: true, skipped: "already_done" };
+    if (slotHasSuccessfulPublication(slotKey)) return { ok: true, skipped: "already_done" };
+    // Older builds marked an empty slot as completed. Clear that stale marker so
+    // catch-up can recover the missing publication.
+    schedulerState.lastPublishedSlot = "";
+    saveState();
   }
   if (publishKind === "blogger") {
     if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
@@ -5453,36 +5470,45 @@ async function publishDynamicSlot(kind) {
   if (!queueId) {
     const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
     let lastChanceItem = dynamicAssignBest(day, time, laneKind);
-    if (!lastChanceItem && !isCollectorRunning()) {
+    if (!lastChanceItem && !isCollectorRunning() && emptySlotCollectorAllowed(schedulerState, slotKey)) {
+      schedulerState.lastEmptySlotKey = slotKey;
+      schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
+      saveState();
       const lastChanceTrigger = publishKind === "blogger"
         ? "blogger-slot-last-chance"
         : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
       await collectOnce(lastChanceTrigger);
+      // A secondary-checker outage may have left usable posts on hold. Re-run
+      // those through degraded-safe QC before declaring the slot empty.
+      await retryUnavailableEditorialQueueItems().catch(function(){});
       lastChanceItem = dynamicAssignBest(day, time, laneKind);
     }
     queueId = lastChanceItem && lastChanceItem.id || "";
   }
 
   if (!queueId) {
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = schedulerState.lastEmptySlotAttemptAt || new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "empty_slot" };
+    return { ok: true, skipped: "empty_slot_retry_pending", slot: time };
   }
 
   const item = (state.queue || []).find(function(q){ return q && q.id === queueId; });
   if (!item) {
     delete schedule.assignments[day][time];
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "missing_item" };
+    return { ok: true, skipped: "missing_item_retry_pending" };
   }
 
   if (dynamicItemAgeMs(item) > DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "stale" };
+    return { ok: true, skipped: "stale_retry_pending" };
   }
 
   if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) {
@@ -5613,8 +5639,12 @@ async function publishDynamicSlot(kind) {
   }
 
   delete schedule.assignments[day][time];
-  schedulerState.lastPublishedSlot = slotKey;
-  schedulerState.lastPublishedAt = publishedAt;
+  if (result.telegramPublished || result.vkPublished) {
+    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastPublishedAt = publishedAt;
+    schedulerState.lastEmptySlotKey = "";
+    schedulerState.lastEmptySlotAttemptAt = "";
+  }
 
   const mediaFailed = result.vkStatus === "media_failed";
   if (!mediaFailed && (!targets.telegram || item.telegramPublished) && (!targets.vk || item.vkPublished)) {
@@ -5752,7 +5782,9 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
   const nowMinutes = moscowMinutes(now);
   const hour = Math.floor(nowMinutes / 60);
   const minute = nowMinutes % 60;
-  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 29) return;
+  // Give a slow collector/checker up to 44 minutes to recover the hourly post.
+  // 20:45 is already the preparation window for 21:00, so stop before it.
+  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 44) return;
 
   const day = moscowDateKey(now);
   const time = String(hour).padStart(2, "0") + ":00";
@@ -5764,13 +5796,15 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
     try {
       await workspaceContext.run({ workspaceId: ws.id }, async function() {
         state.dynamicScheduler = state.dynamicScheduler || {};
-        if (state.dynamicScheduler.lastPublishedSlot === slotKey) return;
+        if (slotHasSuccessfulPublication(slotKey)) {
+          state.dynamicScheduler.lastPublishedSlot = slotKey;
+          return;
+        }
         if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) return;
 
         const schedule = ensureScheduleShape(state);
-        const assignment = schedule.assignments[day] && schedule.assignments[day][time];
-        if (!assignment) return;
         if (schedule.suppressed[day] && schedule.suppressed[day][time]) return;
+        const assignment = schedule.assignments[day] && schedule.assignments[day][time] || "";
 
         console.warn("SCHEDULER_CATCHUP_START " + JSON.stringify({ workspace: ws.id, slot: time, queueId: assignment, minute: minute }));
         const result = await publishDynamicSlot();
