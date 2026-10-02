@@ -8,7 +8,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
-import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
+import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
   createModelClients,
@@ -2470,7 +2470,7 @@ async function replenishSources(reason) {
 
 // One cheap call over all fresh headlines before media and editorial work:
 // drops ads, listings, old press releases and off-topic links.
-const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "мировые новости", stars: "знаменитости", travel: "путешествия", shopping: "покупки и скидки", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "маркетплейсы и покупатели: правила Ozon, Wildberries и Яндекс Маркета, доставка, возвраты, новые товары и тренды; без рекламных подборок, промокодов и скидок", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
 async function prefilterCandidates(candidates, summary) {
   if (!candidates.length) return candidates;
   const now = new Date();
@@ -10938,6 +10938,20 @@ async function seedChannelSources(ws) {
     state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
     if (removed.length && !state.sourceBlockedHosts.includes("cnbc.com")) state.sourceBlockedHosts.push("cnbc.com");
   }
+  // Sources that an earlier seed list added and a newer list retired (trader feeds, promo channels,
+  // tabloids...). Only seeder-added sources are removed, never the editor's own.
+  const retired = retiredSeedSources(state.sources, channelId);
+  if (retired.length) {
+    const retiredIds = new Set(retired.map(function(x){ return x.id; }));
+    state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+    for (const x of retired) {
+      const key = sourceKey(x.url);
+      if (key && !state.sourceBlockedHosts.includes(key)) state.sourceBlockedHosts.push(key);
+      if (state.sourceStats) delete state.sourceStats[x.id];
+      removed.push(x.name);
+    }
+    state.sources = state.sources.filter(function(x){ return !retiredIds.has(x.id); });
+  }
   const added = [];
   const failed = [];
   for (const c of freshCandidates(seeds, state.sources, state.sourceBlockedHosts || [])) {
@@ -10967,6 +10981,10 @@ const SEED_LISTS_V0415 = new Set(["world", "stars"]);
 const SEED_LISTS_V0422 = new Set(["travel", "shopping", "home"]);
 // food/business/crypto: same problem (OpenAI rate limit), hand-made lists since v0.42.3.
 const SEED_LISTS_V0423 = new Set(["food", "business", "crypto"]);
+// v0.42.4: lists cleaned against the channel profiles (trader/promo/tabloid sources retired, replacements added,
+// sourceKey no longer collapses sibling rubrics). Re-seeded once under a new prefix: it adds the new entries and
+// drops only the retired seed sources (see retiredSeedSources); business only regains the sections the old key dropped.
+const SEED_LISTS_V0424 = new Set(["money", "kino", "stars", "world", "travel", "shopping", "home", "food", "business", "crypto"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -10978,7 +10996,7 @@ function setupNewChannels() {
       if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
       // kino/science/sport got hand-made lists in v0.41.3 (their first run relied
       // on AI discovery, which hit the OpenAI rate limit) — seed them again.
-      const migration = (SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
+      const migration = (SEED_LISTS_V0424.has(channelId) ? "v0.42.4-seed-" : SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         if (!state.migrations.includes(migration)) {

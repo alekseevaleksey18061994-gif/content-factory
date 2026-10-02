@@ -8,6 +8,7 @@ import {
 } from "../lib/editorial-v2.js";
 import { visibleLength, trimPostPreservingTail, missingProtected, splitTail, CAPTION_VISIBLE_LIMIT } from "../lib/telegram-caption.js";
 import { matchRegistry, builtinBannedNames } from "../lib/editorial-registry.js";
+import { SEED_SOURCES, RETIRED_SEED_URLS, retiredSeedSources, sourceKey, freshCandidates } from "../lib/source-quality.js";
 
 const PROMPT_FILE = fileURLToPath(new URL("../prompts/chto-tam.md", import.meta.url));
 const SERVER_FILE = fileURLToPath(new URL("../server.js", import.meta.url));
@@ -265,6 +266,73 @@ await test("P9: all 16 channels resolve from name, id, slug, username and pin", 
   assert.equal(resolveChannelId({ id: "workspace-17", name: "Новый канал", slug: "", telegramPublicUsername: "" }), "");
   // a pin always wins over what the name suggests
   assert.equal(resolveChannelId({ name: "Что там у игр?", channelId: "kino" }), "kino");
+});
+
+// --- S1: seed lists ---------------------------------------------------------
+await test("S1: no list is below 25 candidates and none has colliding sourceKeys", function() {
+  for (const [channel, list] of Object.entries(SEED_SOURCES)) {
+    assert.ok(list.length >= 25, channel + " has " + list.length);
+    assert.equal(freshCandidates(list, [], []).length, list.length, channel + ": sourceKey collisions silently drop sources");
+  }
+});
+
+await test("S1: sources that contradict the channel profiles are gone", function() {
+  const banned = {
+    money: /investing\.com|finam\.ru|finamalert|moex|sravni/i,
+    shopping: /ozon_ru|wildberries_ru|yandexmarket|market\.yandex\.ru\/journal|wired\.com\/category\/gear|ixbt|3dnews|ferra|cnews|overclockers|iphones\.ru|computerra|androidauthority|9to5google|theverge|engadget|hightech\.fm|rozetked|wylsared|banki\.ru/i,
+    stars: /starhit|peopletalk|super\.ru|superru|7days|eg\.ru/i,
+    crypto: /ambcrypto|newsbtc|bitcoinist|cryptopotato|u\.today|beincrypto/i,
+    travel: /mid\.ru/i,
+    world: /lenta\.ru\/rubrics\/life|metro\.co\.uk/i,
+    food: /lenta\.ru\/rubrics\/(life|style)|ria\.ru\/society|iz\.ru\/rubric\/obshchestvo/i,
+    home: /ixbt|3dnews|ferra|inmyroom|houzz|apartmenttherapy/i,
+    kino: /okkotv|ivi_ru|kion_ru|wink_rt/i
+  };
+  for (const [channel, re] of Object.entries(banned)) {
+    const hits = SEED_SOURCES[channel].filter(function(x){ return re.test(x.url); });
+    assert.deepEqual(hits.map(function(x){ return x.url; }), [], channel);
+  }
+  // host typos: one spelling of each
+  const urls = Object.values(SEED_SOURCES).flat().map(function(x){ return x.url; });
+  assert.ok(!urls.some(function(u){ return /vokrug-sveta\.ru|journal\.tinkoff\.ru/.test(u); }));
+  assert.ok(urls.some(function(u){ return /vokrugsveta\.ru/.test(u); }) && urls.some(function(u){ return /journal\.tbank\.ru/.test(u); }));
+});
+
+await test("S1: retired seeds are removed only when the seeder added them", function() {
+  assert.ok(RETIRED_SEED_URLS.money.includes("https://ru.investing.com/news/economy"));
+  const inv = "https://ru.investing.com/news/economy";
+  const sources = [
+    { id: "seed-1", name: "Investing", url: inv, autoAdded: { from: "seed" } },
+    { id: "u-1", name: "Investing (editor)", url: "https://ru.investing.com/news/economy-extra", autoAdded: undefined },
+    { id: "u-2", name: "Investing hand-added", url: inv },
+    { id: "ai-1", name: "AI found", url: inv, autoAdded: { from: "ai" } },
+    { id: "seed-2", name: "CBR", url: "https://www.cbr.ru/news/", autoAdded: { from: "seed" } }
+  ];
+  assert.deepEqual(retiredSeedSources(sources, "money").map(function(x){ return x.id; }), ["seed-1"]);
+  assert.deepEqual(retiredSeedSources(sources, "tech"), [], "other channels are not affected");
+  for (const [channel, urls] of Object.entries(RETIRED_SEED_URLS)) {
+    const live = new Set(SEED_SOURCES[channel].map(function(x){ return sourceKey(x.url); }));
+    for (const u of urls) assert.ok(!live.has(sourceKey(u)), channel + " still seeds retired " + u);
+  }
+});
+
+await test("S1: sourceKey keeps rubrics of multi-section hosts apart; old blocked keys still block", function() {
+  assert.notEqual(sourceKey("https://www.kommersant.ru/rubric/3"), sourceKey("https://www.kommersant.ru/rubric/4"));
+  assert.notEqual(sourceKey("https://lenta.ru/rubrics/life/"), sourceKey("https://lenta.ru/rubrics/style/"));
+  assert.notEqual(sourceKey("https://rg.ru/tema/ekonomika/zhkh"), sourceKey("https://rg.ru/tema/ekonomika/nedvizhimost"));
+  assert.equal(sourceKey("https://www.kommersant.ru/rubric/3?from=x"), "kommersant.ru/rubric/3");
+  assert.equal(sourceKey("https://vc.ru/ai"), "vc.ru/ai");
+  assert.equal(sourceKey("https://t.me/s/rozetked"), "t.me/rozetked");
+  const cand = [{ name: "a", url: "https://lenta.ru/rubrics/style/", group: "media" }, { name: "b", url: "https://www.kommersant.ru/rubric/4", group: "media" }];
+  assert.equal(freshCandidates(cand, [], ["lenta.ru/rubrics"]).length, 1, "legacy blocked key");
+  assert.equal(freshCandidates(cand, [], ["lenta.ru/rubrics/life"]).length, 2, "new-style blocked key blocks only its rubric");
+});
+
+await test("S1: channel topics and the re-seed migration are wired in server.js", function() {
+  assert.ok(!/world: "мировые новости"/.test(serverSrc) && !/shopping: "покупки и скидки"/.test(serverSrc));
+  assert.ok(/SEED_LISTS_V0424 = new Set\(\[[^\]]*"money"[^\]]*"shopping"[^\]]*\]\)/.test(serverSrc));
+  assert.ok(/SEED_LISTS_V0424\.has\(channelId\) \? "v0\.42\.4-seed-"/.test(serverSrc));
+  assert.ok(/retiredSeedSources\(state\.sources, channelId\)/.test(serverSrc));
 });
 
 console.log(passed + " tests passed");
