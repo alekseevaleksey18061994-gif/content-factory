@@ -320,6 +320,27 @@ export function createModelClients(config) {
       Object.assign({}, opts && opts.extra || {}, { structured: !structuredUnsupported }));
 
     let parsed = parseJsonLoose(anthropicText(result.data));
+    if (!parsed && !structuredUnsupported) {
+      // Structured output only breaks when the answer is cut off (max_tokens) or
+      // refused. Log why and retry once with a larger budget.
+      const text = anthropicText(result.data);
+      console.warn("EDITORIAL_V2_CLAUDE_BAD_JSON " + JSON.stringify({ model: model, stop_reason: result.data && result.data.stop_reason || "", length: String(text || "").length, head: String(text || "").slice(0, 160), tail: String(text || "").slice(-120) }));
+      const bigger = Math.max(8000, ((opts && opts.maxTokens) || 3000) * 2);
+      const retryOpts = Object.assign({}, opts || {}, { maxTokens: bigger });
+      const prevOpts = opts;
+      opts = retryOpts;
+      try {
+        result = await send({ structured: true, temperature: true });
+        if (!result.response.ok && result.response.status === 400 && /temperature/i.test(errMsg(result.data))) {
+          result = await send({ structured: true, temperature: false });
+        }
+      } finally { opts = prevOpts; }
+      if (result.response.ok) {
+        reportUsage("anthropic", model, (opts && opts.purpose || "editorial_checker") + "_retry", result.data,
+          Object.assign({}, opts && opts.extra || {}, { structured: true }));
+        parsed = parseJsonLoose(anthropicText(result.data));
+      }
+    }
     if (!parsed && structuredUnsupported) {
       const repairSystem = [
         system,

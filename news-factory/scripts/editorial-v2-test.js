@@ -510,4 +510,23 @@ await test("server and admin post ratings are identical", async function() {
   assert.equal(lib.postRating(lib.queueItemRatingInput(samples[0])).total, 32 + 21 + 15 + 8 + 7);
 });
 
+await test("Claude retries with a bigger budget when the JSON is cut off", async function() {
+  const bodies = [];
+  const fakeFetch = async function(url, init) {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    const cut = bodies.length === 1;
+    const data = cut
+      ? { stop_reason: "max_tokens", content: [{ type: "text", text: '{"verdict":"fix","errors":[{"severity":"minor","type":"tech","fi' }] }
+      : { stop_reason: "end_turn", content: [{ type: "text", text: '{"verdict":"pass","errors":[],"checked_claims":5,"summary":"ok"}' }] };
+    return { ok: true, status: 200, json: async function(){ return data; } };
+  };
+  const c = createModelClients({ fetch: fakeFetch, anthropicApiKey: "k2", anthropicModel: "claude-sonnet-5-5" });
+  const a = await c.callAnthropic("SYS", "{}", {});
+  assert.equal(a.parsed.verdict, "pass");
+  assert.equal(bodies.length, 2);
+  assert.ok(bodies[1].max_tokens >= 8000);
+  assert.equal(bodies[1].output_config.format.type, "json_schema");
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));

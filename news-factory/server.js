@@ -8013,7 +8013,7 @@ async function retryUnavailableEditorialQueueItems() {
       item.topicEntities = Array.isArray(qc.topicEntities) ? qc.topicEntities : item.topicEntities || [];
       item.platformVariants = qc.platformVariants || item.platformVariants || {};
       item.decisionSummary = qc.decisionSummary || item.decisionSummary || "";
-      item.priorityScore = calculatePriorityScore(item);
+      item.priorityScore = Math.round(dynamicItemScore(item));
       item.decisionExplanation = buildDecisionExplanation(item);
 
       if (item.qcStatus === "pass" && result.meta && result.meta.verdict === "pass") repaired += 1;
