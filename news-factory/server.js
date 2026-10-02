@@ -16,6 +16,7 @@ import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState,
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
+import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
@@ -101,6 +102,12 @@ const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.E
 const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+// Provider failover: OpenAI or Claude out of money (or down) -> the other one writes and checks, publishing goes on.
+const PROVIDER_FAILOVER_ENABLED = String(process.env.EDITORIAL_V2_PROVIDER_FAILOVER || "true").toLowerCase() !== "false";
+const ANTHROPIC_FALLBACK_WRITER_MODEL = String(process.env.ANTHROPIC_FALLBACK_WRITER_MODEL || "claude-sonnet-5-5").trim();
+const PROVIDER_BREAKER_COOLDOWN_MIN = Math.max(1, Math.min(240, Number(process.env.PROVIDER_BREAKER_COOLDOWN_MIN || 10) || 10));
+// When OpenAI cannot draw covers (no money) a local text card is used instead of blocking the post on MEDIA_REQUIRED.
+const PROVIDER_FAILOVER_COVER_CARD = String(process.env.PROVIDER_FAILOVER_COVER_CARD || "true").toLowerCase() !== "false";
 const HEADLINE_PREFILTER_ENABLED = String(process.env.HEADLINE_PREFILTER_ENABLED || "true").toLowerCase() !== "false";
 const SOURCE_AUTO_PAUSE_ENABLED = String(process.env.SOURCE_AUTO_PAUSE_ENABLED || "true").toLowerCase() !== "false";
 function envNumber(name, def, min, max) { const v = Number(String(process.env[name] == null ? "" : process.env[name]).replace(",", ".").replace(/[^0-9.\-]/g, "")); const n = process.env[name] == null || process.env[name] === "" || !Number.isFinite(v) ? def : v; return Math.max(min, Math.min(max, n)); }
@@ -1673,11 +1680,14 @@ async function apiBalanceSnapshot(knownRate) {
 // Provider out of money: tell the owner in Telegram (once per 3 hours per provider)
 // instead of silently failing every call.
 const billingAlertSentAt = {};
-function maybeBillingAlert(text) {
+function alertProviderLabel(key) { return key === "openai" ? "OpenAI" : "Anthropic (Claude)"; }
+function maybeBillingAlert(text, forcedProvider) {
   const msg = String(text || "");
-  let provider = "";
-  if (/no credits remaining|insufficient_quota|exceeded your current quota/i.test(msg)) provider = "OpenAI";
-  else if (/credit balance is too low/i.test(msg)) provider = "Anthropic (Claude)";
+  let provider = forcedProvider === "openai" || forcedProvider === "anthropic" ? alertProviderLabel(forcedProvider) : "";
+  if (!provider) {
+    if (/no credits remaining|insufficient_quota|exceeded your current quota/i.test(msg)) provider = "OpenAI";
+    else if (/credit balance is too low/i.test(msg)) provider = "Anthropic (Claude)";
+  }
   if (!provider || !BOT_TOKEN) return;
   const last = billingAlertSentAt[provider] || 0;
   if (Date.now() - last < 3 * 3600000) return;
@@ -1687,12 +1697,18 @@ function maybeBillingAlert(text) {
   billingAlertSentAt[provider] = chatId ? Date.now() : Date.now() - 3 * 3600000 + 10 * 60000;
   console.warn("BILLING_EXHAUSTED " + JSON.stringify({ provider: provider, alerted: Boolean(chatId) }));
   if (!chatId) return;
-  const link = provider === "OpenAI" ? "https://platform.openai.com/settings/organization/billing/" : "https://console.anthropic.com/settings/billing";
+  const key = provider === "OpenAI" ? "openai" : "anthropic";
+  const other = key === "openai" ? "anthropic" : "openai";
+  const otherConfigured = other === "openai" ? Boolean(OPENAI_API_KEY) : Boolean(ANTHROPIC_API_KEY);
+  const otherUp = otherConfigured && !providerBreaker.isOpen(other);
+  const link = key === "openai" ? "https://platform.openai.com/settings/organization/billing/" : "https://console.anthropic.com/settings/billing";
+  let effect;
+  if (PROVIDER_FAILOVER_ENABLED && otherUp) effect = "Публикация не остановилась: " + alertProviderLabel(other) + " сам взял на себя написание и проверку постов. Как только баланс будет пополнен, всё вернётся на обычную схему автоматически.";
+  else if (PROVIDER_FAILOVER_ENABLED && otherConfigured) effect = "Второй сервис тоже недоступен — новые посты не пишутся, пока не пополнится хотя бы один баланс. Каналы выпустят то, что уже в очереди.";
+  else effect = key === "openai" ? "Новые посты не пишутся — каналы выпустят то, что уже в очереди, и остановятся." : "Вторая проверка фактов не работает — посты проверяет только одна нейросеть.";
   telegramApi("sendMessage", {
     chat_id: chatId,
-    text: "🚨 News Factory: на балансе " + provider + " закончились деньги.\n" +
-      (provider === "OpenAI" ? "Новые посты не пишутся — каналы выпустят то, что уже в очереди, и остановятся." : "Вторая проверка фактов не работает — посты проверяет только одна нейросеть.") +
-      "\nПополните баланс: " + link,
+    text: "🚨 News Factory: у " + provider + " закончились деньги (или ключ не принят).\n" + effect + "\nПополните баланс: " + link,
     disable_web_page_preview: true
   }).catch(function(error){
     // Failed send: allow another try in 10 minutes instead of 3 hours.
@@ -1700,6 +1716,36 @@ function maybeBillingAlert(text) {
     console.warn("Billing alert failed:", error.message);
   });
 }
+
+// One switch for the whole app: after "no money / bad key" a provider is skipped for PROVIDER_BREAKER_COOLDOWN_MIN
+// minutes (then retried once), so every post does not pay for a request that is certain to fail.
+const providerBreaker = createProviderBreaker({
+  cooldownMs: PROVIDER_BREAKER_COOLDOWN_MIN * 60000,
+  onTrip: function(provider, reason, kind) {
+    console.warn("PROVIDER_SWITCHED_OFF " + JSON.stringify({ provider: provider, kind: kind, failover: PROVIDER_FAILOVER_ENABLED, reason: String(reason || "").slice(0, 200) }));
+    maybeBillingAlert(reason, provider);
+  },
+  onRecover: function(provider) {
+    console.log("PROVIDER_RECOVERED " + JSON.stringify({ provider: provider }));
+    delete billingAlertSentAt[alertProviderLabel(provider)];
+    sendOwnerAlert("✅ News Factory: " + alertProviderLabel(provider) + " снова отвечает — работа вернулась на обычную схему.").catch(function(){});
+  }
+});
+
+// Drop-in for the OpenAI Responses endpoint fetch used by the helper models (headline filter, scoring,
+// translation, story composer ...): OpenAI first, Claude when OpenAI has no money / is down.
+const llmResponsesFetch = createResponsesFailover({
+  breaker: providerBreaker,
+  get anthropicApiKey() { return PROVIDER_FAILOVER_ENABLED ? ANTHROPIC_API_KEY : ""; },
+  get anthropicModel() { return ANTHROPIC_MODEL; },
+  onUsage: function(event) { return recordCostUsage(event); },
+  onFailover: function(info) {
+    const now = Date.now();
+    if (now - (llmResponsesFetch.lastLogAt || 0) < 60000) return;
+    llmResponsesFetch.lastLogAt = now;
+    console.warn("LLM_FAILOVER " + JSON.stringify({ from: info.from, to: info.to, why: info.why }));
+  }
+});
 
 async function sendCostBudgetAlert(snapshot, threshold) {
   if (!BOT_TOKEN) return false;
@@ -2702,7 +2748,7 @@ async function discoverSourcesWithAI(count) {
     try {
       const body = { model: OPENAI_MODEL, input: prompt, max_output_tokens: 2500 };
       if (withSearch) body.tools = [{ type: "web_search" }];
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify(body),
@@ -2805,7 +2851,7 @@ async function prefilterCandidates(candidates, summary) {
       items: judged.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, sourceClass: sourceClassFor(candidate.source), date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
     });
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         // 20-40 headlines with reasons need room; a cut answer made the pre-filter fail open.
@@ -3802,6 +3848,16 @@ async function generateNewsCover(payload) {
 
   const candidates = [OPENAI_IMAGE_MODEL, "gpt-image-2"].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
   let lastError = "";
+  // OpenAI is out of money: a missing cover must not stop the post (MEDIA_REQUIRED), draw the local text card.
+  const coverCardFallback = async function(reason) {
+    if (!PROVIDER_FAILOVER_COVER_CARD) return null;
+    console.warn("COVER_FALLBACK_TEXT_CARD " + JSON.stringify({ workspace: currentWorkspaceId(), reason: String(reason || "").slice(0, 160) }));
+    return renderEconomyTextCard(payload);
+  };
+  if (providerBreaker.isOpen("openai")) {
+    const card = await coverCardFallback(providerBreaker.reason("openai"));
+    if (card) return card;
+  }
 
   for (const model of candidates) {
     try {
@@ -3822,6 +3878,13 @@ async function generateNewsCover(payload) {
       const data = await response.json().catch(function(){ return {}; });
       if (!response.ok) {
         lastError = (data && data.error && data.error.message) || ("OpenAI Images HTTP " + response.status);
+        const failureKind = classifyProviderFailure({ status: response.status, message: lastError });
+        if (tripsBreaker(failureKind)) {
+          providerBreaker.trip("openai", lastError, failureKind);
+          const card = await coverCardFallback(lastError);
+          if (card) return card;
+          break;
+        }
         continue;
       }
       recordOpenAIResponseUsage(model, String(payload && payload.costPurpose || "image_generation"), data, "images", {
@@ -6662,7 +6725,7 @@ async function preparePostForSingleTelegramCaption(post) {
     const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
     for (const model of candidates) {
       try {
-        const response = await fetch("https://api.openai.com/v1/responses", {
+        const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
           method: "POST",
           headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
           body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 900 }),
@@ -8814,7 +8877,7 @@ async function generatePromotionCreative() {
   let lastError = "";
   for (const model of candidates) {
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 900, text: { format: { type: "json_object" } } }),
@@ -9170,7 +9233,7 @@ async function callOpenAIRewrite(payload) {
   let lastError = "";
   for (const model of candidates) {
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -9309,12 +9372,15 @@ function editorialPipeline() {
       maxFixRounds: EDITORIAL_V2_MAX_FIX_ROUNDS,
       requireAllCheckers: EDITORIAL_V2_REQUIRE_ALL_CHECKERS,
       claudeCheck: process.env.EDITORIAL_V2_CLAUDE_CHECK,
+      providerFailover: PROVIDER_FAILOVER_ENABLED,
       config: {
         openaiApiKey: OPENAI_API_KEY,
         openaiModel: OPENAI_MODEL,
         openaiFallbackModel: OPENAI_FALLBACK_MODEL,
         anthropicApiKey: ANTHROPIC_API_KEY,
         anthropicModel: ANTHROPIC_MODEL,
+        anthropicWriterModel: ANTHROPIC_FALLBACK_WRITER_MODEL,
+        breaker: providerBreaker,
         onUsage: recordCostUsage
       }
     });
@@ -9629,6 +9695,8 @@ async function runEditorialV2(sources, options) {
     cover: post.cover || null,
     rounds: outcome.rounds || 0,
     writerModel: outcome.writerModel || "",
+    writerProvider: outcome.writerProvider || "openai",
+    failoverChecker: outcome.failoverChecker || "",
     checkers: checkerModels,
     degradedQc: Boolean(outcome.degraded),
     failedProviders: outcome.failedProviders || [],
@@ -10517,7 +10585,7 @@ async function callOpenAIEditorialQC(payload) {
   let lastError = "";
   for (const model of candidates) {
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 2600 }),
@@ -10711,7 +10779,7 @@ async function classifyPublishedStoryRelationship(item, options) {
     ].join("\n");
 
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 600 }),
@@ -10813,7 +10881,7 @@ async function callOpenAIStoryComposer(storySources, existingItem, incomingItem)
   let lastError = "";
   for (const model of models) {
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 1800 }),
@@ -11086,7 +11154,7 @@ async function translateTitlesToRussian(items) {
   const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
   for (const model of candidates) {
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 3000 }),
@@ -11161,7 +11229,7 @@ async function callOpenAIEditorialScoreBatch(items) {
   const candidates = [OPENAI_MODEL, OPENAI_FALLBACK_MODEL].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
   for (const model of candidates) {
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify({ model: model, input: prompt, max_output_tokens: 2200 }),
@@ -11449,7 +11517,8 @@ async function buildSystemStatus(force) {
         " · GPT: " + (openaiProbe.ok ? openaiProbe.model : "ошибка") +
         " · Claude: " + (anthropicProbe.ok ? (anthropicProbe.model + (anthropicProbe.structured ? " · JSON schema OK" : " · JSON fallback")) : String(anthropicProbe.error || (ANTHROPIC_API_KEY ? "ошибка" : "нет ключа"))) +
         " · исправлений до " + EDITORIAL_V2_MAX_FIX_ROUNDS +
-        (editorialPromptError ? " · ошибка промпта: " + editorialPromptError : ""),
+        (editorialPromptError ? " · ошибка промпта: " + editorialPromptError : "") +
+        (Object.keys(providerBreaker.snapshot()).length ? " · временно отключено (переключение на второго): " + Object.entries(providerBreaker.snapshot()).filter(function(e){ return e[1].open; }).map(function(e){ return alertProviderLabel(e[0]) + " — " + e[1].reason.slice(0, 80); }).join("; ") : ""),
       next: !EDITORIAL_V2_ENABLED ? "" :
         (!editorialV2Active() ? "Проверить OPENAI_API_KEY и файл prompts/chto-tam.md" :
           (!ANTHROPIC_API_KEY ? "Добавить ANTHROPIC_API_KEY для второй проверки" :

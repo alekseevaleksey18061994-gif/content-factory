@@ -13,6 +13,7 @@
 // which keeps it unit-testable with a mocked fetch.
 
 import fs from "node:fs";
+import { createProviderBreaker, breakerError, classifyProviderFailure, failoverKind, tripsBreaker, callClaudeMessages } from "./llm-failover.js";
 
 export const CHANNEL_IDS = [
   "ai", "auto", "money", "tech", "games", "kino", "science", "sport",
@@ -292,6 +293,20 @@ function anthropicOutputSchema(opts) {
 export function createModelClients(config) {
   const cfg = config || {};
   const fetchImpl = cfg.fetch || globalThis.fetch;
+  // Shared with the rest of the app (see server.js): after a "no money / bad key" answer a provider is skipped for a
+  // while instead of being hit again by every post.
+  const breaker = cfg.breaker || createProviderBreaker({ onTrip: cfg.onProviderTrip });
+  // Mark an error with what kind of failure it was and trip the breaker when money/key is the problem.
+  const annotate = function(error, provider, status) {
+    const e = error instanceof Error ? error : new Error(String(error));
+    if (!e.failureKind) {
+      const st = Number(status || e.status || 0);
+      e.failureKind = classifyProviderFailure({ status: st, message: e.message });
+      if (tripsBreaker(e.failureKind)) breaker.trip(provider, e.message, e.failureKind);
+    }
+    e.provider = e.provider || provider;
+    return e;
+  };
   const reportUsage = function(provider, model, purpose, data, extra) {
     if (typeof cfg.onUsage !== "function") return;
     try {
@@ -310,8 +325,10 @@ export function createModelClients(config) {
 
   async function callOpenAI(instructions, input, opts) {
     if (!cfg.openaiApiKey) throw new Error("OPENAI_API_KEY не настроен");
+    if (breaker.isOpen("openai")) throw breakerError("openai", breaker);
     const models = [cfg.openaiModel, cfg.openaiFallbackModel].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
     let lastError = "";
+    let lastStatus = 0;
     for (const model of models) {
       try {
         const send = function(withTemperature) {
@@ -333,7 +350,14 @@ export function createModelClients(config) {
           response = await send(false);
           data = await response.json().catch(function(){ return {}; });
         }
-        if (!response.ok) { lastError = (data && data.error && data.error.message) || ("OpenAI HTTP " + response.status); continue; }
+        if (!response.ok) {
+          lastError = (data && data.error && data.error.message) || ("OpenAI HTTP " + response.status);
+          lastStatus = response.status;
+          // No money / bad key: the second OpenAI model would fail the same way, stop here and let Claude take over.
+          if (tripsBreaker(classifyProviderFailure({ status: response.status, message: lastError }))) break;
+          continue;
+        }
+        breaker.recordSuccess("openai");
         reportUsage("openai", model, opts && opts.purpose || "editorial", data, opts && opts.extra);
         const text = openAIText(data);
         const parsed = parseJsonLoose(text);
@@ -341,12 +365,15 @@ export function createModelClients(config) {
         return { parsed, model, provider: "openai" };
       } catch (error) {
         lastError = String(error && error.message || error);
+        lastStatus = 0;
       }
     }
-    throw new Error(lastError || "OpenAI недоступен");
+    const failure = new Error(lastError || "OpenAI недоступен");
+    failure.status = lastStatus;
+    throw annotate(failure, "openai", lastStatus);
   }
 
-  async function callAnthropic(system, input, opts) {
+  async function callAnthropicRaw(system, input, opts) {
     if (!cfg.anthropicApiKey) throw new Error("ANTHROPIC_API_KEY не настроен");
     const model = cfg.anthropicModel || "claude-sonnet-5-5";
     const schema = anthropicOutputSchema(opts);
@@ -402,7 +429,7 @@ export function createModelClients(config) {
       result = await send({ structured: false, temperature: false });
     }
 
-    if (!result.response.ok) throw new Error(errMsg(result.data) || ("Anthropic HTTP " + result.response.status));
+    if (!result.response.ok) throw Object.assign(new Error(errMsg(result.data) || ("Anthropic HTTP " + result.response.status)), { status: result.response.status });
     reportUsage("anthropic", model, opts && opts.purpose || "editorial_checker", result.data,
       Object.assign({}, opts && opts.extra || {}, { structured: !structuredUnsupported }));
 
@@ -473,7 +500,7 @@ export function createModelClients(config) {
         });
         repairData = await repairResponse.json().catch(function(){ return {}; });
       }
-      if (!repairResponse.ok) throw new Error(errMsg(repairData) || ("Anthropic HTTP " + repairResponse.status));
+      if (!repairResponse.ok) throw Object.assign(new Error(errMsg(repairData) || ("Anthropic HTTP " + repairResponse.status)), { status: repairResponse.status });
       reportUsage("anthropic", model, (opts && opts.purpose || "editorial_checker") + "_repair", repairData,
         Object.assign({}, opts && opts.extra || {}, { structured: false }));
       parsed = parseJsonLoose(anthropicText(repairData));
@@ -483,7 +510,43 @@ export function createModelClients(config) {
     return { parsed, model, provider: "anthropic", structured: !structuredUnsupported };
   }
 
-  return { callOpenAI, callAnthropic };
+  async function callAnthropic(system, input, opts) {
+    if (cfg.anthropicApiKey && breaker.isOpen("anthropic")) throw breakerError("anthropic", breaker);
+    try {
+      const out = await callAnthropicRaw(system, input, opts);
+      breaker.recordSuccess("anthropic");
+      return out;
+    } catch (error) {
+      throw annotate(error, "anthropic");
+    }
+  }
+
+  // Claude as the WRITER when OpenAI cannot write (no money / outage). Plain Messages call (the checker schema must not
+  // be forced on a post), JSON is asked for in the prompt and parsed loosely like the OpenAI answer.
+  async function callAnthropicWriter(system, input, opts) {
+    if (!cfg.anthropicApiKey) throw new Error("ANTHROPIC_API_KEY не настроен");
+    if (breaker.isOpen("anthropic")) throw breakerError("anthropic", breaker);
+    const model = cfg.anthropicWriterModel || "claude-sonnet-5-5";
+    try {
+      const result = await callClaudeMessages({
+        fetch: fetchImpl, apiKey: cfg.anthropicApiKey, model,
+        system: system + "\n\nТЕХНИЧЕСКОЕ ТРЕБОВАНИЕ: верни только один валидный JSON-объект того формата, который описан выше, без markdown и пояснений до и после.",
+        messages: [{ role: "user", content: input }],
+        maxTokens: (opts && opts.maxTokens) || 3500,
+        temperature: opts && typeof opts.temperature === "number" ? opts.temperature : 0.7,
+        timeoutMs: (cfg.timeoutMs || 90000) * 2
+      });
+      reportUsage("anthropic", model, (opts && opts.purpose || "editorial_writer") + "_failover", { usage: result.usage }, opts && opts.extra);
+      const parsed = parseJsonLoose(result.text);
+      if (!parsed) throw new Error("Claude вернул невалидный JSON (автор)");
+      breaker.recordSuccess("anthropic");
+      return { parsed, model, provider: "anthropic" };
+    } catch (error) {
+      throw annotate(error, "anthropic");
+    }
+  }
+
+  return { callOpenAI, callAnthropic, callAnthropicWriter, breaker };
 }
 
 // ---------------------------------------------------------------------------
@@ -606,15 +669,30 @@ export function createEditorialPipeline(options) {
   // round does not repeat the Claude check of the previous draft. "always": Claude checks every draft in parallel
   // with GPT (the old behaviour, about 1.75 Claude calls per post).
   const claudeCheckMode = String(opt.claudeCheck || "final").trim().toLowerCase() === "always" ? "always" : "final";
+  // Provider failover: when OpenAI cannot answer (no money, bad key, outage) Claude writes AND checks instead, so
+  // publishing keeps going. Claude out of money is the old behaviour (OpenAI alone checks, flagged degraded).
+  const failoverOn = opt.providerFailover !== false;
+  const failoverLog = function(info) { try { console.warn("EDITORIAL_V2_FAILOVER " + JSON.stringify(info)); } catch {} };
 
   async function runWriter(channelId, request) {
     const parsed = loadPrompt(promptFile);
     const system = buildSystemPrompt(parsed, "writer", channelId);
     const input = JSON.stringify(Object.assign({ role: "writer", channel_id: channelId }, request));
-    const res = await clients.callOpenAI(system, input, {
-      maxTokens: 3500, temperature: 0.7, purpose: "editorial_writer", extra: { news_id: String(request.news_id || "") }
-    });
-    return { result: normalizeWriterResult(res.parsed, channelId), model: res.model };
+    const callOpts = { maxTokens: 3500, temperature: 0.7, purpose: "editorial_writer", extra: { news_id: String(request.news_id || "") } };
+    let res;
+    try {
+      res = await clients.callOpenAI(system, input, callOpts);
+    } catch (error) {
+      if (!failoverOn || !useClaude() || typeof clients.callAnthropicWriter !== "function") throw error;
+      const reason = String(error && error.message || error).slice(0, 200);
+      try {
+        res = await clients.callAnthropicWriter(system, input, callOpts);
+      } catch (claudeError) {
+        throw Object.assign(new Error("OpenAI: " + reason + " | Claude: " + String(claudeError && claudeError.message || claudeError)), { failureKind: error && error.failureKind || "other" });
+      }
+      failoverLog({ role: "writer", from: "openai", to: "anthropic", kind: error && error.failureKind || "other", reason: reason, model: res.model, news_id: String(request.news_id || "") });
+    }
+    return { result: normalizeWriterResult(res.parsed, channelId), model: res.model, provider: res.provider || "openai" };
   }
 
   async function runCheckers(channelId, post, request) {
@@ -658,9 +736,11 @@ export function createEditorialPipeline(options) {
       const first = await openaiJob();
       results = [first];
       if (useClaude()) {
-        // Claude only sees a draft GPT passed. If GPT failed, asked for fixes or rejected, the verdict is already
-        // decided (an OpenAI outage is "unavailable" whatever Claude says), so the call would be wasted.
+        // Claude only sees a draft GPT passed. If GPT asked for fixes or rejected, the verdict is already decided,
+        // so the call would be wasted. If GPT could not answer at all (no money, outage), Claude takes over as the
+        // only checker (provider failover); with failover off that stays "unavailable" and the post waits.
         if (!first.failed && first.verdict === "pass") results.push(await claudeJob());
+        else if (first.failed && failoverOn) results.push(await claudeJob());
         else claudeSkipped = true;
       }
     }
@@ -674,13 +754,20 @@ export function createEditorialPipeline(options) {
     // limit, provider incident) must be visible as degraded QC, but must not
     // freeze every channel and create empty publication slots. If OpenAI itself
     // is unavailable, the result remains unavailable.
-    if (!done.length || !openaiDone) verdict = "unavailable";
-    const degraded = Boolean(failed.length && openaiDone);
+    // Failover: OpenAI could not check but Claude did -> Claude's verdict stands on its own.
+    const claudeSole = failoverOn && !openaiDone && done.some(function(r){ return r && r.provider === "anthropic"; });
+    if (!done.length || (!openaiDone && !claudeSole)) verdict = "unavailable";
+    const degraded = Boolean(failed.length && verdict !== "unavailable");
+    if (claudeSole) {
+      const openaiFailure = results.find(function(r){ return r && r.provider === "openai" && r.failed; });
+      failoverLog({ role: "checker", from: "openai", to: "anthropic", verdict: verdict, reason: String(openaiFailure && openaiFailure.error || "").slice(0, 200), news_id: String(request.news_id || "") });
+    }
     return {
       verdict,
       errors: merged.errors,
       checkers: results,
       degraded,
+      failoverChecker: claudeSole ? "anthropic" : "",
       claudeSkipped: claudeSkipped,
       failedProviders: failed.map(function(r){ return r.provider; })
     };
@@ -691,9 +778,9 @@ export function createEditorialPipeline(options) {
   async function run(channelId, request) {
     const log = [];
     let writer = await runWriter(channelId, request);
-    log.push({ step: "writer", round: 0, model: writer.model, status: writer.result.status });
+    log.push({ step: "writer", round: 0, model: writer.model, provider: writer.provider, status: writer.result.status });
     if (writer.result.status === "skip") {
-      return { status: "skip", post: writer.result, verdict: "skip", rounds: 0, log, writerModel: writer.model };
+      return { status: "skip", post: writer.result, verdict: "skip", rounds: 0, log, writerModel: writer.model, writerProvider: writer.provider };
     }
     let post = writer.result;
     let check = await runCheckers(channelId, post, request);
@@ -707,9 +794,9 @@ export function createEditorialPipeline(options) {
         fix_notes: fixNotes,
         previous_post: { title: post.title, tg_text: post.tgText, vk_text: post.vkText, format: post.format, hook_type: post.hookType, ending_type: post.endingType, content_bucket: post.contentBucket, channel_signals: post.channelSignals }
       }));
-      log.push({ step: "writer", round, model: writer.model, status: writer.result.status });
+      log.push({ step: "writer", round, model: writer.model, provider: writer.provider, status: writer.result.status });
       if (writer.result.status === "skip") {
-        return { status: "skip", post: writer.result, verdict: "skip", rounds: round, log, writerModel: writer.model };
+        return { status: "skip", post: writer.result, verdict: "skip", rounds: round, log, writerModel: writer.model, writerProvider: writer.provider };
       }
       post = writer.result;
       check = await runCheckers(channelId, post, request);
@@ -724,10 +811,12 @@ export function createEditorialPipeline(options) {
       errors: check.errors,
       checkers: check.checkers,
       degraded: Boolean(check.degraded),
+      failoverChecker: check.failoverChecker || "",
       failedProviders: check.failedProviders || [],
       rounds: round,
       log,
-      writerModel: writer.model
+      writerModel: writer.model,
+      writerProvider: writer.provider
     };
   }
 

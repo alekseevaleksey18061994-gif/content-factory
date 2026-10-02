@@ -44,7 +44,8 @@ function mockClients(script) {
     calls,
     clients: {
       callOpenAI: function(system, input){ return next("openai", system, input); },
-      callAnthropic: function(system, input){ return next("anthropic", system, input); }
+      callAnthropic: function(system, input){ return next("anthropic", system, input); },
+      callAnthropicWriter: function(system, input){ return next("anthropic", system, input); }
     }
   };
 }
@@ -167,9 +168,9 @@ await test("pipeline: Claude outage → approved in explicit degraded mode", asy
   assert.deepEqual(out.failedProviders, ["anthropic"]);
 });
 
-await test("pipeline: primary OpenAI checker outage → hold unavailable", async function() {
+await test("pipeline: OpenAI checker outage with failover switched off → hold unavailable", async function() {
   const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": new Error("openai down"), "anthropic:checker": PASS });
-  const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude });
+  const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude, providerFailover: false });
   const out = await p.run("auto", REQUEST);
   assert.equal(out.status, "hold");
   assert.equal(out.verdict, "unavailable");
@@ -205,8 +206,64 @@ await test("claude cost: GPT reject or GPT outage never costs a Claude call", as
   let out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
   assert.equal(out.verdict, "reject"); assert.equal(mock.calls.anthropic.length, 0);
   mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": new Error("openai down"), "anthropic:checker": PASS });
-  out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude, providerFailover: false }).run("auto", REQUEST);
   assert.equal(out.verdict, "unavailable"); assert.equal(mock.calls.anthropic.length, 0);
+});
+
+// ---- provider failover: one provider out of money must not stop publishing ----
+const billing = function(msg){ return Object.assign(new Error(msg), { failureKind: "billing" }); };
+
+await test("failover: OpenAI out of money → Claude writes AND checks the post alone", async function() {
+  const mock = mockClients({ "openai:writer": billing("You exceeded your current quota"), "openai:checker": billing("You exceeded your current quota"), "anthropic:writer": WRITER_OK, "anthropic:checker": PASS });
+  const out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.status, "approved"); assert.equal(out.verdict, "pass");
+  assert.equal(out.writerProvider, "anthropic");
+  assert.equal(out.failoverChecker, "anthropic");
+  assert.equal(out.degraded, true);
+  assert.deepEqual(out.failedProviders, ["openai"]);
+});
+
+await test("failover: Claude as the only checker still sends a bad draft back / rejects it", async function() {
+  let mock = mockClients({ "openai:writer": billing("no credits remaining"), "openai:checker": billing("no credits remaining"), "anthropic:writer": WRITER_OK, "anthropic:checker": [FIX, PASS] });
+  let out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.status, "approved"); assert.equal(out.rounds, 1);
+  assert.equal(mock.calls.anthropic.filter(function(c){ return c.role === "writer"; }).length, 2, "the fix round is written by Claude too");
+  mock = mockClients({ "openai:writer": billing("no credits remaining"), "openai:checker": billing("no credits remaining"), "anthropic:writer": WRITER_OK, "anthropic:checker": REJECT });
+  out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.verdict, "reject"); assert.equal(out.status, "hold");
+});
+
+await test("failover: Claude out of money → OpenAI writes and checks alone (degraded), no Claude calls repeated", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": PASS, "anthropic:checker": billing("credit balance is too low") });
+  const out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.status, "approved"); assert.equal(out.degraded, true);
+  assert.equal(out.writerProvider, "openai"); assert.equal(out.failoverChecker, "");
+  assert.deepEqual(out.failedProviders, ["anthropic"]);
+});
+
+await test("failover: both providers out of money → post waits (unavailable), nothing is published unchecked", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": billing("no credits remaining"), "anthropic:checker": billing("credit balance is too low") });
+  const out = await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude }).run("auto", REQUEST);
+  assert.equal(out.status, "hold"); assert.equal(out.verdict, "unavailable");
+  let threw = "";
+  const mock2 = mockClients({ "openai:writer": billing("no credits remaining"), "anthropic:writer": billing("credit balance is too low") });
+  try { await createEditorialPipeline({ promptFile: PROMPT, clients: mock2.clients, config: withClaude }).run("auto", REQUEST); } catch (e) { threw = e.message; }
+  assert.match(threw, /OpenAI: .*no credits remaining.*Claude: .*credit balance is too low/);
+});
+
+await test("failover: without an Anthropic key nothing changes (OpenAI outage → error / unavailable)", async function() {
+  const mock = mockClients({ "openai:writer": billing("no credits remaining"), "openai:checker": new Error("down") });
+  let threw = false;
+  try { await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: {} }).run("auto", REQUEST); } catch { threw = true; }
+  assert.ok(threw);
+  assert.equal(mock.calls.anthropic.length, 0);
+});
+
+await test("failover: switched off by flag → writer error propagates, Claude is not called", async function() {
+  const mock = mockClients({ "openai:writer": billing("no credits remaining"), "anthropic:writer": WRITER_OK });
+  let threw = false;
+  try { await createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude, providerFailover: false }).run("auto", REQUEST); } catch { threw = true; }
+  assert.ok(threw); assert.equal(mock.calls.anthropic.length, 0);
 });
 
 await test("claude cost: the second check still has teeth - Claude fix after a GPT pass sends the draft back", async function() {
