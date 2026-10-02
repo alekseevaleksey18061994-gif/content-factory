@@ -3919,11 +3919,18 @@ async function generateNewsCover(payload) {
     throw new Error("Генерация обложек отключена");
   }
 
-  const channelName = String(currentWorkspace().name || "News Factory");
+  const workspace = currentWorkspace();
+  const channelName = String(workspace.name || "News Factory");
+  const channelId = resolveChannelId(workspace);
+  const channelEditorialFocus = channelFocus(channelId);
+  const channelContentType = channelStrategy(channelId).type;
   const prompt = [
     "Create a premium editorial news image for the Telegram channel «" + channelName + "».",
+    "Channel content type: " + String(channelContentType || "news") + ".",
+    channelEditorialFocus ? ("Channel editorial focus: " + channelEditorialFocus) : "",
     "Topic: " + String(payload.title || "AI technology news"),
     "Context: " + String(payload.text || "").slice(0, 1800),
+    payload.sourceName ? ("Source context label: " + String(payload.sourceName).slice(0, 180)) : "",
     "Visual recipe: " + visualRecipeFor(payload, payload.visualIndex || 0),
     "Make it look like a real photograph someone could plausibly capture, not a movie poster and not generic AI art.",
     "Use natural or practical lighting, realistic color balance, imperfect real-world textures, believable materials, subtle sensor/film texture where appropriate, and slightly imperfect asymmetry.",
@@ -3933,7 +3940,7 @@ async function generateNewsCover(payload) {
     "No text, no captions, no watermarks, no fake UI, no invented logos, no random letters.",
     "If a real company/product is mentioned, do not invent a different product design or fabricated branding.",
     "Landscape 3:2 composition suitable for Telegram and VK. Keep important faces/products inside a safe central area for mobile crops."
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   const candidates = [OPENAI_IMAGE_MODEL, "gpt-image-2"].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
   let lastError = "";
@@ -12774,82 +12781,163 @@ const server = http.createServer(async function(req, res) {
       const body = await readJsonObject(req);
       const item = (state.queue || []).find(function(x){ return x.id === body.id; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
-      if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — улучшать фото не требуется" });
+      if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — отдельная обложка не требуется" });
 
-      const sourceImage = String(item.originalImageUrl || item.imageUrl || "").trim();
+      const knownBrokenSource = Boolean(item.sourceImageUnavailableAt);
+      const sourceImage = knownBrokenSource
+        ? ""
+        : String(item.originalImageUrl || item.enhancedImageUrl || item.imageUrl || "").trim();
+      const license = sourceMediaLicense(item);
+
+      const persistMediaMetadata = async function(patch) {
+        if (!(db && dbReady && item.newsId)) return;
+        try {
+          const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 AND workspace_id=$2 LIMIT 1", [item.newsId, currentWorkspaceId()]);
+          if (!row.rowCount) return;
+          const metadata = Object.assign({}, row.rows[0].metadata || {}, patch || {});
+          await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, JSON.stringify(metadata), currentWorkspaceId()]);
+        } catch (error) {
+          console.warn("QUEUE_COVER_METADATA_SYNC_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), id: item.newsId || item.id, error: String(error && error.message || error).slice(0, 220) }));
+        }
+      };
+
+      const generateFreshCover = async function(reason, decision) {
+        const generated = await generateNewsCover({
+          id: item.newsId || item.id,
+          newsId: item.newsId || item.id,
+          title: item.title,
+          text: item.text,
+          sourceName: item.sourceName || "",
+          costPurpose: "image_generation"
+        });
+        const generatedAt = new Date().toISOString();
+        item.originalImageUrl = item.originalImageUrl || sourceImage || "";
+        item.imageUrl = "";
+        item.enhancedImageUrl = "";
+        item.generatedImageUrl = generated.url;
+        item.mediaType = "generated";
+        item.mediaStatus = "generated";
+        item.mediaPriority = 2;
+        item.mediaLicense = license;
+        item.mediaOrigin = "ai_generated";
+        item.copyrightSafe = true;
+        item.copyrightMediaDecision = decision || "manual_cover_generated";
+        item.generatedBy = generated.model;
+        item.generatedAt = generatedAt;
+        item.coverFallbackReason = String(reason || "").slice(0, 500);
+        item.canEnhance = true;
+
+        await persistMediaMetadata({
+          originalImageUrl: item.originalImageUrl || "",
+          imageUrl: "",
+          enhancedImageUrl: "",
+          generatedImageUrl: generated.url,
+          mediaType: "generated",
+          mediaStatus: "generated",
+          mediaPriority: 2,
+          mediaLicense: license,
+          mediaOrigin: "ai_generated",
+          copyrightSafe: true,
+          copyrightPolicyVersion: "v2",
+          copyrightMediaDecision: item.copyrightMediaDecision,
+          generatedBy: generated.model,
+          generatedAt: generatedAt,
+          coverFallbackReason: item.coverFallbackReason,
+          sourceImageUnavailableAt: item.sourceImageUnavailableAt || null,
+          sourceImageError: item.sourceImageError || ""
+        });
+
+        saveState();
+        return sendJson(res, 200, {
+          ok: true,
+          mode: "generated",
+          imageUrl: generated.url,
+          model: generated.model,
+          fallbackReason: item.coverFallbackReason,
+          copyrightSafe: true
+        });
+      };
 
       try {
-        const license = sourceMediaLicense(item);
+        // If third-party reuse is not allowed, never touch the source pixels: create
+        // an independent cover from the story facts and the current channel DNA.
         if (COPYRIGHT_SAFE_MODE && !mediaLicenseAllowsReuse(license)) {
-          const generated = await generateNewsCover({
+          return await generateFreshCover("Исходное медиа нельзя переиспользовать по политике канала", "third_party_media_blocked");
+        }
+
+        // No source photo (or it already failed to download on a previous click):
+        // the button becomes "generate a new cover", not an error.
+        if (!sourceImage) {
+          return await generateFreshCover(
+            knownBrokenSource ? (item.sourceImageError || "Исходное фото недоступно") : "У новости нет доступного исходного фото",
+            knownBrokenSource ? "source_image_unavailable_generated" : "no_source_image_generated"
+          );
+        }
+
+        try {
+          const enhanced = await enhanceNewsImage({
             id: item.newsId || item.id,
             title: item.title,
             text: item.text,
-            sourceName: item.sourceName || ""
+            imageUrl: sourceImage
           });
-          item.originalImageUrl = item.originalImageUrl || sourceImage || "";
-          item.imageUrl = "";
-          item.videoUrl = "";
-          item.generatedImageUrl = generated.url;
-          item.mediaType = "generated";
-          item.mediaStatus = "generated";
+          const enhancedAt = new Date().toISOString();
+          item.originalImageUrl = item.originalImageUrl || sourceImage;
+          // IMPORTANT: publishing reads imageUrl. The previous code stored the
+          // improved file only in generatedImageUrl, so preview/publishing kept using
+          // the old source photo and the button appeared to do nothing.
+          item.imageUrl = enhanced.url;
+          item.enhancedImageUrl = enhanced.url;
+          item.generatedImageUrl = "";
+          item.mediaType = "enhanced";
+          item.mediaStatus = "enhanced";
           item.mediaPriority = 2;
           item.mediaLicense = license;
-          item.mediaOrigin = "ai_generated";
-          item.copyrightSafe = true;
-          item.copyrightMediaDecision = "third_party_media_blocked";
-          item.generatedBy = generated.model;
-          item.generatedAt = new Date().toISOString();
-          item.canEnhance = false;
+          item.mediaOrigin = "licensed_derivative";
+          item.copyrightSafe = COPYRIGHT_SAFE_MODE;
+          item.enhancedBy = enhanced.model;
+          item.enhancedAt = enhancedAt;
+          item.sourceImageUnavailableAt = "";
+          item.sourceImageError = "";
+          item.coverFallbackReason = "";
+          item.canEnhance = true;
+
+          await persistMediaMetadata({
+            originalImageUrl: item.originalImageUrl || sourceImage,
+            imageUrl: enhanced.url,
+            enhancedImageUrl: enhanced.url,
+            generatedImageUrl: "",
+            mediaType: "enhanced",
+            mediaStatus: "enhanced",
+            mediaPriority: 2,
+            mediaLicense: license,
+            mediaOrigin: "licensed_derivative",
+            copyrightSafe: COPYRIGHT_SAFE_MODE,
+            copyrightPolicyVersion: "v2",
+            enhancedBy: enhanced.model,
+            enhancedAt: enhancedAt,
+            sourceImageUnavailableAt: null,
+            sourceImageError: "",
+            coverFallbackReason: ""
+          });
+
           saveState();
-          return sendJson(res, 200, { ok: true, imageUrl: generated.url, model: generated.model, copyrightSafe: true });
+          return sendJson(res, 200, { ok: true, mode: "enhanced", imageUrl: enhanced.url, model: enhanced.model });
+        } catch (sourceError) {
+          // 404/403/expired Telegram CDN links and malformed source images are common.
+          // They must never dead-end the button: remember the failure and generate a
+          // fresh cover from the news text instead.
+          item.sourceImageUnavailableAt = new Date().toISOString();
+          item.sourceImageError = String(sourceError && sourceError.message || sourceError).slice(0, 500);
+          console.warn("QUEUE_COVER_SOURCE_FALLBACK " + JSON.stringify({
+            workspace: currentWorkspaceId(),
+            id: item.newsId || item.id,
+            error: item.sourceImageError
+          }));
+          return await generateFreshCover(item.sourceImageError, "source_image_unavailable_generated");
         }
-
-        if (!sourceImage) return sendJson(res, 400, { ok: false, error: "У новости нет найденного фото для улучшения" });
-        const enhanced = await enhanceNewsImage({
-          id: item.newsId || item.id,
-          title: item.title,
-          text: item.text,
-          imageUrl: sourceImage
-        });
-        item.originalImageUrl = sourceImage;
-        item.imageUrl = sourceImage;
-        item.generatedImageUrl = enhanced.url;
-        item.mediaType = "enhanced";
-        item.mediaStatus = "enhanced";
-        item.mediaPriority = 2;
-        item.mediaLicense = license;
-        item.mediaOrigin = "licensed_derivative";
-        item.copyrightSafe = COPYRIGHT_SAFE_MODE;
-        item.enhancedBy = enhanced.model;
-        item.enhancedAt = new Date().toISOString();
-        item.canEnhance = true;
-
-        if (db && dbReady && item.newsId) {
-          const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 AND workspace_id=$2 LIMIT 1", [item.newsId, currentWorkspaceId()]);
-          if (row.rowCount) {
-            const metadata = Object.assign({}, row.rows[0].metadata || {}, {
-              originalImageUrl: sourceImage,
-              imageUrl: sourceImage,
-              generatedImageUrl: enhanced.url,
-              mediaType: "enhanced",
-              mediaStatus: "enhanced",
-              mediaPriority: 2,
-              mediaLicense: license,
-              mediaOrigin: "licensed_derivative",
-              copyrightSafe: COPYRIGHT_SAFE_MODE,
-              copyrightPolicyVersion: "v1",
-              enhancedBy: enhanced.model,
-              enhancedAt: item.enhancedAt
-            });
-            await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, JSON.stringify(metadata), currentWorkspaceId()]);
-          }
-        }
-
-        saveState();
-        return sendJson(res, 200, { ok: true, imageUrl: enhanced.url, model: enhanced.model });
       } catch (error) {
-        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось улучшить фото" });
+        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось подготовить обложку" });
       }
     }
 
