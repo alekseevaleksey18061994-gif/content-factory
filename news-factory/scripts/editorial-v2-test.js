@@ -157,8 +157,18 @@ await test("pipeline: reject → hold without extra rewrites", async function() 
   assert.equal(mock.calls.openai.filter(function(c){ return c.role === "writer"; }).length, 1);
 });
 
-await test("pipeline: Claude configured but failing → hold (no silent single check)", async function() {
+await test("pipeline: Claude outage → approved in explicit degraded mode", async function() {
   const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": PASS, "anthropic:checker": new Error("overloaded") });
+  const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude });
+  const out = await p.run("auto", REQUEST);
+  assert.equal(out.status, "approved");
+  assert.equal(out.verdict, "pass");
+  assert.equal(out.degraded, true);
+  assert.deepEqual(out.failedProviders, ["anthropic"]);
+});
+
+await test("pipeline: primary OpenAI checker outage → hold unavailable", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": new Error("openai down"), "anthropic:checker": PASS });
   const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude });
   const out = await p.run("auto", REQUEST);
   assert.equal(out.status, "hold");

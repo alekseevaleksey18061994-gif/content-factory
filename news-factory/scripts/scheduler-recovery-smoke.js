@@ -11,7 +11,10 @@ const fail = (msg) => { console.error(msg); process.exit(1); };
   "SCHEDULER_CATCHUP_RESULT",
   "lastAttemptedTickKey",
   "lastTickCompletedAt",
-  "return catchUpCurrentRegularSlotAllWorkspaces()"
+  "return catchUpCurrentRegularSlotAllWorkspaces()",
+  "empty_slot_retry_pending",
+  "slotHasSuccessfulPublication(slotKey)",
+  "DYNAMIC_SLOT_END_HOUR - DYNAMIC_SLOT_START_HOUR + 1"
 ].forEach((marker) => {
   if (!source.includes(marker)) fail("Missing scheduler recovery marker: " + marker);
 });
@@ -19,6 +22,11 @@ const fail = (msg) => { console.error(msg); process.exit(1); };
 const completedPos = source.indexOf("state.dynamicScheduler.lastTickKey = key;");
 const actionPos = source.indexOf("const result = action === \"prepare\"");
 if (completedPos < actionPos) fail("Scheduler marks tick complete before action finishes");
+
+
+if (source.includes('schedulerState.lastPublishedSlot = slotKey;\n    saveState();\n    return { ok: true, skipped: "empty_slot"')) {
+  fail("Empty slot is still marked as successfully published");
+}
 
 const syntax = spawnSync(process.execPath, ["--check", serverUrl.pathname], { encoding: "utf8" });
 if (syntax.status !== 0) fail(syntax.stderr || syntax.stdout || "server.js syntax check failed");

@@ -125,8 +125,10 @@ const DYNAMIC_SLOT_END_HOUR = 23;
 const DYNAMIC_SLOT_PREP_MINUTE = 45;
 const SCHEDULER_SLOT_WINDOW_MINUTES = Math.max(1, Math.min(14, Number(process.env.SCHEDULER_SLOT_WINDOW_MINUTES || 10)));
 const DYNAMIC_SLOT_MAX_AGE_HOURS = Math.max(4, Math.min(48, Number(process.env.DYNAMIC_SLOT_MAX_AGE_HOURS || 24)));
-const DYNAMIC_DAILY_TARGET = 10;
-const DYNAMIC_DAILY_MAX = 12;
+// Regular channel promise: one regular publication slot every hour from 08:00
+// through 23:00 Moscow. The old 12-post cap silently skipped evening slots.
+const DYNAMIC_DAILY_TARGET = DYNAMIC_SLOT_END_HOUR - DYNAMIC_SLOT_START_HOUR + 1;
+const DYNAMIC_DAILY_MAX = Math.max(DYNAMIC_DAILY_TARGET, Math.min(24, Number(process.env.DYNAMIC_DAILY_MAX || DYNAMIC_DAILY_TARGET)));
 const MAX_ITEMS_PER_RUN = Math.max(1, Math.min(10, Number(process.env.MAX_ITEMS_PER_RUN || 5)));
 const ARTICLE_MAX_AGE_HOURS = Math.max(6, Math.min(168, Number(process.env.ARTICLE_MAX_AGE_HOURS || 24)));
 const QUEUE_MAX_AGE_HOURS = Math.max(2, Math.min(72, Number(process.env.QUEUE_MAX_AGE_HOURS || 12)));
@@ -5413,6 +5415,19 @@ async function prepareRussianAiSlot(time) {
   return { ok: true, slot: slotTime, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
 }
 
+function slotHasSuccessfulPublication(slotKey) {
+  return (state.history || []).some(function(item){
+    if (!item || String(item.scheduledSlot || "") !== String(slotKey || "")) return false;
+    return Boolean(item.messageId || item.telegramMessageId || item.vkPostId || item.publishedAt);
+  });
+}
+
+function emptySlotCollectorAllowed(schedulerState, slotKey) {
+  const same = String(schedulerState.lastEmptySlotKey || "") === String(slotKey || "");
+  const at = new Date(schedulerState.lastEmptySlotAttemptAt || 0).getTime();
+  return !same || !Number.isFinite(at) || Date.now() - at >= 2 * 60 * 1000;
+}
+
 async function publishDynamicSlot(kind) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
   const now = new Date();
@@ -5435,7 +5450,11 @@ async function publishDynamicSlot(kind) {
     : (publishKind === "russian-ai" ? state.russianAiScheduler : state.dynamicScheduler);
 
   if (schedulerState.lastPublishedSlot === slotKey) {
-    return { ok: true, skipped: "already_done" };
+    if (slotHasSuccessfulPublication(slotKey)) return { ok: true, skipped: "already_done" };
+    // Older builds marked an empty slot as completed. Clear that stale marker so
+    // catch-up can recover the missing publication.
+    schedulerState.lastPublishedSlot = "";
+    saveState();
   }
   if (publishKind === "blogger") {
     if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
@@ -5451,36 +5470,45 @@ async function publishDynamicSlot(kind) {
   if (!queueId) {
     const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
     let lastChanceItem = dynamicAssignBest(day, time, laneKind);
-    if (!lastChanceItem && !isCollectorRunning()) {
+    if (!lastChanceItem && !isCollectorRunning() && emptySlotCollectorAllowed(schedulerState, slotKey)) {
+      schedulerState.lastEmptySlotKey = slotKey;
+      schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
+      saveState();
       const lastChanceTrigger = publishKind === "blogger"
         ? "blogger-slot-last-chance"
         : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
       await collectOnce(lastChanceTrigger);
+      // A secondary-checker outage may have left usable posts on hold. Re-run
+      // those through degraded-safe QC before declaring the slot empty.
+      await retryUnavailableEditorialQueueItems().catch(function(){});
       lastChanceItem = dynamicAssignBest(day, time, laneKind);
     }
     queueId = lastChanceItem && lastChanceItem.id || "";
   }
 
   if (!queueId) {
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = schedulerState.lastEmptySlotAttemptAt || new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "empty_slot" };
+    return { ok: true, skipped: "empty_slot_retry_pending", slot: time };
   }
 
   const item = (state.queue || []).find(function(q){ return q && q.id === queueId; });
   if (!item) {
     delete schedule.assignments[day][time];
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "missing_item" };
+    return { ok: true, skipped: "missing_item_retry_pending" };
   }
 
   if (dynamicItemAgeMs(item) > DYNAMIC_SLOT_MAX_AGE_HOURS * 60 * 60 * 1000) {
     delete schedule.assignments[day][time];
     state.queue = (state.queue || []).filter(function(q){ return q.id !== queueId; });
-    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastEmptySlotKey = slotKey;
+    schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
     saveState();
-    return { ok: true, skipped: "stale" };
+    return { ok: true, skipped: "stale_retry_pending" };
   }
 
   if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) {
@@ -5611,8 +5639,12 @@ async function publishDynamicSlot(kind) {
   }
 
   delete schedule.assignments[day][time];
-  schedulerState.lastPublishedSlot = slotKey;
-  schedulerState.lastPublishedAt = publishedAt;
+  if (result.telegramPublished || result.vkPublished) {
+    schedulerState.lastPublishedSlot = slotKey;
+    schedulerState.lastPublishedAt = publishedAt;
+    schedulerState.lastEmptySlotKey = "";
+    schedulerState.lastEmptySlotAttemptAt = "";
+  }
 
   const mediaFailed = result.vkStatus === "media_failed";
   if (!mediaFailed && (!targets.telegram || item.telegramPublished) && (!targets.vk || item.vkPublished)) {
@@ -5750,7 +5782,9 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
   const nowMinutes = moscowMinutes(now);
   const hour = Math.floor(nowMinutes / 60);
   const minute = nowMinutes % 60;
-  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 29) return;
+  // Give a slow collector/checker up to 44 minutes to recover the hourly post.
+  // 20:45 is already the preparation window for 21:00, so stop before it.
+  if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 44) return;
 
   const day = moscowDateKey(now);
   const time = String(hour).padStart(2, "0") + ":00";
@@ -5762,13 +5796,15 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
     try {
       await workspaceContext.run({ workspaceId: ws.id }, async function() {
         state.dynamicScheduler = state.dynamicScheduler || {};
-        if (state.dynamicScheduler.lastPublishedSlot === slotKey) return;
+        if (slotHasSuccessfulPublication(slotKey)) {
+          state.dynamicScheduler.lastPublishedSlot = slotKey;
+          return;
+        }
         if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) return;
 
         const schedule = ensureScheduleShape(state);
-        const assignment = schedule.assignments[day] && schedule.assignments[day][time];
-        if (!assignment) return;
         if (schedule.suppressed[day] && schedule.suppressed[day][time]) return;
+        const assignment = schedule.assignments[day] && schedule.assignments[day][time] || "";
 
         console.warn("SCHEDULER_CATCHUP_START " + JSON.stringify({ workspace: ws.id, slot: time, queueId: assignment, minute: minute }));
         const result = await publishDynamicSlot();
@@ -8690,6 +8726,8 @@ async function runEditorialV2(sources, options) {
     rounds: outcome.rounds || 0,
     writerModel: outcome.writerModel || "",
     checkers: checkerModels,
+    degradedQc: Boolean(outcome.degraded),
+    failedProviders: outcome.failedProviders || [],
     errors: (outcome.errors || []).slice(0, 12),
     log: outcome.log || [],
     checkedAt: new Date().toISOString()
@@ -8706,6 +8744,8 @@ async function runEditorialV2(sources, options) {
     contentBucket: meta.contentBucket || undefined,
     rounds: meta.rounds,
     checkers: checkerModels,
+    degradedQc: Boolean(outcome.degraded),
+    failedProviders: outcome.failedProviders || [],
     errors: (outcome.errors || []).length,
     skipReason: meta.skipReason ? String(meta.skipReason).slice(0, 120) : undefined,
     checkerErrors: (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + ": " + String(c.error || "").slice(0, 160); }),
@@ -8721,9 +8761,10 @@ async function runEditorialV2(sources, options) {
     issues.unshift("Проверка недоступна: " + (outcome.checkers || []).filter(function(c){ return c.failed; }).map(function(c){ return c.provider + " — " + String(c.error || "").slice(0, 120); }).join("; "));
   }
   const approved = outcome.status === "approved";
+  const degradedNote = outcome.degraded ? " · резервный режим: недоступен " + (outcome.failedProviders || []).join(", ") : "";
   const decision = approved
-    ? "Пост прошёл проверку: " + checkerModels.join(", ") + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
-    : "Пост не прошёл проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "одна из нейросетей-проверщиков недоступна", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
+    ? "Пост прошёл проверку: " + checkerModels.join(", ") + degradedNote + (outcome.rounds ? " (исправлений: " + outcome.rounds + ")" : "")
+    : "Пост не прошёл проверку: " + ({ reject: "проверка отклонила", fix_exhausted: "ошибки остались после исправлений", unavailable: "основной проверщик недоступен", copyright_overlap: "дословное совпадение с источником" }[outcome.verdict] || outcome.verdict);
 
   return {
     skip: false,
@@ -8757,6 +8798,262 @@ async function runEditorialV2(sources, options) {
       model: checkerModels.join(", ")
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Editorial QA: production dry-run for all channel profiles. It never publishes.
+// The run is asynchronous because a full network audit can take several minutes.
+// ---------------------------------------------------------------------------
+
+let editorialQaState = {
+  status: "idle",
+  startedAt: "",
+  finishedAt: "",
+  progress: { done: 0, total: 0 },
+  summary: null,
+  channels: [],
+  error: ""
+};
+
+function qaStyleCheck(channelId, title, body) {
+  const strategy = channelStrategy(channelId);
+  const text = (String(title || "") + " " + String(body || "")).toLowerCase();
+  const formal = [
+    /согласно пресс-релизу/g,
+    /в пресс-службе (?:сообщили|заявили)/g,
+    /компания сообщила о том, что/g,
+    /как отмечается в сообщении/g,
+    /по данным пресс-службы/g
+  ];
+  let formalHits = 0;
+  formal.forEach(function(re){ formalHits += (text.match(re) || []).length; });
+
+  if (strategy.type === "blogger") {
+    return {
+      pass: formalHits === 0,
+      note: formalHits ? "Есть канцелярская/пресс-релизная подача" : "Блогерский профиль без пресс-релизных маркеров",
+      formalHits
+    };
+  }
+  if (strategy.type === "trends") {
+    return {
+      pass: formalHits <= 1,
+      note: formalHits > 1 ? "Слишком официальная подача для трендового канала" : "Трендовый профиль без перегруза канцеляритом",
+      formalHits
+    };
+  }
+  return {
+    pass: formalHits <= 2,
+    note: formalHits > 2 ? "Слишком много пресс-релизных формулировок" : "Стиль соответствует новостному профилю",
+    formalHits
+  };
+}
+
+function publicationCoverageSnapshot() {
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const hour = Math.floor(nowMinutes / 60);
+  const day = moscowDateKey(now);
+  const time = String(hour).padStart(2, "0") + ":00";
+  const slotKey = day + " " + time;
+  const channels = workspaceStore.workspaces.map(function(ws){
+    const history = ws && ws.state && Array.isArray(ws.state.history) ? ws.state.history : [];
+    const hit = history.find(function(item){
+      return item && String(item.scheduledSlot || "") === slotKey && Boolean(item.messageId || item.telegramMessageId || item.vkPostId || item.publishedAt);
+    });
+    const assignment = ws && ws.state && ws.state.schedule && ws.state.schedule.assignments &&
+      ws.state.schedule.assignments[day] && ws.state.schedule.assignments[day][time] || "";
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      channelId: resolveChannelId(ws),
+      telegram: ws.telegramPublicUsername || String(ws.telegramChannel || "").replace(/^@/, ""),
+      published: Boolean(hit),
+      title: hit && hit.title || "",
+      publishedAt: hit && hit.publishedAt || "",
+      queueId: assignment || ""
+    };
+  });
+  return {
+    slot: slotKey,
+    published: channels.filter(function(x){ return x.published; }).length,
+    total: channels.length,
+    missing: channels.filter(function(x){ return !x.published; }).map(function(x){ return x.workspaceId; }),
+    channels
+  };
+}
+
+function qaSourceClassCounts() {
+  const counts = { OFFICIAL:0, MEDIA:0, CREATOR:0, COMMUNITY:0, SOCIAL:0 };
+  (state.sources || []).forEach(function(source){
+    if (!source || !source.enabled) return;
+    const cls = source.sourceClass || sourceClassFor(source);
+    if (Object.prototype.hasOwnProperty.call(counts, cls)) counts[cls] += 1;
+  });
+  return counts;
+}
+
+function qaRecentMix(channelId) {
+  const strategy = channelStrategy(channelId);
+  const mix = strategy.mix || {};
+  const recent = (state.history || []).filter(function(item){
+    return item && !item.isDigest && item.publicationOrigin !== "digest";
+  }).slice(0, 24);
+  const counts = {};
+  Object.keys(mix).forEach(function(k){ counts[k] = 0; });
+  recent.forEach(function(item){
+    const bucket = item.contentBucket || item.editorialV2 && item.editorialV2.contentBucket || "";
+    if (Object.prototype.hasOwnProperty.call(counts, bucket)) counts[bucket] += 1;
+  });
+  return { sampleSize: recent.length, counts, target: mix };
+}
+
+function qaScoreChecks(checks) {
+  const required = checks.filter(function(x){ return x.required !== false; });
+  const passed = required.filter(function(x){ return x.pass === true; }).length;
+  const percent = required.length ? Math.round(passed / required.length * 100) : 0;
+  return { passed, total: required.length, percent };
+}
+
+async function runEditorialQaForWorkspace(ws) {
+  return workspaceContext.run({ workspaceId: ws.id }, async function(){
+    const channelId = resolveChannelId(ws);
+    const strategy = channelStrategy(channelId);
+    const sourceClasses = qaSourceClassCounts();
+    const recentMix = qaRecentMix(channelId);
+    const sourceClassVariety = Object.values(sourceClasses).filter(function(n){ return n > 0; }).length;
+
+    const candidates = (state.queue || []).filter(function(item){
+      return item && String(item.sourceOriginalText || "").trim() && !item.telegramPublished && item.status !== "media_failed";
+    }).sort(function(a,b){ return dynamicItemScore(b) - dynamicItemScore(a); });
+    const candidate = candidates[0] || null;
+
+    const checks = [
+      { key:"profile", label:"Channel DNA", pass:Boolean(channelId && Object.keys(strategy.mix || {}).length), note:channelId + " · " + strategy.type },
+      { key:"sources", label:"Классы источников", pass:sourceClassVariety >= 2, note:sourceClassVariety + " активных классов" },
+      { key:"candidate", label:"Контрольный материал", pass:Boolean(candidate), note:candidate ? String(candidate.sourceOriginalTitle || candidate.title || "").slice(0,120) : "Нет подходящего материала в очереди" }
+    ];
+
+    let sample = null;
+    let degraded = false;
+    let checkerError = "";
+    if (candidate) {
+      try {
+        const result = await runEditorialV2([{
+          name: String(candidate.sourceName || "Источник"),
+          url: String(candidate.sourceUrl || ""),
+          date: String(candidate.articlePublishedAt || candidate.createdAt || ""),
+          role: sourceRoleLabel(candidate.sourceRole || sourceEditorialRole(candidate)),
+          title: String(candidate.sourceOriginalTitle || candidate.title || ""),
+          text: String(candidate.sourceOriginalText || candidate.text || "").slice(0,7000),
+          photos: [candidate.originalImageUrl, candidate.imageUrl, candidate.generatedImageUrl].filter(Boolean).slice(0,3)
+        }], {
+          hasPhoto: Boolean(candidate.videoUrl || candidate.imageUrl || candidate.generatedImageUrl),
+          newsId: "qa_" + ws.id + "_" + Date.now()
+        });
+
+        const meta = result.meta || {};
+        const bucketKeys = Object.keys(strategy.mix || {});
+        const signals = meta.channelSignals || {};
+        const allSignals = ["virality","utility","discussion","visual","wow","local","deal"].every(function(k){ return Number.isFinite(Number(signals[k])); });
+        const style = qaStyleCheck(channelId, result.rewrite && result.rewrite.title, result.rewrite && result.rewrite.text);
+        degraded = Boolean(meta.degradedQc);
+        checkerError = degraded ? String((meta.failedProviders || []).join(", ")) : "";
+
+        checks.push(
+          { key:"bucket", label:"Тип контента", pass:bucketKeys.includes(String(meta.contentBucket || "")), note:String(meta.contentBucket || "не определён") },
+          { key:"signals", label:"Channel Score", pass:allSignals, note:allSignals ? "7/7 сигналов" : "Не все сигналы заполнены" },
+          { key:"style", label:"Стиль канала", pass:style.pass, note:style.note },
+          { key:"qc", label:"Фактчек", pass:meta.verdict === "pass", note:meta.verdict === "pass" ? (degraded ? "PASS · резервный режим" : "PASS") : String(meta.verdict || "нет результата") }
+        );
+
+        sample = {
+          sourceTitle: String(candidate.sourceOriginalTitle || candidate.title || "").slice(0,180),
+          title: String(result.rewrite && result.rewrite.title || "").slice(0,180),
+          text: String(result.rewrite && result.rewrite.text || "").slice(0,700),
+          contentBucket: meta.contentBucket || "",
+          channelSignals: signals,
+          verdict: meta.verdict || "",
+          degradedQc: degraded,
+          failedProviders: meta.failedProviders || [],
+          checkerModels: meta.checkers || []
+        };
+      } catch (error) {
+        checks.push({ key:"generation", label:"Контрольная генерация", pass:false, note:String(error && error.message || error).slice(0,220) });
+      }
+    }
+
+    const scored = qaScoreChecks(checks);
+    let status = scored.percent >= 85 ? "pass" : (scored.percent >= 60 ? "warn" : "fail");
+    if (degraded && status === "pass") status = "warn";
+
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      channelId,
+      type: strategy.type,
+      status,
+      percent: scored.percent,
+      checks,
+      sourceClasses,
+      recentMix,
+      sample,
+      degradedQc: degraded,
+      checkerError
+    };
+  });
+}
+
+async function runEditorialQaNetwork() {
+  if (editorialQaState.status === "running") return editorialQaState;
+  editorialQaState = {
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    progress: { done: 0, total: workspaceStore.workspaces.length },
+    summary: null,
+    channels: [],
+    error: ""
+  };
+
+  try {
+    for (const ws of workspaceStore.workspaces) {
+      let result;
+      try {
+        result = await runEditorialQaForWorkspace(ws);
+      } catch (error) {
+        result = {
+          workspaceId: ws.id,
+          name: ws.name,
+          channelId: resolveChannelId(ws),
+          status: "fail",
+          percent: 0,
+          checks: [{ key:"runtime", label:"Запуск QA", pass:false, note:String(error && error.message || error).slice(0,220) }],
+          sourceClasses: {},
+          recentMix: {},
+          sample: null
+        };
+      }
+      editorialQaState.channels.push(result);
+      editorialQaState.progress.done += 1;
+    }
+
+    const channels = editorialQaState.channels;
+    editorialQaState.summary = {
+      pass: channels.filter(function(x){ return x.status === "pass"; }).length,
+      warn: channels.filter(function(x){ return x.status === "warn"; }).length,
+      fail: channels.filter(function(x){ return x.status === "fail"; }).length,
+      averagePercent: channels.length ? Math.round(channels.reduce(function(sum,x){ return sum + Number(x.percent || 0); },0) / channels.length) : 0,
+      degraded: channels.filter(function(x){ return x.degradedQc; }).length
+    };
+    editorialQaState.status = "done";
+    editorialQaState.finishedAt = new Date().toISOString();
+  } catch (error) {
+    editorialQaState.status = "error";
+    editorialQaState.error = String(error && error.message || error);
+    editorialQaState.finishedAt = new Date().toISOString();
+  }
+  return editorialQaState;
 }
 
 // ---------------------------------------------------------------------------
@@ -8973,11 +9270,19 @@ setInterval(function() {
 
 async function retryUnavailableEditorialQueueItems() {
   if (costEconomyMode()) return { checked: 0, repaired: 0, held: 0, skipped: 0, economyMode: true };
-  if (!editorialV2Active() || !ANTHROPIC_API_KEY) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
-  const probe = await anthropicEditorialProbe(false);
-  if (!probe.ok) return { checked: 0, repaired: 0, held: 0, skipped: 0, error: probe.error || "Anthropic checker unavailable" };
+  if (!editorialV2Active()) return { checked: 0, repaired: 0, held: 0, skipped: 0 };
 
-  const marker = "structured-json-v1";
+  // Retry even when Anthropic is temporarily unavailable. Editorial v2 now
+  // operates in explicit degraded mode with OpenAI as the primary checker,
+  // instead of leaving the whole queue on hold and causing empty slots.
+  let secondaryChecker = { ok: false, error: "ANTHROPIC_API_KEY не задан" };
+  if (ANTHROPIC_API_KEY) {
+    secondaryChecker = await anthropicEditorialProbe(false).catch(function(error){
+      return { ok: false, error: String(error && error.message || error) };
+    });
+  }
+
+  const marker = "structured-json-v2-degraded-safe";
   const candidates = (state.queue || []).filter(function(item) {
     if (!item || !item.editorialV2) return false;
     if (item.editorialV2RetryVersion === marker) return false;
@@ -9069,7 +9374,14 @@ async function retryUnavailableEditorialQueueItems() {
     }
   }
 
-  return { checked: candidates.length, repaired, held, skipped };
+  return {
+    checked: candidates.length,
+    repaired,
+    held,
+    skipped,
+    degradedSecondaryChecker: !secondaryChecker.ok,
+    secondaryCheckerError: secondaryChecker.ok ? "" : String(secondaryChecker.error || "").slice(0, 240)
+  };
 }
 
 // Re-runs every not-yet-published queue item through the current editorial v2 rules
@@ -10476,6 +10788,29 @@ const server = http.createServer(async function(req, res) {
       const result = await rebuildQueueWithEditorialV2();
       return sendJson(res, result.ok ? 200 : 409, result);
     }
+    if (req.method === "GET" && p === "/api/editorial/qa") {
+      return sendJson(res, 200, {
+        ok: true,
+        qa: editorialQaState,
+        publicationCoverage: publicationCoverageSnapshot()
+      });
+    }
+    if (req.method === "POST" && p === "/api/editorial/qa/run") {
+      if (editorialQaState.status === "running") {
+        return sendJson(res, 202, { ok: true, started: false, qa: editorialQaState });
+      }
+      runEditorialQaNetwork().catch(function(error){
+        editorialQaState.status = "error";
+        editorialQaState.error = String(error && error.message || error);
+        editorialQaState.finishedAt = new Date().toISOString();
+      });
+      return sendJson(res, 202, { ok: true, started: true });
+    }
+    if (req.method === "POST" && p === "/api/editorial/repair-current-slot") {
+      await catchUpCurrentRegularSlotAllWorkspaces();
+      return sendJson(res, 200, { ok: true, publicationCoverage: publicationCoverageSnapshot() });
+    }
+
     if (req.method === "GET" && p === "/api/editorial/status") {
       const recent = (state.queue || []).concat(state.history || []).filter(function(item){ return item && item.editorialV2; }).slice(0, 20);
       const anthropicHealth = ANTHROPIC_API_KEY ? await anthropicEditorialProbe(false) : { ok: false, error: "ANTHROPIC_API_KEY не задан" };
