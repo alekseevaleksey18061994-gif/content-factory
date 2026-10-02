@@ -615,7 +615,11 @@ function normalizeWorkspaceState(saved) {
 }
 function freshWorkspaceState() {
   const fresh = structuredClone(defaultState);
-  fresh.mode = "AUTO";
+  // Safe start: nothing is published automatically until enableAutoPublishingAfterChecks
+  // (Telegram reachable + bot can post + enough sources + profile) has passed and switched it to AUTO.
+  // A manual mode / auto-publish choice made in the admin before that clears the pending flag, so the gate never overrides it.
+  fresh.mode = "REVIEW";
+  fresh.autoGate = { pending: true, since: new Date().toISOString() };
   fresh.sources = [];
   fresh.sourceStats = {};
   fresh.queue = [];
@@ -636,6 +640,11 @@ function freshWorkspaceState() {
   return fresh;
 }
 
+// A public @username (not a numeric chat id like -1001234567890, which must never be shown as "@-100…").
+function telegramUsernameOrEmpty(value) {
+  const v = String(value || "").trim().replace(/^@/, "");
+  return /^[A-Za-z][A-Za-z0-9_]*$/.test(v) ? v : "";
+}
 function normalizeWorkspaceMeta(raw, fallbackId) {
   const id = String(raw && raw.id || fallbackId || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || DEFAULT_WORKSPACE_ID;
   const name = String(raw && raw.name || "Новый канал").trim().slice(0, 80) || "Новый канал";
@@ -643,7 +652,7 @@ function normalizeWorkspaceMeta(raw, fallbackId) {
   const initialsRaw = String(raw && raw.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3);
   const initials = initialsRaw || name.split(/\s+/).filter(Boolean).slice(0, 2).map(function(x){ return x[0] || ""; }).join("").toUpperCase().slice(0, 3) || "NF";
   const telegramChannel = String(raw && raw.telegramChannel || "").trim();
-  const telegramPublicUsername = String(raw && raw.telegramPublicUsername || telegramChannel || slug || "").replace(/^@/, "").trim();
+  const telegramPublicUsername = telegramUsernameOrEmpty(raw && raw.telegramPublicUsername) || telegramUsernameOrEmpty(telegramChannel) || telegramUsernameOrEmpty(slug);
   const avatarUrl = String(raw && raw.avatarUrl || "").trim();
   const avatarFile = String(raw && raw.avatarFile || "").trim();
   const channelIdRaw = String(raw && raw.channelId || "").trim().toLowerCase();
@@ -680,14 +689,25 @@ function currentTelegramChannel() {
 function currentTelegramPublicUsername() {
   const ws = currentWorkspace();
   return ws
-    ? String(ws.telegramPublicUsername || ws.slug || ws.telegramChannel || "").replace(/^@/, "").trim()
-    : String(TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
+    ? (telegramUsernameOrEmpty(ws.telegramPublicUsername) || telegramUsernameOrEmpty(ws.slug) || telegramUsernameOrEmpty(ws.telegramChannel))
+    : (telegramUsernameOrEmpty(TELEGRAM_PUBLIC_USERNAME) || telegramUsernameOrEmpty(CHANNEL));
 }
 function workspaceVkPublishingAllowed(ws) {
   const target = ws || currentWorkspace();
   return Boolean(target && target.id === workspaceStore.defaultWorkspaceId);
 }
 function publicWorkspaceMeta(ws) { return { id: ws.id, name: ws.name, slug: ws.slug || "", initials: ws.initials || "NF", telegramChannel: ws.telegramChannel || "", telegramPublicUsername: ws.telegramPublicUsername || "", avatarUrl: ws.avatarUrl || "", vkPublishingAllowed: workspaceVkPublishingAllowed(ws), channelId: ws.channelId || "", editorialChannelId: resolveChannelId(ws), createdAt: ws.createdAt, updatedAt: ws.updatedAt }; }
+// Two cabinets posting into one Telegram chat would publish every post twice into it.
+function telegramChatKey(raw) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  return /^-?\d+$/.test(v) ? v : v.replace(/^@/, "").toLowerCase();
+}
+function findWorkspaceByTelegramChat(raw, exceptId) {
+  const key = telegramChatKey(raw);
+  if (!key) return null;
+  return workspaceStore.workspaces.find(function(ws){ return ws && ws.id !== exceptId && telegramChatKey(ws.telegramChannel) === key; }) || null;
+}
 function normalizeTelegramChannelInput(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
@@ -2858,16 +2878,17 @@ function extractMetaImage(html, pageUrl) {
   return "";
 }
 
-// Telegram sendVideo only plays MPEG-4: a .webm is delivered as a plain "logo.webm" file
-// attachment. Short decorative clips (animated logos, backgrounds, hero loops) found on
+// Telegram sendVideo only plays MPEG-4 (.mp4 / .m4v): a .webm is delivered as a plain "logo.webm" file
+// attachment, and a QuickTime .mov is not reliably accepted, so only MPEG-4 containers pass. Short decorative clips (animated logos, backgrounds, hero loops) found on
 // article pages are not news video either, so neither is accepted as a post video.
 function isUsableNewsVideoUrl(rawUrl) {
   const value = String(rawUrl || "").trim();
   if (!value) return false;
   let pathname = value;
   try { pathname = new URL(value, PUBLIC_BASE_URL).pathname; } catch {}
-  if (!/\.(mp4|m4v|mov)$/i.test(pathname)) return false;
-  const base = decodeURIComponent(pathname.split("/").pop() || "");
+  if (!/\.(mp4|m4v)$/i.test(pathname)) return false;
+  let base = pathname.split("/").pop() || "";
+  try { base = decodeURIComponent(base); } catch { return false; }
   if (/(^|[-_.\s])(logo|logotype|loop|intro|outro|bg|background|header|hero|banner|favicon|icon|sprite|placeholder|ambient|teaser-loop)([-_.\s\d]|$)/i.test(base)) return false;
   return true;
 }
@@ -5787,7 +5808,8 @@ function parseCookies(req) {
     if (!trimmed) return;
     const i = trimmed.indexOf("=");
     if (i === -1) return;
-    out[trimmed.slice(0, i)] = decodeURIComponent(trimmed.slice(i + 1));
+    const rawValue = trimmed.slice(i + 1);
+    try { out[trimmed.slice(0, i)] = decodeURIComponent(rawValue); } catch { out[trimmed.slice(0, i)] = rawValue; }
   });
   return out;
 }
@@ -8080,7 +8102,7 @@ function editorialChannelId() {
 
 function editorialSignature(ws) {
   const target = ws || currentWorkspace();
-  const username = String(target && (target.telegramPublicUsername || target.slug) || "").replace(/^@/, "").trim();
+  const username = target ? (telegramUsernameOrEmpty(target.telegramPublicUsername) || telegramUsernameOrEmpty(target.slug)) : "";
   return username ? "@" + username : "";
 }
 
@@ -9802,7 +9824,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
-      const slug = decodeURIComponent(p.slice("/p/".length));
+      let slug = "";
+      try { slug = decodeURIComponent(p.slice("/p/".length)); } catch { return sendJson(res, 400, { ok: false, error: "invalid page path" }); }
       if (!slug || !/^[a-z0-9_-]{8,120}$/i.test(slug)) return sendJson(res, 404, { ok: false, error: "page not found" });
       const page = await getPublicPostPage(slug);
       if (!page) return sendJson(res, 404, { ok: false, error: "page not found" });
@@ -9817,7 +9840,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/media/")) {
-      const fileName = decodeURIComponent(p.slice("/media/".length));
+      let fileName = "";
+      try { fileName = decodeURIComponent(p.slice("/media/".length)); } catch { return sendJson(res, 400, { ok: false, error: "invalid media path" }); }
       if (!fileName || fileName !== path.basename(fileName)) return sendJson(res, 400, { ok: false, error: "invalid media path" });
       const filePath = path.join(MEDIA_DIR, fileName);
       try {
@@ -10050,6 +10074,8 @@ const server = http.createServer(async function(req, res) {
       if (!/^[A-Za-z0-9_-]+$/.test(slug)) slug = username;
       // id только из латиницы/цифр: normalizeWorkspaceMeta всё остальное вырезает, и id мог совпасть с существующим.
       const base = String(slug || username || name).toLowerCase().replace(/^@/, "").replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "channel";
+      const sharedChat = findWorkspaceByTelegramChat(tgChannel, "");
+      if (sharedChat) return sendJson(res, 409, { ok: false, error: "Этот Telegram-канал уже подключён к кабинету «" + sharedChat.name + "»", conflictWorkspaceId: sharedChat.id });
       let id = base, suffix = 2;
       while (getWorkspaceById(id)) id = base + "-" + suffix++;
       const workspace = normalizeWorkspaceMeta({
@@ -10069,6 +10095,11 @@ const server = http.createServer(async function(req, res) {
       const body = await readJson(req);
       const workspace = getWorkspaceById(String(body.id || currentWorkspaceId()));
       if (!workspace) return sendJson(res, 404, { ok: false, error: "Кабинет не найден" });
+      if (body.telegramChannel != null) {
+        const nextChannel = normalizeTelegramChannelInput(body.telegramChannel);
+        const sharedChat = telegramChatKey(nextChannel) !== telegramChatKey(workspace.telegramChannel) ? findWorkspaceByTelegramChat(nextChannel, workspace.id) : null;
+        if (sharedChat) return sendJson(res, 409, { ok: false, error: "Этот Telegram-канал уже подключён к кабинету «" + sharedChat.name + "»", conflictWorkspaceId: sharedChat.id });
+      }
       if (body.name != null) workspace.name = String(body.name || "").trim().slice(0, 80) || workspace.name;
       if (body.initials != null) workspace.initials = String(body.initials || "").trim().toUpperCase().replace(/[^A-ZА-Я0-9]/gi, "").slice(0, 3) || workspace.initials;
       if (body.slug != null) workspace.slug = String(body.slug || "").replace(/^@/, "").trim().slice(0, 80);
@@ -10285,6 +10316,7 @@ const server = http.createServer(async function(req, res) {
         return sendJson(res, 400, { ok: false, error: "invalid mode" });
       }
       state.mode = mode;
+      if (state.autoGate && state.autoGate.pending) state.autoGate = Object.assign({}, state.autoGate, { pending: false, manualAt: new Date().toISOString() });
       saveState();
       return sendJson(res, 200, { ok: true, mode: mode });
     }
@@ -10312,6 +10344,7 @@ const server = http.createServer(async function(req, res) {
       }
       if (Object.prototype.hasOwnProperty.call(body, "auto_publish_telegram")) {
         current.auto_publish_telegram = body.auto_publish_telegram !== false;
+        if (state.autoGate && state.autoGate.pending) state.autoGate = Object.assign({}, state.autoGate, { pending: false, manualAt: new Date().toISOString() });
       }
       if (Object.prototype.hasOwnProperty.call(body, "auto_publish_vk")) {
         current.auto_publish_vk = body.auto_publish_vk !== false;
@@ -11112,6 +11145,10 @@ function setupNewChannels() {
         const autoMigration = "v0.40.3-auto-publish";
         if (!state.migrations.includes(autoMigration) && !state.migrations.includes("v0.40.2-money-auto-publish")) {
           const auto = await enableAutoPublishingAfterChecks(ws);
+          if (auto.skippedManual) {
+            state.migrations.push(autoMigration);
+            saveState();
+          }
           if (auto.enabled) {
             state.migrations.push(autoMigration);
             saveState();
@@ -11136,6 +11173,13 @@ setInterval(setupNewChannels, 15 * 60 * 1000);
 // sources, editorial profile resolved. VK stays off (not connected).
 async function enableAutoPublishingAfterChecks(ws) {
   const checks = {};
+  // Never override an explicit manual choice: a REVIEW / PAUSED mode or auto_publish_telegram:false that is not the
+  // fresh-workspace default (autoGate.pending) was set by a person, so the gate leaves it alone.
+  const gatePending = Boolean(state.autoGate && state.autoGate.pending);
+  const currentTopic = state.topicSettings && state.topicSettings.default || {};
+  if (!gatePending && (state.mode !== "AUTO" || currentTopic.auto_publish_telegram === false)) {
+    return { enabled: false, skippedManual: true, mode: state.mode };
+  }
   checks.channelId = resolveChannelId(ws);
   checks.profile = Boolean(checks.channelId);
   checks.telegramChannel = String(ws.telegramChannel || "").trim();
@@ -11146,7 +11190,12 @@ async function enableAutoPublishingAfterChecks(ws) {
     const chat = await telegramApi("getChat", { chat_id: checks.telegramChannel });
     const me = await telegramApi("getMe", {});
     const member = await telegramApi("getChatMember", { chat_id: chat.id, user_id: me.id });
-    botCanPost = member && (member.status === "creator" || (member.status === "administrator" && member.can_post_messages !== false));
+    // Telegram omits can_post_messages for the creator only; an administrator must have it explicitly true.
+    // The news channels are broadcast channels, so any other chat type is rejected.
+    checks.chatType = String(chat.type || "");
+    botCanPost = Boolean(member) && checks.chatType === "channel" &&
+      (member.status === "creator" || (member.status === "administrator" && member.can_post_messages === true));
+    if (checks.chatType && checks.chatType !== "channel") checks.telegramError = "chat type is " + checks.chatType + ", expected channel";
     checks.chatTitle = chat.title || "";
   } catch (error) { checks.telegramError = String(error.message || error).slice(0, 160); }
   checks.botCanPost = Boolean(botCanPost);
@@ -11155,6 +11204,7 @@ async function enableAutoPublishingAfterChecks(ws) {
     state.mode = "AUTO";
     state.topicSettings = state.topicSettings || {};
     state.topicSettings.default = Object.assign({}, state.topicSettings.default || {}, { auto_publish_telegram: true, auto_publish_vk: false });
+    if (state.autoGate) state.autoGate = Object.assign({}, state.autoGate, { pending: false, enabledAt: new Date().toISOString() });
     saveState();
   }
   return Object.assign({ enabled: Boolean(ok), mode: state.mode }, checks);
@@ -11169,7 +11219,7 @@ setTimeout(function() {
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         const result = await enableAutoPublishingAfterChecks(ws);
         // Retried on the next start until all checks pass.
-        if (result.enabled) { state.migrations.push(migration); saveState(); }
+        if (result.enabled || result.skippedManual) { state.migrations.push(migration); saveState(); }
         console.log("AUTO_PUBLISH_SETUP " + JSON.stringify(Object.assign({ workspace: ws.id }, result)));
       });
     }
