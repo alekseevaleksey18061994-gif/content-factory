@@ -425,4 +425,46 @@ await test("feed explains why a news item was skipped", async function() {
   assert.equal(fn({ metadata: {} }, "queued"), null);
 });
 
+await test("source quality: stale year, prefilter parsing, auto pause", async function() {
+  const sq = await import("../lib/source-quality.js");
+  const now = new Date("2026-10-02T01:00:00Z");
+  assert.equal(sq.staleYearInTitle("IAA Mobility 2025 — новости Volkswagen", false, now), true);
+  assert.equal(sq.staleYearInTitle("IAA Mobility 2025 — новости Volkswagen", true, now), false);
+  assert.equal(sq.staleYearInTitle("Новая Camry 2027 модельного года", false, now), false);
+  assert.equal(sq.staleYearInTitle("BMW показала новую тройку", false, now), false);
+
+  const prompt = sq.buildPrefilterPrompt({ channelName: "Что там у тачек?", topic: "автомобили", today: "2026-10-02", items: [{ source: "Drom", group: "media", title: "BMW X4 продаётся за 8,5 млн" }] });
+  assert.ok(/объявления о продаже/.test(prompt) && /2026-10-02/.test(prompt) && /BMW X4/.test(prompt));
+
+  const parsed = sq.parsePrefilterResult('```json\n{"items":[{"n":1,"keep":false,"score":1,"reason":"реклама"},{"n":2,"keep":true,"score":8}]}\n```', 3);
+  assert.equal(parsed.get(1).keep, false);
+  assert.equal(parsed.get(2).score, 8);
+  assert.equal(parsed.get(3).keep, true, "items the model forgot are kept");
+  assert.equal(sq.parsePrefilterResult("not json", 2), null);
+
+  const stat = {};
+  for (let i = 0; i < 9; i += 1) sq.recordOutcome(stat, "junk");
+  const src = { id: "b1", enabled: true, group: "blogger" };
+  assert.equal(sq.autoPauseReason(src, stat, 10), "");
+  sq.recordOutcome(stat, "junk");
+  assert.ok(/10 новостей подряд/.test(sq.autoPauseReason(src, stat, 10)));
+  assert.equal(sq.autoPauseReason(src, stat, 4), "", "keeps a minimum of sources per group");
+  sq.recordOutcome(stat, "ok");
+  assert.equal(sq.autoPauseReason(src, stat, 10), "", "one useful item resets the streak");
+  assert.ok(/не открывается/.test(sq.autoPauseReason(src, { errorStreak: 12 }, 10)));
+  assert.equal(sq.outcomeForStatus("editorial_skip"), "junk");
+  assert.equal(sq.outcomeForStatus("queued"), "ok");
+  assert.equal(sq.outcomeForStatus("duplicate_story"), "");
+});
+
+await test("collector pre-filters headlines before processing candidates", async function() {
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.url)), "utf8");
+  const start = src.indexOf("async function collectOnce(");
+  const body = src.slice(start, start + 60000);
+  const pre = body.indexOf("await prefilterCandidates(ordered, summary)");
+  const loop = body.indexOf("for (const candidate of ordered)");
+  assert.ok(pre > 0 && loop > pre);
+});
+
 console.log("\n" + passed + " tests passed" + (process.exitCode ? " (with failures)" : ""));

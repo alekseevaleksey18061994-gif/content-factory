@@ -6,6 +6,7 @@ import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
+import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
   createModelClients,
@@ -60,6 +61,8 @@ const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.E
 const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+const HEADLINE_PREFILTER_ENABLED = String(process.env.HEADLINE_PREFILTER_ENABLED || "true").toLowerCase() !== "false";
+const SOURCE_AUTO_PAUSE_ENABLED = String(process.env.SOURCE_AUTO_PAUSE_ENABLED || "true").toLowerCase() !== "false";
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
 const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
@@ -205,7 +208,11 @@ const CAR_SOURCES = [
   { id: "cars-motor-ru", name: "Motor.ru", type: "web", group: "media", priority: 2, url: "https://motor.ru/", enabled: true },
   { id: "cars-drom", name: "Drom Новости", type: "web", group: "media", priority: 2, url: "https://news.drom.ru/", enabled: true },
   { id: "cars-quto", name: "Quto", type: "web", group: "media", priority: 2, url: "https://quto.ru/news/", enabled: true },
-  { id: "cars-autoevolution", name: "Autoevolution", type: "web", group: "media", priority: 2, url: "https://www.autoevolution.com/news/", enabled: true }
+  { id: "cars-autoevolution", name: "Autoevolution", type: "web", group: "media", priority: 2, url: "https://www.autoevolution.com/news/", enabled: true },
+  { id: "cars-zr", name: "За рулём", type: "web", group: "media", priority: 2, url: "https://www.zr.ru/", enabled: true },
+  { id: "cars-autostat", name: "Автостат", type: "web", group: "media", priority: 1, url: "https://www.autostat.ru/news/", enabled: true },
+  { id: "cars-kolesa", name: "Колёса.ру", type: "web", group: "media", priority: 2, url: "https://www.kolesa.ru/news", enabled: true },
+  { id: "cars-autoreview", name: "Авторевю", type: "web", group: "media", priority: 2, url: "https://autoreview.ru/news", enabled: true }
 ];
 
 const BLOGGER_SOURCES = [
@@ -768,6 +775,17 @@ function ensureConfiguredWorkspaces() {
       lastPublishedSlot: ""
     }, cars.state.bloggerScheduler || {});
     cars.state.migrations.push(bloggerMigration);
+    changed = true;
+  }
+  // Russian-market sources: prices, sales starts and statistics in Russia.
+  const ruCarSourcesMigration = "v0.35.0-car-sources-ru";
+  if (!cars.state.migrations.includes(ruCarSourcesMigration)) {
+    const existingIds = new Set((cars.state.sources || []).map(function(source){ return source && source.id; }));
+    for (const id of ["cars-zr", "cars-autostat", "cars-kolesa", "cars-autoreview"]) {
+      const source = CAR_SOURCES.find(function(x){ return x.id === id; });
+      if (source && !existingIds.has(id)) cars.state.sources.push(structuredClone(source));
+    }
+    cars.state.migrations.push(ruCarSourcesMigration);
     changed = true;
   }
   const copyrightMigration = "v0.30.0-copyright-safe-v1";
@@ -2139,6 +2157,98 @@ function noteSourceEvent(sourceOrItem, event, extra) {
   } else if (event === "selected") { stat.selected = Number(stat.selected || 0) + 1; stat.lastSelectedAt = now; }
   else if (event === "published") { stat.published = Number(stat.published || 0) + 1; stat.lastPublishedAt = now; }
   else if (event === "error") { stat.errors = Number(stat.errors || 0) + 1; stat.lastErrorAt = now; }
+  else if (event === "fetch_error") { stat.errorStreak = Number(stat.errorStreak || 0) + 1; }
+  else if (event === "fetch_ok") { stat.errorStreak = 0; }
+  else if (event === "junk") { recordOutcome(stat, "junk"); stat.lastJunkReason = String(extra && extra.reason || "").slice(0, 160); }
+  else if (event === "useful") { recordOutcome(stat, "ok"); }
+}
+
+// Pause sources that only bring junk or keep failing. Keeps at least a few
+// sources enabled per group and never touches sources the editor turned on
+// after an automatic pause (they are reset on toggle).
+function autoPauseWeakSources() {
+  if (!SOURCE_AUTO_PAUSE_ENABLED) return [];
+  const paused = [];
+  for (const source of (state.sources || [])) {
+    if (!source || !source.enabled) continue;
+    const group = source.group || "media";
+    const enabledInGroup = (state.sources || []).filter(function(x){ return x && x.enabled && (x.group || "media") === group; }).length;
+    const reason = autoPauseReason(source, ensureSourceStat(source), enabledInGroup);
+    if (!reason) continue;
+    source.enabled = false;
+    source.autoPaused = { reason: reason, at: new Date().toISOString() };
+    paused.push({ id: source.id, name: source.name, reason: reason });
+    console.log("SOURCE_AUTO_PAUSED " + JSON.stringify({ workspace: currentWorkspaceId(), id: source.id, name: source.name, reason: reason }));
+  }
+  return paused;
+}
+
+// One cheap call over all fresh headlines before media and editorial work:
+// drops ads, listings, old press releases and off-topic links.
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "деньги и финансы", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "мировые новости", stars: "знаменитости", travel: "путешествия", shopping: "покупки и скидки", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+async function prefilterCandidates(candidates, summary) {
+  if (!candidates.length) return candidates;
+  const now = new Date();
+  const kept = [];
+  const rejected = [];
+  for (const candidate of candidates) {
+    const title = candidate.link.title || "";
+    if (staleYearInTitle(title, Boolean(candidate.link.publishedAt), now)) rejected.push({ candidate: candidate, reason: "старая новость: в заголовке прошлый год, даты нет", score: 1 });
+    else kept.push(candidate);
+  }
+  let ranked = kept.map(function(candidate){ return { candidate: candidate, score: 5 }; });
+  if (HEADLINE_PREFILTER_ENABLED && OPENAI_API_KEY && kept.length) {
+    const ws = currentWorkspace();
+    const channelId = resolveChannelId(ws);
+    const prompt = buildPrefilterPrompt({
+      channelName: ws && ws.name || "",
+      topic: CHANNEL_TOPICS_RU[channelId] || "",
+      today: new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Moscow" }).format(now),
+      items: kept.map(function(candidate){ return { source: candidate.source.name, group: candidate.source.group, date: candidate.link.publishedAt || "", title: candidate.link.title || "", text: candidate.link.text || "" }; })
+    });
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 2500 }),
+        signal: AbortSignal.timeout(45000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+      recordOpenAIResponseUsage(OPENAI_MODEL, "headline_prefilter", data, "responses", { items: kept.length });
+      const verdicts = parsePrefilterResult(extractOpenAIText(data), kept.length);
+      if (!verdicts) throw new Error("не удалось разобрать ответ");
+      ranked = [];
+      kept.forEach(function(candidate, index) {
+        const v = verdicts.get(index + 1);
+        if (v.keep) ranked.push({ candidate: candidate, score: v.score });
+        else rejected.push({ candidate: candidate, reason: v.reason || "отсеяно по заголовку", score: v.score });
+      });
+    } catch (error) {
+      // Fail open: without the pre-filter the old order is used, nothing is lost.
+      console.warn("HEADLINE_PREFILTER_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: error.message }));
+    }
+  }
+  for (const r of rejected) {
+    const source = r.candidate.source;
+    const link = r.candidate.link;
+    noteSourceEvent(source, "junk", { reason: r.reason });
+    try {
+      await saveNewsItem({
+        id: "news_" + crypto.createHash("sha256").update("prefilter\n" + link.url).digest("hex").slice(0, 20),
+        sourceId: source.id, sourceName: source.name, sourceUrl: source.url,
+        originalUrl: link.url, originalTitle: link.title || "", originalText: String(link.text || "").slice(0, 2000),
+        contentHash: "", status: "prefilter_skip",
+        metadata: { prefilterReason: r.reason, prefilterScore: r.score, articlePublishedAt: link.publishedAt || "" }
+      });
+    } catch (error) { console.warn("Prefilter save failed:", error.message); }
+  }
+  ranked.sort(function(a, b){ return b.score - a.score; });
+  summary.prefilterRejected = rejected.length;
+  if (rejected.length || ranked.length) {
+    console.log("HEADLINE_PREFILTER " + JSON.stringify({ workspace: currentWorkspaceId(), total: candidates.length, kept: ranked.length, rejected: rejected.length, examples: rejected.slice(0, 5).map(function(r){ return (r.candidate.link.title || "").slice(0, 70) + " — " + r.reason; }) }));
+  }
+  return ranked.map(function(r){ return r.candidate; });
 }
 
 function buildSourceRankings() {
@@ -2183,7 +2293,11 @@ function buildSourceRankings() {
       errors: errors,
       avgScore: scored ? Math.round(avgScore) : null,
       lastSelectedAt: stat.lastSelectedAt || "",
-      lastPublishedAt: stat.lastPublishedAt || ""
+      lastPublishedAt: stat.lastPublishedAt || "",
+      useful: Number(stat.useful || 0),
+      junk: Number(stat.junk || 0),
+      lastJunkReason: stat.lastJunkReason || "",
+      autoPaused: source.autoPaused || null
     };
   });
   rows.sort(function(a,b){
@@ -4014,7 +4128,7 @@ async function listNewsItems(limit) {
           original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
           rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
           telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
-          FROM news_items WHERE workspace_id=$1 AND detected_at >= $2 ORDER BY detected_at DESC LIMIT $3`,
+          FROM news_items WHERE workspace_id=$1 AND detected_at >= $2 AND status <> 'prefilter_skip' ORDER BY detected_at DESC LIMIT $3`,
           [currentWorkspaceId(), cutoff, safeLimit]
         )
       : await db.query(
@@ -4022,7 +4136,7 @@ async function listNewsItems(limit) {
           original_url AS "originalUrl", original_title AS "originalTitle", detected_at AS "detectedAt",
           rewritten_title AS "rewrittenTitle", rewritten_text AS "rewrittenText", confidence, status,
           telegram_message_id AS "telegramMessageId", published_at AS "publishedAt", metadata
-          FROM news_items WHERE workspace_id=$1 ORDER BY detected_at DESC LIMIT $2`,
+          FROM news_items WHERE workspace_id=$1 AND status <> 'prefilter_skip' ORDER BY detected_at DESC LIMIT $2`,
           [currentWorkspaceId(), safeLimit]
         );
     return r.rows.map(enrichNewsFeedItem);
@@ -4086,6 +4200,7 @@ async function collectOnce(trigger) {
       noteSourceEvent(source, "check");
       try {
         const html = await fetchText(source.url, 15000);
+        noteSourceEvent(source, "fetch_ok");
         const isTelegramCreator = source.group === "blogger" || source.group === "creator";
         const links = (isTelegramCreator
           ? extractTelegramSourcePosts(html, source.url)
@@ -4104,6 +4219,7 @@ async function collectOnce(trigger) {
         return null;
       } catch (error) {
         noteSourceEvent(source, "error");
+        noteSourceEvent(source, "fetch_error");
         summary.errors.push(source.name + ": " + error.message);
         return null;
       }
@@ -4112,6 +4228,9 @@ async function collectOnce(trigger) {
     for (const candidate of sourceResults) {
       if (candidate) ordered.push(candidate);
     }
+    const prefiltered = await prefilterCandidates(ordered, summary);
+    ordered.length = 0;
+    prefiltered.forEach(function(candidate){ ordered.push(candidate); });
 
     if (enabledSources.length) {
       state.sourceCursor = (cursor + Math.max(1, MAX_ITEMS_PER_RUN)) % enabledSources.length;
@@ -4282,6 +4401,7 @@ async function collectOnce(trigger) {
             await saveNewsItem(baseItem);
             summary.skipped += 1;
             summary.editorialSkipped = (summary.editorialSkipped || 0) + 1;
+            noteSourceEvent(source, "junk", { reason: v2.reason });
             continue;
           }
           rewrite = v2.rewrite;
@@ -4398,6 +4518,7 @@ async function collectOnce(trigger) {
             decisionSummary: qc.decisionSummary
           });
           baseItem.status = "published";
+          noteSourceEvent(source, "useful");
           baseItem.telegramMessageId = tg.message_id;
           baseItem.publishedAt = new Date().toISOString();
           state.history.unshift({
@@ -4545,6 +4666,7 @@ async function collectOnce(trigger) {
           };
           pruneQueueItems(state);
           summary.queued += 1;
+          noteSourceEvent(source, "useful");
         }
 
         await saveNewsItem(baseItem);
@@ -4555,6 +4677,8 @@ async function collectOnce(trigger) {
       }
     }
 
+    const pausedSources = autoPauseWeakSources();
+    if (pausedSources.length) summary.pausedSources = pausedSources;
     summary.finishedAt = new Date().toISOString();
     lastCollectorRuns.set(currentWorkspaceId(), summary);
     if (db && dbReady && runId) {
@@ -9483,6 +9607,12 @@ const server = http.createServer(async function(req, res) {
       const src = state.sources.find(function(x){ return x.id === body.id; });
       if (!src) return sendJson(res, 404, { ok: false, error: "Источник не найден" });
       src.enabled = !src.enabled;
+      if (src.enabled) {
+        // Turned on by the editor: forget the automatic pause and its history.
+        delete src.autoPaused;
+        const stat = ensureSourceStat(src);
+        if (stat) { stat.recent = []; stat.errorStreak = 0; }
+      }
       saveState();
       return sendJson(res, 200, { ok: true });
     }
@@ -9936,6 +10066,44 @@ setTimeout(function() {
     }
   })();
 }, 1500);
+
+// One-time bootstrap of per-source outcomes from the last week of news, so
+// automatic pausing works on existing history instead of starting from zero.
+setTimeout(function() {
+  (async function(){
+    const migration = "v0.35.0-source-outcomes-bootstrap";
+    if (!db || !dbReady) return;
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const r = await db.query("SELECT source_id, status FROM news_items WHERE workspace_id=$1 AND detected_at > NOW() - INTERVAL '7 days' ORDER BY detected_at ASC", [ws.id]);
+        const bySource = new Map();
+        for (const row of r.rows) {
+          const outcome = outcomeForStatus(row.status);
+          if (!outcome || !row.source_id) continue;
+          if (!bySource.has(row.source_id)) bySource.set(row.source_id, []);
+          bySource.get(row.source_id).push(outcome);
+        }
+        let touched = 0;
+        for (const source of (state.sources || [])) {
+          const outcomes = bySource.get(source.id);
+          if (!outcomes) continue;
+          const stat = ensureSourceStat(source);
+          if (!stat) continue;
+          stat.recent = [];
+          outcomes.forEach(function(o){ recordOutcome(stat, o); });
+          touched += 1;
+        }
+        const paused = autoPauseWeakSources();
+        state.migrations.push(migration);
+        saveState();
+        console.log("Source outcomes bootstrap " + ws.id + ": " + JSON.stringify({ sources: touched, paused: paused }));
+      });
+    }
+  })().catch(function(error){ console.warn("Source outcomes bootstrap failed:", error.message); });
+}, 45000);
 
 // One-time clean-up of photo sets already in the queue (duplicates, logos, thumbnails).
 setTimeout(function() {
