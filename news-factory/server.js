@@ -5171,7 +5171,7 @@ function capacityGateDecision(candidate, trigger) {
   return { allow: false, reason: "queue_full", depth: depth, score: score };
 }
 
-function collectOnce(trigger) {
+async function collectOnce(trigger) {
   if (!COLLECTOR_ENABLED) return { ok: false, error: "Collector disabled" };
   const collectorWorkspaceId = currentWorkspaceId();
   if (collectorRunningWorkspaces.has(collectorWorkspaceId)) return { ok: false, error: "Collector already running" };
