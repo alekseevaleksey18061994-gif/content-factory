@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { loadServer, inWs, startTempPostgres } from "./dedupe-harness.js";
+import { loadServer, inWs, startTempPostgres, dbRows } from "./dedupe-harness.js";
 
 const cases = {};
 function test(name, fn) { cases[name] = fn; }
@@ -130,8 +130,41 @@ test("L8 everything fails and text fallback is not allowed -> error, no text pos
     if (m === "photos.getMessagesUploadServer") return { error: { error_code: 901, error_msg: "Can't send messages for users without permission" } };
     return { response: {} };
   });
-  await assert.rejects(() => inWs(t, "ai-main", () => t.publishVkPost(post())), (e) => e.mediaFailed === true);
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishVkPost(post())), (e) => e.mediaFailed === true && /No photo given/.test(e.vkErrorMsg || e.message) && e.mediaAttempts === 6);
   assert.equal(wallPosts(calls).filter((c) => !c.params.attachments).length, 0);
+});
+
+// ---- regressions from the adversarial review ----
+test("R1 database error AFTER VK created the post does not trigger a second post", async () => {
+  const t = await boot();
+  const calls = installVk(t, async (m) => {
+    if (m === "wall.post") { await dbRows("ALTER TABLE public_post_pages RENAME TO public_post_pages_broken"); return okPost(30); }
+    return messagesPhoto(m) || { response: {} };
+  });
+  const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
+  assert.equal(res.mediaMode, "link_preview"); assert.equal(res.post_id, 30);
+  assert.equal(wallPosts(calls).length, 1);
+});
+
+test("R2 VK 'internal server error' (10) or HTTP 5xx on wall.post stops: the post may exist", async () => {
+  for (const answer of [{ error: { error_code: 10, error_msg: "Internal server error" } }, "http502"]) {
+    const t = await boot();
+    globalThis.__answer = answer;
+    const calls = installVk(t, (m) => m === "wall.post" ? answer : (messagesPhoto(m) || { response: {} }));
+    if (answer === "http502") {
+      const inner = globalThis.fetch;
+      globalThis.fetch = async (url, init) => String(url) === "https://api.vk.com/method/wall.post" ? (calls.push({ method: "wall.post", params: {} }), new Response("bad gateway", { status: 502 })) : inner(url, init);
+    }
+    await assert.rejects(() => inWs(t, "ai-main", () => t.publishVkPost(post())), (e) => e.mediaFailed === true);
+    assert.equal(wallPosts(calls).length, 1, "no second mode after an unclear answer: " + JSON.stringify(answer));
+  }
+});
+
+test("R3 VK_MEDIA_ORDER=photo still falls back to the link card", async () => {
+  const t = await boot({ VK_MEDIA_ORDER: "photo" });
+  const calls = installVk(t, (m, p) => m === "wall.post" ? (String(p.attachments || "").startsWith("photo") ? { error: { error_code: 100, error_msg: "bad photo" } } : okPost(31)) : (messagesPhoto(m) || { response: {} }));
+  const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
+  assert.equal(res.mediaMode, "link_preview"); assert.equal(wallPosts(calls).length, 2);
 });
 
 async function main() {
