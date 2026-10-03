@@ -12,7 +12,7 @@ const appDir = fileURLToPath(new URL("..", import.meta.url));
 const child = spawn(process.execPath, ["server.js"], {
   cwd: appDir,
   env: Object.assign({}, process.env, {
-    PORT: String(port), DATA_DIR: dataDir, DATABASE_URL: "", ADMIN_UI_PASSWORD: password, ADMIN_UI_PASSWORD_SHA256: "",
+    PORT: String(port), DATA_DIR: dataDir, STATE_SAVE_DEBOUNCE_MS: "0", DATABASE_URL: "", ADMIN_UI_PASSWORD: password, ADMIN_UI_PASSWORD_SHA256: "",
     COLLECTOR_ENABLED: "false", AUTO_PUBLISH_ENABLED: "false", TELEGRAM_BOT_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: ""
   }),
   stdio: ["ignore", "pipe", "pipe"]
