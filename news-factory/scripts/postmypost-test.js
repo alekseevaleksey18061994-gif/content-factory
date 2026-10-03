@@ -20,6 +20,14 @@ function fakePmp(opts = {}) {
   const up = (opts.uploadStatuses || [5, 3, 1]).slice();
   const pub = (opts.pubStatuses || [5, 2, 1]).slice();
   const handler = async (url, init = {}) => {
+    if (String(url).startsWith("https://storage.pmp.test/")) {
+      const form = init.body;
+      const keys = []; let file = null;
+      for (const [k, v] of form.entries()) { keys.push(k); if (k === "file") file = v; }
+      calls.push({ method: "POST", path: "STORAGE", keys, fileSize: file ? file.size : 0, fileName: file ? file.name : "", fileType: file ? file.type : "" });
+      if (opts.storageStatus) return new Response("<Error>Denied</Error>", { status: opts.storageStatus });
+      return new Response(null, { status: 204 });
+    }
     const u = new URL(String(url));
     const path = u.pathname.replace("/v4.1", "");
     const body = init.body ? JSON.parse(init.body) : null;
@@ -30,7 +38,12 @@ function fakePmp(opts = {}) {
       { id: 501, chanel_id: 9, external_id: "-1004220646926", name: "Что там у ИИ? TG", connection_status: 1 },
       { id: 502, chanel_id: 5, external_id: "241910449", name: "Что там у ИИ? VK", connection_status: 1 }
     ] });
-    if (path === "/upload/init") return json({ id: 9001, status: up.shift() ?? 1, url: body && body.url });
+    if (path === "/upload/init" && body && body.url) {
+      if (opts.urlStatus) return json({ message: "Не удалось загрузить файл по ссылке." }, opts.urlStatus);
+      return json({ id: 9001, status: up.shift() ?? 1, url: body.url });
+    }
+    if (path === "/upload/init") return json({ id: 9001, status: 5, name: body.name, size: body.size, action: "https://storage.pmp.test/upload", fields: [{ key: "key", value: "u/9001.jpg" }, { key: "policy", value: "pol" }, { key: "x-amz-signature", value: "sig" }] });
+    if (path === "/upload/complete") return json({ id: Number(u.searchParams.get("id")), status: up.length ? up.shift() : 1 });
     if (path === "/upload/status") { const st = up.length ? up.shift() : 1; return json({ id: 9001, status: st, file_id: st === 1 ? 4242 : undefined }); }
     if (path === "/publications" && (init.method || "GET") === "POST") {
       if (opts.createThrows) throw new Error("socket hang up");
@@ -52,6 +65,24 @@ test("C1 client: Bearer auth, upload by URL waits for status 1, returns file id"
   assert.deepEqual(f.calls[0].body, { project_id: 77, url: "https://x/img.jpg" });
   assert.equal(f.calls.filter((x) => x.path === "/upload/status").length, 2);
   assert.equal(f.calls[1].query.id, "9001");
+});
+
+test("C5 client: file upload sends storage fields BEFORE the file, completes, waits for the file id", async () => {
+  const f = fakePmp({ uploadStatuses: [3, 1] });
+  const c = createPostmypostClient({ token: TOKEN, fetch: f.handler, pollMs: 1 });
+  const bytes = Buffer.alloc(1234, 7);
+  assert.equal(await c.uploadFile(77, bytes, "vk_preview_x.jpg", "image/jpeg"), 4242);
+  const init = f.calls.find((x) => x.path === "/upload/init");
+  assert.deepEqual(init.body, { project_id: 77, name: "vk_preview_x.jpg", size: 1234 });
+  const st = f.calls.find((x) => x.path === "STORAGE");
+  assert.deepEqual(st.keys, ["key", "policy", "x-amz-signature", "file"]);
+  assert.equal(st.fileSize, 1234); assert.equal(st.fileName, "vk_preview_x.jpg"); assert.equal(st.fileType, "image/jpeg");
+  const complete = f.calls.find((x) => x.path === "/upload/complete");
+  assert.equal(complete.query.id, "9001"); assert.equal(complete.auth, "Bearer " + TOKEN);
+  assert.equal(st.auth, undefined, "no Postmypost token sent to the storage");
+  const bad = createPostmypostClient({ token: TOKEN, fetch: fakePmp({ storageStatus: 403 }).handler, pollMs: 1 });
+  await assert.rejects(() => bad.uploadFile(77, bytes, "a.jpg"), (e) => e.pmpCode === "storage_403");
+  await assert.rejects(() => c.uploadFile(77, Buffer.alloc(0), "a.jpg"), (e) => e.pmpCode === "upload_empty");
 });
 
 test("C2 client: upload error and timeout are reported", async () => {
@@ -91,7 +122,7 @@ function installNet(t, pmp, vk) {
   const calls = { vk: [] };
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
-    if (u.startsWith(PMP)) return pmp.handler(url, init);
+    if (u.startsWith(PMP) || u.startsWith("https://storage.pmp.test/")) return pmp.handler(url, init);
     if (u.startsWith("https://api.vk.com/method/")) {
       const method = u.slice("https://api.vk.com/method/".length);
       calls.vk.push({ method, params: Object.fromEntries(new URLSearchParams(String(init.body || ""))) });
@@ -136,12 +167,23 @@ test("S1 VK post goes through Postmypost with the 1200x630 picture; direct VK wa
   const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
   assert.equal(res.mediaMode, "postmypost"); assert.equal(res.post_id, "pmp-31337");
   const init = pmp.calls.find((c) => c.path === "/upload/init");
-  assert.match(init.body.url, new RegExp("^" + BASE.replace(/\./g, "\\.") + "/media/vk_preview_.*\\.jpg$"));
+  assert.equal(init.body.url, undefined, "the picture is pushed as a file, not given as a Railway URL");
+  assert.match(init.body.name, /^vk_preview_.*\.jpg$/); assert.ok(init.body.size > 1000);
+  const st = pmp.calls.find((c) => c.path === "STORAGE");
+  assert.equal(st.fileSize, init.body.size);
   const create = pmp.calls.find((c) => c.path === "/publications" && c.method === "POST");
   assert.equal(create.body.account_ids[0], 502); assert.deepEqual(create.body.details[0].file_ids, [4242]);
   assert.match(create.body.details[0].content, /папа римский/);
   assert.ok(Date.parse(create.body.post_at) > Date.now() - 60000);
   assert.equal(wallPosts(calls).length, 0);
+});
+
+test("S8 production case: Postmypost cannot download our URL (422) but the file upload works", async () => {
+  const t = await boot();
+  const pmp = fakePmp({ urlStatus: 422 });
+  const calls = installNet(t, pmp, vkDirect);
+  const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
+  assert.equal(res.mediaMode, "postmypost"); assert.equal(wallPosts(calls).length, 0);
 });
 
 test("S2 Postmypost refuses (4xx) before the post exists -> direct VK posts as before", async () => {

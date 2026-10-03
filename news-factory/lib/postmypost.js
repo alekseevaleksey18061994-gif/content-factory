@@ -100,6 +100,46 @@ export function createPostmypostClient(options) {
       }
     },
 
+    // -> file_id. We push the bytes ourselves: Postmypost (like VK) cannot download from *.up.railway.app, which is
+    // not reachable from Russian networks. init {project_id, name, size} -> multipart POST of the returned fields + file
+    // to the storage "action" URL -> POST /upload/complete?id= -> poll status.
+    uploadFile: async function(projectId, bytes, name, mime, maxWaitMs) {
+      const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
+      if (!buf.length) throw new PostmypostError("Postmypost: пустой файл", { pmpCode: "upload_empty" });
+      const fileName = String(name || "image.jpg");
+      const init = await request("POST", "/upload/init", null, { project_id: Number(projectId), name: fileName, size: buf.length });
+      const uploadId = init && init.id;
+      if (!uploadId || !init.action) throw new PostmypostError("Postmypost не вернул адрес загрузки", { pmpCode: "upload_no_action" });
+      const form = new FormData();
+      for (const f of Array.isArray(init.fields) ? init.fields : []) {
+        if (f && f.key != null) form.append(String(f.key), String(f.value == null ? "" : f.value));
+      }
+      form.append("file", new Blob([buf], { type: mime || "image/jpeg" }), fileName);
+      let storage;
+      try {
+        storage = await doFetch(String(init.action), { method: "POST", body: form, signal: AbortSignal.timeout(Math.max(timeoutMs, 60000)) });
+      } catch (error) {
+        throw new PostmypostError("Postmypost: хранилище недоступно: " + String(error && error.message || error), { pmpCode: "storage_network" });
+      }
+      if (!storage.ok) {
+        const text = await storage.text().catch(function() { return ""; });
+        throw new PostmypostError("Postmypost: хранилище отклонило файл → " + storage.status + " " + text.replace(/\s+/g, " ").slice(0, 200), { pmpCode: "storage_" + storage.status });
+      }
+      const done = await request("POST", "/upload/complete", { id: uploadId });
+      const deadline = Date.now() + Number(maxWaitMs || 90000);
+      let status = Number(done && done.status || 0);
+      let fileId = done && done.file_id || null;
+      while (true) {
+        if (status === UPLOAD_STATUS.DONE && fileId) return Number(fileId);
+        if (status === UPLOAD_STATUS.ERROR) throw new PostmypostError("Postmypost не смог обработать картинку", { pmpCode: "upload_error", pmpUploadId: uploadId });
+        if (Date.now() > deadline) throw new PostmypostError("Postmypost: обработка картинки не завершилась вовремя", { pmpCode: "upload_timeout", pmpUploadId: uploadId });
+        await sleep(pollMs);
+        const st = await request("GET", "/upload/status", { id: uploadId });
+        status = Number(st && st.status || 0);
+        fileId = st && st.file_id || null;
+      }
+    },
+
     createPublication: function(params) {
       const p = params || {};
       return request("POST", "/publications", null, {
