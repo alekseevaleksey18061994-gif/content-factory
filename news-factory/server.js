@@ -3914,7 +3914,7 @@ function visualRecipeFor(payload, index) {
 }
 
 async function generateNewsCover(payload) {
-  if (costEconomyMode()) return renderEconomyTextCard(payload);
+  if (costEconomyMode() && !(payload && payload.forceAi)) return renderEconomyTextCard(payload);
   if (!OPENAI_API_KEY || !GENERATE_COVER_IF_MISSING) {
     throw new Error("Генерация обложек отключена");
   }
@@ -3993,7 +3993,7 @@ async function generateNewsCover(payload) {
       }
       ensureDataDir();
       const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
-      const fileName = "cover_" + safeId + ".png";
+      const fileName = "cover_" + safeId + "_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex") + ".png";
       const filePath = path.join(MEDIA_DIR, fileName);
       fs.writeFileSync(filePath, Buffer.from(b64, "base64"));
       return { url: mediaPublicUrl(fileName), model: model, fileName: fileName };
@@ -12848,10 +12848,7 @@ const server = http.createServer(async function(req, res) {
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
       if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — отдельная обложка не требуется" });
 
-      const knownBrokenSource = Boolean(item.sourceImageUnavailableAt);
-      const sourceImage = knownBrokenSource
-        ? ""
-        : String(item.originalImageUrl || item.enhancedImageUrl || item.imageUrl || "").trim();
+      const sourceImage = String(item.originalImageUrl || item.cachedSourceImageUrl || item.enhancedImageUrl || item.imageUrl || "").trim();
       const license = sourceMediaLicense(item);
 
       const persistMediaMetadata = async function(patch) {
@@ -12862,41 +12859,59 @@ const server = http.createServer(async function(req, res) {
           const metadata = Object.assign({}, row.rows[0].metadata || {}, patch || {});
           await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, JSON.stringify(metadata), currentWorkspaceId()]);
         } catch (error) {
-          console.warn("QUEUE_COVER_METADATA_SYNC_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), id: item.newsId || item.id, error: String(error && error.message || error).slice(0, 220) }));
+          console.warn("QUEUE_COVER_METADATA_SYNC_FAILED " + JSON.stringify({
+            workspace: currentWorkspaceId(),
+            id: item.newsId || item.id,
+            error: String(error && error.message || error).slice(0, 220)
+          }));
         }
       };
 
-      const generateFreshCover = async function(reason, decision) {
+      try {
+        // The manual "Обложка" button is a creative action, not a sharpen/upscale
+        // operation. Every click creates a fresh independent cover from the story
+        // facts and channel DNA. This fixes the old behaviour where a low-quality
+        // source thumbnail stayed visually the same after several clicks.
+        const generation = Number(item.coverGenerationCount || 0) + 1;
         const generated = await generateNewsCover({
           id: item.newsId || item.id,
           newsId: item.newsId || item.id,
           title: item.title,
           text: item.text,
           sourceName: item.sourceName || "",
+          topicId: item.topicId || currentWorkspace().channelId || "",
+          visualIndex: generation,
+          forceAi: true,
           costPurpose: "image_generation"
         });
+
         const generatedAt = new Date().toISOString();
         item.originalImageUrl = item.originalImageUrl || sourceImage || "";
         item.imageUrl = "";
         item.enhancedImageUrl = "";
+        item.cachedSourceImageUrl = "";
         item.generatedImageUrl = generated.url;
+        item.mediaPackUrls = [];
         item.mediaType = "generated";
         item.mediaStatus = "generated";
         item.mediaPriority = 2;
         item.mediaLicense = license;
         item.mediaOrigin = "ai_generated";
         item.copyrightSafe = true;
-        item.copyrightMediaDecision = decision || "manual_cover_generated";
+        item.copyrightMediaDecision = "manual_new_cover_generated";
         item.generatedBy = generated.model;
         item.generatedAt = generatedAt;
-        item.coverFallbackReason = String(reason || "").slice(0, 500);
-        item.canEnhance = true;
+        item.coverGenerationCount = generation;
+        item.coverFallbackReason = "";
+        item.canEnhance = false;
 
         await persistMediaMetadata({
           originalImageUrl: item.originalImageUrl || "",
           imageUrl: "",
           enhancedImageUrl: "",
+          cachedSourceImageUrl: "",
           generatedImageUrl: generated.url,
+          mediaPackUrls: [],
           mediaType: "generated",
           mediaStatus: "generated",
           mediaPriority: 2,
@@ -12907,9 +12922,8 @@ const server = http.createServer(async function(req, res) {
           copyrightMediaDecision: item.copyrightMediaDecision,
           generatedBy: generated.model,
           generatedAt: generatedAt,
-          coverFallbackReason: item.coverFallbackReason,
-          sourceImageUnavailableAt: item.sourceImageUnavailableAt || null,
-          sourceImageError: item.sourceImageError || ""
+          coverGenerationCount: generation,
+          coverFallbackReason: ""
         });
 
         saveState();
@@ -12918,91 +12932,11 @@ const server = http.createServer(async function(req, res) {
           mode: "generated",
           imageUrl: generated.url,
           model: generated.model,
-          fallbackReason: item.coverFallbackReason,
+          generation: generation,
           copyrightSafe: true
         });
-      };
-
-      try {
-        // If third-party reuse is not allowed, never touch the source pixels: create
-        // an independent cover from the story facts and the current channel DNA.
-        if (COPYRIGHT_SAFE_MODE && !mediaLicenseAllowsReuse(license)) {
-          return await generateFreshCover("Исходное медиа нельзя переиспользовать по политике канала", "third_party_media_blocked");
-        }
-
-        // No source photo (or it already failed to download on a previous click):
-        // the button becomes "generate a new cover", not an error.
-        if (!sourceImage) {
-          return await generateFreshCover(
-            knownBrokenSource ? (item.sourceImageError || "Исходное фото недоступно") : "У новости нет доступного исходного фото",
-            knownBrokenSource ? "source_image_unavailable_generated" : "no_source_image_generated"
-          );
-        }
-
-        try {
-          const enhanced = await enhanceNewsImage({
-            id: item.newsId || item.id,
-            title: item.title,
-            text: item.text,
-            imageUrl: sourceImage
-          });
-          const enhancedAt = new Date().toISOString();
-          item.originalImageUrl = item.originalImageUrl || sourceImage;
-          // IMPORTANT: publishing reads imageUrl. The previous code stored the
-          // improved file only in generatedImageUrl, so preview/publishing kept using
-          // the old source photo and the button appeared to do nothing.
-          item.imageUrl = enhanced.url;
-          item.enhancedImageUrl = enhanced.url;
-          item.generatedImageUrl = "";
-          item.mediaType = "enhanced";
-          item.mediaStatus = "enhanced";
-          item.mediaPriority = 2;
-          item.mediaLicense = license;
-          item.mediaOrigin = "licensed_derivative";
-          item.copyrightSafe = COPYRIGHT_SAFE_MODE;
-          item.enhancedBy = enhanced.model;
-          item.enhancedAt = enhancedAt;
-          item.sourceImageUnavailableAt = "";
-          item.sourceImageError = "";
-          item.coverFallbackReason = "";
-          item.canEnhance = true;
-
-          await persistMediaMetadata({
-            originalImageUrl: item.originalImageUrl || sourceImage,
-            imageUrl: enhanced.url,
-            enhancedImageUrl: enhanced.url,
-            generatedImageUrl: "",
-            mediaType: "enhanced",
-            mediaStatus: "enhanced",
-            mediaPriority: 2,
-            mediaLicense: license,
-            mediaOrigin: "licensed_derivative",
-            copyrightSafe: COPYRIGHT_SAFE_MODE,
-            copyrightPolicyVersion: "v2",
-            enhancedBy: enhanced.model,
-            enhancedAt: enhancedAt,
-            sourceImageUnavailableAt: null,
-            sourceImageError: "",
-            coverFallbackReason: ""
-          });
-
-          saveState();
-          return sendJson(res, 200, { ok: true, mode: "enhanced", imageUrl: enhanced.url, model: enhanced.model });
-        } catch (sourceError) {
-          // 404/403/expired Telegram CDN links and malformed source images are common.
-          // They must never dead-end the button: remember the failure and generate a
-          // fresh cover from the news text instead.
-          item.sourceImageUnavailableAt = new Date().toISOString();
-          item.sourceImageError = String(sourceError && sourceError.message || sourceError).slice(0, 500);
-          console.warn("QUEUE_COVER_SOURCE_FALLBACK " + JSON.stringify({
-            workspace: currentWorkspaceId(),
-            id: item.newsId || item.id,
-            error: item.sourceImageError
-          }));
-          return await generateFreshCover(item.sourceImageError, "source_image_unavailable_generated");
-        }
       } catch (error) {
-        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось подготовить обложку" });
+        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось сгенерировать новую обложку" });
       }
     }
 

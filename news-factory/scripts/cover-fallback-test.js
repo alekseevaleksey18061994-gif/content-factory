@@ -12,16 +12,22 @@ const end = server.indexOf('if (req.method === "POST" && p === "/api/queue/publi
 if (start < 0 || end <= start) throw new Error("cover endpoint missing");
 const block = server.slice(start, end);
 
-has(block, "QUEUE_COVER_SOURCE_FALLBACK", "broken-source fallback");
-has(block, "generateFreshCover", "fresh cover generation");
-has(block, "item.imageUrl = enhanced.url", "enhanced image becomes active");
-has(block, 'item.generatedImageUrl = ""', "enhancement is not mislabelled");
+has(block, "manual_new_cover_generated", "manual cover mode");
+has(block, "forceAi: true", "manual click bypasses economy text-card mode");
+has(block, "coverGenerationCount", "each click advances visual variation");
+has(block, 'item.imageUrl = ""', "old source image is removed from active media");
+has(block, 'item.enhancedImageUrl = ""', "old enhanced image is removed");
+has(block, "generatedImageUrl = generated.url", "fresh cover becomes active");
+if (block.includes("enhanceNewsImage(")) {
+  throw new Error("Manual cover button still performs technical source-image enhancement");
+}
+has(server, 'Date.now() + "_" + crypto.randomBytes(3).toString("hex") + ".png"', "generated cover URL is unique");
 has(server, "if (!preparedImage.imageUrl) {", "collector broken-hotlink fallback");
 if (server.includes("const publishImageUrl = preparedImage.imageUrl || imageUrl;")) {
   throw new Error("Raw remote image can still become publishable media");
 }
-has(admin, "img=item.enhancedImageUrl||item.imageUrl||item.generatedImageUrl||item.originalImageUrl", "preview cover priority");
-has(admin, "var image=sourceImage||md.generatedImageUrl||md.originalImageUrl||'';", "news list cover priority");
-has(admin, "j&&j.mode==='enhanced'?'Фото улучшено':'Новая AI-обложка готова'", "UI mode feedback");
+has(admin, "Генерирую новую AI-обложку", "UI says it is generating a new cover");
+has(admin, "Новая AI-обложка готова", "UI confirms new cover");
+has(admin, "img=item.enhancedImageUrl||item.imageUrl||item.generatedImageUrl||item.originalImageUrl", "preview prefers generated cover");
 
 console.log("cover-fallback regression checks: OK");
