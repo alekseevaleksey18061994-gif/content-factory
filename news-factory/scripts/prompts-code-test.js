@@ -94,21 +94,22 @@ await test("P1: server.js uses visible-length checks, not html.length, for capti
   assert.ok(!/formatTelegramPost\([a-z]+\)\.length\s*<=\s*900/.test(serverSrc));
 });
 
-await test("MEDIA: queue cover enhances a usable source and generates on missing/broken source", function() {
+await test("MEDIA: manual cover always generates a fresh AI visual", function() {
   const start = serverSrc.indexOf('if (req.method === "POST" && p === "/api/queue/enhance-media")');
   const end = serverSrc.indexOf('if (req.method === "POST" && p === "/api/queue/publish")', start);
   assert.ok(start >= 0 && end > start, "cover endpoint exists");
   const block = serverSrc.slice(start, end);
-  assert.ok(block.includes("QUEUE_COVER_SOURCE_FALLBACK"), "broken source is logged and falls back");
-  assert.ok(block.includes('return await generateFreshCover(item.sourceImageError, "source_image_unavailable_generated")'), "broken source generates a fresh cover");
-  assert.ok(block.includes('knownBrokenSource ? (item.sourceImageError || "Исходное фото недоступно")'), "repeat click skips a source already known to be broken");
-  assert.ok(block.includes("item.imageUrl = enhanced.url"), "enhanced pixels become the publishing image");
-  assert.ok(block.includes("item.enhancedImageUrl = enhanced.url"), "enhanced pixels become the preview image");
-  assert.ok(block.includes('item.generatedImageUrl = ""'), "enhancement is not mislabelled as generated media");
-  assert.ok(!block.includes("У новости нет найденного фото для улучшения"), "missing source is no longer a dead-end 400");
+  assert.ok(block.includes("manual_new_cover_generated"), "manual cover is recorded as a generated visual");
+  assert.ok(block.includes("forceAi: true"), "manual action bypasses economy text-card mode");
+  assert.ok(block.includes("coverGenerationCount"), "repeat clicks advance visual variation");
+  assert.ok(block.includes('item.imageUrl = ""'), "source image is no longer kept active");
+  assert.ok(block.includes('item.enhancedImageUrl = ""'), "enhanced source image is no longer kept active");
+  assert.ok(block.includes("item.generatedImageUrl = generated.url"), "new cover becomes publishing media");
+  assert.ok(!block.includes("enhanceNewsImage("), "manual cover no longer sharpens/upscales the same source thumbnail");
   assert.ok(serverSrc.includes("Channel editorial focus: "), "generated-cover prompt includes channel DNA");
-  assert.ok(adminSrc.includes("Готовлю обложку: улучшаю фото или создаю новую"), "UI explains automatic cover mode");
-  assert.ok(adminSrc.includes("j&&j.mode==='enhanced'?'Фото улучшено':'Новая AI-обложка готова'"), "UI reports which path was used");
+  assert.ok(serverSrc.includes('Date.now() + "_" + crypto.randomBytes(3).toString("hex") + ".png"'), "cover URL changes on every generation");
+  assert.ok(adminSrc.includes("Генерирую новую AI-обложку"), "UI describes the real action");
+  assert.ok(adminSrc.includes("Новая AI-обложка готова"), "UI confirms a new cover");
 });
 
 // --- P2 ---------------------------------------------------------------------
