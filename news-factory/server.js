@@ -5270,7 +5270,7 @@ function extractArticleLinks(html, sourceUrl) {
 let sourceProxy = null;
 try { sourceProxy = parseProxyUrl(process.env.SOURCE_PROXY_URL || ""); }
 catch (error) { console.error("SOURCE_PROXY_INVALID " + JSON.stringify({ error: error.message })); }
-const sourceFetcher = createSourceFetcher({ fetch: function(url, init) { return safeFetch(url, init); }, proxy: sourceProxy });
+const sourceFetcher = createSourceFetcher({ fetch: function(url, init) { return safeFetch(url, init); }, proxy: sourceProxy, maxConcurrent: envNumber("SOURCE_FETCH_CONCURRENCY", 48, 1, 200) });
 if (sourceProxy) console.log("SOURCE_PROXY_ENABLED " + JSON.stringify({ proxy: sourceProxy.label }));
 
 async function fetchText(url, timeoutMs) {

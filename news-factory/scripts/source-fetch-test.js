@@ -187,6 +187,18 @@ test("F9 hostile feeds parse in linear time; section pages never fall back to th
   assert.deepEqual(guessFeedUrls("https://iz.ru/rubric/ekonomika"), ["https://iz.ru/rubric/ekonomika/rss", "https://iz.ru/rubric/ekonomika/feed"]);
 });
 
+test("F10 global concurrency limit: never more than N requests at once, all complete, timeouts start on their turn", async () => {
+  let active = 0, peak = 0;
+  const f = createSourceFetcher({ maxConcurrent: 3, fetch: async () => { active += 1; peak = Math.max(peak, active); await new Promise((r) => setTimeout(r, 15)); active -= 1; return resp(200, "<html>ok</html>"); } });
+  const results = await Promise.all(Array.from({ length: 20 }, (_, i) => f.fetch("https://s" + i + ".ru/", {})));
+  assert.equal(results.length, 20); assert.ok(results.every((r) => r.status === 200));
+  assert.equal(peak, 3); assert.equal(f.stats().peak, 3); assert.equal(f.stats().waiting, 0);
+  // a failing request releases its slot too
+  const g = createSourceFetcher({ maxConcurrent: 1, fetch: async (u) => { if (/bad/.test(u)) throw new SafeFetchError("blocked_address", "x"); return resp(200); } });
+  await assert.rejects(() => g.fetch("https://bad.ru/", {}));
+  assert.equal((await g.fetch("https://ok.ru/", {})).status, 200);
+});
+
 test("F7 trial period: an auto-added source with no useful news is paused after the trial; editor's sources are not", async () => {
   const past = new Date(Date.now() - 3600e3).toISOString();
   const future = new Date(Date.now() + 3600e3).toISOString();

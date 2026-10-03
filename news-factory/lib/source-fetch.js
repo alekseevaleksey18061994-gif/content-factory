@@ -40,11 +40,28 @@ export function createSourceFetcher(options) {
   const now = opt.now || Date.now;
   const stickyMs = Number(opt.stickyMs == null ? 24 * 3600000 : opt.stickyMs);
   const sticky = new Map(); // host -> until (ms): opens only through the proxy
-  const stats = { direct: 0, ipv4: 0, proxy: 0, failed: 0 };
+  const stats = { direct: 0, ipv4: 0, proxy: 0, failed: 0, waiting: 0, peak: 0 };
+  // All channels collect at the same minute, each opening every source at once: a thousand parallel requests
+  // made almost every one of them time out. A global limit keeps requests fast; each one's timeout starts only
+  // when it gets its turn.
+  const maxConcurrent = Math.max(1, Math.floor(Number(opt.maxConcurrent == null ? 24 : opt.maxConcurrent) || 24));
+  let active = 0;
+  const queue = [];
+  function acquire() {
+    if (active < maxConcurrent) { active += 1; stats.peak = Math.max(stats.peak, active); return Promise.resolve(); }
+    stats.waiting += 1;
+    return new Promise(function(resolve) { queue.push(resolve); });
+  }
+  function release() {
+    const next = queue.shift();
+    if (next) { stats.waiting -= 1; next(); } else active -= 1;
+  }
 
   async function attempt(url, init, extra) {
+    await acquire();
     try { return { response: await fetchImpl(url, Object.assign({}, init, extra)) }; }
     catch (error) { return { error: error }; }
+    finally { release(); }
   }
 
   function done(outcome, route) {
