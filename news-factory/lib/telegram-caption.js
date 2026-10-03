@@ -19,7 +19,9 @@ export function visibleLength(html) {
   const plain = String(html || "")
     .replace(/<[^>]*>/g, "")
     .replace(/&(?:amp|lt|gt|quot|#39|nbsp);/g, function(m){ return ENTITIES[m]; });
-  return Array.from(plain).length;
+  // Telegram measures text in UTF-16 code units: an emoji counts as 2. Counting code points let captions with
+  // many emoji slip over 1024 and get rejected.
+  return plain.length;
 }
 
 export function captionFits(html, limit) {

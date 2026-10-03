@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createPostmypostClient } from "../lib/postmypost.js";
+import { foreignLinks, normalizeCheckerResult } from "../lib/editorial-v2.js";
+import { visibleLength } from "../lib/telegram-caption.js";
 import { loadServer, inWs, startTempPostgres, dbRows } from "./dedupe-harness.js";
 
 const cases = {};
@@ -186,6 +188,18 @@ test("U7 SIGTERM flushes pending changes before exit", async () => {
   assert.match(out, /STATE_FLUSHED_ON_SIGTERM/);
   const parsed = JSON.parse(fs.readFileSync(path.join(dir, "workspaces.json"), "utf8"));
   assert.ok(parsed.workspaces.length >= 1);
+});
+
+test("U8 review bots: foreign links hold a post; prototype verdicts / 'Critical' never pass; UTF-16 caption length", async () => {
+  const req = { signature: "@chtotamai", network_channels: [{ signature: "@chtotamdengi" }] };
+  assert.deepEqual(foreignLinks({ title: "T", tgText: "Текст.\n\n#ии\n@chtotamai", vkText: "" }, req), []);
+  assert.deepEqual(foreignLinks({ title: "T", tgText: "Читайте @chtotamdengi и ozon.ru без ссылки", vkText: "" }, req), []);
+  const bad = foreignLinks({ title: "T", tgText: "Бесплатный доступ: https://free-gpt-promo.example/ref=x и бот @free_gpt_promo_bot, t.me/joinchat/abc", vkText: "www.scam.ru" }, req);
+  assert.ok(bad.includes("@free_gpt_promo_bot") && bad.some((x) => /free-gpt-promo/.test(x)) && bad.some((x) => /t\.me\/joinchat/.test(x)) && bad.some((x) => /www\.scam\.ru/.test(x)), JSON.stringify(bad));
+  for (const v of ["constructor", "__proto__", "hasOwnProperty", "toString"]) assert.equal(normalizeCheckerResult({ verdict: v, errors: [] }, "openai", "m").verdict, "fix", v);
+  assert.equal(normalizeCheckerResult({ verdict: "pass", errors: [{ severity: "Critical", problem: "x" }] }, "openai", "m").verdict, "fix");
+  assert.equal(visibleLength("🤖 ок"), 5, "emoji counts as 2 UTF-16 units");
+  assert.equal(visibleLength("<b>а&amp;б</b>"), 3);
 });
 
 async function main() {
