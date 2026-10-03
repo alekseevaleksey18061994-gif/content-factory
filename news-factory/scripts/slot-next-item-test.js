@@ -20,12 +20,15 @@ function installTelegram(mode = "post") {
       const method = u.split("/").pop();
       let body = {};
       if (init.body && typeof init.body === "string") body = JSON.parse(init.body);
-      else if (init.body && typeof init.body.get === "function") body = { caption: init.body.get("caption") || "", text: init.body.get("text") || "" };
+      else if (init.body && typeof init.body.get === "function") body = { caption: init.body.get("caption") || "", text: init.body.get("text") || "", multipart: true };
+      if (method === "getChat" && mode === "getchat-timeout") { const e = new Error("The operation was aborted due to timeout"); e.name = "TimeoutError"; throw e; }
       if (method === "getChat") return json({ ok: true, result: { id: -100123, type: "channel", username: "chtotamai", title: "Что там у ИИ?" } });
       const text = String(body.text || body.caption || "");
       if (/FAILME/.test(text) || mode === "kicked-all") {
-        sent.push({ method, text, failed: true });
+        sent.push({ method, text, failed: true, multipart: Boolean(body.multipart) });
         if (mode === "network") throw new Error("fetch failed");
+        if (mode === "timeout") { const e = new Error("The operation was aborted due to timeout"); e.name = "TimeoutError"; throw e; }
+        if (mode === "refused") { const e = new TypeError("fetch failed"); e.cause = { code: "ECONNREFUSED" }; throw e; }
         if (mode === "kicked" || mode === "kicked-all") return json({ ok: false, error_code: 403, description: "Forbidden: bot was kicked from the channel chat" }, 403);
         if (mode === "flood") return json({ ok: false, error_code: 429, description: "Too Many Requests: retry after 600", parameters: { retry_after: 600 } }, 429);
         return json({ ok: false, error_code: 400, description: "Bad Request: MESSAGE_EMPTY" }, 400);
@@ -137,15 +140,74 @@ test("R2 flood limit (429): the slot stops after one post", async () => {
   assert.equal(sent.filter((x) => !x.failed).length, 0, "no next post sent into the flood limit");
 });
 
-test("R3 no answer from Telegram (network): the post may be out -> no DIFFERENT post in the same slot", async () => {
+test("R3 no answer from Telegram (network): counted as published (uncertain) — no second copy, no other post", async () => {
   const t = await boot();
   const sent = installTelegram("network");
   t.ws("ai-main").state.queue = [item("a", 99, true), item("b", 95)];
   t.ws("ai-main").state.mode = "AUTO";
+  const r = await inWs(t, "ai-main", () => t.publishDynamicSlot());
+  assert.equal(r.published, true, JSON.stringify(r));
+  assert.equal(sent.filter((x) => x.failed).length, 1, "exactly one send attempt: " + JSON.stringify(sent));
+  assert.equal(sent.some((x) => !x.failed && /Заголовок b/.test(x.text)), false, "no different post in the same slot");
+  assert.equal(t.ws("ai-main").state.queue.some((x) => x.id === "a"), false, "the post is not sent again later");
+  assert.ok(t.ws("ai-main").state.queue.some((x) => x.id === "b"));
+});
+
+test("R4 Telegram timeout on a photo (the 18:00 duplicates): one request only, our media uploaded directly, slot done", async () => {
+  const t = await boot();
+  const sent = installTelegram("timeout");
+  t.ws("ai-main").state.queue = [item("a", 99, true), item("b", 95)];
+  t.ws("ai-main").state.mode = "AUTO";
+  const r = await inWs(t, "ai-main", () => t.publishDynamicSlot());
+  assert.equal(r.published, true);
+  const attempts = sent.filter((x) => x.failed);
+  assert.equal(attempts.length, 1, "no URL->upload / cover / repair re-sends: " + JSON.stringify(sent.map((x) => x.method)));
+  assert.equal(attempts[0].multipart, true, "local cover is uploaded, not passed as a URL Telegram must fetch from us");
+  const again = await inWs(t, "ai-main", () => t.catchUpCurrentRegularSlotAllWorkspaces());
+  assert.equal(sent.filter((x) => !x.failed).length, 0, "catch-up does not publish another post into the same slot");
+  void again;
+});
+
+test("R5 connection refused (request never reached Telegram): not counted as published; slot stops, post kept", async () => {
+  const t = await boot();
+  const sent = installTelegram("refused");
+  t.ws("ai-main").state.queue = [item("a", 99, true), item("b", 95)];
+  t.ws("ai-main").state.mode = "AUTO";
   await assert.rejects(() => inWs(t, "ai-main", () => t.publishDynamicSlot()));
-  assert.equal(sent.some((x) => !x.failed && /Заголовок b/.test(x.text)), false);
+  assert.equal(sent.filter((x) => !x.failed).length, 0, "Telegram unreachable: no other post thrown at it");
   const a = t.ws("ai-main").state.queue.find((x) => x.id === "a");
-  assert.ok(!a.publishRetryAfter, "the same post stays the slot's post (old behaviour)");
+  assert.ok(a && !a.telegramPublished, "not marked as published");
+  assert.ok(!a.publishRetryAfter, "not penalised: it was not the post's fault");
+});
+
+test("R6 which failures count as 'maybe sent'", async () => {
+  const t = await boot();
+  const f = t.telegramErrorIsAmbiguous;
+  const te = new Error("x"); te.name = "TimeoutError";
+  const c = (code) => { const e = new TypeError("fetch failed"); e.cause = { code }; return e; };
+  assert.deepEqual([f(te), f(c("ECONNRESET")), f(c("UND_ERR_SOCKET")), f(c("ECONNREFUSED")), f(c("ENOTFOUND")), f(c("UND_ERR_CONNECT_TIMEOUT")), f(c("DEPTH_ZERO_SELF_SIGNED_CERT")), f(c("CERT_HAS_EXPIRED"))], [true, true, true, false, false, false, false, false]);
+});
+
+test("R7 timeout on getChat (before any send): NOT counted as published, the post stays", async () => {
+  const t = await boot();
+  const sent = installTelegram("getchat-timeout");
+  t.ws("ai-main").state.queue = [item("a", 99), item("b", 95)];
+  t.ws("ai-main").state.mode = "AUTO";
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishDynamicSlot()));
+  assert.equal(sent.length, 0);
+  const a = t.ws("ai-main").state.queue.find((x) => x.id === "a");
+  assert.ok(a && !a.telegramPublished, "kept for a later slot");
+  assert.equal((t.ws("ai-main").state.history || []).length, 0);
+});
+
+test("R8 an uncertain post is recorded as such (queue item / history) for a manual check", async () => {
+  const t = await boot();
+  installTelegram("timeout");
+  t.ws("ai-main").state.queue = [item("a", 99, true)];
+  t.ws("ai-main").state.mode = "AUTO";
+  await inWs(t, "ai-main", () => t.publishDynamicSlot());
+  const h = (t.ws("ai-main").state.history || []).find((x) => x.queueId === "a");
+  assert.ok(h && h.telegramUncertain === true, JSON.stringify(h || null).slice(0, 300));
 });
 
 async function main() {

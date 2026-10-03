@@ -105,7 +105,7 @@ const EXPORT_NAMES = [
   "recoverMissingWorkspaces", "persistWorkspaceStore", "pendingAutoTargets", "acquirePublishLock", "currentWorkspace", "dynamicUsedQueueIds", "enforceCopyrightSafeMedia", "server",
   "runOffsiteBackup", "workspaceWatchdogTick", "readBackupStatus", "buildBackupPayload",
   "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage", "publishVkPost", "logPostmypostStatus", "workspaceVkPublishingAllowed", "refreshPostmypostMap", "sendMultiPlatformPost",
-  "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources"
+  "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous"
 ];
 
 function bin(name) {
