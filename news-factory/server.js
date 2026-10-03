@@ -34,6 +34,7 @@ import {
 } from "./lib/editorial-v2.js";
 import { matchRegistry as matchEditorialRegistry } from "./lib/editorial-registry.js";
 import { CAPTION_VISIBLE_LIMIT, TELEGRAM_CAPTION_HARD_LIMIT, visibleLength, trimPostPreservingTail, missingProtected } from "./lib/telegram-caption.js";
+import { cardSafeText, wrapCardLines } from "./lib/card-text.js";
 import {
   COST_STATE_MIGRATION_ID,
   collectLegacyCostRows,
@@ -1953,8 +1954,9 @@ function startCostBudgetMonitor() {
 async function renderEconomyTextCard(payload) {
   ensureDataDir();
   // emoji have no glyph in the card font (they were drawn as boxes): keep letters, digits and punctuation only
-  const noEmoji = function(v){ return String(v || "").replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{20E3}]/gu, "").replace(/\s+/g, " ").trim(); };
-  const raw = noEmoji(String(payload && payload.title || "Новость")).slice(0, 180) || "Новость";
+  // emoji, CJK and other scripts missing from DejaVu are dropped (they rendered as boxes)
+  const noEmoji = cardSafeText;
+  const raw = noEmoji(String(payload && payload.title || "Новость").slice(0, 400)) || "Новость";
   const esc = function(v){ return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
   const channel = noEmoji(currentWorkspace().name || "News Factory") || "News Factory";
   const topic = String(payload && payload.topicId || currentWorkspace().channelId || "NEWS").toUpperCase();
@@ -1968,18 +1970,12 @@ async function renderEconomyTextCard(payload) {
     { a:"#101a28", b:"#225c7a", accent:"#7dd7ff" }
   ];
   const v = variants[seed % variants.length];
-  const words = raw.split(/\s+/), lines = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? line + " " + word : word;
-    if (next.length > 26 && line) { lines.push(line); line = word; } else line = next; // DejaVu Bold is wider than Arial
-    if (lines.length >= 3) break;
-  }
-  if (line && lines.length < 4) lines.push(line);
-  const text = lines.slice(0,4).map(function(x,i){
+  // DejaVu Bold is wider than Arial: 26 chars per line, 4 lines, long words split, overflow ends with "…"
+  const lines = wrapCardLines(raw, 26, 4);
+  const text = lines.map(function(x,i){
     return '<text x="92" y="'+(355+i*98)+'" font-family="Arial,sans-serif" font-size="64" font-weight="800" fill="#fff">'+esc(x)+'</text>';
   }).join("");
-  const note = esc(payload && payload.cardNote != null ? payload.cardNote : "");
+  const note = esc(wrapCardLines(cardSafeText(payload && payload.cardNote != null ? payload.cardNote : ""), 80, 1)[0] || "");
   const variant = seed % 3;
   const decor = variant === 0
     ? '<circle cx="1320" cy="170" r="240" fill="'+v.accent+'" opacity=".18"/><circle cx="1400" cy="860" r="330" fill="'+v.accent+'" opacity=".08"/>'
@@ -1990,7 +1986,7 @@ async function renderEconomyTextCard(payload) {
     '<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="'+v.a+'"/><stop offset="1" stop-color="'+v.b+'"/></linearGradient></defs>'+
     '<rect width="1536" height="1024" fill="url(#bg)"/>'+decor+
     '<rect x="92" y="92" width="14" height="110" rx="7" fill="'+v.accent+'"/>'+
-    '<text x="138" y="138" font-family="Arial,sans-serif" font-size="38" font-weight="800" fill="#fff">'+esc(channel)+'</text>'+
+    '<text x="138" y="138" font-family="Arial,sans-serif" font-size="38" font-weight="800" fill="#fff">'+esc(wrapCardLines(channel, 48, 1)[0] || "News Factory")+'</text>'+
     '<text x="138" y="188" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="'+v.accent+'">'+esc(topic)+'</text>'+
     text+
     '<text x="92" y="925" font-family="Arial,sans-serif" font-size="28" fill="#dbe7ff">'+note+'</text>'+

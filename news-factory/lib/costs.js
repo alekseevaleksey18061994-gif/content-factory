@@ -192,6 +192,45 @@ function usageNum(value) {
 }
 
 // Never lets a NaN/negative/infinite cost escape (a poisoned price would otherwise be written into rows).
+// Resolve a rate for a model id that may not be in the table verbatim.
+// 1) exact id; 2) dated/suffixed id of a known base ("claude-sonnet-5-5-20261001",
+//    "gpt-6-luna-2026-09-01") -> base price, still "known";
+// 3) otherwise the most expensive rate of the matching family (or of the whole
+//    section) so unknown models are never counted as $0 — flagged estimated.
+const RATE_WEIGHT_KEYS = ["output", "input", "imageInput", "textInput"];
+function rateWeight(rate) {
+  let w = 0;
+  for (const k of RATE_WEIGHT_KEYS) w += Number(rate && rate[k]) || 0;
+  return w;
+}
+export function resolveModelRate(table, model) {
+  const map = table && typeof table === "object" ? table : {};
+  const m = String(model || "").trim().toLowerCase();
+  const keys = Object.keys(map).filter((k) => map[k] && typeof map[k] === "object");
+  if (!keys.length) return { rate: null, known: false, estimated: false, matched: "" };
+  if (m && Object.prototype.hasOwnProperty.call(map, m) && map[m] && typeof map[m] === "object") {
+    return { rate: map[m], known: true, estimated: false, matched: m };
+  }
+  const exactCase = keys.find((k) => k.toLowerCase() === m);
+  if (m && exactCase) return { rate: map[exactCase], known: true, estimated: false, matched: exactCase };
+  // Suffix only: date stamps / "-latest" / "@version".
+  const prefix = keys
+    .filter((k) => {
+      const kl = k.toLowerCase();
+      if (!m.startsWith(kl) || m.length === kl.length) return false;
+      const rest = m.slice(kl.length);
+      return /^(?:[-@_](?:\d{4}-?\d{2}-?\d{2}|\d{8}|latest|v\d+(?:\.\d+)*))+$/.test(rest);
+    })
+    .sort((a, b) => b.length - a.length)[0];
+  if (prefix) return { rate: map[prefix], known: true, estimated: false, matched: prefix };
+  const families = ["opus", "sonnet", "haiku", "luna", "sunburst", "mini", "nano"];
+  const fam = families.find((f) => m.includes(f));
+  let pool = fam ? keys.filter((k) => k.toLowerCase().includes(fam)) : [];
+  if (!pool.length) pool = keys;
+  const top = pool.slice().sort((a, b) => rateWeight(map[b]) - rateWeight(map[a]))[0];
+  return { rate: map[top], known: false, estimated: true, matched: top };
+}
+
 export function calculateUsageCost(provider, model, usage, endpoint, pricingInput) {
   const result = calculateUsageCostRaw(provider, model, usage, endpoint, pricingInput);
   if (!Number.isFinite(result.costUsd) || result.costUsd < 0) {
@@ -221,8 +260,10 @@ function calculateUsageCostRaw(provider, model, usage, endpoint, pricingInput) {
 
   if (p === "openai" && ep === "images") {
     kind = "image";
-    const rate = pricing.openaiImage && pricing.openaiImage[m];
-    if (!rate) pricingKnown = false;
+    const resolved = resolveModelRate(pricing.openaiImage, m);
+    const rate = resolved.rate;
+    if (!resolved.known) pricingKnown = false;
+    if (resolved.estimated) estimated = true;
     const imageInput = usageNum(inputDetails.image_tokens);
     let textInput = usageNum(inputDetails.text_tokens);
     if (!textInput && !imageInput && input) textInput = input;
@@ -243,8 +284,10 @@ function calculateUsageCostRaw(provider, model, usage, endpoint, pricingInput) {
   }
 
   if (p === "anthropic") {
-    const rate = pricing.anthropic && pricing.anthropic[m];
-    if (!rate) pricingKnown = false;
+    const resolved = resolveModelRate(pricing.anthropic, m);
+    const rate = resolved.rate;
+    if (!resolved.known) pricingKnown = false;
+    if (resolved.estimated) estimated = true;
     // Anthropic input_tokens excludes cache creation/read tokens. Do NOT subtract them.
     if (rate) {
       costUsd = ((input * Number(rate.input || 0)) +
@@ -262,12 +305,10 @@ function calculateUsageCostRaw(provider, model, usage, endpoint, pricingInput) {
   }
 
   if (p === "openai") {
-    let rate = pricing.openaiText && pricing.openaiText[m];
-    if (!rate) {
-      rate = pricing.openaiText && pricing.openaiText["gpt-6-luna"];
-      estimated = true;
-      pricingKnown = false;
-    }
+    const resolved = resolveModelRate(pricing.openaiText, m);
+    const rate = resolved.rate;
+    if (!resolved.known) pricingKnown = false;
+    if (resolved.estimated) estimated = true;
     if (rate) {
       const normalInput = Math.max(0, input - cached);
       costUsd = ((normalInput * Number(rate.input || 0)) +

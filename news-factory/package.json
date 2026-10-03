@@ -31,7 +31,8 @@
     "test:source-fetch": "node scripts/source-fetch-test.js",
     "test:channel-notes": "node scripts/channel-notes-test.js",
     "test:cost-media-balance": "node scripts/cost-media-balance-test.js",
-    "test:cover-fallback": "node scripts/cover-fallback-test.js"
+    "test:cover-fallback": "node scripts/cover-fallback-test.js",
+    "test:cards-pricing": "node scripts/cards-pricing-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
