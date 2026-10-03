@@ -4898,10 +4898,10 @@ async function enhanceQueuePhoto(id){
   var item=(state.queue||[]).find(function(q){return q.id===id});
   if(!item)return;
   if(item.videoUrl){toast('У этой новости приоритет у видео');return}
-  toast('Готовлю обложку: улучшаю фото или создаю новую…');
+  toast('Генерирую новую AI-обложку…');
   try{
-    var j=await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id})});
-    toast(j&&j.mode==='enhanced'?'Фото улучшено':'Новая AI-обложка готова');
+    await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id})});
+    toast('Новая AI-обложка готова');
     await load();
     openQueuePreview(id);
   }catch(e){toast('Обложка: '+e.message)}
