@@ -5679,7 +5679,9 @@ async function collectOnce(trigger) {
           articleHtml = await fetchText(url, 15000);
         } catch (fetchErrorRaw) {
           // The Telegram post / RSS item already carries the text: use it instead of losing the news.
-          const rebuilt = articleHtmlFromLink(candidate.link);
+          // ...but not when the page is gone (404/410: removed or retracted) — only when it is blocked or slow.
+          const removed = /HTTP (404|410)\b/.test(String(fetchErrorRaw && fetchErrorRaw.message || ""));
+          const rebuilt = removed ? "" : articleHtmlFromLink(candidate.link);
           const minText = (source.group === "blogger" || source.group === "creator") ? 40 : 250;
           if (rebuilt && String(candidate.link.text || "").length >= minText) {
             articleHtml = rebuilt;

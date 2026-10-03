@@ -238,7 +238,25 @@ function openProxyTunnel(proxy, host, port, deadline) {
 async function requestOnce(u, o) {
   let tunnel = null;
   if (o.proxy && u.protocol === "https:") tunnel = await openProxyTunnel(o.proxy, u.hostname.replace(/^\[|\]$/g, ""), Number(u.port || 443), o.deadline);
-  return requestOnceRaw(u, o, tunnel);
+  try {
+    return await requestOnceRaw(u, o, tunnel);
+  } finally {
+    // The body is fully buffered before requestOnceRaw resolves, so the tunnel is never needed afterwards.
+    if (tunnel) tunnel.destroy();
+  }
+}
+
+// One-shot agent whose only connection is TLS over the already opened CONNECT tunnel. (A request-level
+// createConnection is ignored when agent:false, which silently sent "proxied" HTTPS straight to the target.)
+function tunnelAgent(tunnel, servername) {
+  const agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
+  agent.createConnection = function(options) {
+    // certificate verification stays on (default rejectUnauthorized), checked against the target host name
+    const tlsOptions = { socket: tunnel, servername: servername, host: options.host };
+    if (options.rejectUnauthorized === false) tlsOptions.rejectUnauthorized = false; // never set by our callers
+    return tls.connect(tlsOptions);
+  };
+  return agent;
 }
 
 function requestOnceRaw(u, o, tunnel) {
@@ -263,8 +281,9 @@ function requestOnceRaw(u, o, tunnel) {
     let reqOptions;
     if (tunnel) {
       // HTTPS through the proxy: TLS runs end-to-end over the CONNECT tunnel (the proxy sees only ciphertext).
-      reqOptions = { protocol: "https:", hostname: targetHost, port: u.port || 443, path: u.pathname + u.search, method: o.method, headers: headers, agent: false, servername: net.isIP(targetHost) ? undefined : targetHost,
-        createConnection: function() { return tls.connect({ socket: tunnel, servername: net.isIP(targetHost) ? undefined : targetHost }); } };
+      reqOptions = { protocol: "https:", hostname: targetHost, port: u.port || 443, path: u.pathname + u.search, method: o.method, headers: headers,
+        agent: tunnelAgent(tunnel, net.isIP(targetHost) ? undefined : targetHost), servername: net.isIP(targetHost) ? undefined : targetHost,
+        lookup: function(host, lookupOptions, callback) { (typeof lookupOptions === "function" ? lookupOptions : callback)(new SafeFetchError("blocked_address", "direct connection is not allowed for a proxied request")); } };
     } else if (o.proxy) {
       // plain HTTP through the proxy: absolute URL in the request line
       const h = Object.assign({}, headers, { host: u.host });

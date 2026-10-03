@@ -140,32 +140,51 @@ test("F6 safeFetch through a real HTTP proxy: absolute URL, Proxy-Authorization,
 test("F8 HTTPS through the proxy: CONNECT tunnel + end-to-end TLS to the target", async () => {
   const fs = await import("node:fs"); const os = await import("node:os"); const path = await import("node:path"); const https = await import("node:https"); const netm = await import("node:net");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nf-tls-"));
-  const r0 = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", dir + "/k.pem", "-out", dir + "/c.pem", "-days", "1", "-subj", "/CN=localhost"], { encoding: "utf8" });
+  const r0 = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", dir + "/k.pem", "-out", dir + "/c.pem", "-days", "1", "-subj", "/CN=nf-target.invalid", "-addext", "subjectAltName=DNS:nf-target.invalid"], { encoding: "utf8" });
   if (r0.status !== 0) { console.log("skip: no openssl"); return; }
   const target = https.createServer({ key: fs.readFileSync(dir + "/k.pem"), cert: fs.readFileSync(dir + "/c.pem") }, (req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<html>secure " + req.url + " " + (req.headers["user-agent"] || "") + "</html>"); });
   await new Promise((r) => target.listen(0, "127.0.0.1", r));
   const tport = target.address().port;
   const tunnels = [];
   const proxy = http.createServer((req, res) => { res.writeHead(405); res.end(); });
+  const openSockets = new Set();
   proxy.on("connect", (req, socket, head) => {
+    openSockets.add(socket); socket.on("close", () => openSockets.delete(socket));
     tunnels.push({ url: req.url, auth: req.headers["proxy-authorization"] || "" });
     const [h, p] = req.url.split(":");
-    const up = netm.connect(Number(p), h === "localhost" ? "127.0.0.1" : h, () => { socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head && head.length) up.write(head); up.pipe(socket); socket.pipe(up); });
+    const up = netm.connect(Number(p), h === "nf-target.invalid" ? "127.0.0.1" : h, () => { socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head && head.length) up.write(head); up.pipe(socket); socket.pipe(up); });
     up.on("error", () => socket.destroy());
   });
   await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"; // self-signed test certificate only
   try {
-    const sf = createSafeFetch({ ipFilter: () => false, skipHostnameBlocklist: true, allowedPorts: [tport] });
-    const f = createSourceFetcher({ fetch: sf, proxy: parseProxyUrl("http://u:p@127.0.0.1:" + proxy.address().port) });
-    const r = await f.fetch("https://localhost:" + tport + "/news?q=1", { timeoutMs: 5000 });
-    assert.equal(r.status, 200, "direct works too, but let us force the proxy below");
-    const r2 = await sf("https://localhost:" + tport + "/via?x=2", { proxy: parseProxyUrl("http://u:p@127.0.0.1:" + proxy.address().port), timeoutMs: 5000, headers: { "user-agent": "UA-TEST" } });
+    // nf-target.invalid does not resolve: the request can ONLY succeed through the tunnel (a direct connection
+    // would fail DNS). Before the fix the "proxied" request silently went direct.
+    const sf = createSafeFetch({ ipFilter: () => false, allowedPorts: [tport] });
+    const p = parseProxyUrl("http://u:p@127.0.0.1:" + proxy.address().port);
+    const r2 = await sf("https://nf-target.invalid:" + tport + "/via?x=2", { proxy: p, timeoutMs: 5000, headers: { "user-agent": "UA-TEST" } });
     assert.equal(r2.status, 200);
     assert.match(await r2.text(), /secure \/via\?x=2 UA-TEST/);
-    assert.equal(tunnels.at(-1).url, "localhost:" + tport);
+    assert.equal(tunnels.at(-1).url, "nf-target.invalid:" + tport);
     assert.equal(tunnels.at(-1).auth, "Basic " + Buffer.from("u:p").toString("base64"));
+    await assert.rejects(() => sf("https://nf-target.invalid:" + tport + "/", { timeoutMs: 3000 }), "without the proxy the host is unreachable");
+    // certificate is still verified against the target name through the tunnel
+    delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    await assert.rejects(() => sf("https://nf-target.invalid:" + tport + "/", { proxy: p, timeoutMs: 3000 }), /self-signed|certificate/i);
+    // no tunnel sockets left open
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(openSockets.size, 0, "tunnels are closed after use");
   } finally { target.close(); proxy.close(); }
+});
+
+test("F9 hostile feeds parse in linear time; section pages never fall back to the site-wide feed", async () => {
+  for (const evil of ["<item>".repeat(400000), "<rss><item><title>x</title><link>https://a.b/1</link><description>" + "<script".repeat(200000) + "</description></item></rss>", "<![CDATA[".repeat(300000), "<".repeat(2000000), "<rss><item><title " + "a".repeat(1000000)]) {
+    const t0 = Date.now(); parseFeed(evil, "https://a.b/"); discoverFeedUrl(evil, "https://a.b/x/y");
+    assert.ok(Date.now() - t0 < 500, "took " + (Date.now() - t0) + " ms for " + evil.slice(0, 20));
+  }
+  assert.equal(discoverFeedUrl('<link rel="alternate" type="application/rss+xml" href="/rss">', "https://iz.ru/rubric/ekonomika"), "", "section page: no site-wide feed");
+  assert.equal(discoverFeedUrl('<link rel="alternate" type="application/rss+xml" href="/rss">', "https://www.retail.ru/news/"), "https://www.retail.ru/rss");
+  assert.deepEqual(guessFeedUrls("https://iz.ru/rubric/ekonomika"), ["https://iz.ru/rubric/ekonomika/rss", "https://iz.ru/rubric/ekonomika/feed"]);
 });
 
 test("F7 trial period: an auto-added source with no useful news is paused after the trial; editor's sources are not", async () => {
@@ -211,6 +230,16 @@ test("C3 collector: page that opens records its feed for later", async () => {
   net.pages.set(ART, articleHtml({ title: TITLE, date: "2026-10-03T08:00:00+03:00", body: BODY }));
   await inWs(t, "chtotampokupki", () => t.collectOnce("slot-prep"));
   assert.equal(t.ws("chtotampokupki").state.sources[0].feedUrl, "https://www.retail.ru/news/rss");
+});
+
+test("C4 collector: removed article (HTTP 410) is NOT rebuilt from the feed text", async () => {
+  const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", env: { CROSS_CHANNEL_DEDUPE_ENABLED: "false" }, state: { chtotampokupki: { sources: [shopSrc({ feedUrl: "https://www.retail.ru/news/rss" })] } } });
+  net.pages.set("https://www.retail.ru/news/", () => resp(403, "Forbidden"));
+  net.pages.set("https://www.retail.ru/news/rss", () => resp(200, `<rss><channel><item><title>${TITLE}</title><link>${ART}</link><pubDate>Sat, 03 Oct 2026 08:00:00 +0300</pubDate><description>${BODY}</description></item></channel></rss>`, "application/rss+xml"));
+  net.pages.set(ART, () => resp(410, "Gone"));
+  const r = await inWs(t, "chtotampokupki", () => t.collectOnce("slot-prep"));
+  assert.ok(!r.fromLinkText, JSON.stringify(r));
+  assert.equal(r.queued, 0);
 });
 
 async function main() {

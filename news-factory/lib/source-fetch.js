@@ -104,26 +104,66 @@ export function createSourceFetcher(options) {
 
 // ---------------------------------------------------------------- RSS / Atom
 
+// All parsing below is linear in the input: a hostile feed (thousands of unclosed <item>/<script>/CDATA) used
+// to make lazy [\s\S]*? patterns quadratic and freeze the whole server for minutes.
+const MAX_FEED_CHARS = 3000000;
+const MAX_FEED_ITEMS = 100;
+const MAX_FIELD_CHARS = 20000;
+
+// Calls onBlock(inner, outerStart, outerEnd) for every open..close pair; stops at the first open without a close.
+function eachBlock(src, openRe, closeRe, onBlock) {
+  openRe.lastIndex = 0;
+  let m;
+  while ((m = openRe.exec(src))) {
+    const innerStart = m.index + m[0].length;
+    closeRe.lastIndex = innerStart;
+    const c = closeRe.exec(src);
+    if (!c) return;
+    if (onBlock(src.slice(innerStart, c.index), m.index, c.index + c[0].length) === false) return;
+    openRe.lastIndex = c.index + c[0].length;
+  }
+}
+
+function replaceBlocks(src, openRe, closeRe, replacer) {
+  let out = "";
+  let pos = 0;
+  let cut = -1;
+  eachBlock(src, openRe, closeRe, function(inner, a, b) { out += src.slice(pos, a) + replacer(inner); pos = b; });
+  // an unclosed opener: drop everything after it (it is never a well-formed field anyway)
+  openRe.lastIndex = pos;
+  const tail = openRe.exec(src);
+  if (tail) cut = tail.index;
+  return out + src.slice(pos, cut >= 0 ? cut : src.length);
+}
+
+function unwrapCdata(text) {
+  return replaceBlocks(String(text || ""), /<!\[CDATA\[/g, /\]\]>/g, function(inner) { return inner; });
+}
+
 function decodeEntities(text) {
-  return String(text || "")
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+  return unwrapCdata(text)
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;|&apos;/g, "'")
-    .replace(/&#(\d+);/g, function(m, n) { const c = Number(n); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ""; })
-    .replace(/&#x([0-9a-f]+);/gi, function(m, n) { const c = parseInt(n, 16); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ""; })
+    .replace(/&#(\d{1,7});/g, function(m, n) { const c = Number(n); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ""; })
+    .replace(/&#x([0-9a-f]{1,6});/gi, function(m, n) { const c = parseInt(n, 16); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ""; })
     .replace(/&amp;/g, "&");
 }
 
 function stripTags(html) {
   // feeds carry escaped HTML: decode once to get the markup, drop the tags, then decode the text entities
-  return decodeEntities(decodeEntities(String(html || "").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1"))
-    .replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n").replace(/<[^>]+>/g, " "))
-    .replace(/&nbsp;| /g, " ").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+  let markup = decodeEntities(String(html || "").slice(0, MAX_FIELD_CHARS));
+  markup = replaceBlocks(markup, /<script\b/gi, /<\/script>/gi, function() { return " "; });
+  markup = replaceBlocks(markup, /<style\b/gi, /<\/style>/gi, function() { return " "; });
+  markup = markup.replace(/<br\s{0,10}\/?>/gi, "\n").replace(/<\/p>/gi, "\n").replace(/<[^<>]{0,2000}>/g, " ");
+  return decodeEntities(markup)
+    .replace(/&nbsp;|\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
 }
 
+function escapeRe(text) { return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
 function tag(block, name) {
-  const m = block.match(new RegExp("<" + name + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/" + name + ">", "i"));
-  return m ? m[1] : "";
+  let found = "";
+  eachBlock(block, new RegExp("<" + escapeRe(name) + "(?:\\s[^<>]{0,300})?>", "gi"), new RegExp("<\\/" + escapeRe(name) + ">", "gi"), function(inner) { found = inner; return false; });
+  return found;
 }
 
 export function looksLikeFeed(text) {
@@ -133,13 +173,15 @@ export function looksLikeFeed(text) {
 
 // -> [{url, title, text, publishedAt, imageUrl}], newest first, http(s) links only.
 export function parseFeed(xml, baseUrl) {
-  const src = String(xml || "");
+  const src = String(xml || "").slice(0, MAX_FEED_CHARS);
   const out = [];
-  const blocks = src.match(/<item[\s>][\s\S]*?<\/item>/gi) || src.match(/<entry[\s>][\s\S]*?<\/entry>/gi) || [];
+  let blocks = [];
+  eachBlock(src, /<item[\s>]/gi, /<\/item>/gi, function(inner) { blocks.push(inner); return blocks.length < MAX_FEED_ITEMS; });
+  if (!blocks.length) eachBlock(src, /<entry[\s>]/gi, /<\/entry>/gi, function(inner) { blocks.push(inner); return blocks.length < MAX_FEED_ITEMS; });
   for (const block of blocks) {
     let link = stripTags(tag(block, "link"));
     if (!link) {
-      const alt = block.match(/<link\b[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["']/i) || block.match(/<link\b[^>]*href=["']([^"']+)["']/i);
+      const alt = block.match(/<link\b[^<>]{0,500}rel=["']alternate["'][^<>]{0,500}href=["']([^"'<>]{1,2000})["']/i) || block.match(/<link\b[^<>]{0,500}href=["']([^"'<>]{1,2000})["']/i);
       link = alt ? decodeEntities(alt[1]) : "";
     }
     if (!link) link = stripTags(tag(block, "guid"));
@@ -152,8 +194,10 @@ export function parseFeed(xml, baseUrl) {
     const text = stripTags(body).slice(0, 6000);
     const dateRaw = stripTags(tag(block, "pubDate") || tag(block, "published") || tag(block, "updated") || tag(block, "dc:date"));
     const t = dateRaw ? Date.parse(dateRaw) : NaN;
-    const img = block.match(/<enclosure\b[^>]*url=["']([^"']+)["'][^>]*type=["']image\//i) || block.match(/<enclosure\b[^>]*type=["']image\/[^"']*["'][^>]*url=["']([^"']+)["']/i) ||
-      block.match(/<media:content\b[^>]*url=["']([^"']+)["']/i) || block.match(/<media:thumbnail\b[^>]*url=["']([^"']+)["']/i);
+    const A = "[^<>]{0,500}";
+    const U = "[\"']([^\"'<>]{1,2000})[\"']";
+    const img = block.match(new RegExp("<enclosure\\b" + A + "url=" + U + A + "type=[\"']image\\/", "i")) || block.match(new RegExp("<enclosure\\b" + A + "type=[\"']image\\/[^\"'<>]{0,50}[\"']" + A + "url=" + U, "i")) ||
+      block.match(new RegExp("<media:content\\b" + A + "url=" + U, "i")) || block.match(new RegExp("<media:thumbnail\\b" + A + "url=" + U, "i"));
     let imageUrl = "";
     if (img) { try { imageUrl = new URL(decodeEntities(img[1]), baseUrl).href; } catch {} }
     out.push({ url: url, title: title.length > 220 ? title.slice(0, 217) + "…" : title, text: text, publishedAt: Number.isFinite(t) ? new Date(t).toISOString() : "", imageUrl: /^https?:\/\//i.test(imageUrl) ? imageUrl : "" });
@@ -165,7 +209,7 @@ export function parseFeed(xml, baseUrl) {
 // the source page (a section feed) wins over a site-wide feed.
 export function discoverFeedUrl(html, pageUrl) {
   const found = [];
-  const re = /<link\b[^>]*>/gi;
+  const re = /<link\b[^<>]{0,2000}>/gi;
   let m;
   while ((m = re.exec(String(html || "")))) {
     const t = m[0];
@@ -186,7 +230,18 @@ export function discoverFeedUrl(html, pageUrl) {
     try { p = new URL(u).pathname; } catch {}
     return segs.filter(function(s) { return s.length > 2 && p.includes(s); }).length;
   };
-  return found.slice().sort(function(a, b) { return score(b) - score(a); })[0];
+  const best = found.slice().sort(function(a, b) { return score(b) - score(a); })[0];
+  // A section page (/rubric/ekonomika) must not silently turn into the whole site's feed: off-topic floods.
+  if (isSectionPage(pageUrl) && score(best) === 0) return "";
+  return best;
+}
+
+// More than one meaningful path segment (e.g. /rubric/ekonomika, /business/consumer): a section of a site.
+export function isSectionPage(pageUrl) {
+  try {
+    const segs = new URL(pageUrl).pathname.split("/").filter(function(s) { return s && !/^(news|novosti|lenta|all|ru|en)$/i.test(s); });
+    return segs.length >= 1;
+  } catch { return false; }
 }
 
 // Common feed locations tried when the page itself is blocked and no feed is known yet.
@@ -194,9 +249,11 @@ export function guessFeedUrls(pageUrl) {
   try {
     const u = new URL(pageUrl);
     const origin = u.origin;
-    const list = [origin + "/rss", origin + "/rss.xml", origin + "/feed", origin + "/feed/"];
     const path = u.pathname.replace(/\/+$/, "");
-    if (path && path !== "/") list.unshift(origin + path + "/rss", origin + path + "/feed");
+    const list = [];
+    if (path && path !== "/") list.push(origin + path + "/rss", origin + path + "/feed");
+    // site-wide feeds only for a site's main / news page, never for a section (off-topic floods)
+    if (!isSectionPage(pageUrl)) list.push(origin + "/rss", origin + "/rss.xml", origin + "/feed", origin + "/feed/");
     return Array.from(new Set(list));
   } catch { return []; }
 }
