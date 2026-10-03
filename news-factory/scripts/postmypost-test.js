@@ -253,11 +253,11 @@ test("S8 production case: Postmypost cannot download our URL (422) but the file 
   assert.equal(res.mediaMode, "postmypost"); assert.equal(wallPosts(calls).length, 0);
 });
 
-test("S2 Postmypost refuses (4xx) before the post exists -> direct VK posts as before", async () => {
+test("S2 Postmypost refuses (4xx) -> VK fails for this post; the old text-only community-token route is gone", async () => {
   const t = await boot();
   const calls = installNet(t, fakePmp({ createStatus: 402 }), vkDirect);
-  const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
-  assert.equal(res.mediaMode, "link_photo"); assert.equal(wallPosts(calls).length, 1);
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishVkPost(post())), (e) => e.mediaFailed === true && /402/.test(e.vkErrorMsg || e.message));
+  assert.equal(calls.vk.length, 0, "no VK API call with the community token");
 });
 
 test("S3 network error while creating the publication stops: no direct post (could be a duplicate)", async () => {
@@ -267,11 +267,11 @@ test("S3 network error while creating the publication stops: no direct post (cou
   assert.equal(wallPosts(calls).length, 0);
 });
 
-test("S4 publication ends with error status -> direct VK fallback", async () => {
+test("S4 publication ends with error status -> VK fails for this post, no direct VK", async () => {
   const t = await boot();
   const calls = installNet(t, fakePmp({ pubStatuses: [5, 3] }), vkDirect);
-  const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
-  assert.equal(res.mediaMode, "link_photo"); assert.equal(wallPosts(calls).length, 1);
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishVkPost(post())), (e) => e.mediaFailed === true);
+  assert.equal(calls.vk.length, 0);
 });
 
 test("S5 still pending when the wait ends -> reported as sent, NO direct fallback", async () => {
@@ -281,13 +281,14 @@ test("S5 still pending when the wait ends -> reported as sent, NO direct fallbac
   assert.equal(res.mediaMode, "postmypost_pending"); assert.equal(wallPosts(calls).length, 0);
 });
 
-test("S6 VK_VIA_POSTMYPOST=false or no token -> direct VK only, Postmypost never called", async () => {
+test("S6 VK_VIA_POSTMYPOST=false or no token -> VK is off everywhere (not allowed, publish refused), nothing is called", async () => {
   for (const env of [{ VK_VIA_POSTMYPOST: "false" }, { POSTMYPOST_TOKEN: "" }]) {
     const t = await boot(env);
     const pmp = fakePmp();
     const calls = installNet(t, pmp, vkDirect);
-    const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
-    assert.equal(res.mediaMode, "link_photo"); assert.equal(pmp.calls.length, 0); assert.equal(wallPosts(calls).length, 1);
+    assert.equal(t.workspaceVkPublishingAllowed(t.ws("ai-main")), false);
+    await assert.rejects(() => inWs(t, "ai-main", () => t.publishVkPost(post())), (e) => e.vkErrorCode === "config_missing");
+    assert.equal(pmp.calls.length, 0); assert.equal(calls.vk.length, 0);
   }
 });
 
@@ -385,15 +386,15 @@ test("R4 owner turned VK off; the community is re-connected (new account id) -> 
   assert.equal(cars.state.vkPostmypostAccountId, 603, "the target follows the new account");
 });
 
-test("R5 main cabinet whose community needs re-auth never posts into the only other connected community", async () => {
+test("R5 main cabinet whose community needs re-auth: no post into another community and no direct VK", async () => {
   const t = await boot({}, twoCh);
   const accounts = [Object.assign({}, NET_ACCOUNTS[0], { connection_status: 2 }), NET_ACCOUNTS[1]];
   const pmp = fakePmp({ accounts });
   const calls = installNet(t, pmp, vkDirect);
   await t.logPostmypostStatus();
-  const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishVkPost(post())), (e) => e.mediaFailed === true);
   assert.equal(pmp.calls.filter((c) => c.path === "/publications" && c.method === "POST").length, 0);
-  assert.equal(res.mediaMode, "link_photo"); assert.equal(calls.vk.filter((c) => c.method === "wall.post").length, 1);
+  assert.equal(calls.vk.length, 0, "no foreign community, no community-token post");
 });
 
 test("R6 publication created but the status check fails -> treated as sent (no duplicate), for any channel", async () => {

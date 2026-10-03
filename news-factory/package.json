@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.47.8",
+  "version": "0.48.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -25,8 +25,8 @@
     "test:workspace-recovery": "node scripts/workspace-recovery-test.js",
     "test:data-protection": "node scripts/data-protection-test.js",
     "test:provider-failover": "node scripts/provider-failover-test.js",
-    "test:link-card-vk": "node scripts/vk-link-card-test.js",
     "test:postmypost": "node scripts/postmypost-test.js",
+    "test:slot-next-item": "node scripts/slot-next-item-test.js",
     "test:cost-media-balance": "node scripts/cost-media-balance-test.js",
     "test:cover-fallback": "node scripts/cover-fallback-test.js"
   },

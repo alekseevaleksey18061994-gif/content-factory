@@ -839,9 +839,11 @@ function currentTelegramPublicUsername() {
 // may publish to VK only through its own community connected in Postmypost (see refreshPostmypostMap).
 function workspaceVkPublishingAllowed(ws) {
   const target = ws || currentWorkspace();
-  if (!target) return false;
+  if (!target || !VK_VIA_POSTMYPOST) return false;
+  // VK posts go only through Postmypost (with the picture). The main cabinet is allowed before the first map refresh;
+  // the publish itself refreshes the map and needs the pairing.
   if (target.id === workspaceStore.defaultWorkspaceId) return true;
-  return Boolean(VK_VIA_POSTMYPOST && postmypostMap.byWorkspace[target.id]);
+  return Boolean(postmypostMap.byWorkspace[target.id]);
 }
 // Direct VK API calls (analytics, wall.get, community token) exist only for the main cabinet's community.
 function workspaceVkDirectAllowed(ws) {
@@ -6312,6 +6314,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   return (state.queue || [])
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && item.status !== "publish_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
+      if (item.publishRetryAfter && Date.parse(item.publishRetryAfter) > Date.now()) return false;
       { const pending = pendingAutoTargets(item); if (!pending.telegram && !pending.vk) return false; }
       if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
@@ -6448,7 +6451,32 @@ function emptySlotCollectorAllowed(schedulerState, slotKey) {
   return !same || !Number.isFinite(at) || Date.now() - at >= 2 * 60 * 1000;
 }
 
+// One slot = one published post. If the chosen post fails, the next best post from the queue is tried right away,
+// up to SLOT_PUBLISH_TRIES posts, until one goes out. The failed post rests PUBLISH_RETRY_COOLDOWN_MIN minutes
+// (PUBLISH_FAILURE_MAX failures in total -> publish_failed for good).
 async function publishDynamicSlot(kind) {
+  let lastError = null;
+  const failedIds = [];
+  for (let attempt = 1; attempt <= SLOT_PUBLISH_TRIES; attempt++) {
+    try {
+      const result = await publishDynamicSlotOnce(kind);
+      if (failedIds.length) {
+        console.log("SLOT_NEXT_ITEM_RESULT " + JSON.stringify({ workspace: currentWorkspaceId(), attempts: attempt, failed: failedIds, result: { published: Boolean(result && result.published), skipped: result && result.skipped || "" } }));
+        return Object.assign({}, result, { slotAttempts: attempt, failedBefore: failedIds });
+      }
+      return result;
+    } catch (error) {
+      // Only a failed PUBLICATION moves on to the next post; any other error (collector, database) is not retried here.
+      if (!(error && error.queueId)) throw error;
+      lastError = error;
+      failedIds.push(String(error.queueId));
+      console.warn("SLOT_NEXT_ITEM " + JSON.stringify({ workspace: currentWorkspaceId(), attempt: attempt, queueId: error && error.queueId || "", error: String(error && error.message || error).slice(0, 200) }));
+    }
+  }
+  throw lastError || new Error("slot publish failed");
+}
+
+async function publishDynamicSlotOnce(kind) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
@@ -6606,13 +6634,17 @@ async function publishDynamicSlot(kind) {
     item.publishFailures = Number(item.publishFailures || 0) + 1;
     item.lastPublishError = String(error && error.message || error).slice(0, 300);
     const permanent = Boolean(error && (error.permanent || error.telegramPermanent));
+    // The slot is freed for the next post right away; this post rests before it may be tried again.
+    delete schedule.assignments[day][time];
+    item.preparedFor = "";
     if (permanent || item.publishFailures >= PUBLISH_FAILURE_MAX) {
       item.status = "publish_failed";
-      delete schedule.assignments[day][time];
-      schedulerState.lastPublishedSlot = slotKey;
       console.warn("PUBLISH_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), queueId: queueId, failures: item.publishFailures, permanent: permanent, error: item.lastPublishError }));
+    } else {
+      item.publishRetryAfter = new Date(Date.now() + PUBLISH_RETRY_COOLDOWN_MIN * 60000).toISOString();
     }
     saveState();
+    if (error && typeof error === "object") error.queueId = queueId;
     throw error;
   }
   if (result.safeMedia) Object.assign(item, result.safeMedia);
@@ -8004,7 +8036,13 @@ function autoPublishTargetsForPost(post) {
 
 // VK is optional and often off. A post that already went to Telegram must never occupy a slot again just
 // because VK failed: VK gets a bounded number of automatic retries, then the post leaves the queue.
-const VK_AUTO_RETRY_MAX = Math.max(1, Number(process.env.VK_AUTO_RETRY_MAX || 2));
+// One VK attempt per post by default: when VK fails, the NEXT post goes to VK in the next slot instead of a slot spent
+// re-sending the old one to VK only.
+const VK_AUTO_RETRY_MAX = Math.max(1, Number(process.env.VK_AUTO_RETRY_MAX || 1));
+// A post that failed to publish waits this long before it may be tried again (the slot moves on to the next post).
+const PUBLISH_RETRY_COOLDOWN_MIN = Math.max(1, Math.min(24 * 60, Number(process.env.PUBLISH_RETRY_COOLDOWN_MIN || 30) || 30));
+// How many queue posts one slot tries, one after another, until one is published.
+const SLOT_PUBLISH_TRIES = Math.max(1, Math.min(10, Number(process.env.SLOT_PUBLISH_TRIES || 5) || 5));
 const PUBLISH_FAILURE_MAX = Math.max(1, Number(process.env.PUBLISH_FAILURE_MAX || 3));
 function pendingAutoTargets(item) {
   const t = autoPublishTargetsForPost(item);
@@ -8115,97 +8153,7 @@ async function downloadVkImage(imageUrl, context) {
   return { bytes: bytes, mime: mime, ext: ext };
 }
 
-async function uploadVkWallPhoto(imageUrl, post) {
-  const baseContext = vkPostContext(post);
-  if (!getVkUserToken()) {
-    const error = createVkError("photos.getWallUploadServer", "user_token_missing", "VK_USER_TOKEN is not configured", baseContext);
-    logVkError("photos.getWallUploadServer", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, baseContext, { attempt: 1, tokenKind: "user" }));
-    error.mediaFailed = true;
-    error.mediaAttempts = 0;
-    throw error;
-  }
 
-  const image = await downloadVkImage(imageUrl, baseContext);
-  let lastError = null;
-  const delays = [1000, 2500];
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const context = Object.assign({}, baseContext, { attempt: attempt, tokenKind: "user" });
-    try {
-      const uploadServer = await vkApi(
-        "photos.getWallUploadServer",
-        { group_id: VK_GROUP_ID },
-        { token: getVkUserToken(), tokenKind: "user", context: context }
-      );
-      if (!uploadServer || !uploadServer.upload_url) {
-        logVkError("photos.getWallUploadServer", "no_upload_url", "VK did not return upload_url", context);
-        throw createVkError("photos.getWallUploadServer", "no_upload_url", "VK did not return upload_url", context);
-      }
-
-      const form = new FormData();
-      form.append("photo", new Blob([image.bytes], { type: image.mime }), "news." + image.ext);
-
-      let uploadResponse;
-      let uploaded = {};
-      try {
-        uploadResponse = await fetch(uploadServer.upload_url, {
-          method: "POST",
-          body: form,
-          signal: AbortSignal.timeout(45000)
-        });
-        uploaded = await uploadResponse.json().catch(function(){ return {}; });
-      } catch (error) {
-        logVkError("photo.upload", "network", error && error.message || error, context);
-        throw createVkError("photo.upload", "network", error && error.message || error, context);
-      }
-
-      if (!uploadResponse.ok || !uploaded.server || !uploaded.photo || !uploaded.hash) {
-        const msg = uploaded && uploaded.error ? JSON.stringify(uploaded.error) : ("Invalid upload response HTTP " + uploadResponse.status);
-        logVkError("photo.upload", uploadResponse.status || "upload_invalid", msg, context);
-        throw createVkError("photo.upload", uploadResponse.status || "upload_invalid", msg, context);
-      }
-
-      const saved = await vkApi(
-        "photos.saveWallPhoto",
-        {
-          group_id: VK_GROUP_ID,
-          server: uploaded.server,
-          photo: uploaded.photo,
-          hash: uploaded.hash
-        },
-        { token: getVkUserToken(), tokenKind: "user", context: context }
-      );
-
-      const photo = Array.isArray(saved) ? saved[0] : (saved && saved.items ? saved.items[0] : null);
-      if (!photo || !photo.id || !photo.owner_id) {
-        logVkError("photos.saveWallPhoto", "invalid_photo", "VK did not return saved photo owner_id/id", context);
-        throw createVkError("photos.saveWallPhoto", "invalid_photo", "VK did not return saved photo owner_id/id", context);
-      }
-
-      return {
-        attachment: "photo" + photo.owner_id + "_" + photo.id,
-        attempts: attempt,
-        ownerId: photo.owner_id,
-        photoId: photo.id
-      };
-    } catch (error) {
-      lastError = error;
-      if (attempt < 3) await sleepMs(delays[attempt - 1]);
-    }
-  }
-
-  const failed = lastError || createVkError("photo.upload", "unknown", "VK photo upload failed", baseContext);
-  failed.mediaFailed = true;
-  failed.mediaAttempts = 3;
-  throw failed;
-}
-
-
-function vkPostGuid(post, mode) {
-  const p = post || {};
-  const identity = String(p.postId || p.id || p.newsId || "unknown") + ":" + String(mode || "default");
-  return "nf_" + crypto.createHash("sha256").update(identity).digest("hex").slice(0, 28);
-}
 
 function isVkLinkPreviewError(error) {
   const code = String(error && error.vkErrorCode == null ? "" : error.vkErrorCode);
@@ -8234,150 +8182,6 @@ async function loadVkImageBytes(imageUrl, context) {
     }
   }
   return downloadVkImage(imageUrl, context);
-}
-
-async function uploadVkMessagesPhotoWithRetry(imageUrl, post, previewSlug) {
-  // VK sometimes answers with an empty "photo" field or a transient 901/network error,
-  // so retry a few times with backoff before giving up on this media mode.
-  const delays = [1500, 4000];
-  let lastError = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const photo = await uploadVkMessagesPhoto(imageUrl, post, previewSlug);
-      photo.attempts = attempt;
-      return photo;
-    } catch (error) {
-      lastError = error;
-      if (attempt < 3) await sleepMs(delays[attempt - 1]);
-    }
-  }
-  lastError.mediaAttempts = 3;
-  throw lastError;
-}
-
-async function uploadVkMessagesPhoto(imageUrl, post, previewSlug) {
-  const context = vkPostContext(post, { slug: previewSlug || "", tokenKind: "community" });
-  const image = await loadVkImageBytes(imageUrl, context);
-
-  const uploadServer = await vkApi(
-    "photos.getMessagesUploadServer",
-    {},
-    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-  );
-  if (!uploadServer || !uploadServer.upload_url) {
-    throw createVkError("photos.getMessagesUploadServer", "no_upload_url", "VK did not return messages upload_url", context);
-  }
-
-  const form = new FormData();
-  form.append("photo", new Blob([image.bytes], { type: image.mime || "image/jpeg" }), "preview." + (image.ext || "jpg"));
-
-  let uploadResponse;
-  let uploaded = {};
-  try {
-    uploadResponse = await fetch(uploadServer.upload_url, {
-      method: "POST",
-      body: form,
-      signal: AbortSignal.timeout(45000)
-    });
-    uploaded = await uploadResponse.json().catch(function(){ return {}; });
-  } catch (error) {
-    logVkError("messages-photo.upload", "network", error && error.message || error, context);
-    throw createVkError("messages-photo.upload", "network", error && error.message || error, context);
-  }
-
-  if (!uploadResponse.ok || !uploaded.server || !uploaded.photo || !uploaded.hash) {
-    const safeShape = {
-      http: uploadResponse.status,
-      keys: uploaded && typeof uploaded === "object" ? Object.keys(uploaded).sort() : [],
-      has_server: Boolean(uploaded && uploaded.server),
-      photo_length: uploaded && uploaded.photo != null ? String(uploaded.photo).length : 0,
-      hash_length: uploaded && uploaded.hash != null ? String(uploaded.hash).length : 0
-    };
-    const msg = uploaded && uploaded.error ? "VK upload returned error" : ("Invalid messages photo upload response " + JSON.stringify(safeShape));
-    logVkError("messages-photo.upload", uploadResponse.status || "upload_invalid", msg, context);
-    throw createVkError("messages-photo.upload", uploadResponse.status || "upload_invalid", msg, context);
-  }
-
-  const saved = await vkApi(
-    "photos.saveMessagesPhoto",
-    {
-      server: uploaded.server,
-      photo: uploaded.photo,
-      hash: uploaded.hash
-    },
-    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-  );
-
-  const photo = Array.isArray(saved) ? saved[0] : (saved && saved.items ? saved.items[0] : null);
-  if (!photo || !photo.id || !photo.owner_id) {
-    logVkError("photos.saveMessagesPhoto", "invalid_photo", "VK did not return saved messages photo owner_id/id", context);
-    throw createVkError("photos.saveMessagesPhoto", "invalid_photo", "VK did not return saved messages photo owner_id/id", context);
-  }
-
-  let attachment = "photo" + photo.owner_id + "_" + photo.id;
-  if (photo.access_key) attachment += "_" + photo.access_key;
-  return {
-    attachment: attachment,
-    ownerId: photo.owner_id,
-    photoId: photo.id
-  };
-}
-
-async function uploadVkWallImageDocument(imageUrl, post, previewSlug) {
-  const context = vkPostContext(post, { slug: previewSlug || "", tokenKind: "community" });
-  const image = await downloadVkImage(imageUrl, context);
-  const uploadServer = await vkApi(
-    "docs.getWallUploadServer",
-    { group_id: VK_GROUP_ID },
-    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-  );
-  if (!uploadServer || !uploadServer.upload_url) {
-    throw createVkError("docs.getWallUploadServer", "no_upload_url", "VK did not return document upload_url", context);
-  }
-
-  const form = new FormData();
-  form.append("file", new Blob([image.bytes], { type: image.mime || "image/jpeg" }), "preview." + (image.ext || "jpg"));
-
-  let uploadedResponse;
-  let uploaded = {};
-  try {
-    uploadedResponse = await fetch(uploadServer.upload_url, {
-      method: "POST",
-      body: form,
-      signal: AbortSignal.timeout(45000)
-    });
-    uploaded = await uploadedResponse.json().catch(function(){ return {}; });
-  } catch (error) {
-    logVkError("doc.upload", "network", error && error.message || error, context);
-    throw createVkError("doc.upload", "network", error && error.message || error, context);
-  }
-
-  if (!uploadedResponse.ok || !uploaded.file) {
-    const msg = uploaded && uploaded.error ? JSON.stringify(uploaded.error) : ("Invalid doc upload response HTTP " + uploadedResponse.status);
-    logVkError("doc.upload", uploadedResponse.status || "upload_invalid", msg, context);
-    throw createVkError("doc.upload", uploadedResponse.status || "upload_invalid", msg, context);
-  }
-
-  const saved = await vkApi(
-    "docs.save",
-    {
-      file: uploaded.file,
-      title: String(post && post.title || "News Factory").slice(0, 120)
-    },
-    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-  );
-
-  const doc = saved && saved.doc ? saved.doc : (Array.isArray(saved) ? saved[0] : null);
-  if (!doc || !doc.id || !doc.owner_id) {
-    logVkError("docs.save", "invalid_doc", "VK did not return saved document owner_id/id", context);
-    throw createVkError("docs.save", "invalid_doc", "VK did not return saved document owner_id/id", context);
-  }
-
-  return {
-    attachment: "doc" + doc.owner_id + "_" + doc.id,
-    ownerId: doc.owner_id,
-    docId: doc.id
-  };
 }
 
 let postmypostClientInstance = null;
@@ -8477,16 +8281,12 @@ async function postmypostTargetForCurrent() {
 async function publishVkPost(post) {
   if (!VK_PUBLISH_ENABLED) return null;
   const baseContext = vkPostContext(post);
-  // Channels other than the main cabinet have no VK token of their own: they publish only through Postmypost.
-  const vkDirect = workspaceVkDirectAllowed(currentWorkspace());
-  if (!vkDirect && !(VK_VIA_POSTMYPOST && postmypostMap.byWorkspace[currentWorkspaceId()])) {
-    const error = createVkError("wall.post", "config_missing", "VK для этого канала не подключён (нет VK-группы в Postmypost)", baseContext);
+  // VK posts go ONLY through Postmypost (photo included). The old direct community-token route, which could only post
+  // text with an invisible photo, is gone.
+  const isMain = currentWorkspaceId() === workspaceStore.defaultWorkspaceId;
+  if (!VK_VIA_POSTMYPOST || (!isMain && !postmypostMap.byWorkspace[currentWorkspaceId()])) {
+    const error = createVkError("wall.post", "config_missing", VK_VIA_POSTMYPOST ? "VK для этого канала не подключён (нет VK-группы в Postmypost)" : "VK публикуется только через Postmypost: POSTMYPOST_TOKEN не задан", baseContext);
     logVkError("wall.post", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, baseContext, { tokenKind: "postmypost" }));
-    throw error;
-  }
-  if (vkDirect && (!VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID)) {
-    const error = createVkError("wall.post", "config_missing", "VK community publishing configuration is incomplete", baseContext);
-    logVkError("wall.post", error.vkErrorCode, error.vkErrorMsg, Object.assign({}, baseContext, { tokenKind: "community" }));
     throw error;
   }
 
@@ -8542,92 +8342,6 @@ async function publishVkPost(post) {
     return result || null;
   };
 
-  // Link card: VK builds the snippet from the og:image of our public page (1200x630 JPEG). This is the only way a
-  // community token gets a picture that readers SEE: wall photo upload is closed for community tokens (error 27),
-  // and a "messages" photo is accepted by wall.post but not shown on the wall. VK crawls the page during the first
-  // wall.post and may answer "link_photo_sizing_rule. No photo given" before it has the image; that answer creates
-  // no post, so a retry after a pause (page now cached by VK) is safe.
-  async function tryLinkCard() {
-    const delays = vkLinkCardDelaysMs();
-    let lastError = null;
-    for (let i = 0; i <= delays.length; i++) {
-      if (i > 0) await sleepMs(delays[i - 1]);
-      attempts += 1;
-      let result;
-      try {
-        result = await vkApi(
-          "wall.post",
-          { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, attachments: preview.url, guid: vkPostGuid(post, "link") },
-          { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-        );
-      } catch (error) {
-        await ambiguous(error);
-        lastError = error;
-        const msg = String(error && (error.vkErrorMsg || error.message) || error);
-        console.warn("VK_LINK_CARD_FAILED " + JSON.stringify({ post_id: context.postId, slug: preview.slug, attempt: i + 1, error_code: error && error.vkErrorCode != null ? error.vkErrorCode : null, error_msg: msg.slice(0, 300), preview_url: preview.url }));
-        // Only the "VK has no picture for the link yet" answer is worth waiting for.
-        if (!/link_photo_sizing_rule|no photo given/i.test(msg)) break;
-        continue;
-      }
-      return published(result, "link_preview", { link_attempt: i + 1 });
-    }
-    throw lastError || createVkError("wall.post", "unknown", "VK link card failed", context);
-  }
-
-  // The 1200x630 picture is uploaded once (community-token "messages" upload) and reused by every mode.
-  let uploadedPhoto = null;
-  let uploadError = null;
-  async function getPhoto() {
-    if (uploadedPhoto) return uploadedPhoto;
-    if (uploadError) throw uploadError;
-    try {
-      uploadedPhoto = await uploadVkMessagesPhotoWithRetry(preview.imageUrl, post, preview.slug);
-    } catch (error) {
-      attempts += Number(error && error.mediaAttempts || 1);
-      uploadError = error;
-      throw error;
-    }
-    attempts += Number(uploadedPhoto.attempts || 1);
-    return uploadedPhoto;
-  }
-
-  // Link card WITH an attached photo. VK's "link_photo_sizing_rule. No photo given" means a community-token link post
-  // needs the snippet picture attached explicitly (it does not take og:image): photo + link in one wall.post, the photo
-  // (1200x630, above VK's 537x240 minimum) becomes the card's picture.
-  async function tryLinkWithPhoto() {
-    const photo = await getPhoto();
-    attempts += 1;
-    let result;
-    try {
-      result = await vkApi(
-        "wall.post",
-        { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, attachments: photo.attachment + "," + preview.url, guid: vkPostGuid(post, "linkphoto") },
-        { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-      );
-    } catch (error) {
-      await ambiguous(error);
-      console.warn("VK_LINK_PHOTO_FAILED " + JSON.stringify({ post_id: context.postId, slug: preview.slug, error_code: error && error.vkErrorCode != null ? error.vkErrorCode : null, error_msg: String(error && (error.vkErrorMsg || error.message) || error).slice(0, 300) }));
-      throw error;
-    }
-    return published(result, "link_photo", { attachment: photo.attachment });
-  }
-
-  async function tryMessagesPhoto() {
-    const photo = await getPhoto();
-    let result;
-    try {
-      result = await vkApi(
-        "wall.post",
-        { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, attachments: photo.attachment, guid: vkPostGuid(post, "photo") },
-        { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-      );
-    } catch (error) {
-      await ambiguous(error);
-      throw error;
-    }
-    return published(result, "photo_upload", { attachment: photo.attachment });
-  }
-
   // Postmypost: the only route where readers SEE the photo. Its failure before the post exists falls back to direct VK.
   async function tryPostmypost() {
     const pmp = postmypostClient();
@@ -8681,90 +8395,20 @@ async function publishVkPost(post) {
     return published({ post_id: "pmp-" + pubId }, mode, { pmp_publication_id: pubId });
   }
 
-  if (VK_VIA_POSTMYPOST) {
-    try {
-      return await tryPostmypost();
-    } catch (error) {
-      if (error && error.vkAmbiguous) throw error;
-      postmypostTargetCache = null;
-      console.warn("VK_POSTMYPOST_FAILED " + JSON.stringify({ post_id: context.postId, slug: preview.slug, code: error && (error.pmpCode != null ? error.pmpCode : error.vkErrorCode) || null, error: String(error && error.message || error).slice(0, 400), fallback: vkDirect ? "direct_vk" : "none" }));
-      if (!vkDirect) {
-        // No direct VK for this channel: the VK side fails, Telegram is not affected.
-        const failed = createVkError("postmypost", error && error.pmpCode != null ? error.pmpCode : "failed", String(error && error.message || error).slice(0, 400), context);
-        failed.mediaFailed = true;
-        failed.mediaAttempts = attempts || 1;
-        failed.previewSlug = preview.slug;
-        await markPublicPostVkFailed(preview.slug, failed);
-        throw failed;
-      }
-    }
+  try {
+    return await tryPostmypost();
+  } catch (error) {
+    if (error && error.vkAmbiguous) throw error;
+    postmypostTargetCache = null;
+    console.warn("VK_POSTMYPOST_FAILED " + JSON.stringify({ post_id: context.postId, slug: preview.slug, code: error && (error.pmpCode != null ? error.pmpCode : error.vkErrorCode) || null, error: String(error && error.message || error).slice(0, 400) }));
+    // No other VK route: the VK side of this post fails, Telegram is not affected.
+    const failed = createVkError("postmypost", error && error.pmpCode != null ? error.pmpCode : "failed", String(error && error.message || error).slice(0, 400), context);
+    failed.mediaFailed = true;
+    failed.mediaAttempts = attempts || 1;
+    failed.previewSlug = preview.slug;
+    await markPublicPostVkFailed(preview.slug, failed);
+    throw failed;
   }
-
-  let lastError = null;
-  let linkError = null;
-  for (const mode of vkMediaOrder()) {
-    try {
-      if (mode === "linkphoto") return await tryLinkWithPhoto();
-      return mode === "link" ? await tryLinkCard() : await tryMessagesPhoto();
-    } catch (error) {
-      if (error && error.vkAmbiguous) throw error;
-      lastError = error;
-      if (mode === "link" || (mode === "linkphoto" && !linkError)) linkError = error;
-      if (mode === "photo") {
-        console.warn("VK_PHOTO_UPLOAD_MODE_FAILED " + JSON.stringify({
-          post_id: context.postId,
-          slug: preview.slug,
-          error_code: error && error.vkErrorCode != null ? error.vkErrorCode : null,
-          error_msg: String(error && (error.vkErrorMsg || error.message) || error)
-        }));
-      }
-    }
-  }
-
-  // The link-card error is the one reported (as before this change): repair logic and alerts read its message.
-  const error = linkError || lastError || createVkError("wall.post", "unknown", "VK media modes failed", context);
-  error.mediaAttempts = attempts || 1;
-  error.previewSlug = preview.slug;
-  error.vkContext = Object.assign({}, error.vkContext || context, { slug: preview.slug });
-  await markPublicPostVkFailed(preview.slug, error);
-  if (!allowTextFallbackForPost(post)) {
-    error.mediaFailed = true;
-    await notifyVkMediaFailure(post, error, error.mediaAttempts);
-    throw error;
-  }
-  await notifyVkMediaFailure(post, error, error.mediaAttempts);
-  const fallback = await vkApi(
-    "wall.post",
-    { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, guid: vkPostGuid(post, "text") },
-    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-  );
-  attempts += 1;
-  return published(fallback, "text_fallback");
-}
-
-// VK_MEDIA_ORDER, modes: linkphoto (link card with the photo attached, default first), photo (photo only — accepted
-// by VK but not shown on the wall), link (bare link card; VK answers "No photo given" for community tokens).
-// Default "linkphoto,photo,link"; "photo,link" = the order before v0.47.4.
-function vkMediaOrder() {
-  const known = ["linkphoto", "photo", "link"];
-  const raw = String(process.env.VK_MEDIA_ORDER || "linkphoto,photo,link").toLowerCase().split(/[\s,]+/).filter(function(m){ return known.includes(m); });
-  const order = raw.filter(function(m, i){ return raw.indexOf(m) === i; });
-  // A mode left out of a non-empty list is appended, never dropped ("photo" alone = photo, then the others).
-  known.forEach(function(m){ if (!order.includes(m)) order.push(m); });
-  return order;
-}
-
-// Pauses between bare link-card attempts, ms, e.g. "3000,8000". Default: no retry — live posts on 2026-10-03 showed
-// VK answers "No photo given" identically after 3 and 8 s, so waiting does not help.
-function vkLinkCardDelaysMs() {
-  const raw = process.env.VK_LINK_CARD_RETRY_DELAYS_MS;
-  if (raw === undefined || raw === "undefined") return [];
-  const list = String(raw).split(/[\s,;]+/).map(Number).filter(function(n){ return Number.isFinite(n) && n > 0; }).slice(0, 4).map(function(n){ return Math.min(n, 30000); });
-  if (!list.length && String(raw).trim() && String(raw).trim() !== "0" && !vkLinkCardDelaysMs.warned) {
-    vkLinkCardDelaysMs.warned = true;
-    console.warn("VK_LINK_CARD_DELAYS_INVALID " + JSON.stringify({ value: String(raw).slice(0, 60), hint: "milliseconds, e.g. 3000,8000" }));
-  }
-  return list;
 }
 
 function postForPlatform(post, platform) {
