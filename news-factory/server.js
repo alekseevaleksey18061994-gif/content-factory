@@ -132,7 +132,13 @@ const DIGEST_SUNDAY_TIME = normHHMM(process.env.DIGEST_SUNDAY_TIME, "20:15");
 const DAILY_REPORT_ENABLED = String(process.env.DAILY_REPORT_ENABLED || "true").toLowerCase() !== "false";
 const DAILY_REPORT_TIME = normHHMM(process.env.DAILY_REPORT_TIME, "22:50");
 const SOURCES_MIN_ACTIVE = envNumber("SOURCES_MIN_ACTIVE", 40, 0, 200);
-const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 120));
+const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 60));
+// How many new sources one top-up may add (was a fixed 5) and the ceiling a starving channel may grow to.
+const SOURCES_ADDED_PER_RUN = envNumber("SOURCES_ADDED_PER_RUN", 15, 1, 50);
+const SOURCES_MAX_ACTIVE = envNumber("SOURCES_MAX_ACTIVE", 150, 10, 400);
+// A channel whose slot preparations found nothing new this many times in a row gets new sources even when it
+// already has the target number: the count is fine, but they bring nothing.
+const SOURCE_STARVING_RUNS = envNumber("SOURCE_STARVING_RUNS", 2, 1, 24);
 const SOURCE_PROBATION_HOURS = envNumber("SOURCE_PROBATION_HOURS", 48, 6, 24 * 14);
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
@@ -2854,7 +2860,7 @@ async function discoverSourcesWithAI(count) {
   while (triedModes.length) {
     const withSearch = triedModes.shift();
     try {
-      const body = { model: OPENAI_MODEL, input: prompt, max_output_tokens: 2500 };
+      const body = { model: OPENAI_MODEL, input: prompt, max_output_tokens: 8000 };
       if (withSearch) body.tools = [{ type: "web_search" }];
       const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
         method: "POST",
@@ -2891,7 +2897,14 @@ function rateLimitWaitMs(message) {
 
 async function replenishSources(reason) {
   const target = Number.isFinite(Number(state.sourceTarget)) && state.sourceTarget !== "" && state.sourceTarget != null ? Number(state.sourceTarget) : SOURCES_MIN_ACTIVE;
-  let need = Math.min(MAX_SOURCES_ADDED_PER_RUN, sourcesNeeded(state.sources, target));
+  let need = Math.min(SOURCES_ADDED_PER_RUN, sourcesNeeded(state.sources, target));
+  // Starving channel (no new news in recent preparations): add sources beyond the target, up to the ceiling.
+  const starving = Number(state.sourceStarvingRuns || 0) >= SOURCE_STARVING_RUNS;
+  if (starving) {
+    const active = (state.sources || []).filter(function(x){ return x && x.enabled; }).length;
+    need = Math.max(need, Math.min(SOURCES_ADDED_PER_RUN, Math.max(0, SOURCES_MAX_ACTIVE - active)));
+    if (need) reason = "starving";
+  }
   if (!need) return { added: [], need: 0 };
   state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
   const last = new Date(state.sourceReplenish.lastAt || 0).getTime();
@@ -2915,7 +2928,7 @@ async function replenishSources(reason) {
       if (!check.ok) { rejected[key] = { at: new Date().toISOString(), reason: check.reason }; continue; }
       const source = {
         id: "auto-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-        name: c.name, type: "web", group: c.group === "official" ? "official" : "media", sourceClass: sourceClassFor(c), priority: 2,
+        name: c.name, type: "web", group: /^https?:\/\/t\.me\/s\//i.test(c.url) ? "creator" : (c.group === "official" ? "official" : "media"), sourceClass: sourceClassFor(c), priority: 2,
         url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
         autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" },
         // On trial: kept only if its news pass the editors within SOURCE_PROBATION_HOURS (see autoPauseReason).
@@ -2930,7 +2943,9 @@ async function replenishSources(reason) {
   }
 
   await tryList(RESERVE_SOURCES[channelId] || [], "reserve");
-  if (need > 0) await tryList(await discoverSourcesWithAI(need + 4), "ai");
+  // candidates are often rejected by validation (do not open, few news): ask for more than needed
+  if (need > 0) await tryList(await discoverSourcesWithAI(Math.min(30, need * 2 + 4)), "ai");
+  if (added.length) console.log("SOURCE_REPLENISH " + JSON.stringify({ workspace: currentWorkspaceId(), reason: reason || "", added: added.length, stillNeeded: need }));
   saveState();
   return { added: added, need: need };
 }
@@ -6274,6 +6289,12 @@ async function collectOnce(trigger) {
       }
     }
 
+    // Starvation: slot preparations that found nothing new in a row (see replenishSources).
+    if (String(trigger || "").startsWith("slot-")) {
+      // capacityDeferred: there were good candidates, the queue was just full — not starving
+      state.sourceStarvingRuns = summary.found > 0 || summary.queued > 0 || Number(summary.capacityDeferred || 0) > 0 ? 0 : Number(state.sourceStarvingRuns || 0) + 1;
+      if (state.sourceStarvingRuns >= SOURCE_STARVING_RUNS) summary.starving = state.sourceStarvingRuns;
+    }
     const pausedSources = autoPauseWeakSources();
     if (pausedSources.length) summary.pausedSources = pausedSources;
     // Top up sources in the background so the collector run is not delayed.
