@@ -216,6 +216,19 @@ const WORKSPACES_FILE = path.join(DATA_DIR, "workspaces.json");
 const DEFAULT_WORKSPACE_ID = "ai-main";
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const PUBLIC_DIR = path.join(process.cwd(), "public");
+// Text in generated images (cover cards, VK previews) needs fonts; the server image has none, so every letter was
+// drawn as an empty box. Point fontconfig (used by sharp/librsvg) at the bundled DejaVu fonts.
+(function configureFonts() {
+  try {
+    const dir = fileURLToPathSafe(new URL("./fonts/", import.meta.url));
+    const conf = dir && path.join(dir, "fonts.conf");
+    if (conf && fs.existsSync(conf) && !process.env.FONTCONFIG_FILE) {
+      process.env.FONTCONFIG_FILE = conf;
+      process.env.FONTCONFIG_PATH = dir;
+    }
+  } catch {}
+})();
+function fileURLToPathSafe(u) { try { return decodeURIComponent(u.pathname); } catch { return ""; } }
 const VK_PREVIEW_WIDTH = 1200;
 const VK_PREVIEW_HEIGHT = 630;
 const VK_PREVIEW_MAX_BYTES = Math.max(200000, Math.min(1048576, Number(process.env.VK_PREVIEW_MAX_BYTES || 950000)));
@@ -1861,9 +1874,11 @@ function startCostBudgetMonitor() {
 
 async function renderEconomyTextCard(payload) {
   ensureDataDir();
-  const raw = String(payload && payload.title || "Новость").trim().slice(0, 180);
+  // emoji have no glyph in the card font (they were drawn as boxes): keep letters, digits and punctuation only
+  const noEmoji = function(v){ return String(v || "").replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{20E3}]/gu, "").replace(/\s+/g, " ").trim(); };
+  const raw = noEmoji(String(payload && payload.title || "Новость")).slice(0, 180) || "Новость";
   const esc = function(v){ return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); };
-  const channel = String(currentWorkspace().name || "News Factory");
+  const channel = noEmoji(currentWorkspace().name || "News Factory") || "News Factory";
   const topic = String(payload && payload.topicId || currentWorkspace().channelId || "NEWS").toUpperCase();
   const seed = crypto.createHash("sha256").update(channel + "|" + raw).digest()[0];
   const variants = [
@@ -1879,14 +1894,14 @@ async function renderEconomyTextCard(payload) {
   let line = "";
   for (const word of words) {
     const next = line ? line + " " + word : word;
-    if (next.length > 31 && line) { lines.push(line); line = word; } else line = next;
+    if (next.length > 26 && line) { lines.push(line); line = word; } else line = next; // DejaVu Bold is wider than Arial
     if (lines.length >= 3) break;
   }
   if (line && lines.length < 4) lines.push(line);
   const text = lines.slice(0,4).map(function(x,i){
-    return '<text x="92" y="'+(355+i*98)+'" font-family="Arial,sans-serif" font-size="68" font-weight="800" fill="#fff">'+esc(x)+'</text>';
+    return '<text x="92" y="'+(355+i*98)+'" font-family="Arial,sans-serif" font-size="64" font-weight="800" fill="#fff">'+esc(x)+'</text>';
   }).join("");
-  const note = esc(payload && payload.cardNote || "Редакционная карточка");
+  const note = esc(payload && payload.cardNote != null ? payload.cardNote : "");
   const variant = seed % 3;
   const decor = variant === 0
     ? '<circle cx="1320" cy="170" r="240" fill="'+v.accent+'" opacity=".18"/><circle cx="1400" cy="860" r="330" fill="'+v.accent+'" opacity=".08"/>'
@@ -4035,7 +4050,7 @@ async function generateNewsCover(payload) {
   const coverCardFallback = async function(reason) {
     if (!PROVIDER_FAILOVER_ENABLED || !PROVIDER_FAILOVER_COVER_CARD) return null;
     console.warn("COVER_FALLBACK_TEXT_CARD " + JSON.stringify({ workspace: currentWorkspaceId(), reason: String(reason || "").slice(0, 160) }));
-    return renderEconomyTextCard(Object.assign({}, payload, { cardNote: "Без AI-обложки" }));
+    return renderEconomyTextCard(Object.assign({}, payload, { cardNote: "" })); // readers see the card: no internal notes
   };
   if (providerBreaker.isOpen("openai")) {
     const card = await coverCardFallback(providerBreaker.reason("openai"));
@@ -7500,7 +7515,18 @@ function createTelegramError(method, httpStatus, data, fallbackMessage) {
 // Errors where another attempt (URL -> upload, generated cover, repair loop) cannot help:
 // the chat rejects us, or Telegram told us to slow down.
 function isTelegramFatalError(error) {
-  return Boolean(error && error.telegram && (error.telegramPermanent || error.telegramRateLimited));
+  return Boolean(error && ((error.telegram && (error.telegramPermanent || error.telegramRateLimited)) || error.telegramAmbiguous));
+}
+// No Telegram answer although the request may have reached it. Connection never made (DNS, refused, connect
+// timeout) is safe to retry; a timeout or a reset after sending is not.
+function telegramErrorIsAmbiguous(error) {
+  if (!error) return false;
+  const name = String(error.name || "");
+  if (name === "TimeoutError" || name === "AbortError") return true;
+  const cause = error.cause || {};
+  const code = String(cause.code || error.code || "");
+  if (/^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|UND_ERR_CONNECT_TIMEOUT|ENETUNREACH|EHOSTUNREACH)$/.test(code)) return false;
+  return true;
 }
 
 function stripTelegramHtml(html) {
@@ -7541,7 +7567,15 @@ async function telegramRequest(method, makeInit, timeoutMs) {
   for (let attempt = 0; ; attempt += 1) {
     const init = makeInit();
     init.signal = AbortSignal.timeout(timeoutMs);
-    const response = await fetch(endpoint, init);
+    let response;
+    try {
+      response = await fetch(endpoint, init);
+    } catch (networkError) {
+      // Sent but no answer (timeout, connection dropped mid-request): Telegram may well have published it.
+      // Any further attempt (URL -> upload, new cover, repair loop, next post) risks a duplicate post.
+      networkError.telegramAmbiguous = telegramErrorIsAmbiguous(networkError);
+      throw networkError;
+    }
     const data = await response.json().catch(function(){ return null; });
     if (response.ok && data && data.ok) return data.result;
     const error = createTelegramError(method, response.status, data, "Telegram " + method + " HTTP " + response.status);
@@ -7719,7 +7753,7 @@ async function telegramMultipartApi(method, payload, fieldName, mediaUrl, kind) 
       });
       form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
       return { method: "POST", body: form };
-    }, kind === "video" ? 60000 : 45000);
+    }, kind === "video" ? 180000 : 90000); // a longer wait means fewer "no answer, maybe sent" outcomes
   };
   try {
     return await upload(payload);
@@ -7732,6 +7766,9 @@ async function telegramMultipartApi(method, payload, fieldName, mediaUrl, kind) 
 }
 
 async function telegramMediaApi(method, payload, fieldName, mediaUrl, kind) {
+  // Our own media: upload the file. With a URL, Telegram has to download it from our server abroad, which
+  // regularly takes longer than our timeout — Telegram then posts anyway and the upload fallback posted a second copy.
+  if (isLocalMediaUrl(mediaUrl) && localMediaPathFromUrl(mediaUrl)) return telegramMultipartApi(method, payload, fieldName, mediaUrl, kind);
   try {
     return await telegramApi(method, Object.assign({}, payload, { [fieldName]: mediaUrl }));
   } catch (urlError) {
@@ -8789,6 +8826,18 @@ async function sendMultiPlatformPost(post, targets) {
       result.publishedTelegramText = telegramPrepared.text || "";
       result.publishedTelegramTitle = telegramPrepared.title || "";
     } else {
+      const error = tgSettled.reason || new Error("Telegram publish failed");
+      if (error && error.telegramAmbiguous) {
+        // The request went out and no answer came back: Telegram usually publishes such a post. Counting it as
+        // published (without a message id) keeps the slot from sending the same post — or another one — again.
+        console.warn("TELEGRAM_UNCERTAIN " + JSON.stringify({ workspace: currentWorkspaceId(), post_id: String(post.postId || post.id || ""), error: String(error.message || error).slice(0, 200) }));
+        result.telegramPublished = true;
+        result.telegramStatus = "uncertain";
+        result.telegramUncertain = true;
+        result.telegramError = String(error.message || error);
+      }
+    }
+    if (!result.telegramPublished && !(tgSettled.status === "fulfilled" && tgSettled.value)) {
       const error = tgSettled.reason || new Error("Telegram publish failed");
       result.telegramStatus = "failed";
       result.telegramError = String(error && error.message || error);
