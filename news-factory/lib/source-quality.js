@@ -262,6 +262,15 @@ export function buildDiscoveryPrompt(options) {
   ].filter(Boolean).join("\n");
 }
 
+// t.me/name, telegram.me/name, t.me/s/name?x=1, @name -> https://t.me/s/name (the public web preview we can read).
+export function normalizeTelegramUrl(url) {
+  const raw = String(url || "").trim();
+  const at = /^@([A-Za-z][A-Za-z0-9_]{3,31})$/.exec(raw);
+  if (at) return "https://t.me/s/" + at[1];
+  const m = /^(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.me\/(?:s\/)?([A-Za-z][A-Za-z0-9_]{3,31})\/?(?:[?#].*)?$/i.exec(raw);
+  return m ? "https://t.me/s/" + m[1] : raw;
+}
+
 export function parseDiscoveryResult(text) {
   const raw = String(text || "").replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "");
   let parsed = null;
@@ -274,7 +283,7 @@ export function parseDiscoveryResult(text) {
   return list.map(function(x){
     return {
       name: String(x && x.name || "").trim().slice(0, 80),
-      url: String(x && x.url || "").trim(),
+      url: normalizeTelegramUrl(String(x && x.url || "").trim()),
       group: x && x.group === "official" ? "official" : "media",
       why: String(x && x.why || "").trim().slice(0, 160)
     };

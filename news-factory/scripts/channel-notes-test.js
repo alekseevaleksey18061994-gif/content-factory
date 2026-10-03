@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadServer, inWs, net, mkQueueItem, listHtml } from "./dedupe-harness.js";
+import { normalizeTelegramUrl, parseDiscoveryResult } from "../lib/source-quality.js";
 
 const cases = {};
 function test(name, fn) { cases[name] = fn; }
@@ -47,9 +48,9 @@ test("L2 kino: meme lane only once it has meme (blogger) sources; slots 12:30/16
 });
 
 test("P1 channel notes: weak channels' auto sources go on a 24h trial + boost; once only; others untouched", async () => {
-  const auto = (id) => src(id, "https://" + id + ".ru/", { autoAdded: { from: "seed" } });
+  const auto = (id) => src(id, "https://" + id + ".ru/", { autoAdded: { from: "ai" } });
   const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", state: {
-    chtotamdengi: { sources: [auto("a"), auto("b"), src("manual", "https://manual.ru/")] },
+    chtotamdengi: { sources: [auto("a"), auto("b"), src("manual", "https://manual.ru/"), src("seed1", "https://seed1.ru/", { autoAdded: { from: "seed" } })] },
     chtotamsport: { sources: [auto("c")] },
     chtotamtour: undefined
   } });
@@ -58,6 +59,10 @@ test("P1 channel notes: weak channels' auto sources go on a 24h trial + boost; o
   const st = t.ws("chtotamdengi").state;
   assert.ok(st.sources.find((x) => x.id === "a").probationUntil);
   assert.ok(!st.sources.find((x) => x.id === "manual").probationUntil, "editor's own sources are not put on trial");
+  assert.ok(!st.sources.find((x) => x.id === "seed1").probationUntil, "starter (seed) sources are not put on trial");
+  const a = Date.parse(st.sources.find((x) => x.id === "a").probationUntil), b = Date.parse(st.sources.find((x) => x.id === "b").probationUntil);
+  assert.notEqual(a, b, "trials end at different hours (no mass pause in one run)");
+  assert.ok(st.sourceBoostUntil, "boost has an end");
   assert.equal(t.applyChannelNotes(t.ws("chtotamdengi")), null, "applied once");
   const sp = t.applyChannelNotes(t.ws("chtotamsport"));
   assert.equal(sp.trial, 0, "sport: no refresh, only more sources"); assert.equal(sp.boost, 15);
@@ -115,6 +120,19 @@ test("P3 sport boost: 15 new sources beyond the target, hint about different spo
   assert.equal(r.added.length, 15, JSON.stringify(r).slice(0, 200));
   assert.ok(asked.some((x) => /хоккей \(КХЛ, НХЛ\)/.test(x)));
   assert.equal(t.ws("chtotamsport").state.sourceBoostRemaining, 0);
+});
+
+test("P4 Telegram links from the model are normalised; 3 empty discoveries -> 24h rest (no paid loop)", async () => {
+  assert.equal(normalizeTelegramUrl("https://t.me/kinomemes"), "https://t.me/s/kinomemes");
+  assert.equal(normalizeTelegramUrl("t.me/s/kinomemes?before=10"), "https://t.me/s/kinomemes");
+  assert.equal(normalizeTelegramUrl("@kino_memes"), "https://t.me/s/kino_memes");
+  assert.equal(normalizeTelegramUrl("https://telegram.me/kinomemes/"), "https://t.me/s/kinomemes");
+  assert.equal(normalizeTelegramUrl("https://example.ru/news"), "https://example.ru/news");
+  assert.equal(parseDiscoveryResult(JSON.stringify({ sources: [{ name: "x", url: "https://t.me/abcd_memes" }] }))[0].url, "https://t.me/s/abcd_memes");
+  const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", env: { SOURCES_MIN_ACTIVE: "1" }, state: { chtotamgames: { sources: [src("g0", "https://g0.ru/news/")] } } });
+  const asked = fakeDiscovery(t, () => []);
+  for (let i = 0; i < 6; i++) { t.ws("chtotamgames").state.sourceReplenish = Object.assign({}, t.ws("chtotamgames").state.sourceReplenish, { lastAt: "" }); await inWs(t, "chtotamgames", () => t.replenishSources("below_target")); }
+  assert.equal(asked.length, 3, "after 3 empty answers the Telegram discovery rests: " + asked.length);
 });
 
 async function main() {
