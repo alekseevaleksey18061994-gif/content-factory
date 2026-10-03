@@ -338,6 +338,36 @@ const BLOGGER_SOURCES = [
 ];
 const BLOGGER_SLOTS = ["10:30", "12:30", "15:30", "18:30", "21:30"];
 const BLOGGER_DAILY_TARGET = 5;
+// Extra :30 lane per channel (the "blogger" lane, generalised). stars: three extra posts a day taken from all its
+// sources; kino: three posts a day from Telegram channels with film memes (group "blogger", found by discovery).
+const CHANNEL_EXTRA_LANES = {
+  stars: { slots: ["12:30", "18:30", "21:30"], anySource: true, label: "Доп. посты" },
+  kino: { slots: ["12:30", "16:30", "20:30"], anySource: false, label: "Кино-мемы" }
+};
+// Editor's notes per channel (2026-10-03): what discovery should look for, which channels get their sources
+// refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
+// replaced), extra Telegram channels, and the source set for the kino meme lane.
+const CHANNEL_SOURCE_PLANS = {
+  money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
+  tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
+  games: { hint: "игровые новостные Telegram-каналы: релизы, скидки и раздачи, утечки, трейлеры, игровое сообщество", telegramMin: 12 },
+  science: { refresh: true, hint: "вау-наука для широкой публики: космос с красивыми снимками, животные, тело человека и здоровье, археология, необычные открытия; без грантов, конференций и рейтингов вузов" },
+  sport: { hint: "разные виды спорта и события России и мира: футбол (РПЛ, еврокубки, сборная), хоккей (КХЛ, НХЛ), баскетбол, теннис, Формула-1, бокс и ММА, биатлон, лыжи, фигурное катание, киберспорт", boost: 15 },
+  world: { refresh: true, hint: "вирусное в интернете: мемы, тренды TikTok, Reels и YouTube, челленджи, интернет-истории; лучше Telegram-каналы и сайты про тренды, а не обычные новостные" },
+  kino: { laneHint: "Telegram-каналы с мемами и юмором про кино и сериалы (подписанные кадры, шутки про премьеры и актёров)", laneMin: 6 }
+};
+function channelSourcePlan() { return CHANNEL_SOURCE_PLANS[resolveChannelId(currentWorkspace())] || null; }
+function channelExtraLane() {
+  const ws = currentWorkspace();
+  return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
+}
+function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : BLOGGER_SLOTS; }
+function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? lane.slots.length : BLOGGER_DAILY_TARGET; }
+// The extra lane runs when the channel has blogger sources (or, for an anySource lane, any enabled source).
+function bloggerLaneActive() {
+  const lane = channelExtraLane();
+  return (state.sources || []).some(function(source){ return source && source.enabled && (source.group === "blogger" || Boolean(lane && lane.anySource && !isRussianAISource(source))); });
+}
 const RUSSIAN_AI_SLOTS = ["09:30", "11:30", "13:30", "16:30", "19:30", "22:30"];
 const RUSSIAN_AI_DAILY_TARGET = 6;
 
@@ -2824,6 +2854,8 @@ function autoPauseWeakSources() {
     const enabledInGroup = (state.sources || []).filter(function(x){ return x && x.enabled && (x.group || "media") === group; }).length;
     const reason = autoPauseReason(source, ensureSourceStat(source), enabledInGroup);
     if (!reason) continue;
+    // at most 3 trial pauses per run: replacements arrive gradually, the channel never loses half its sources at once
+    if (/пробный срок/.test(reason) && paused.filter(function(x){ return /пробный срок/.test(x.reason); }).length >= 3) continue;
     source.enabled = false;
     source.autoPaused = { reason: reason, at: new Date().toISOString() };
     paused.push({ id: source.id, name: source.name, reason: reason });
@@ -2860,15 +2892,23 @@ async function validateSourceCandidate(url) {
   }
 }
 
-async function discoverSourcesWithAI(count) {
+async function discoverSourcesWithAI(count, discoverOpts) {
   if (!OPENAI_API_KEY) return [];
   const ws = currentWorkspace();
   const channelId = resolveChannelId(ws);
+  const dopt = discoverOpts || {};
+  const plan = channelSourcePlan();
   const prompt = buildDiscoveryPrompt({
     channelName: ws && ws.name || "",
     topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "",
+    hint: dopt.hint != null ? dopt.hint : (plan && plan.hint || ""),
+    telegramOnly: Boolean(dopt.telegramOnly),
     count: count,
-    existingHosts: Array.from(new Set((state.sources || []).map(function(x){ return sourceHost(x && x.url); }).filter(Boolean)))
+    // Telegram channels are named one by one (t.me/s/name), the bare host "t.me" would forbid all of them
+    existingHosts: Array.from(new Set((state.sources || []).map(function(x){
+      const url = String(x && x.url || "");
+      return /^https?:\/\/t\.me\//i.test(url) ? sourceKey(url) : sourceHost(url);
+    }).filter(function(h){ return h && h !== "t.me"; })))
   });
   const triedModes = [true, false];
   let retriedAfterLimit = false;
@@ -2910,9 +2950,38 @@ function rateLimitWaitMs(message) {
   return Math.min(30000, Math.max(2000, Math.round(base + 1000 + Math.random() * 4000)));
 }
 
+const replenishRunning = new Set(); // workspace ids with a top-up in flight (two at once added the same sources twice)
 async function replenishSources(reason) {
+  const wsKey = currentWorkspaceId();
+  if (replenishRunning.has(wsKey)) return { added: [], need: 0, busy: true };
+  replenishRunning.add(wsKey);
+  try { return await replenishSourcesInner(reason); } finally { replenishRunning.delete(wsKey); }
+}
+// A discovery kind that found nothing usable 3 times in a row rests 24 h (each call is a paid web search).
+function discoveryAllowed(kind) {
+  const misses = state.sourceReplenish && state.sourceReplenish.misses && state.sourceReplenish.misses[kind];
+  return !misses || !misses.until || Date.parse(misses.until) <= Date.now();
+}
+function noteDiscoveryResult(kind, addedCount) {
+  state.sourceReplenish.misses = state.sourceReplenish.misses && typeof state.sourceReplenish.misses === "object" ? state.sourceReplenish.misses : {};
+  const m = state.sourceReplenish.misses[kind] || { count: 0 };
+  if (addedCount > 0) { delete state.sourceReplenish.misses[kind]; return; }
+  m.count = Number(m.count || 0) + 1;
+  if (m.count >= 3) { m.until = new Date(Date.now() + 24 * 3600000).toISOString(); m.count = 0; }
+  state.sourceReplenish.misses[kind] = m;
+}
+async function replenishSourcesInner(reason) {
   const target = Number.isFinite(Number(state.sourceTarget)) && state.sourceTarget !== "" && state.sourceTarget != null ? Number(state.sourceTarget) : SOURCES_MIN_ACTIVE;
   let need = Math.min(SOURCES_ADDED_PER_RUN, sourcesNeeded(state.sources, target));
+  // Editor asked for new sources for this channel (one-time boost, see applyChannelNotes).
+  // the boost lives 72 h at most: candidates that never validate must not keep paid discovery running forever
+  if (Number(state.sourceBoostRemaining || 0) > 0 && state.sourceBoostUntil && Date.parse(state.sourceBoostUntil) <= Date.now()) state.sourceBoostRemaining = 0;
+  const boostLeft = Number(state.sourceBoostRemaining || 0);
+  if (boostLeft > 0) {
+    const activeNow = (state.sources || []).filter(function(x){ return x && x.enabled; }).length;
+    need = Math.max(need, Math.min(SOURCES_ADDED_PER_RUN, boostLeft, Math.max(0, SOURCES_MAX_ACTIVE - activeNow)));
+    if (need) reason = "editor_boost";
+  }
   // Starving channel (no new news in recent preparations): add sources beyond the target, up to the ceiling.
   const starving = Number(state.sourceStarvingRuns || 0) >= SOURCE_STARVING_RUNS;
   if (starving) {
@@ -2920,7 +2989,13 @@ async function replenishSources(reason) {
     need = Math.max(need, Math.min(SOURCES_ADDED_PER_RUN, Math.max(0, SOURCES_MAX_ACTIVE - active)));
     if (need) reason = "starving";
   }
-  if (!need) return { added: [], need: 0 };
+  const plan = channelSourcePlan();
+  const enabledTelegram = (state.sources || []).filter(function(x){ return x && x.enabled && /^https?:\/\/t\.me\/s\//i.test(String(x.url || "")); });
+  const laneSources = (state.sources || []).filter(function(x){ return x && x.enabled && x.group === "blogger"; });
+  const roomLeft = Math.max(0, SOURCES_MAX_ACTIVE - (state.sources || []).filter(function(x){ return x && x.enabled; }).length);
+  const needTelegram = plan && plan.telegramMin && discoveryAllowed("telegram") ? Math.max(0, Math.min(SOURCES_ADDED_PER_RUN, roomLeft, plan.telegramMin - enabledTelegram.length)) : 0;
+  const needLane = plan && plan.laneMin && discoveryAllowed("lane") ? Math.max(0, Math.min(SOURCES_ADDED_PER_RUN, roomLeft, plan.laneMin - laneSources.length)) : 0;
+  if (!need && !needTelegram && !needLane) return { added: [], need: 0 };
   state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
   const last = new Date(state.sourceReplenish.lastAt || 0).getTime();
   if (Date.now() - last < SOURCE_REPLENISH_INTERVAL_MINUTES * 60000) return { added: [], need: need, throttled: true };
@@ -2934,16 +3009,19 @@ async function replenishSources(reason) {
   const channelId = resolveChannelId(currentWorkspace());
   const added = [];
 
-  async function tryList(list, from) {
+  async function tryList(list, from, forceGroup) {
     for (const c of freshCandidates(list, state.sources, blocked)) {
       if (need <= 0) return;
+      if (forceGroup && !/^https?:\/\/t\.me\/s\//i.test(c.url)) continue; // lane / Telegram lists take Telegram channels only
+      const candKey = sourceKey(c.url);
+      if ((state.sources || []).some(function(x){ return x && sourceKey(x.url) === candKey; })) continue; // added meanwhile
       const key = sourceKey(c.url);
       if (rejected[key]) continue;
       const check = await validateSourceCandidate(c.url);
       if (!check.ok) { rejected[key] = { at: new Date().toISOString(), reason: check.reason }; continue; }
       const source = {
         id: "auto-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
-        name: c.name, type: "web", group: /^https?:\/\/t\.me\/s\//i.test(c.url) ? "creator" : (c.group === "official" ? "official" : "media"), sourceClass: sourceClassFor(c), priority: 2,
+        name: c.name, type: "web", group: forceGroup || (/^https?:\/\/t\.me\/s\//i.test(c.url) ? "creator" : (c.group === "official" ? "official" : "media")), sourceClass: sourceClassFor(c), priority: 2,
         url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
         autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" },
         // On trial: kept only if its news pass the editors within SOURCE_PROBATION_HOURS (see autoPauseReason).
@@ -2957,9 +3035,31 @@ async function replenishSources(reason) {
     }
   }
 
-  await tryList(RESERVE_SOURCES[channelId] || [], "reserve");
-  // candidates are often rejected by validation (do not open, few news): ask for more than needed
-  if (need > 0) await tryList(await discoverSourcesWithAI(Math.min(30, need * 2 + 4)), "ai");
+  const mainNeed = need;
+  if (mainNeed > 0) {
+    await tryList(RESERVE_SOURCES[channelId] || [], "reserve");
+    // candidates are often rejected by validation (do not open, few news): ask for more than needed
+    if (need > 0 && discoveryAllowed("main")) {
+      const before = added.length;
+      await tryList(await discoverSourcesWithAI(Math.min(30, need * 2 + 4)), "ai");
+      noteDiscoveryResult("main", added.length - before);
+    }
+  }
+  const addedMain = added.length;
+  // Telegram channels the editor asked for (games) and the meme lane (kino).
+  if (needTelegram > 0) {
+    need = needTelegram;
+    const before = added.length;
+    await tryList(await discoverSourcesWithAI(Math.min(30, needTelegram * 2 + 4), { telegramOnly: true, hint: plan.hint }), "ai-telegram", "creator");
+    noteDiscoveryResult("telegram", added.length - before);
+  }
+  if (needLane > 0) {
+    need = needLane;
+    const before = added.length;
+    await tryList(await discoverSourcesWithAI(Math.min(30, needLane * 2 + 4), { telegramOnly: true, hint: plan.laneHint }), "ai-lane", "blogger");
+    noteDiscoveryResult("lane", added.length - before);
+  }
+  if (Number(state.sourceBoostRemaining || 0) > 0) state.sourceBoostRemaining = Math.max(0, Number(state.sourceBoostRemaining) - addedMain);
   if (added.length) console.log("SOURCE_REPLENISH " + JSON.stringify({ workspace: currentWorkspaceId(), reason: reason || "", added: added.length, stillNeeded: need }));
   saveState();
   return { added: added, need: need };
@@ -5587,7 +5687,10 @@ async function collectOnce(trigger) {
     const russianAiRun = triggerName.startsWith("russian-ai-");
     const enabledSources = (state.sources || []).filter(function(src){
       if (!src || !src.enabled || !/^https?:\/\//i.test(src.url || "")) return false;
-      if (bloggerRun) return src.group === "blogger";
+      if (bloggerRun) {
+        const lane = channelExtraLane();
+        return src.group === "blogger" || Boolean(lane && lane.anySource && !isRussianAISource(src));
+      }
       if (russianAiRun) return isRussianAISource(src);
       if (triggerName.startsWith("slot-")) return src.group !== "blogger" && !isRussianAISource(src);
       return true;
@@ -6348,8 +6451,8 @@ function dynamicScheduledHistorySlot(item) {
 
   const explicitOrigin = String(item.publicationOrigin || "").trim();
   const explicitSlot = String(item.scheduledSlot || "").trim();
-  if (explicitOrigin === "schedule" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(explicitSlot)) {
-    return explicitSlot;
+  if ((explicitOrigin === "schedule" || explicitOrigin === "blogger-schedule" || explicitOrigin === "russian-ai-schedule") && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(explicitSlot)) {
+    return explicitSlot; // the lane counters filter by origin themselves
   }
 
   // New manual/test history is explicitly excluded from schedule accounting.
@@ -6465,7 +6568,10 @@ function dynamicUsedQueueIds() {
       if (!id) return;
       const m = /^(\d{1,2}):(\d{2})$/.exec(String(entry[0] || ""));
       const slotMinutes = m ? Number(m[1]) * 60 + Number(m[2]) : null;
-      const expired = day < today || (day === today && slotMinutes != null && slotMinutes + DYNAMIC_ASSIGNMENT_GRACE_MIN < nowMinutes);
+      // :30 lanes have no catch-up: their reservation ends with the publish window, so a missed extra slot does
+      // not keep an ordinary post away from the hourly lane for 90 minutes.
+      const grace = m && m[2] === "30" ? SCHEDULER_SLOT_WINDOW_MINUTES : DYNAMIC_ASSIGNMENT_GRACE_MIN;
+      const expired = day < today || (day === today && slotMinutes != null && slotMinutes + grace < nowMinutes);
       if (!expired) used.add(id);
     });
   });
@@ -6483,6 +6589,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const used = dynamicUsedQueueIds();
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
+  const anySourceLane = wantsBlogger && Boolean(channelExtraLane() && channelExtraLane().anySource);
   // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
   const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
   return (state.queue || [])
@@ -6493,7 +6600,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
-      if (wantsBlogger) return isBloggerSource(item);
+      if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
       return !isBloggerSource(item) && !isRussianAISource(item);
     })
@@ -6578,13 +6685,16 @@ async function prepareBloggerSlot(time) {
   const now = new Date();
   const day = moscowDateKey(now);
   const slotTime = String(time || "");
-  if (!BLOGGER_SLOTS.includes(slotTime)) return { ok: true, skipped: "invalid_blogger_slot" };
-  if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
+  if (!bloggerSlotsFor().includes(slotTime)) return { ok: true, skipped: "invalid_blogger_slot" };
+  if (bloggerDailyPublishedCount(day) >= bloggerTargetFor()) return { ok: true, skipped: "blogger_daily_target" };
 
   const schedule = ensureScheduleShape(state);
   if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
 
-  const collector = await collectOnce("blogger-slot-prep");
+  // A lane fed from all sources (stars) picks from the queue the :45 preparation already filled; collecting every
+  // source again could run past the :30 window and lose the slot.
+  const lane = channelExtraLane();
+  const collector = lane && lane.anySource ? { ok: true, skipped: "any_source_lane_uses_queue" } : await collectOnce("blogger-slot-prep");
   await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
   const item = dynamicAssignBest(day, slotTime, "blogger");
   state.bloggerScheduler = state.bloggerScheduler || {};
@@ -6666,7 +6776,7 @@ async function publishDynamicSlotOnce(kind, opts) {
 
   const day = moscowDateKey(now);
   const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai") ? ":30" : ":00");
-  if (publishKind === "blogger" && !BLOGGER_SLOTS.includes(time)) return { ok: true, skipped: "not_blogger_slot" };
+  if (publishKind === "blogger" && !bloggerSlotsFor().includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
   const slotKey = day + " " + time;
   state.dynamicScheduler = state.dynamicScheduler || {};
@@ -6684,7 +6794,7 @@ async function publishDynamicSlotOnce(kind, opts) {
     saveState();
   }
   if (publishKind === "blogger") {
-    if (bloggerDailyPublishedCount(day) >= BLOGGER_DAILY_TARGET) return { ok: true, skipped: "blogger_daily_target" };
+    if (bloggerDailyPublishedCount(day) >= bloggerTargetFor()) return { ok: true, skipped: "blogger_daily_target" };
   } else if (publishKind === "russian-ai") {
     if (russianAiDailyPublishedCount(day) >= RUSSIAN_AI_DAILY_TARGET) return { ok: true, skipped: "russian_ai_daily_target" };
   } else if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
@@ -7040,7 +7150,7 @@ async function dynamicSchedulerTick() {
     windowStart = 15;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
-    if (BLOGGER_SLOTS.includes(bloggerTime) && (state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) {
+    if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
       action = "blogger_prepare";
     } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
       action = "russian_ai_prepare";
@@ -7050,7 +7160,7 @@ async function dynamicSchedulerTick() {
     windowStart = 30;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
-    if (BLOGGER_SLOTS.includes(bloggerTime) && (state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) {
+    if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
       action = "blogger_publish";
     } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
       action = "russian_ai_publish";
@@ -7064,7 +7174,7 @@ async function dynamicSchedulerTick() {
     windowStart = 0;
   }
   if (!action) return;
-  if (action.startsWith("blogger_") && !(state.sources || []).some(function(source){ return source && source.enabled && source.group === "blogger"; })) return;
+  if (action.startsWith("blogger_") && !bloggerLaneActive()) return;
   if (action.startsWith("russian_ai_") && !(state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) return;
 
   state.dynamicScheduler = state.dynamicScheduler || {};
@@ -10253,7 +10363,7 @@ function editorialPostsToday() {
 function editorialDailyLimit() {
   const sources = state.sources || [];
   let limit = DYNAMIC_DAILY_MAX;
-  if (sources.some(function(s){ return s && s.enabled && s.group === "blogger"; })) limit += BLOGGER_DAILY_TARGET;
+  if (bloggerLaneActive()) limit += bloggerTargetFor();
   if (sources.some(function(s){ return s && s.enabled && isRussianAISource(s); })) limit += RUSSIAN_AI_DAILY_TARGET;
   return limit;
 }
@@ -14166,12 +14276,45 @@ setTimeout(function() {
   })().catch(function(error){ console.warn("Auto publish setup failed:", error.message); });
 }, 70000);
 
+// Editor's notes of 2026-10-03, once per channel: refresh the sources of weak channels (every automatically
+// added source gets a 24 h trial; ones that never brought a news item that passed are replaced) and a boost of
+// new sources found with the channel's hint.
+const CHANNEL_NOTES_MIGRATION = "v0.50.0-channel-notes";
+function applyChannelNotes(ws) {
+  const st = ws.state;
+  st.migrations = Array.isArray(st.migrations) ? st.migrations : [];
+  if (st.migrations.includes(CHANNEL_NOTES_MIGRATION)) return null;
+  const plan = CHANNEL_SOURCE_PLANS[resolveChannelId(ws)] || null;
+  const result = { workspace: ws.id, trial: 0, boost: 0 };
+  if (plan && plan.refresh) {
+    // seed (starter) sources stay; the rest get a trial ending between 24 and 48 h from now, so they are not
+    // judged — and paused — all in the same collector run
+    let i = 0;
+    for (const src of st.sources || []) {
+      if (src && src.enabled && src.autoAdded && src.autoAdded.from !== "seed" && !src.probationUntil && !src.autoPauseExempt) {
+        src.probationUntil = new Date(Date.now() + (24 + (i++ % 24)) * 3600000).toISOString();
+        result.trial += 1;
+      }
+    }
+  }
+  if (plan && (plan.refresh || plan.boost)) {
+    st.sourceBoostRemaining = Number(plan.boost || 15);
+    st.sourceBoostUntil = new Date(Date.now() + 72 * 3600000).toISOString();
+    st.sourceReplenish = Object.assign({}, st.sourceReplenish || {}, { lastAt: "" });
+    result.boost = st.sourceBoostRemaining;
+  }
+  st.migrations.push(CHANNEL_NOTES_MIGRATION);
+  return result;
+}
+
 // Top up sources to the target shortly after start (respects the throttle).
 setTimeout(function() {
   (async function(){
     for (const ws of workspaceStore.workspaces) {
       if (!ws || !ws.state) continue;
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const notes = applyChannelNotes(ws);
+        if (notes) { saveState(); console.log("CHANNEL_NOTES_APPLIED " + JSON.stringify(notes)); }
         const result = await replenishSources("startup");
         console.log("Source replenish " + ws.id + ": " + JSON.stringify(result));
       });

@@ -241,15 +241,34 @@ export const RESERVE_SOURCES = {
 
 export function buildDiscoveryPrompt(options) {
   const existing = (options.existingHosts || []).slice(0, 120);
+  if (options.telegramOnly) {
+    return [
+      "Подбери публичные Telegram-каналы для Telegram-канала «" + (options.channelName || "") + "».",
+      "Что нужно: " + (options.hint || options.topic || "новости по теме") + ".",
+      "Нужны " + (options.count || 5) + " живых каналов, которые публикуют посты каждый день; у постов должна быть подпись (текст), а не только картинка.",
+      "Ссылку давай строго в виде https://t.me/s/имя_канала. Не предлагай каналы с рекламой казино и ставок, 18+, и эти уже подключённые: " + existing.join(", ") + ".",
+      "Ответь строго JSON без пояснений: {\"sources\":[{\"name\":\"Название\",\"url\":\"https://t.me/s/…\",\"group\":\"media\",\"why\":\"коротко\"}]}"
+    ].join("\n");
+  }
   return [
     "Подбери новые источники новостей для Telegram-канала «" + (options.channelName || "") + "» (тема: " + (options.topic || "новости") + ").",
+    options.hint ? "Особое пожелание редактора: " + options.hint : "",
     "Нужны " + (options.count || 5) + " сайтов с ежедневно обновляемой лентой новостей по этой теме: крупные СМИ, отраслевые издания, официальные пресс-центры компаний.",
     "Желательно часть русскоязычных, если они пишут о российском рынке.",
     "Дай прямую ссылку именно на страницу-ленту новостей (не на главную, если лента отдельная), без RSS.",
     "Подходят и публичные Telegram-каналы с новостями по теме (официальные каналы компаний и ведомств, отраслевые каналы): ссылку давай в виде https://t.me/s/имя_канала.",
     "Не предлагай агрегаторы, форумы, доски объявлений, сайты с платным доступом ко всем статьям и эти уже подключённые сайты: " + existing.join(", ") + ".",
     "Ответь строго JSON без пояснений: {\"sources\":[{\"name\":\"Название\",\"url\":\"https://…\",\"group\":\"media|official\",\"why\":\"коротко\"}]}"
-  ].join("\n");
+  ].filter(Boolean).join("\n");
+}
+
+// t.me/name, telegram.me/name, t.me/s/name?x=1, @name -> https://t.me/s/name (the public web preview we can read).
+export function normalizeTelegramUrl(url) {
+  const raw = String(url || "").trim();
+  const at = /^@([A-Za-z][A-Za-z0-9_]{3,31})$/.exec(raw);
+  if (at) return "https://t.me/s/" + at[1];
+  const m = /^(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.me\/(?:s\/)?([A-Za-z][A-Za-z0-9_]{3,31})\/?(?:[?#].*)?$/i.exec(raw);
+  return m ? "https://t.me/s/" + m[1] : raw;
 }
 
 export function parseDiscoveryResult(text) {
@@ -264,7 +283,7 @@ export function parseDiscoveryResult(text) {
   return list.map(function(x){
     return {
       name: String(x && x.name || "").trim().slice(0, 80),
-      url: String(x && x.url || "").trim(),
+      url: normalizeTelegramUrl(String(x && x.url || "").trim()),
       group: x && x.group === "official" ? "official" : "media",
       why: String(x && x.why || "").trim().slice(0, 160)
     };
