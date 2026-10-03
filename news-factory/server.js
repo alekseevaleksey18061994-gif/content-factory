@@ -8555,7 +8555,14 @@ async function publishVkPost(post) {
     const target = await postmypostTarget();
     const pmpContext = { post_id: context.postId, slug: preview.slug, project: target.projectId, account: target.accountId };
     attempts += 1;
-    const fileId = await pmp.uploadByUrl(target.projectId, preview.imageUrl, 90000);
+    // Push the picture as a file (Postmypost cannot download from our Railway domain); by URL only as a last resort.
+    let fileId;
+    const localPath = localMediaPathFromUrl(preview.imageUrl);
+    if (localPath && fs.existsSync(localPath)) {
+      fileId = await pmp.uploadFile(target.projectId, fs.readFileSync(localPath), path.basename(localPath), "image/jpeg", 90000);
+    } else {
+      fileId = await pmp.uploadByUrl(target.projectId, preview.imageUrl, 90000);
+    }
     let created;
     try {
       created = await pmp.createPublication({
