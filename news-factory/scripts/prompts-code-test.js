@@ -94,22 +94,24 @@ await test("P1: server.js uses visible-length checks, not html.length, for capti
   assert.ok(!/formatTelegramPost\([a-z]+\)\.length\s*<=\s*900/.test(serverSrc));
 });
 
-await test("MEDIA: manual cover always generates a fresh AI visual", function() {
+await test("MEDIA: manual cover supports fresh and source-reference generation", function() {
   const start = serverSrc.indexOf('if (req.method === "POST" && p === "/api/queue/enhance-media")');
   const end = serverSrc.indexOf('if (req.method === "POST" && p === "/api/queue/publish")', start);
   assert.ok(start >= 0 && end > start, "cover endpoint exists");
   const block = serverSrc.slice(start, end);
-  assert.ok(block.includes("manual_new_cover_generated"), "manual cover is recorded as a generated visual");
-  assert.ok(block.includes("forceAi: true"), "manual action bypasses economy text-card mode");
-  assert.ok(block.includes("coverGenerationCount"), "repeat clicks advance visual variation");
-  assert.ok(block.includes('item.imageUrl = ""'), "source image is no longer kept active");
-  assert.ok(block.includes('item.enhancedImageUrl = ""'), "enhanced source image is no longer kept active");
-  assert.ok(block.includes("item.generatedImageUrl = generated.url"), "new cover becomes publishing media");
-  assert.ok(!block.includes("enhanceNewsImage("), "manual cover no longer sharpens/upscales the same source thumbnail");
+  assert.ok(block.includes('requestedMode = String(body.mode || "fresh")'), "manual action has an explicit mode");
+  assert.ok(block.includes('requestedMode === "reference"'), "reference branch exists");
+  assert.ok(block.includes("generateNewsCoverFromReference"), "reference mode uses the source image");
+  assert.ok(block.includes("manual_reference_cover_generated"), "reference output is tracked");
+  assert.ok(block.includes("manual_new_cover_generated"), "fresh output is tracked");
+  assert.ok(block.includes("coverReferenceUsed"), "metadata records reference usage");
+  assert.ok(!block.includes("enhanceNewsImage("), "manual cover never just sharpens/upscales the same thumbnail");
   assert.ok(serverSrc.includes("Channel editorial focus: "), "generated-cover prompt includes channel DNA");
-  assert.ok(serverSrc.includes('Date.now() + "_" + crypto.randomBytes(3).toString("hex") + ".png"'), "cover URL changes on every generation");
-  assert.ok(adminSrc.includes("Генерирую новую AI-обложку"), "UI describes the real action");
-  assert.ok(adminSrc.includes("Новая AI-обложка готова"), "UI confirms a new cover");
+  assert.ok(serverSrc.includes('https://api.openai.com/v1/images/edits'), "reference mode uses image edits");
+  assert.ok(serverSrc.includes('form.append("image[]",'), "reference image is supplied to the model");
+  assert.ok(serverSrc.includes('form.append("input_fidelity", "high")'), "reference mode preserves useful visual identity");
+  assert.ok(adminSrc.includes("AI с нуля"), "UI exposes fresh generation");
+  assert.ok(adminSrc.includes("По фото"), "UI exposes reference generation");
 });
 
 // --- P2 ---------------------------------------------------------------------
