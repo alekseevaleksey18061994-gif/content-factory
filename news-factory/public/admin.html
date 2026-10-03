@@ -2102,10 +2102,10 @@ button{line-height:1.2!important}
 .qa-main{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
 .qa .qa-main button{min-height:46px!important;margin:0!important;border-radius:13px!important;font-size:14px!important}
 .qa .qa-remove{width:auto!important;min-width:104px!important;padding:0 16px!important}
-.qa-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.qa-tools{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
 .qa .qa-tool{display:flex;align-items:center;justify-content:center;min-height:36px!important;height:auto;margin:0!important;padding:6px 6px!important;border-radius:10px!important;font-size:12px!important;font-weight:700!important;line-height:1.2;text-align:center;white-space:nowrap!important;overflow:hidden;text-overflow:ellipsis;min-width:0;box-sizing:border-box;box-shadow:none!important}
 .qa .qa-note{border:1px dashed rgba(128,140,160,.35);color:#7a869b;background:transparent}
-@media(max-width:440px){.qa-label{display:none}}@media(max-width:360px){.qa .qa-tool{font-size:11px!important}.qa .qa-target{font-size:12px!important}}
+@media(max-width:520px){.qa-tools{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:440px){.qa-label{display:none}}@media(max-width:360px){.qa .qa-tool{font-size:11px!important}.qa .qa-target{font-size:12px!important}}
 
 /* v0.38.4 — layout polish: account, connections, calendar, sources */
 .account-avatar-dup{display:none!important}
@@ -3824,7 +3824,12 @@ function render(){
         '<div class="qa-tools">'+
           '<button class="qa-tool" onclick="openQueuePreview('+ja(q.id)+')">Просмотр</button>'+
           '<button class="qa-tool" onclick="toggleWhy('+ja(q.id)+')">Почему он?</button>'+
-          (q.videoUrl?'<span class="qa-tool qa-note">🎬 Видео</span>':'<button class="qa-tool" onclick="enhanceQueuePhoto('+ja(q.id)+')">Обложка</button>')+
+          (q.videoUrl
+            ? '<span class="qa-tool qa-note">🎬 Видео</span>'
+            : '<button class="qa-tool" onclick="enhanceQueuePhoto('+ja(q.id)+',\'fresh\')">AI с нуля</button>'+
+              ((q.originalImageUrl||q.cachedSourceImageUrl||q.imageUrl)
+                ? '<button class="qa-tool" onclick="enhanceQueuePhoto('+ja(q.id)+',\'reference\')">По фото</button>'
+                : '<span class="qa-tool qa-note">Нет референса</span>'))+
         '</div>'+
         whyPostHtml(q)+
       '</div>'+
@@ -4894,14 +4899,21 @@ async function setSourceMediaLicense(id,mediaLicense){await api('/api/sources/me
 async function toggleSource(id){await api('/api/sources/toggle',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function removeSource(id){await api('/api/sources/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
 async function addDraft(){var title=prompt('Заголовок черновика');if(title===null)return;var text=prompt('Текст поста');if(!text)return;await api('/api/queue',{method:'POST',body:JSON.stringify({title:title,text:text})});await load();toast('Черновик добавлен')}
-async function enhanceQueuePhoto(id){
+async function enhanceQueuePhoto(id,mode){
   var item=(state.queue||[]).find(function(q){return q.id===id});
   if(!item)return;
   if(item.videoUrl){toast('У этой новости приоритет у видео');return}
-  toast('Генерирую новую AI-обложку…');
+  mode=mode==='reference'?'reference':'fresh';
+  toast(mode==='reference'?'Генерирую новую обложку по исходному фото…':'Генерирую новую AI-обложку с нуля…');
   try{
-    await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id})});
-    toast('Новая AI-обложка готова');
+    var j=await api('/api/queue/enhance-media',{method:'POST',body:JSON.stringify({id:id,mode:mode})});
+    if(mode==='reference'&&j&&j.mode==='reference'){
+      toast('Новая обложка по фото готова');
+    }else if(mode==='reference'&&j&&j.fallback){
+      toast('Референс недоступен — сделана AI-обложка с нуля');
+    }else{
+      toast('Новая AI-обложка готова');
+    }
     await load();
     openQueuePreview(id);
   }catch(e){toast('Обложка: '+e.message)}

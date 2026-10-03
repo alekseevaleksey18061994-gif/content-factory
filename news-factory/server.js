@@ -4005,6 +4005,132 @@ async function generateNewsCover(payload) {
 }
 
 
+async function loadReferenceImageForGeneration(imageUrl, id) {
+  const sourceUrl = String(imageUrl || "").trim();
+  if (!sourceUrl) throw new Error("У новости нет исходного фото для референса");
+
+  const prepared = await prepareReusableSourceImage(sourceUrl, String(id || "reference") + "_ref");
+  const usableUrl = String(prepared.imageUrl || "").trim();
+  if (!usableUrl) throw new Error(prepared.cacheError || "Исходное фото для референса недоступно");
+
+  let bytes = null;
+  const localFile = localMediaPathFromUrl(usableUrl);
+  if (localFile && fs.existsSync(localFile)) {
+    bytes = fs.readFileSync(localFile);
+  } else {
+    const response = await safeFetch(usableUrl, {
+      headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryReference/1.0)" },
+      timeoutMs: 30000,
+      maxBytes: 20 * 1024 * 1024
+    });
+    if (!response.ok) throw new Error("Не удалось скачать фото-референс: HTTP " + response.status);
+    bytes = response.body;
+  }
+
+  if (!bytes || !bytes.length) throw new Error("Фото-референс пустое");
+  await assertSafeRaster(bytes);
+
+  const normalized = await sharp(bytes, { failOn: "none", limitInputPixels: SAFE_INPUT_PIXELS })
+    .rotate()
+    .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
+    .png()
+    .toBuffer();
+
+  return {
+    bytes: normalized,
+    originalImageUrl: prepared.originalImageUrl || sourceUrl,
+    cachedImageUrl: usableUrl
+  };
+}
+
+async function generateNewsCoverFromReference(payload, referenceUrl) {
+  if (!OPENAI_API_KEY || !GENERATE_COVER_IF_MISSING) throw new Error("Генерация обложек отключена");
+  if (providerBreaker.isOpen("openai")) throw new Error(providerBreaker.reason("openai") || "OpenAI временно недоступен");
+
+  const reference = await loadReferenceImageForGeneration(referenceUrl, payload && (payload.newsId || payload.id));
+  const workspace = currentWorkspace();
+  const channelName = String(workspace.name || "News Factory");
+  const channelId = resolveChannelId(workspace);
+  const editorialFocus = channelFocus(channelId);
+  const contentType = channelStrategy(channelId).type;
+
+  const prompt = [
+    "Create a NEW premium editorial news image for the Telegram channel «" + channelName + "» using the supplied image only as a visual reference.",
+    "Channel content type: " + String(contentType || "news") + ".",
+    editorialFocus ? ("Channel editorial focus: " + editorialFocus) : "",
+    "Topic: " + String(payload.title || "News"),
+    "Context: " + String(payload.text || "").slice(0, 1800),
+    "Reference rule: preserve the main subject identity, important real objects, scene context and useful visual cues when relevant, but create a noticeably new composition rather than copying the source frame.",
+    "Remove all source text, ratings, captions, watermarks, logos, UI, borders and thumbnail graphics unless a real-world product logo is factually necessary.",
+    "Improve framing, lighting, detail and realism. Make it look like a clean high-end editorial photograph, not a screenshot, poster, thumbnail or AI collage.",
+    "Do not invent events, people, products or factual details that are not supported by the news text or reference image.",
+    "Do not imitate a living artist or a recognizable copyrighted visual style.",
+    "No added text, captions, watermarks, fake UI or random letters.",
+    "Landscape 3:2 composition suitable for Telegram and VK. Keep the main subject inside a safe central area for mobile crops."
+  ].filter(Boolean).join("\n");
+
+  const candidates = [OPENAI_IMAGE_MODEL, "gpt-image-2"].filter(function(v, i, a){ return v && a.indexOf(v) === i; });
+  let lastError = "";
+
+  for (const model of candidates) {
+    try {
+      const form = new FormData();
+      form.append("model", model);
+      form.append("image[]", new Blob([reference.bytes], { type: "image/png" }), "reference.png");
+      form.append("prompt", prompt);
+      form.append("size", "1536x1024");
+      form.append("quality", OPENAI_IMAGE_QUALITY);
+      form.append("input_fidelity", "high");
+      form.append("output_format", "png");
+
+      const response = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { authorization: "Bearer " + OPENAI_API_KEY },
+        body: form,
+        signal: AbortSignal.timeout(120000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) {
+        lastError = (data && data.error && data.error.message) || ("OpenAI Image Edit HTTP " + response.status);
+        const failureKind = classifyProviderFailure({ status: response.status, message: lastError });
+        if (tripsBreaker(failureKind)) providerBreaker.trip("openai", lastError, failureKind);
+        continue;
+      }
+
+      recordOpenAIResponseUsage(model, String(payload && payload.costPurpose || "image_generation"), data, "images.edits", {
+        quality: OPENAI_IMAGE_QUALITY,
+        size: "1536x1024",
+        input_fidelity: "high",
+        reference: true,
+        news_id: payload && (payload.newsId || payload.id) || ""
+      });
+
+      const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
+      if (!b64) {
+        lastError = "OpenAI Image Edit не вернул изображение";
+        continue;
+      }
+
+      ensureDataDir();
+      const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 70);
+      const fileName = "cover_ref_" + safeId + "_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex") + ".png";
+      fs.writeFileSync(path.join(MEDIA_DIR, fileName), Buffer.from(b64, "base64"));
+      return {
+        url: mediaPublicUrl(fileName),
+        model: model,
+        fileName: fileName,
+        referenceOriginalUrl: reference.originalImageUrl,
+        referenceCachedUrl: reference.cachedImageUrl
+      };
+    } catch (error) {
+      lastError = String(error && error.message || error);
+    }
+  }
+
+  throw new Error(lastError || "Не удалось создать обложку по фото");
+}
+
+
 async function generateStoryMediaPack(payload, count) {
   const desired = Math.max(2, Math.min(4, Number(count || STORY_MEDIA_PACK_COUNT)));
   const baseId = String(payload && payload.id || newId("story")).replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -12848,6 +12974,7 @@ const server = http.createServer(async function(req, res) {
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
       if (item.videoUrl) return sendJson(res, 409, { ok: false, error: "Для этой новости приоритет уже у видео — отдельная обложка не требуется" });
 
+      const requestedMode = String(body.mode || "fresh").toLowerCase() === "reference" ? "reference" : "fresh";
       const sourceImage = String(item.originalImageUrl || item.cachedSourceImageUrl || item.enhancedImageUrl || item.imageUrl || "").trim();
       const license = sourceMediaLicense(item);
 
@@ -12868,12 +12995,8 @@ const server = http.createServer(async function(req, res) {
       };
 
       try {
-        // The manual "Обложка" button is a creative action, not a sharpen/upscale
-        // operation. Every click creates a fresh independent cover from the story
-        // facts and channel DNA. This fixes the old behaviour where a low-quality
-        // source thumbnail stayed visually the same after several clicks.
         const generation = Number(item.coverGenerationCount || 0) + 1;
-        const generated = await generateNewsCover({
+        const payload = {
           id: item.newsId || item.id,
           newsId: item.newsId || item.id,
           title: item.title,
@@ -12883,60 +13006,93 @@ const server = http.createServer(async function(req, res) {
           visualIndex: generation,
           forceAi: true,
           costPurpose: "image_generation"
-        });
+        };
+
+        let generated = null;
+        let modeUsed = "generated";
+        let fallbackReason = "";
+
+        if (requestedMode === "reference") {
+          if (!sourceImage) {
+            fallbackReason = "У новости нет доступного исходного фото";
+          } else if (!mediaLicenseAllowsReuse(license)) {
+            fallbackReason = "Исходное фото нельзя использовать как референс по политике медиа";
+          } else {
+            try {
+              generated = await generateNewsCoverFromReference(payload, sourceImage);
+              modeUsed = "reference";
+            } catch (referenceError) {
+              fallbackReason = String(referenceError && referenceError.message || referenceError).slice(0, 500);
+              console.warn("QUEUE_REFERENCE_COVER_FALLBACK " + JSON.stringify({
+                workspace: currentWorkspaceId(),
+                id: item.newsId || item.id,
+                error: fallbackReason
+              }));
+            }
+          }
+        }
+
+        if (!generated) generated = await generateNewsCover(payload);
 
         const generatedAt = new Date().toISOString();
         item.originalImageUrl = item.originalImageUrl || sourceImage || "";
         item.imageUrl = "";
         item.enhancedImageUrl = "";
-        item.cachedSourceImageUrl = "";
         item.generatedImageUrl = generated.url;
         item.mediaPackUrls = [];
         item.mediaType = "generated";
         item.mediaStatus = "generated";
         item.mediaPriority = 2;
         item.mediaLicense = license;
-        item.mediaOrigin = "ai_generated";
+        item.mediaOrigin = modeUsed === "reference" ? "ai_generated_reference" : "ai_generated";
         item.copyrightSafe = true;
-        item.copyrightMediaDecision = "manual_new_cover_generated";
+        item.copyrightMediaDecision = modeUsed === "reference" ? "manual_reference_cover_generated" : "manual_new_cover_generated";
         item.generatedBy = generated.model;
         item.generatedAt = generatedAt;
         item.coverGenerationCount = generation;
-        item.coverFallbackReason = "";
+        item.coverMode = modeUsed;
+        item.coverReferenceUsed = modeUsed === "reference";
+        item.coverReferenceSource = modeUsed === "reference" ? (generated.referenceOriginalUrl || sourceImage) : "";
+        item.coverFallbackReason = fallbackReason;
         item.canEnhance = false;
 
         await persistMediaMetadata({
           originalImageUrl: item.originalImageUrl || "",
           imageUrl: "",
           enhancedImageUrl: "",
-          cachedSourceImageUrl: "",
           generatedImageUrl: generated.url,
           mediaPackUrls: [],
           mediaType: "generated",
           mediaStatus: "generated",
           mediaPriority: 2,
           mediaLicense: license,
-          mediaOrigin: "ai_generated",
+          mediaOrigin: item.mediaOrigin,
           copyrightSafe: true,
           copyrightPolicyVersion: "v2",
           copyrightMediaDecision: item.copyrightMediaDecision,
           generatedBy: generated.model,
           generatedAt: generatedAt,
           coverGenerationCount: generation,
-          coverFallbackReason: ""
+          coverMode: modeUsed,
+          coverReferenceUsed: item.coverReferenceUsed,
+          coverReferenceSource: item.coverReferenceSource,
+          coverFallbackReason: fallbackReason
         });
 
         saveState();
         return sendJson(res, 200, {
           ok: true,
-          mode: "generated",
+          mode: modeUsed,
+          requestedMode: requestedMode,
           imageUrl: generated.url,
           model: generated.model,
           generation: generation,
+          fallback: Boolean(fallbackReason),
+          fallbackReason: fallbackReason,
           copyrightSafe: true
         });
       } catch (error) {
-        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось сгенерировать новую обложку" });
+        return sendJson(res, 502, { ok: false, error: error.message || "Не удалось сгенерировать обложку" });
       }
     }
 
