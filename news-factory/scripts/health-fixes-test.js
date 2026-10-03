@@ -122,6 +122,28 @@ test("U3 Postmypost storage: fetch failed / 5xx are retried with a fresh upload 
   await assert.rejects(() => c.uploadFile(77, bytes, "a.jpg"), (e) => e.pmpCode === "storage_network");
 });
 
+test("U5 Postmypost /upload/init without an upload address: retried; finished-file answer used; error shows the shape", async () => {
+  const bytes = Buffer.alloc(50, 1);
+  let n = 0;
+  const mk = (answers) => async (url, init = {}) => {
+    const u = String(url);
+    if (u.startsWith("https://storage.pmp.test/")) return new Response(null, { status: 204 });
+    const path = new URL(u).pathname.replace("/v4.1", "");
+    if (path === "/upload/init") { n += 1; const a = answers.shift(); return json(a); }
+    if (path === "/upload/complete") return json({ status: 1, file_id: 4242 });
+    return json({}, 404);
+  };
+  n = 0;
+  let c = createPostmypostClient({ token: "t", fetch: mk([{ id: 0, status: 5 }, { id: 9001, status: 5, action: "https://storage.pmp.test/up", fields: [] }]), pollMs: 1, storageRetryMs: 0 });
+  assert.equal(await c.uploadFile(77, bytes, "a.jpg"), 4242); assert.equal(n, 2, "retried once");
+  c = createPostmypostClient({ token: "t", fetch: mk([{ id: 9002, status: 1, file_id: 777 }]), pollMs: 1, storageRetryMs: 0 });
+  assert.equal(await c.uploadFile(77, bytes, "a.jpg"), 777, "already uploaded file is reused");
+  c = createPostmypostClient({ token: "t", fetch: mk([{ data: { id: 9003, action: "https://storage.pmp.test/up", fields: [] } }]), pollMs: 1, storageRetryMs: 0 });
+  assert.equal(await c.uploadFile(77, bytes, "a.jpg"), 4242, "wrapped answer understood");
+  c = createPostmypostClient({ token: "t", fetch: mk([{ status: 2, message: "x" }, { status: 2 }, { status: 2 }]), pollMs: 1, storageRetryMs: 0 });
+  await assert.rejects(() => c.uploadFile(77, bytes, "a.jpg"), (e) => e.pmpCode === "upload_no_action" && /status=2/.test(e.message) && e.pmpAttempts === 3);
+});
+
 test("U4 catch-up of an empty channel logs START/RESULT once per slot, not every 30 s", async () => {
   const t = await loadServer({ channels: [["chtotampokupki", "shop", "Что там с покупками?"]], fixedNow: "2026-10-03T13:05:00Z", env: { AUTO_PUBLISH_ENABLED: "true", TELEGRAM_BOT_TOKEN: "123:test" } });
   t.ws("chtotampokupki").state.mode = "AUTO";
