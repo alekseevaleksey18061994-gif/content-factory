@@ -21,6 +21,7 @@ function installTelegram(mode = "post") {
       let body = {};
       if (init.body && typeof init.body === "string") body = JSON.parse(init.body);
       else if (init.body && typeof init.body.get === "function") body = { caption: init.body.get("caption") || "", text: init.body.get("text") || "", multipart: true };
+      if (method === "getChat" && mode === "getchat-timeout") { const e = new Error("The operation was aborted due to timeout"); e.name = "TimeoutError"; throw e; }
       if (method === "getChat") return json({ ok: true, result: { id: -100123, type: "channel", username: "chtotamai", title: "Что там у ИИ?" } });
       const text = String(body.text || body.caption || "");
       if (/FAILME/.test(text) || mode === "kicked-all") {
@@ -184,7 +185,29 @@ test("R6 which failures count as 'maybe sent'", async () => {
   const f = t.telegramErrorIsAmbiguous;
   const te = new Error("x"); te.name = "TimeoutError";
   const c = (code) => { const e = new TypeError("fetch failed"); e.cause = { code }; return e; };
-  assert.deepEqual([f(te), f(c("ECONNRESET")), f(c("UND_ERR_SOCKET")), f(c("ECONNREFUSED")), f(c("ENOTFOUND")), f(c("UND_ERR_CONNECT_TIMEOUT"))], [true, true, true, false, false, false]);
+  assert.deepEqual([f(te), f(c("ECONNRESET")), f(c("UND_ERR_SOCKET")), f(c("ECONNREFUSED")), f(c("ENOTFOUND")), f(c("UND_ERR_CONNECT_TIMEOUT")), f(c("DEPTH_ZERO_SELF_SIGNED_CERT")), f(c("CERT_HAS_EXPIRED"))], [true, true, true, false, false, false, false, false]);
+});
+
+test("R7 timeout on getChat (before any send): NOT counted as published, the post stays", async () => {
+  const t = await boot();
+  const sent = installTelegram("getchat-timeout");
+  t.ws("ai-main").state.queue = [item("a", 99), item("b", 95)];
+  t.ws("ai-main").state.mode = "AUTO";
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishDynamicSlot()));
+  assert.equal(sent.length, 0);
+  const a = t.ws("ai-main").state.queue.find((x) => x.id === "a");
+  assert.ok(a && !a.telegramPublished, "kept for a later slot");
+  assert.equal((t.ws("ai-main").state.history || []).length, 0);
+});
+
+test("R8 an uncertain post is recorded as such (queue item / history) for a manual check", async () => {
+  const t = await boot();
+  installTelegram("timeout");
+  t.ws("ai-main").state.queue = [item("a", 99, true)];
+  t.ws("ai-main").state.mode = "AUTO";
+  await inWs(t, "ai-main", () => t.publishDynamicSlot());
+  const h = (t.ws("ai-main").state.history || []).find((x) => x.queueId === "a");
+  assert.ok(h && h.telegramUncertain === true, JSON.stringify(h || null).slice(0, 300));
 });
 
 async function main() {

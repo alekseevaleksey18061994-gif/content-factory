@@ -6854,6 +6854,7 @@ async function publishDynamicSlotOnce(kind, opts) {
     item.telegramPublished = true;
     item.telegramMessageId = result.message_id;
     item.telegramPublishedAt = publishedAt;
+    if (result.telegramUncertain) item.telegramUncertain = true; // sent, no answer: check the channel by hand
   }
   if (result.vkPublished) {
     item.vkPublished = true;
@@ -6881,6 +6882,7 @@ async function publishDynamicSlotOnce(kind, opts) {
       title: item.title || "Публикация",
       text: result.publishedText || item.text || "",
       messageId: result.message_id || item.telegramMessageId || null,
+      telegramUncertain: Boolean(result.telegramUncertain || item.telegramUncertain),
       vkPostId: result.vkPostId || item.vkPostId || null,
       vkStatus: result.vkStatus || item.vkStatus || "",
       vkError: result.vkError || item.vkError || "",
@@ -7526,6 +7528,8 @@ function telegramErrorIsAmbiguous(error) {
   const cause = error.cause || {};
   const code = String(cause.code || error.code || "");
   if (/^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|UND_ERR_CONNECT_TIMEOUT|ENETUNREACH|EHOSTUNREACH)$/.test(code)) return false;
+  // TLS refused before any request byte was sent (certificate problems, handshake failure)
+  if (/CERT|SSL|TLS|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO|HANDSHAKE/i.test(code)) return false;
   return true;
 }
 
@@ -7573,7 +7577,8 @@ async function telegramRequest(method, makeInit, timeoutMs) {
     } catch (networkError) {
       // Sent but no answer (timeout, connection dropped mid-request): Telegram may well have published it.
       // Any further attempt (URL -> upload, new cover, repair loop, next post) risks a duplicate post.
-      networkError.telegramAmbiguous = telegramErrorIsAmbiguous(networkError);
+      // Only calls that post something can leave a post behind; getChat & co. never do.
+      networkError.telegramAmbiguous = /^(send|copy|forward)/i.test(method) && telegramErrorIsAmbiguous(networkError);
       throw networkError;
     }
     const data = await response.json().catch(function(){ return null; });
@@ -13250,7 +13255,8 @@ const server = http.createServer(async function(req, res) {
             ok: true,
             alreadyPublished: true,
             status: "published",
-            telegramPublished: Boolean(published.messageId || published.telegramMessageId),
+            telegramPublished: Boolean(published.messageId || published.telegramMessageId || published.telegramUncertain),
+            telegramUncertain: Boolean(published.telegramUncertain),
             vkPublished: Boolean(published.vkPostId),
             messageId: published.messageId || published.telegramMessageId || null,
             vkPostId: published.vkPostId || null,
@@ -13354,6 +13360,7 @@ const server = http.createServer(async function(req, res) {
         item.telegramPublished = true;
         item.telegramMessageId = result.message_id;
         item.telegramPublishedAt = publishedAt;
+        if (result.telegramUncertain) item.telegramUncertain = true;
       }
       if (result.vkPublished) {
         item.vkPublished = true;
@@ -13384,6 +13391,7 @@ const server = http.createServer(async function(req, res) {
           title: item.title,
           text: result.publishedText || item.text,
           messageId: result.message_id || item.telegramMessageId || null,
+          telegramUncertain: Boolean(result.telegramUncertain || item.telegramUncertain),
           vkPostId: result.vkPostId || item.vkPostId || null,
           vkStatus: result.vkStatus || item.vkStatus || "",
           vkError: result.vkError || item.vkError || "",
