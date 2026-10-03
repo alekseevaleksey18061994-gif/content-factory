@@ -17,6 +17,7 @@ import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js"
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
+import { createPostmypostClient, resolvePostmypostTarget, PUBLICATION_STATUS as PMP_STATUS } from "./lib/postmypost.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
@@ -158,6 +159,10 @@ const VK_SCREEN_NAME = String(process.env.VK_SCREEN_NAME || "chtotamai").trim();
 const VK_PUBLIC_URL = String(process.env.VK_PUBLIC_URL || (VK_SCREEN_NAME ? "https://vk.ru/" + VK_SCREEN_NAME : "")).trim();
 const VK_API_VERSION = String(process.env.VK_API_VERSION || "5.199").trim();
 const VK_PUBLISH_ENABLED = String(process.env.VK_PUBLISH_ENABLED || "false").toLowerCase() === "true";
+// VK posts WITH a visible photo go through Postmypost (an app VK approved for photos). Set POSTMYPOST_TOKEN to enable;
+// VK_VIA_POSTMYPOST=false switches back to direct VK API without removing the token.
+const POSTMYPOST_TOKEN = String(process.env.POSTMYPOST_TOKEN || "").trim();
+const VK_VIA_POSTMYPOST = Boolean(POSTMYPOST_TOKEN) && String(process.env.VK_VIA_POSTMYPOST || "true").toLowerCase() !== "false";
 const VK_APP_ID = String(process.env.VK_APP_ID || "").trim();
 const VK_OAUTH_REDIRECT_URI = String(process.env.VK_OAUTH_REDIRECT_URI || (PUBLIC_BASE_URL + "/api/vk/oauth/callback")).trim();
 const VK_OAUTH_SCOPE = String(process.env.VK_OAUTH_SCOPE || "photos wall groups offline").trim();
@@ -8366,6 +8371,37 @@ async function uploadVkWallImageDocument(imageUrl, post, previewSlug) {
   };
 }
 
+let postmypostClientInstance = null;
+let postmypostTargetCache = null;
+function postmypostClient() {
+  if (!postmypostClientInstance) postmypostClientInstance = createPostmypostClient({ token: POSTMYPOST_TOKEN, pollMs: Math.max(10, Number(process.env.POSTMYPOST_POLL_MS || 2000) || 2000) });
+  return postmypostClientInstance;
+}
+async function postmypostTarget() {
+  if (postmypostTargetCache && Date.now() - postmypostTargetCache.at < 6 * 3600000) return postmypostTargetCache.target;
+  const target = await resolvePostmypostTarget(postmypostClient(), {
+    projectId: process.env.POSTMYPOST_PROJECT_ID || "", accountId: process.env.POSTMYPOST_ACCOUNT_ID || ""
+  }, VK_GROUP_ID);
+  postmypostTargetCache = { at: Date.now(), target: target };
+  return target;
+}
+// Boot diagnostics: which Postmypost project/account VK posts will go to (names and ids only, never the token).
+async function logPostmypostStatus() {
+  if (!POSTMYPOST_TOKEN) return null;
+  try {
+    const t = await postmypostTarget();
+    const info = { ok: true, enabled: VK_VIA_POSTMYPOST, projectId: t.projectId, accountId: t.accountId, account: t.accountName, externalId: t.externalId,
+      candidates: t.candidates.map(function(c){ return { project: c.projectId, account: c.accountId, name: c.accountName, vk: c.vk, connected: c.connected, ext: c.externalId }; }).slice(0, 20) };
+    console.log("POSTMYPOST_STATUS " + JSON.stringify(info));
+    return info;
+  } catch (error) {
+    const info = { ok: false, enabled: VK_VIA_POSTMYPOST, error: String(error && error.message || error).slice(0, 300),
+      candidates: (error && error.candidates || []).map(function(c){ return { project: c.projectId, account: c.accountId, name: c.accountName, vk: c.vk, connected: c.connected, ext: c.externalId }; }).slice(0, 20) };
+    console.warn("POSTMYPOST_STATUS " + JSON.stringify(info));
+    return info;
+  }
+}
+
 async function publishVkPost(post) {
   if (!VK_PUBLISH_ENABLED) return null;
   const baseContext = vkPostContext(post);
@@ -8413,7 +8449,8 @@ async function publishVkPost(post) {
   };
   // Runs AFTER VK created the post: nothing here may throw, or the caller would try another mode = a second post.
   const published = async function(result, mode, extraLog) {
-    try { await markPublicPostPublished(preview.slug, result && result.post_id); }
+    const numericVkId = result && /^\d+$/.test(String(result.post_id)) ? result.post_id : null;
+    try { await markPublicPostPublished(preview.slug, numericVkId); }
     catch (error) { console.warn("VK_PREVIEW_MARK_FAILED " + JSON.stringify({ slug: preview.slug, post_id: result && result.post_id || null, error: String(error && error.message || error).slice(0, 200) })); }
     if (result && typeof result === "object") {
       result.mediaMode = mode;
@@ -8510,6 +8547,50 @@ async function publishVkPost(post) {
       throw error;
     }
     return published(result, "photo_upload", { attachment: photo.attachment });
+  }
+
+  // Postmypost: the only route where readers SEE the photo. Its failure before the post exists falls back to direct VK.
+  async function tryPostmypost() {
+    const pmp = postmypostClient();
+    const target = await postmypostTarget();
+    const pmpContext = { post_id: context.postId, slug: preview.slug, project: target.projectId, account: target.accountId };
+    attempts += 1;
+    const fileId = await pmp.uploadByUrl(target.projectId, preview.imageUrl, 90000);
+    let created;
+    try {
+      created = await pmp.createPublication({
+        projectId: target.projectId, accountId: target.accountId, content: baseMessage, fileIds: [fileId],
+        postAt: new Date(Date.now() + 15000).toISOString()
+      });
+    } catch (error) {
+      // Network / 5xx: Postmypost may have created the publication anyway -> stop, never post a second copy.
+      if (error && (error.pmpCode === "network" || Number(error.pmpStatus) >= 500)) {
+        const err = createVkError("postmypost.publication", "network", String(error.message || error), context);
+        err.vkMethod = "wall.post"; err.vkErrorCode = "network";
+        await ambiguous(err);
+      }
+      throw error;
+    }
+    const pubId = created && created.id;
+    if (!pubId) throw new Error("Postmypost не вернул id публикации");
+    const waited = await pmp.waitPublished(pubId, Math.max(100, Number(process.env.POSTMYPOST_WAIT_MS || 120000) || 120000));
+    if (waited.status === PMP_STATUS.ERROR || waited.status === PMP_STATUS.DELETED) {
+      // The publication exists in Postmypost but VK refused it: the post is not on the wall, direct VK may try.
+      throw Object.assign(new Error("Postmypost: публикация " + pubId + " завершилась ошибкой (статус " + waited.status + ")"), { pmpCode: "publication_error", pmpPublicationId: pubId });
+    }
+    const mode = waited.status === PMP_STATUS.PUBLISHED ? "postmypost" : "postmypost_pending";
+    console.log("VK_POSTMYPOST_RESULT " + JSON.stringify(Object.assign({}, pmpContext, { publication_id: pubId, file_id: fileId, status: waited.status, timed_out: Boolean(waited.timedOut) })));
+    return published({ post_id: "pmp-" + pubId }, mode, { pmp_publication_id: pubId });
+  }
+
+  if (VK_VIA_POSTMYPOST) {
+    try {
+      return await tryPostmypost();
+    } catch (error) {
+      if (error && error.vkAmbiguous) throw error;
+      postmypostTargetCache = null;
+      console.warn("VK_POSTMYPOST_FAILED " + JSON.stringify({ post_id: context.postId, slug: preview.slug, code: error && (error.pmpCode != null ? error.pmpCode : error.vkErrorCode) || null, error: String(error && error.message || error).slice(0, 400), fallback: "direct_vk" }));
+    }
   }
 
   let lastError = null;
@@ -14008,6 +14089,7 @@ async function runOffsiteBackup(reason) {
 })();
 
 setTimeout(setupNewChannels, 30000);
+setTimeout(function(){ logPostmypostStatus().catch(function(){}); }, 20000);
 setInterval(setupNewChannels, 15 * 60 * 1000);
 
 // Turn on automatic publishing for a new network channel only after checks:
