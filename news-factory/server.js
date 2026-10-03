@@ -1325,7 +1325,7 @@ async function insertCostEventRow(row) {
       row.id, row.at, row.workspaceId, row.provider, row.model, row.operation, row.endpoint, row.kind,
       row.inputTokens, row.outputTokens, row.cachedInputTokens, row.cacheReadTokens, row.cacheWriteTokens,
       row.imageInputTokens, row.imageOutputTokens, row.costUsd, row.pricingKnown, row.estimated,
-      row.newsId || null, JSON.stringify(row.extra || {})
+      row.newsId || null, pgJsonString(row.extra || {})
     ]
   );
   scheduleCostBudgetCheck();
@@ -2691,7 +2691,7 @@ async function autoResolveQueue() {
     if (db && dbReady) {
       try {
         await db.query("UPDATE news_items SET status='auto_rejected', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
-          [r.item.newsId, JSON.stringify({ autoRejectReason: r.reason, autoRejectedAt: new Date().toISOString() }), currentWorkspaceId()]);
+          [r.item.newsId, pgJsonString({ autoRejectReason: r.reason, autoRejectedAt: new Date().toISOString() }), currentWorkspaceId()]);
       } catch (error) { console.warn("Auto reject status update failed:", error.message); }
     }
   }
@@ -3064,7 +3064,7 @@ function buildSourceRankings() {
   return rows;
 }
 
-const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: 4, idleTimeoutMillis: 30000, connectionTimeoutMillis: 15000 }) : null;
+const db = DATABASE_URL ? new pg.Pool({ connectionString: DATABASE_URL, max: Math.max(2, Math.min(30, Number(process.env.DB_POOL_MAX || 12) || 12)), idleTimeoutMillis: 30000, connectionTimeoutMillis: 15000 }) : null;
 if (db) {
   // Without an 'error' listener a dropped idle connection (DB restart, network blip) is an
   // unhandled 'error' event and kills the process. Only the message is logged (never the URL).
@@ -3086,6 +3086,31 @@ function saveState() {
   currentWorkspace().updatedAt = state.updatedAt;
   persistWorkspaceStore();
   scheduleStateSnapshot();
+}
+
+// news_items.vk_post_id / public_post_pages.vk_post_id are BIGINT. Postmypost posts carry ids like
+// "pmp-32539480" (kept in metadata/state); only a plain numeric VK post id goes into the column.
+function vkPostIdForDb(value) {
+  const text = String(value == null ? "" : value).trim();
+  return /^\d{1,18}$/.test(text) ? text : null;
+}
+// PostgreSQL json/jsonb rejects lone UTF-16 surrogates (a title or a key cut in the middle of an emoji) and \u0000,
+// text columns reject \u0000. JSON.stringify keeps both, so every snapshot of such a workspace failed with
+// "invalid input syntax for type json".
+function pgSafeString(text) {
+  let out = typeof text.toWellFormed === "function" ? text.toWellFormed() : text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+  if (out.indexOf("\u0000") !== -1) out = out.split("\u0000").join("");
+  return out;
+}
+function pgText(value) { return typeof value === "string" ? pgSafeString(value) : value; }
+// Well-formed JSON.stringify writes a LONE surrogate (in values AND keys) as an escape \udXXX and NUL as \u0000;
+// paired surrogates stay raw characters. A genuine escape has an odd number of backslashes in front of "u".
+function pgJsonString(value) {
+  const json = JSON.stringify(value);
+  if (json === undefined || json.indexOf("\\u") === -1) return json;
+  return json.replace(/(?<!\\)((?:\\\\)*)\\u(d[89a-f][0-9a-f]{2}|0000)/gi, function(m, slashes, code) {
+    return slashes + (code === "0000" ? "" : "\\ufffd");
+  });
 }
 
 async function runMigrations() {
@@ -3237,7 +3262,7 @@ async function saveStateSnapshot() {
   if (!db || !dbReady) return;
   try {
     const workspaceId = currentWorkspaceId();
-    await db.query("INSERT INTO app_snapshots(workspace_id,state) VALUES($1,$2::jsonb)", [workspaceId, JSON.stringify(state)]);
+    await db.query("INSERT INTO app_snapshots(workspace_id,state) VALUES($1,$2::jsonb)", [workspaceId, pgJsonString(state)]);
     await db.query("DELETE FROM app_snapshots WHERE workspace_id=$1 AND id NOT IN (SELECT id FROM app_snapshots WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 200)", [workspaceId]);
   } catch (error) {
     console.error("State snapshot failed:", error.message);
@@ -3747,7 +3772,7 @@ async function createPublicPostPage(post) {
     `INSERT INTO public_post_pages
       (slug, workspace_id, post_id, topic_id, title, body_text, description, source_name, source_url, sources, image_filename, image_url, image_width, image_height, image_bytes)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)`,
-    [slug, currentWorkspaceId(), postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, JSON.stringify(sources), image.fileName, image.url, image.width, image.height, image.bytes]
+    [slug, currentWorkspaceId(), postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, pgJsonString(sources), image.fileName, image.url, image.width, image.height, image.bytes]
   );
 
   return {
@@ -4261,7 +4286,7 @@ async function cacheSourceImage(imageUrl, id) {
   const response = await safeFetch(sourceUrl, {
     headers: {
       "user-agent": "Mozilla/5.0 (compatible; NewsFactory/1.0; +https://news-factory-api-production.up.railway.app)",
-      "accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
+      "accept": "image/webp,image/jpeg,image/png,image/gif,image/*;q=0.5"
     },
     timeoutMs: 30000,
     maxBytes: 20 * 1024 * 1024
@@ -4454,7 +4479,7 @@ async function backfillQueueImageEnhancements(options) {
               "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
               [
                 item.newsId,
-                JSON.stringify({
+                pgJsonString({
                   imageUrl: item.imageUrl || "",
                   enhancedImageUrl: item.enhancedImageUrl || "",
                   generatedImageUrl: item.generatedImageUrl || "",
@@ -5279,15 +5304,15 @@ async function saveNewsItem(item) {
         vk_media_attempts=GREATEST(COALESCE(EXCLUDED.vk_media_attempts,0),COALESCE(news_items.vk_media_attempts,0)),
         updated_at=NOW()`,
       [
-        item.id, currentWorkspaceId(), item.sourceId, item.sourceName, item.sourceUrl, item.originalUrl, item.originalTitle,
-        item.originalText, item.contentHash, item.rewrittenTitle || null, item.rewrittenText || null,
+        item.id, currentWorkspaceId(), item.sourceId, pgText(item.sourceName), item.sourceUrl, item.originalUrl, pgText(item.originalTitle),
+        pgText(item.originalText), item.contentHash, pgText(item.rewrittenTitle) || null, pgText(item.rewrittenText) || null,
         item.confidence || null, item.status, item.telegramMessageId || null, item.publishedAt || null,
-        JSON.stringify(item.metadata || {}),
+        pgJsonString(item.metadata || {}),
         item.topicId || "default",
-        item.vkPostId || null,
+        vkPostIdForDb(item.vkPostId),
         item.vkStatus || null,
         item.vkErrorCode == null ? null : String(item.vkErrorCode),
-        item.vkError || item.vkErrorMsg || null,
+        pgText(item.vkError || item.vkErrorMsg) || null,
         Number(item.vkMediaAttempts || 0)
       ]
     );
@@ -6609,7 +6634,7 @@ async function publishDynamicSlotOnce(kind, opts) {
     if (db && dbReady && item.newsId) {
       try {
         await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
-          [item.newsId, JSON.stringify({ autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: publishConflict.workspace, channel: publishConflict.channel, by: publishConflict.by } }), currentWorkspaceId()]);
+          [item.newsId, pgJsonString({ autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: publishConflict.workspace, channel: publishConflict.channel, by: publishConflict.by } }), currentWorkspaceId()]);
       } catch (error) { console.warn("Cross-channel duplicate status update failed:", error.message); }
     }
     // The slot stays open: the next scheduler tick picks the next best post.
@@ -6803,7 +6828,7 @@ async function publishDynamicSlotOnce(kind, opts) {
           dbStatus,
           result.message_id || item.telegramMessageId || null,
           (result.telegramPublished || result.vkPublished) ? publishedAt : null,
-          JSON.stringify({
+          pgJsonString({
             vkPostId: result.vkPostId || item.vkPostId || null,
             vkStatus: result.vkStatus || item.vkStatus || "",
             vkError: result.vkError || item.vkError || "",
@@ -6815,7 +6840,7 @@ async function publishDynamicSlotOnce(kind, opts) {
             topicEntities: normalizeTopicEntities(item.topicEntities),
             sourceRole: item.sourceRole || sourceEditorialRole(item)
           }),
-          result.vkPostId || item.vkPostId || null,
+          vkPostIdForDb(result.vkPostId || item.vkPostId),
           result.vkStatus || item.vkStatus || "",
           result.vkErrorCode == null ? (item.vkErrorCode == null ? null : String(item.vkErrorCode)) : String(result.vkErrorCode),
           result.vkError || item.vkError || "",
@@ -6922,6 +6947,7 @@ async function dynamicSchedulerTick() {
   }
 }
 
+const catchupLogState = new Map();
 async function catchUpCurrentRegularSlotAllWorkspaces() {
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
@@ -6951,9 +6977,16 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
         if (schedule.suppressed[day] && schedule.suppressed[day][time]) return;
         const assignment = schedule.assignments[day] && schedule.assignments[day][time] || "";
 
-        console.warn("SCHEDULER_CATCHUP_START " + JSON.stringify({ workspace: ws.id, slot: time, queueId: assignment, minute: minute }));
+        // An empty channel retries every 30 s for up to 44 minutes; log the start once and a result only when it
+        // changes, otherwise ~170 identical lines per hour crowd out real events (Railway drops log bursts).
+        const logKey = ws.id + "|" + slotKey;
+        const firstTry = !catchupLogState.has(logKey);
+        if (firstTry) console.warn("SCHEDULER_CATCHUP_START " + JSON.stringify({ workspace: ws.id, slot: time, queueId: assignment, minute: minute }));
         const result = await publishDynamicSlot();
-        console.log("SCHEDULER_CATCHUP_RESULT " + JSON.stringify({ workspace: ws.id, slot: time, result: result }));
+        const summary = JSON.stringify(result || null);
+        if (firstTry || catchupLogState.get(logKey) !== summary) console.log("SCHEDULER_CATCHUP_RESULT " + JSON.stringify({ workspace: ws.id, slot: time, result: result }));
+        catchupLogState.set(logKey, summary);
+        if (catchupLogState.size > 500) catchupLogState.delete(catchupLogState.keys().next().value);
       });
     } catch (error) {
       console.error("SCHEDULER_CATCHUP_FAILED " + JSON.stringify({ workspace: ws.id, slot: time, error: error.message }));
@@ -7511,7 +7544,7 @@ async function loadTelegramUpload(rawUrl, kind) {
     const response = await safeFetch(absolute, {
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegram/1.0)",
-        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/avif,image/webp,image/apng,image/jpeg,image/png,image/gif,image/*;q=0.8"
+        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/webp,image/jpeg,image/png,image/gif,image/*;q=0.5"
       },
       timeoutMs: 30000,
       maxBytes: kind === "video" ? 50 * 1024 * 1024 : 20 * 1024 * 1024
@@ -11121,7 +11154,7 @@ async function dedupeQueueOnce() {
       if (db && dbReady) {
         try {
           await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
-            [item.newsId, JSON.stringify({ storyRelation: compactStoryRelation(rel), autoPublishBlocked: "duplicate_story" }), currentWorkspaceId()]);
+            [item.newsId, pgJsonString({ storyRelation: compactStoryRelation(rel), autoPublishBlocked: "duplicate_story" }), currentWorkspaceId()]);
         } catch (error) { console.warn("Queue dedupe status update failed:", error.message); }
       }
     }
@@ -11621,7 +11654,7 @@ async function backfillRussianNewsTitles(limit) {
   for (const t of translated) {
     const updated = await db.query(
       "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
-      [t.id, JSON.stringify({ titleRu: t.titleRu }), currentWorkspaceId()]
+      [t.id, pgJsonString({ titleRu: t.titleRu }), currentWorkspaceId()]
     );
     count += updated.rowCount || 0;
   }
@@ -11730,7 +11763,7 @@ async function backfillRecentNewsEditorialScores(limit) {
       if (!allowedIds.has(score.id)) continue;
       const updated = await db.query(
         "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
-        [score.id, JSON.stringify({
+        [score.id, pgJsonString({
           editorialScore: score.editorialScore,
           scoreBreakdown: score.scoreBreakdown,
           scoreReason: score.scoreReason,
@@ -12911,7 +12944,7 @@ const server = http.createServer(async function(req, res) {
           const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 AND workspace_id=$2 LIMIT 1", [item.newsId, currentWorkspaceId()]);
           if (!row.rowCount) return;
           const metadata = Object.assign({}, row.rows[0].metadata || {}, patch || {});
-          await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, JSON.stringify(metadata), currentWorkspaceId()]);
+          await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, pgJsonString(metadata), currentWorkspaceId()]);
         } catch (error) {
           console.warn("QUEUE_COVER_METADATA_SYNC_FAILED " + JSON.stringify({
             workspace: currentWorkspaceId(),
@@ -13236,7 +13269,7 @@ const server = http.createServer(async function(req, res) {
               status,
               result.message_id || item.telegramMessageId || null,
               (result.telegramPublished || result.vkPublished) ? publishedAt : null,
-              JSON.stringify({
+              pgJsonString({
                 vkPostId: result.vkPostId || item.vkPostId || null,
                 vkStatus: result.vkStatus || item.vkStatus || "",
                 vkError: result.vkError || item.vkError || "",
@@ -13259,7 +13292,7 @@ const server = http.createServer(async function(req, res) {
                 decisionSummary: item.decisionSummary || "",
                 storyUpdateOf: item.storyUpdateOf || ""
               }),
-              result.vkPostId || item.vkPostId || null,
+              vkPostIdForDb(result.vkPostId || item.vkPostId),
               result.vkStatus || item.vkStatus || "",
               result.vkErrorCode == null ? (item.vkErrorCode == null ? null : String(item.vkErrorCode)) : String(result.vkErrorCode),
               result.vkError || item.vkError || "",

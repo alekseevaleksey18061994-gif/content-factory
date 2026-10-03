@@ -40,6 +40,11 @@ export function createPostmypostClient(options) {
   const doFetch = function(url, init) { return (opt.fetch || globalThis.fetch)(url, init); };
   const pollMs = Number(opt.pollMs == null ? 2000 : opt.pollMs);
   const timeoutMs = Number(opt.timeoutMs || 20000);
+  // The S3 storage POST sometimes drops with "fetch failed"; each retry takes a fresh /upload/init
+  // (presigned fields are single-use). Nothing is published until the file id exists, so a retry is safe.
+  const storageTries = Math.max(1, Math.floor(Number(opt.storageTries == null ? 3 : opt.storageTries) || 1));
+  const storageRetryMs = Math.max(0, Number(opt.storageRetryMs == null ? 2000 : opt.storageRetryMs) || 0);
+  const storageRetryWindowMs = Math.max(0, Number(opt.storageRetryWindowMs == null ? 45000 : opt.storageRetryWindowMs) || 0);
 
   async function request(method, path, query, body) {
     if (!token) throw new PostmypostError("POSTMYPOST_TOKEN не задан", { pmpCode: "config_missing" });
@@ -107,23 +112,35 @@ export function createPostmypostClient(options) {
       const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
       if (!buf.length) throw new PostmypostError("Postmypost: пустой файл", { pmpCode: "upload_empty" });
       const fileName = String(name || "image.jpg");
-      const init = await request("POST", "/upload/init", null, { project_id: Number(projectId), name: fileName, size: buf.length });
-      const uploadId = init && init.id;
-      if (!uploadId || !init.action) throw new PostmypostError("Postmypost не вернул адрес загрузки", { pmpCode: "upload_no_action" });
-      const form = new FormData();
-      for (const f of Array.isArray(init.fields) ? init.fields : []) {
-        if (f && f.key != null) form.append(String(f.key), String(f.value == null ? "" : f.value));
-      }
-      form.append("file", new Blob([buf], { type: mime || "image/jpeg" }), fileName);
-      let storage;
-      try {
-        storage = await doFetch(String(init.action), { method: "POST", body: form, signal: AbortSignal.timeout(Math.max(timeoutMs, 60000)) });
-      } catch (error) {
-        throw new PostmypostError("Postmypost: хранилище недоступно: " + String(error && error.message || error), { pmpCode: "storage_network" });
-      }
-      if (!storage.ok) {
-        const text = await storage.text().catch(function() { return ""; });
-        throw new PostmypostError("Postmypost: хранилище отклонило файл → " + storage.status + " " + text.replace(/\s+/g, " ").slice(0, 200), { pmpCode: "storage_" + storage.status });
+      let init = null;
+      let uploadId = null;
+      const storageStarted = Date.now();
+      for (let attempt = 1; ; attempt++) {
+        init = await request("POST", "/upload/init", null, { project_id: Number(projectId), name: fileName, size: buf.length });
+        uploadId = init && init.id;
+        if (!uploadId || !init.action) throw new PostmypostError("Postmypost не вернул адрес загрузки", { pmpCode: "upload_no_action" });
+        const form = new FormData();
+        for (const f of Array.isArray(init.fields) ? init.fields : []) {
+          if (f && f.key != null) form.append(String(f.key), String(f.value == null ? "" : f.value));
+        }
+        form.append("file", new Blob([buf], { type: mime || "image/jpeg" }), fileName);
+        let storage = null;
+        let retryable = null;
+        try {
+          storage = await doFetch(String(init.action), { method: "POST", body: form, signal: AbortSignal.timeout(Math.max(timeoutMs, 60000)) });
+        } catch (error) {
+          retryable = new PostmypostError("Postmypost: хранилище недоступно: " + String(error && error.message || error), { pmpCode: "storage_network", pmpAttempts: attempt });
+        }
+        if (storage && !storage.ok) {
+          const text = await storage.text().catch(function() { return ""; });
+          const err = new PostmypostError("Postmypost: хранилище отклонило файл → " + storage.status + " " + text.replace(/\s+/g, " ").slice(0, 200), { pmpCode: "storage_" + storage.status, pmpAttempts: attempt });
+          if (storage.status < 500) throw err;
+          retryable = err;
+        }
+        if (!retryable) break;
+        // retry quick drops only: a storage that hung for a long time is not hammered (keeps the VK step bounded)
+        if (attempt >= storageTries || Date.now() - storageStarted >= storageRetryWindowMs) throw retryable;
+        await sleep(storageRetryMs * attempt);
       }
       const done = await request("POST", "/upload/complete", { id: uploadId });
       const deadline = Date.now() + Number(maxWaitMs || 90000);
