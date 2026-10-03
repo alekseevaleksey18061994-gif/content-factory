@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.48.1",
+  "version": "0.49.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -28,6 +28,7 @@
     "test:postmypost": "node scripts/postmypost-test.js",
     "test:slot-next-item": "node scripts/slot-next-item-test.js",
     "test:health-fixes": "node scripts/health-fixes-test.js",
+    "test:source-fetch": "node scripts/source-fetch-test.js",
     "test:cost-media-balance": "node scripts/cost-media-balance-test.js",
     "test:cover-fallback": "node scripts/cover-fallback-test.js"
   },
