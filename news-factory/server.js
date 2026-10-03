@@ -8458,15 +8458,46 @@ async function publishVkPost(post) {
     throw lastError || createVkError("wall.post", "unknown", "VK link card failed", context);
   }
 
-  async function tryMessagesPhoto() {
-    let photo;
+  // The 1200x630 picture is uploaded once (community-token "messages" upload) and reused by every mode.
+  let uploadedPhoto = null;
+  let uploadError = null;
+  async function getPhoto() {
+    if (uploadedPhoto) return uploadedPhoto;
+    if (uploadError) throw uploadError;
     try {
-      photo = await uploadVkMessagesPhotoWithRetry(preview.imageUrl, post, preview.slug);
+      uploadedPhoto = await uploadVkMessagesPhotoWithRetry(preview.imageUrl, post, preview.slug);
     } catch (error) {
       attempts += Number(error && error.mediaAttempts || 1);
+      uploadError = error;
       throw error;
     }
-    attempts += Number(photo.attempts || 1);
+    attempts += Number(uploadedPhoto.attempts || 1);
+    return uploadedPhoto;
+  }
+
+  // Link card WITH an attached photo. VK's "link_photo_sizing_rule. No photo given" means a community-token link post
+  // needs the snippet picture attached explicitly (it does not take og:image): photo + link in one wall.post, the photo
+  // (1200x630, above VK's 537x240 minimum) becomes the card's picture.
+  async function tryLinkWithPhoto() {
+    const photo = await getPhoto();
+    attempts += 1;
+    let result;
+    try {
+      result = await vkApi(
+        "wall.post",
+        { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, attachments: photo.attachment + "," + preview.url, guid: vkPostGuid(post, "linkphoto") },
+        { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+      );
+    } catch (error) {
+      await ambiguous(error);
+      console.warn("VK_LINK_PHOTO_FAILED " + JSON.stringify({ post_id: context.postId, slug: preview.slug, error_code: error && error.vkErrorCode != null ? error.vkErrorCode : null, error_msg: String(error && (error.vkErrorMsg || error.message) || error).slice(0, 300) }));
+      throw error;
+    }
+    return published(result, "link_photo", { attachment: photo.attachment });
+  }
+
+  async function tryMessagesPhoto() {
+    const photo = await getPhoto();
     let result;
     try {
       result = await vkApi(
@@ -8485,11 +8516,12 @@ async function publishVkPost(post) {
   let linkError = null;
   for (const mode of vkMediaOrder()) {
     try {
+      if (mode === "linkphoto") return await tryLinkWithPhoto();
       return mode === "link" ? await tryLinkCard() : await tryMessagesPhoto();
     } catch (error) {
       if (error && error.vkAmbiguous) throw error;
       lastError = error;
-      if (mode === "link") linkError = error;
+      if (mode === "link" || (mode === "linkphoto" && !linkError)) linkError = error;
       if (mode === "photo") {
         console.warn("VK_PHOTO_UPLOAD_MODE_FAILED " + JSON.stringify({
           post_id: context.postId,
@@ -8522,19 +8554,23 @@ async function publishVkPost(post) {
   return published(fallback, "text_fallback");
 }
 
-// VK_MEDIA_ORDER: "link,photo" (default: link card first, then the old messages-photo mode) or "photo,link" (old order).
+// VK_MEDIA_ORDER, modes: linkphoto (link card with the photo attached, default first), photo (photo only — accepted
+// by VK but not shown on the wall), link (bare link card; VK answers "No photo given" for community tokens).
+// Default "linkphoto,photo,link"; "photo,link" = the order before v0.47.4.
 function vkMediaOrder() {
-  const raw = String(process.env.VK_MEDIA_ORDER || "link,photo").toLowerCase().split(/[\s,]+/).filter(function(m){ return m === "link" || m === "photo"; });
+  const known = ["linkphoto", "photo", "link"];
+  const raw = String(process.env.VK_MEDIA_ORDER || "linkphoto,photo,link").toLowerCase().split(/[\s,]+/).filter(function(m){ return known.includes(m); });
   const order = raw.filter(function(m, i){ return raw.indexOf(m) === i; });
-  // A mode left out is appended, never dropped: "photo" alone means "photo, then link".
-  ["link", "photo"].forEach(function(m){ if (!order.includes(m)) order.push(m); });
+  // A mode left out of a non-empty list is appended, never dropped ("photo" alone = photo, then the others).
+  known.forEach(function(m){ if (!order.includes(m)) order.push(m); });
   return order;
 }
 
-// Pauses between link-card attempts, ms. VK_LINK_CARD_RETRY_DELAYS_MS="3000,8000" by default; "" or "0" = no retry.
+// Pauses between bare link-card attempts, ms, e.g. "3000,8000". Default: no retry — live posts on 2026-10-03 showed
+// VK answers "No photo given" identically after 3 and 8 s, so waiting does not help.
 function vkLinkCardDelaysMs() {
   const raw = process.env.VK_LINK_CARD_RETRY_DELAYS_MS;
-  if (raw === undefined || raw === "undefined") return [3000, 8000];
+  if (raw === undefined || raw === "undefined") return [];
   const list = String(raw).split(/[\s,;]+/).map(Number).filter(function(n){ return Number.isFinite(n) && n > 0; }).slice(0, 4).map(function(n){ return Math.min(n, 30000); });
   if (!list.length && String(raw).trim() && String(raw).trim() !== "0" && !vkLinkCardDelaysMs.warned) {
     vkLinkCardDelaysMs.warned = true;
