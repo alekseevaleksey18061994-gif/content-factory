@@ -14,7 +14,7 @@ const child = spawn(process.execPath, ["server.js"], {
   cwd: appDir,
   env: Object.assign({}, process.env, {
     PORT: String(port),
-    DATA_DIR: dataDir,
+    DATA_DIR: dataDir, STATE_SAVE_DEBOUNCE_MS: "0",
     DATABASE_URL: "",
     ADMIN_UI_PASSWORD: password,
     ADMIN_UI_PASSWORD_SHA256: "",

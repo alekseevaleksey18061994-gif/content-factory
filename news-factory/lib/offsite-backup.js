@@ -67,7 +67,7 @@ export function decryptBuffer(buffer, passphrase) {
 
 // JSON payload -> gzip -> optional AES-256-GCM. Returns { buffer, ext, encrypted }.
 export function packBackup(payload, passphrase) {
-  const gz = zlib.gzipSync(Buffer.from(JSON.stringify(payload), "utf8"), { level: 9 });
+  const gz = zlib.gzipSync(Buffer.from(JSON.stringify(payload), "utf8"), { level: 6 }) /* level 9 blocked the server ~2 s for little gain */;
   if (passphrase) return { buffer: encryptBuffer(gz, passphrase), ext: "json.gz.enc", encrypted: true };
   return { buffer: gz, ext: "json.gz", encrypted: false };
 }

@@ -5,7 +5,7 @@
 //  - catch-up of an empty channel logs once per slot instead of every 30 s.
 //   npm run test:health-fixes        (S* cases need a local PostgreSQL)
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createPostmypostClient } from "../lib/postmypost.js";
 import { loadServer, inWs, startTempPostgres, dbRows } from "./dedupe-harness.js";
@@ -157,6 +157,35 @@ test("U4 catch-up of an empty channel logs START/RESULT once per slot, not every
   } finally { console.warn = ow; console.log = ol; }
   assert.equal(lines.filter((l) => l.startsWith("SCHEDULER_CATCHUP_START") && l.includes("chtotampokupki")).length, 1, lines.join("\n"));
   assert.equal(lines.filter((l) => l.startsWith("SCHEDULER_CATCHUP_RESULT") && l.includes("chtotampokupki")).length, 1, lines.join("\n"));
+});
+
+test("U6 coalesced store writes: 50 saves -> 1-2 file writes, file has the last change, compact JSON", async () => {
+  const fs = await import("node:fs");
+  const t = await loadServer({ channels: [["ai-main", "ai", "Что там у ИИ?"]], env: { STATE_SAVE_DEBOUNCE_MS: "150", STATE_SAVE_MAX_WAIT_MS: "1000" } });
+  const before = t.storeFlushStats.writes;
+  await inWs(t, "ai-main", async () => { for (let i = 0; i < 50; i++) { t.state.note = "v" + i; t.saveState(); } });
+  assert.equal(t.storeFlushStats.writes, before, "nothing written synchronously");
+  await new Promise((r) => setTimeout(r, 400));
+  const writes = t.storeFlushStats.writes - before;
+  assert.ok(writes >= 1 && writes <= 2, "writes: " + writes);
+  const raw = fs.readFileSync(t.dir + "/workspaces.json", "utf8");
+  assert.ok(!raw.includes("\n  "), "compact JSON");
+  assert.equal(JSON.parse(raw).workspaces.find((w) => w.id === "ai-main").state.note, "v49");
+});
+
+test("U7 SIGTERM flushes pending changes before exit", async () => {
+  const fs = await import("node:fs"); const os = await import("node:os"); const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nf-sigterm-"));
+  const appDir = fileURLToPath(new URL("..", import.meta.url));
+  const child = spawn(process.execPath, ["server.js"], { cwd: appDir, stdio: ["ignore", "pipe", "pipe"], env: Object.assign({}, process.env, { PORT: "0", DATA_DIR: dir, DATABASE_URL: "", ADMIN_UI_PASSWORD: "x", COLLECTOR_ENABLED: "false", AUTO_PUBLISH_ENABLED: "false", TELEGRAM_BOT_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", STATE_SAVE_DEBOUNCE_MS: "600000", STATE_SAVE_MAX_WAIT_MS: "600000" }) });
+  let out = ""; child.stdout.on("data", (d) => { out += d; }); child.stderr.on("data", (d) => { out += d; });
+  for (let i = 0; i < 100 && !/listening/.test(out); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.match(out, /listening/);
+  const code = await new Promise((resolve) => { child.on("exit", resolve); child.kill("SIGTERM"); });
+  assert.equal(code, 0, out.slice(-500));
+  assert.match(out, /STATE_FLUSHED_ON_SIGTERM/);
+  const parsed = JSON.parse(fs.readFileSync(path.join(dir, "workspaces.json"), "utf8"));
+  assert.ok(parsed.workspaces.length >= 1);
 });
 
 async function main() {

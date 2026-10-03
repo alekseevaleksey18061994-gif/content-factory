@@ -105,7 +105,7 @@ const EXPORT_NAMES = [
   "recoverMissingWorkspaces", "persistWorkspaceStore", "pendingAutoTargets", "acquirePublishLock", "currentWorkspace", "dynamicUsedQueueIds", "enforceCopyrightSafeMedia", "server",
   "runOffsiteBackup", "workspaceWatchdogTick", "readBackupStatus", "buildBackupPayload",
   "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage", "publishVkPost", "logPostmypostStatus", "workspaceVkPublishingAllowed", "refreshPostmypostMap", "sendMultiPlatformPost",
-  "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous", "applyChannelNotes", "bloggerSlotsFor", "bloggerTargetFor", "bloggerLaneActive", "channelExtraLane"
+  "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous", "applyChannelNotes", "flushWorkspaceStoreNow", "storeFlushStats", "bloggerSlotsFor", "bloggerTargetFor", "bloggerLaneActive", "channelExtraLane"
 ];
 
 function bin(name) {
@@ -172,7 +172,8 @@ export async function loadServer(opts = {}) {
   Object.assign(process.env, {
     PORT: "0", DATA_DIR: dir, DATABASE_URL: "", ADMIN_UI_PASSWORD: "x", COLLECTOR_ENABLED: "true", AUTO_PUBLISH_ENABLED: opts.autoPublish ? "true" : "false",
     TELEGRAM_BOT_TOKEN: "", OPENAI_API_KEY: "sk-test", ANTHROPIC_API_KEY: "ak-test", MEDIA_REQUIRED: "false", GENERATE_COVER_IF_MISSING: "false",
-    IMAGE_ENHANCEMENT_ENABLED: "false", AUTO_ENHANCE_SOURCE_IMAGES: "false", HEADLINE_PREFILTER_ENABLED: "true", SOURCE_AUTO_PAUSE_ENABLED: "true"
+    IMAGE_ENHANCEMENT_ENABLED: "false", AUTO_ENHANCE_SOURCE_IMAGES: "false", HEADLINE_PREFILTER_ENABLED: "true", SOURCE_AUTO_PAUSE_ENABLED: "true",
+    STATE_SAVE_DEBOUNCE_MS: "0" // tests read the files right after a save; the coalesced writer has its own test
   }, opts.env || {});
   if (opts.db) {
     const url = process.env.TEST_DATABASE_URL;

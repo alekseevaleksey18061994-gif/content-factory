@@ -126,6 +126,7 @@ export function createAtomicStoreWriter(options) {
   const log = options.log || console;
   const nowFn = options.nowMs || Date.now;
   let lastBackupAt = 0;
+  let lastWritten = null; // content of our own last successful write: already valid, no need to re-read and re-parse
   return {
     backupNow() {
       let previous = null;
@@ -140,8 +141,16 @@ export function createAtomicStoreWriter(options) {
       }
     },
     write(content) {
-      if (nowFn() - lastBackupAt >= intervalMs) this.backupNow();
+      if (nowFn() - lastBackupAt >= intervalMs) {
+        if (lastWritten != null) {
+          try { atomicWriteFileSync(bakFile, lastWritten); lastBackupAt = nowFn(); }
+          catch (error) { log.warn("[data-safety] cannot rotate " + path.basename(bakFile) + ": " + error.message); }
+        } else {
+          this.backupNow();
+        }
+      }
       atomicWriteFileSync(file, content);
+      lastWritten = content;
     }
   };
 }

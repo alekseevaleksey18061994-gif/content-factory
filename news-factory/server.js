@@ -967,15 +967,63 @@ function workspaceSummary(ws) {
     problems: problems
   };
 }
-function persistWorkspaceStore() {
-  ensureDataDir();
+// Every saveState() used to serialise and fsync the WHOLE 16-channel store (tens of MB, pretty-printed, plus a
+// second copy in state.json) synchronously: 0.2-1 s per call, dozens of calls at the top of the hour, and the
+// stalled event loop turned fast answers into DB / Telegram / Postmypost timeouts. Now saves are coalesced: the
+// store is written at most once per STATE_SAVE_DEBOUNCE_MS (forced after STATE_SAVE_MAX_WAIT_MS), compact,
+// and flushed synchronously on shutdown signals. STATE_SAVE_DEBOUNCE_MS=0 restores immediate writes.
+const STATE_SAVE_DEBOUNCE_MS = Math.max(0, Number(process.env.STATE_SAVE_DEBOUNCE_MS == null || process.env.STATE_SAVE_DEBOUNCE_MS === "" ? 1500 : process.env.STATE_SAVE_DEBOUNCE_MS) || 0);
+const STATE_SAVE_MAX_WAIT_MS = Math.max(STATE_SAVE_DEBOUNCE_MS, Number(process.env.STATE_SAVE_MAX_WAIT_MS || 5000) || 5000);
+let storeFlushTimer = null;
+let storeDirtySince = 0;
+let storeFlushStats = { writes: 0, requests: 0, lastMs: 0, maxMs: 0, lastError: "" };
+function assertStorePersistable() {
   if (!workspaceStore || !Array.isArray(workspaceStore.workspaces) || !workspaceStore.workspaces.length) {
     throw new Error("refusing to persist an empty workspace store");
   }
+}
+function flushWorkspaceStoreNow() {
+  if (storeFlushTimer) { clearTimeout(storeFlushTimer); storeFlushTimer = null; }
+  storeDirtySince = 0;
+  ensureDataDir();
+  assertStorePersistable();
+  const started = Date.now();
   // temp file + fsync + rename; the previous good copy is rotated to workspaces.json.bak
-  workspaceStoreWriter.write(JSON.stringify(workspaceStore, null, 2));
+  workspaceStoreWriter.write(JSON.stringify(workspaceStore));
   const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
-  if (defaultWorkspace && defaultWorkspace.state) atomicWriteFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state, null, 2));
+  if (defaultWorkspace && defaultWorkspace.state) atomicWriteFileSync(STATE_FILE, JSON.stringify(defaultWorkspace.state));
+  storeFlushStats.writes += 1;
+  storeFlushStats.lastMs = Date.now() - started;
+  storeFlushStats.maxMs = Math.max(storeFlushStats.maxMs, storeFlushStats.lastMs);
+  storeFlushStats.lastError = "";
+}
+function persistWorkspaceStore() {
+  assertStorePersistable();
+  storeFlushStats.requests += 1;
+  if (!STATE_SAVE_DEBOUNCE_MS) return flushWorkspaceStoreNow();
+  const now = Date.now();
+  if (!storeDirtySince) storeDirtySince = now;
+  if (storeFlushTimer) clearTimeout(storeFlushTimer);
+  const wait = Math.max(0, Math.min(STATE_SAVE_DEBOUNCE_MS, storeDirtySince + STATE_SAVE_MAX_WAIT_MS - now));
+  storeFlushTimer = setTimeout(function() {
+    storeFlushTimer = null;
+    try { flushWorkspaceStoreNow(); }
+    catch (error) {
+      storeFlushStats.lastError = String(error && error.message || error);
+      console.error("STATE_SAVE_FAILED " + JSON.stringify({ error: storeFlushStats.lastError }));
+      // keep the data dirty: the next save (or the shutdown flush) tries again
+      storeDirtySince = storeDirtySince || Date.now();
+    }
+  }, wait);
+  if (storeFlushTimer.unref) storeFlushTimer.unref();
+}
+// Railway stops the old container with SIGTERM on every deploy: write what is still pending first.
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, function() {
+    try { if (storeFlushTimer || storeDirtySince) flushWorkspaceStoreNow(); console.log("STATE_FLUSHED_ON_" + signal); }
+    catch (error) { console.error("STATE_FLUSH_ON_EXIT_FAILED " + JSON.stringify({ error: String(error && error.message || error) })); }
+    process.exit(0);
+  });
 }
 
 function ensureConfiguredWorkspaces() {
@@ -3245,8 +3293,8 @@ function saveState() {
   pruneQueueItems(state);
   state.updatedAt = new Date().toISOString();
   currentWorkspace().updatedAt = state.updatedAt;
-  persistWorkspaceStore();
-  scheduleStateSnapshot();
+  // The PostgreSQL snapshot is the independent copy: schedule it even when the disk write fails.
+  try { persistWorkspaceStore(); } finally { scheduleStateSnapshot(); }
 }
 
 // news_items.vk_post_id / public_post_pages.vk_post_id are BIGINT. Postmypost posts carry ids like

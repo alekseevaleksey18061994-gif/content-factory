@@ -314,7 +314,7 @@ async function startApp(extraEnv) {
   const port = await freePort();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nf-sec-"));
   const env = Object.assign({}, process.env, {
-    PORT: String(port), DATA_DIR: dataDir, DATABASE_URL: "", ADMIN_UI_PASSWORD: PASSWORD, ADMIN_UI_PASSWORD_SHA256: "", ADMIN_UI_PASSWORD_SCRYPT: "",
+    PORT: String(port), DATA_DIR: dataDir, STATE_SAVE_DEBOUNCE_MS: "0", DATABASE_URL: "", ADMIN_UI_PASSWORD: PASSWORD, ADMIN_UI_PASSWORD_SHA256: "", ADMIN_UI_PASSWORD_SCRYPT: "",
     ADMIN_KEY: ADMIN_KEY_FOR_TESTS, COLLECTOR_ENABLED: "false", AUTO_PUBLISH_ENABLED: "false", TELEGRAM_BOT_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",
     VK_APP_ID: "", NEWS_FACTORY_PUBLIC_URL: "http://127.0.0.1:" + port
   }, extraEnv || {});

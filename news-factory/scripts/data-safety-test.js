@@ -95,7 +95,7 @@ globalThis.fetch = async function (input, init) {
 function startServer(dataDir, extraEnv, cwd) {
   const port = freePortSync();
   const env = Object.assign({}, process.env, {
-    PORT: String(port), DATA_DIR: dataDir, DATABASE_URL: "", ADMIN_UI_PASSWORD: "local-smoke-password", ADMIN_UI_PASSWORD_SHA256: "",
+    PORT: String(port), DATA_DIR: dataDir, STATE_SAVE_DEBOUNCE_MS: "0", DATABASE_URL: "", ADMIN_UI_PASSWORD: "local-smoke-password", ADMIN_UI_PASSWORD_SHA256: "",
     COLLECTOR_ENABLED: "false", AUTO_PUBLISH_ENABLED: "false", TELEGRAM_BOT_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "",
     TELEGRAM_ALERT_CHAT_ID: "", COST_USD_RUB_RATE: ""
   }, extraEnv || {});
@@ -198,7 +198,8 @@ section("createAtomicStoreWriter rotates a validated .bak and never copies garba
   // main gets damaged externally; next rotation must not poison .bak
   fs.writeFileSync(file, "{truncated");
   now += 120000; writer.write(v(4));
-  assert.equal(fs.readFileSync(file + ".bak", "utf8"), v(1), "garbage never copied over the good backup");
+  // .bak now comes from the writer's own last good write (v3), not from re-reading the damaged file
+  assert.equal(fs.readFileSync(file + ".bak", "utf8"), v(3), "garbage never copied over the good backup");
   assert.equal(fs.readFileSync(file, "utf8"), v(4));
   assert.deepEqual(listFiles(dir), ["workspaces.json", "workspaces.json.bak"]);
 });
