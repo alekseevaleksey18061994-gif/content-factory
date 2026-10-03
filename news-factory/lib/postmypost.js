@@ -117,8 +117,18 @@ export function createPostmypostClient(options) {
       const storageStarted = Date.now();
       for (let attempt = 1; ; attempt++) {
         init = await request("POST", "/upload/init", null, { project_id: Number(projectId), name: fileName, size: buf.length });
+        if (init && init.data && typeof init.data === "object" && !init.action) init = init.data; // wrapped answer
         uploadId = init && init.id;
-        if (!uploadId || !init.action) throw new PostmypostError("Postmypost не вернул адрес загрузки", { pmpCode: "upload_no_action" });
+        // already known file (same content uploaded before): Postmypost answers with the finished file at once
+        if (init && Number(init.status) === UPLOAD_STATUS.DONE && init.file_id) return Number(init.file_id);
+        if (!uploadId || !init.action) {
+          // shape only (keys / status), never the presigned fields
+          const shape = init && typeof init === "object" ? Object.keys(init).slice(0, 12).join(",") + (init.status != null ? " status=" + init.status : "") : String(init).slice(0, 40);
+          const noAction = new PostmypostError("Postmypost не вернул адрес загрузки (" + shape + ")", { pmpCode: "upload_no_action", pmpAttempts: attempt });
+          if (attempt >= storageTries || Date.now() - storageStarted >= storageRetryWindowMs) throw noAction;
+          await sleep(storageRetryMs * attempt);
+          continue;
+        }
         const form = new FormData();
         for (const f of Array.isArray(init.fields) ? init.fields : []) {
           if (f && f.key != null) form.append(String(f.key), String(f.value == null ? "" : f.value));
