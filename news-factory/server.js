@@ -6459,7 +6459,8 @@ async function publishDynamicSlot(kind) {
   const failedIds = [];
   for (let attempt = 1; attempt <= SLOT_PUBLISH_TRIES; attempt++) {
     try {
-      const result = await publishDynamicSlotOnce(kind);
+      // Later attempts use only posts already in the queue: no costly last-chance collector run per failed post.
+      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 });
       if (failedIds.length) {
         console.log("SLOT_NEXT_ITEM_RESULT " + JSON.stringify({ workspace: currentWorkspaceId(), attempts: attempt, failed: failedIds, result: { published: Boolean(result && result.published), skipped: result && result.skipped || "" } }));
         return Object.assign({}, result, { slotAttempts: attempt, failedBefore: failedIds });
@@ -6468,6 +6469,10 @@ async function publishDynamicSlot(kind) {
     } catch (error) {
       // Only a failed PUBLICATION moves on to the next post; any other error (collector, database) is not retried here.
       if (!(error && error.queueId)) throw error;
+      if (error.slotStop) {
+        console.warn("SLOT_NEXT_ITEM_STOP " + JSON.stringify({ workspace: currentWorkspaceId(), attempt: attempt, queueId: error.queueId, reason: error.slotStop, error: String(error.message || error).slice(0, 200) }));
+        throw error;
+      }
       lastError = error;
       failedIds.push(String(error.queueId));
       console.warn("SLOT_NEXT_ITEM " + JSON.stringify({ workspace: currentWorkspaceId(), attempt: attempt, queueId: error && error.queueId || "", error: String(error && error.message || error).slice(0, 200) }));
@@ -6476,7 +6481,7 @@ async function publishDynamicSlot(kind) {
   throw lastError || new Error("slot publish failed");
 }
 
-async function publishDynamicSlotOnce(kind) {
+async function publishDynamicSlotOnce(kind, opts) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
@@ -6519,7 +6524,7 @@ async function publishDynamicSlotOnce(kind) {
     const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
     let lastChanceItem = dynamicAssignBest(day, time, laneKind);
 
-    if (!lastChanceItem && emptySlotCollectorAllowed(schedulerState, slotKey)) {
+    if (!lastChanceItem && !(opts && opts.noRescue) && emptySlotCollectorAllowed(schedulerState, slotKey)) {
       schedulerState.lastEmptySlotKey = slotKey;
       schedulerState.lastEmptySlotAttemptAt = new Date().toISOString();
       saveState();
@@ -6631,6 +6636,26 @@ async function publishDynamicSlotOnce(kind) {
     }), targets);
   } catch (error) {
     // A post that keeps failing must not hold the slot (and every following slot) hostage.
+    const partial = error && error.partialResult || {};
+    // Channel-level trouble (bot kicked, chat gone, flood limit): the post is not to blame and the next post would fail
+    // the same way -> stop this slot, keep the post. No answer from Telegram: the post may already be out -> stop too,
+    // a different post in the same slot could make two posts.
+    const channelLevel = Boolean(partial.telegramPermanent || partial.telegramRateLimited || (error && (error.telegramPermanent || error.telegramRateLimited)));
+    const unclear = Boolean(partial.telegramNetwork);
+    if (channelLevel || unclear) {
+      item.lastPublishError = String(error && error.message || error).slice(0, 300);
+      if (unclear) {
+        item.publishFailures = Number(item.publishFailures || 0) + 1;
+        if (item.publishFailures >= PUBLISH_FAILURE_MAX) {
+          item.status = "publish_failed";
+          delete schedule.assignments[day][time];
+          console.warn("PUBLISH_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), queueId: queueId, failures: item.publishFailures, unclear: true, error: item.lastPublishError }));
+        }
+      }
+      saveState();
+      if (error && typeof error === "object") { error.queueId = queueId; error.slotStop = channelLevel ? "channel" : "unclear"; }
+      throw error;
+    }
     item.publishFailures = Number(item.publishFailures || 0) + 1;
     item.lastPublishError = String(error && error.message || error).slice(0, 300);
     const permanent = Boolean(error && (error.permanent || error.telegramPermanent));
@@ -8572,7 +8597,7 @@ async function sendMultiPlatformPost(post, targets) {
     ? sendTelegramPostWithRepair(telegramPrepared)
     : Promise.resolve(null);
   const vkJob = selected.vk
-    ? ((!VK_PUBLISH_ENABLED || !VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID)
+    ? ((!VK_PUBLISH_ENABLED || !workspaceVkPublishingAllowed(currentWorkspace()))
         ? Promise.reject(Object.assign(new Error("VK не настроен для публикации"), { vkErrorCode: "config_missing" }))
         : publishVkPostWithRepair(vkPrepared))
     : Promise.resolve(null);
@@ -8601,6 +8626,9 @@ async function sendMultiPlatformPost(post, targets) {
       result.telegramStatus = "failed";
       result.telegramError = String(error && error.message || error);
       result.telegramPermanent = Boolean(error && (error.permanent || error.telegramPermanent));
+      result.telegramRateLimited = Boolean(error && error.telegramRateLimited);
+      // No answer from Telegram at all (network/timeout): the message may have been delivered.
+      result.telegramNetwork = Boolean(error && !error.telegram);
     }
   }
 

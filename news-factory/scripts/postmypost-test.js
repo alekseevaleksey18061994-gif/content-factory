@@ -409,6 +409,15 @@ test("R6 publication created but the status check fails -> treated as sent (no d
   assert.equal(calls.vk.filter((c) => c.method === "wall.post").length, 0);
 });
 
+test("R7 VK through Postmypost does not need the community token any more (sendMultiPlatformPost gate)", async () => {
+  const t = await boot({ VK_ACCESS_TOKEN: "", VK_GROUP_ID: "241910449" });
+  const pmp = fakePmp();
+  installNet(t, pmp, vkDirect);
+  const res = await inWs(t, "ai-main", () => t.sendMultiPlatformPost(post(), { telegram: false, vk: true }));
+  assert.equal(res.vkPublished, true); assert.equal(res.vkMediaMode, "postmypost");
+  assert.ok(pmp.calls.some((c) => c.path === "/publications" && c.method === "POST"));
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {

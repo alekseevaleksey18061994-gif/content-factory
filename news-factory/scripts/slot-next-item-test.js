@@ -10,7 +10,8 @@ function test(name, fn) { cases[name] = fn; }
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 const CH = [["ai-main", "ai", "Что там у ИИ?"]];
 
-function installTelegram() {
+// mode for "FAILME" posts: "post" (Bad Request for this post only), "kicked" (403), "flood" (429), "network" (no answer)
+function installTelegram(mode = "post") {
   const sent = [];
   let mid = 100;
   globalThis.fetch = async (url, init = {}) => {
@@ -22,7 +23,13 @@ function installTelegram() {
       else if (init.body && typeof init.body.get === "function") body = { caption: init.body.get("caption") || "", text: init.body.get("text") || "" };
       if (method === "getChat") return json({ ok: true, result: { id: -100123, type: "channel", username: "chtotamai", title: "Что там у ИИ?" } });
       const text = String(body.text || body.caption || "");
-      if (/FAILME/.test(text)) throw new Error("fetch failed");
+      if (/FAILME/.test(text) || mode === "kicked-all") {
+        sent.push({ method, text, failed: true });
+        if (mode === "network") throw new Error("fetch failed");
+        if (mode === "kicked" || mode === "kicked-all") return json({ ok: false, error_code: 403, description: "Forbidden: bot was kicked from the channel chat" }, 403);
+        if (mode === "flood") return json({ ok: false, error_code: 429, description: "Too Many Requests: retry after 600", parameters: { retry_after: 600 } }, 429);
+        return json({ ok: false, error_code: 400, description: "Bad Request: MESSAGE_EMPTY" }, 400);
+      }
       sent.push({ method, text });
       return json({ ok: true, result: { message_id: ++mid, chat: { id: -100123, type: "channel", username: "chtotamai", title: "Что там у ИИ?" } } });
     }
@@ -54,7 +61,7 @@ test("N1 the best post fails -> the next post from the queue goes out in the SAM
   if (process.env.DEBUG_SLOT) console.error("RESULT", JSON.stringify(r));
   assert.equal(r.published, true);
   assert.equal(r.slotAttempts, 2); assert.deepEqual(r.failedBefore, ["bad"]);
-  assert.equal(sent.filter((x) => /good/.test(x.text)).length >= 1, true); assert.equal(sent.some((x) => /FAILME/.test(x.text)), false);
+  assert.equal(sent.filter((x) => !x.failed && /good/.test(x.text)).length >= 1, true); assert.equal(sent.some((x) => !x.failed && /FAILME/.test(x.text)), false);
   const bad = t.ws("ai-main").state.queue.find((q) => q.id === "bad");
   assert.ok(bad, "the failed post stays in the queue for a later try");
   assert.notEqual(bad.status, "publish_failed");
@@ -69,7 +76,7 @@ test("N2 several failing posts in a row: the slot keeps going until one is publi
   t.ws("ai-main").state.mode = "AUTO";
   const r = await inWs(t, "ai-main", () => t.publishDynamicSlot());
   assert.equal(r.published, true); assert.deepEqual(r.failedBefore, ["b1", "b2", "b3"]);
-  assert.ok(sent.length >= 1 && sent.every((x) => !/FAILME/.test(x.text)));
+  assert.ok(sent.some((x) => !x.failed) && sent.filter((x) => !x.failed).every((x) => !/FAILME/.test(x.text)));
 });
 
 test("N3 the number of posts tried per slot is limited (SLOT_PUBLISH_TRIES)", async () => {
@@ -78,7 +85,7 @@ test("N3 the number of posts tried per slot is limited (SLOT_PUBLISH_TRIES)", as
   t.ws("ai-main").state.queue = [item("b1", 99, true), item("b2", 95, true), item("ok", 70)];
   t.ws("ai-main").state.mode = "AUTO";
   await assert.rejects(() => inWs(t, "ai-main", () => t.publishDynamicSlot()));
-  assert.equal(sent.filter((x) => x.method !== "getChat").length, 0);
+  assert.equal(sent.filter((x) => !x.failed).length, 0);
   // next tick: both failed posts rest, the good one goes out
   const r = await inWs(t, "ai-main", () => t.publishDynamicSlot());
   assert.equal(r.published, true); assert.ok(sent.some((x) => /Заголовок ok/.test(x.text)));
@@ -106,6 +113,39 @@ test("N5 Telegram out, VK failed: VK is not re-sent for the same post (the next 
   const pending = inWs(t, "ai-main", () => t.pendingAutoTargets(done));
   assert.equal(pending.vk, false);
   assert.equal(pending.telegram, false);
+});
+
+// ---- regressions from the adversarial review ----
+test("R1 bot kicked (403): ONE post tried, slot stops, the post is NOT burned, the rest of the queue untouched", async () => {
+  const t = await boot();
+  const sent = installTelegram("kicked-all");
+  t.ws("ai-main").state.queue = [item("a", 99), item("b", 95), item("c", 90)];
+  t.ws("ai-main").state.mode = "AUTO";
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishDynamicSlot()));
+  assert.equal(sent.filter((x) => x.failed).length, 1, "no other posts thrown at a dead chat");
+  const q = t.ws("ai-main").state.queue;
+  assert.equal(q.filter((x) => x.status === "publish_failed").length, 0);
+  assert.equal(q.filter((x) => x.publishRetryAfter).length, 0);
+});
+
+test("R2 flood limit (429): the slot stops after one post", async () => {
+  const t = await boot();
+  const sent = installTelegram("flood");
+  t.ws("ai-main").state.queue = [item("a", 99, true), item("b", 95), item("c", 90)];
+  t.ws("ai-main").state.mode = "AUTO";
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishDynamicSlot()));
+  assert.equal(sent.filter((x) => !x.failed).length, 0, "no next post sent into the flood limit");
+});
+
+test("R3 no answer from Telegram (network): the post may be out -> no DIFFERENT post in the same slot", async () => {
+  const t = await boot();
+  const sent = installTelegram("network");
+  t.ws("ai-main").state.queue = [item("a", 99, true), item("b", 95)];
+  t.ws("ai-main").state.mode = "AUTO";
+  await assert.rejects(() => inWs(t, "ai-main", () => t.publishDynamicSlot()));
+  assert.equal(sent.some((x) => !x.failed && /Заголовок b/.test(x.text)), false);
+  const a = t.ws("ai-main").state.queue.find((x) => x.id === "a");
+  assert.ok(!a.publishRetryAfter, "the same post stays the slot's post (old behaviour)");
 });
 
 async function main() {
