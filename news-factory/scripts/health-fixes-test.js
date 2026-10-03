@@ -39,7 +39,12 @@ test("U2 pgJsonString repairs lone surrogates and drops NUL, keeps normal emoji"
   assert.ok(!/\\ud[89ab][0-9a-f]{2}(?!\\udc)/i.test(out), out);
   const back = JSON.parse(out);
   assert.equal(back.a, "ok �"); assert.equal(back.b[0], "xy"); assert.equal(back.b[1], "🤖 целый"); assert.equal(back.c, 5); assert.equal(back.d, null);
-  assert.equal(back.e.f, "�tail");
+  assert.equal(back.e.f, "\uFFFDtail");
+  // keys are repaired too; literal backslash-u text typed by a human stays untouched
+  const k = JSON.parse(t.pgJsonString({ ["тема " + LONE]: 1, ["n\u0000k"]: 2, lit: "C:\\ud83d and \\u0000" }));
+  assert.deepEqual(Object.keys(k), ["тема \uFFFD", "nk", "lit"]);
+  assert.equal(k.lit, "C:\\ud83d and \\u0000");
+  assert.equal(t.pgJsonString(undefined), undefined);
 });
 
 test("S1 snapshot of a state with a cut emoji is stored (was: invalid input syntax for type json)", async () => {
@@ -47,6 +52,7 @@ test("S1 snapshot of a state with a cut emoji is stored (was: invalid input synt
   await inWs(t, "ai-main", async () => {
     t.state.lastPublishError = "Ошибка: " + LONE;
     t.state.note = "a\u0000b";
+    t.state.editorialLearning = { byTopic: { ["Илон " + LONE]: { n: 1 } } };
     await t.saveStateSnapshot();
   });
   const rows = await dbRows("select state->>'lastPublishError' as e, state->>'note' as n from app_snapshots where workspace_id='ai-main' order by id desc limit 1");
@@ -62,9 +68,12 @@ test("S2 news item with a Postmypost id saves; numeric VK id still lands in vk_p
     const base = { sourceId: "s1", sourceName: "S1", sourceUrl: "https://s", originalTitle: "T", originalText: "X", contentHash: "h", status: "published", metadata: { title: "🤖 " + LONE } };
     await t.saveNewsItem(Object.assign({ id: "n_pmp", originalUrl: "https://s/a", vkPostId: "pmp-32539480" }, base));
     await t.saveNewsItem(Object.assign({ id: "n_vk", originalUrl: "https://s/b", vkPostId: 25 }, base));
+    await t.saveNewsItem(Object.assign({}, base, { id: "n_nul", originalUrl: "https://s/c", originalText: "до\u0000после", originalTitle: "🤖" + LONE }));
   });
   const rows = await dbRows("select id, vk_post_id::text as v from news_items order by id");
-  assert.deepEqual(rows.map((r) => [r.id, r.v]), [["n_pmp", null], ["n_vk", "25"]]);
+  assert.deepEqual(rows.map((r) => [r.id, r.v]), [["n_nul", null], ["n_pmp", null], ["n_vk", "25"]]);
+  const nul = await dbRows("select original_text from news_items where id='n_nul'");
+  assert.equal(nul[0].original_text, "допосле");
 });
 
 function storageFlaky(failures) {
@@ -102,6 +111,11 @@ test("U3 Postmypost storage: fetch failed / 5xx are retried with a fresh upload 
   c = createPostmypostClient({ token: "t", fetch: f.handler, pollMs: 1, storageRetryMs: 0 });
   await assert.rejects(() => c.uploadFile(77, bytes, "a.jpg"), (e) => e.pmpCode === "storage_network" && e.pmpAttempts === 3);
   assert.equal(f.seen.storage, 3);
+
+  f = storageFlaky(["net", "net"]);
+  c = createPostmypostClient({ token: "t", fetch: f.handler, pollMs: 1, storageRetryMs: 0, storageRetryWindowMs: 0 });
+  await assert.rejects(() => c.uploadFile(77, bytes, "a.jpg"), (e) => e.pmpCode === "storage_network");
+  assert.equal(f.seen.storage, 1, "past the retry window (a long hang) no more tries");
 
   f = storageFlaky(["net"]);
   c = createPostmypostClient({ token: "t", fetch: f.handler, pollMs: 1, storageRetryMs: 0, storageTries: 1 });

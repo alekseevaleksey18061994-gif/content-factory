@@ -1325,7 +1325,7 @@ async function insertCostEventRow(row) {
       row.id, row.at, row.workspaceId, row.provider, row.model, row.operation, row.endpoint, row.kind,
       row.inputTokens, row.outputTokens, row.cachedInputTokens, row.cacheReadTokens, row.cacheWriteTokens,
       row.imageInputTokens, row.imageOutputTokens, row.costUsd, row.pricingKnown, row.estimated,
-      row.newsId || null, JSON.stringify(row.extra || {})
+      row.newsId || null, pgJsonString(row.extra || {})
     ]
   );
   scheduleCostBudgetCheck();
@@ -2691,7 +2691,7 @@ async function autoResolveQueue() {
     if (db && dbReady) {
       try {
         await db.query("UPDATE news_items SET status='auto_rejected', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
-          [r.item.newsId, JSON.stringify({ autoRejectReason: r.reason, autoRejectedAt: new Date().toISOString() }), currentWorkspaceId()]);
+          [r.item.newsId, pgJsonString({ autoRejectReason: r.reason, autoRejectedAt: new Date().toISOString() }), currentWorkspaceId()]);
       } catch (error) { console.warn("Auto reject status update failed:", error.message); }
     }
   }
@@ -3094,15 +3094,23 @@ function vkPostIdForDb(value) {
   const text = String(value == null ? "" : value).trim();
   return /^\d{1,18}$/.test(text) ? text : null;
 }
-// PostgreSQL json/jsonb rejects lone UTF-16 surrogates (a title cut in the middle of an emoji) and \u0000.
-// JSON.stringify keeps both, so every snapshot of that workspace failed with "invalid input syntax for type json".
+// PostgreSQL json/jsonb rejects lone UTF-16 surrogates (a title or a key cut in the middle of an emoji) and \u0000,
+// text columns reject \u0000. JSON.stringify keeps both, so every snapshot of such a workspace failed with
+// "invalid input syntax for type json".
 function pgSafeString(text) {
   let out = typeof text.toWellFormed === "function" ? text.toWellFormed() : text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
   if (out.indexOf("\u0000") !== -1) out = out.split("\u0000").join("");
   return out;
 }
+function pgText(value) { return typeof value === "string" ? pgSafeString(value) : value; }
+// Well-formed JSON.stringify writes a LONE surrogate (in values AND keys) as an escape \udXXX and NUL as \u0000;
+// paired surrogates stay raw characters. A genuine escape has an odd number of backslashes in front of "u".
 function pgJsonString(value) {
-  return JSON.stringify(value, function(key, v) { return typeof v === "string" ? pgSafeString(v) : v; });
+  const json = JSON.stringify(value);
+  if (json === undefined || json.indexOf("\\u") === -1) return json;
+  return json.replace(/(?<!\\)((?:\\\\)*)\\u(d[89a-f][0-9a-f]{2}|0000)/gi, function(m, slashes, code) {
+    return slashes + (code === "0000" ? "" : "\\ufffd");
+  });
 }
 
 async function runMigrations() {
@@ -3764,7 +3772,7 @@ async function createPublicPostPage(post) {
     `INSERT INTO public_post_pages
       (slug, workspace_id, post_id, topic_id, title, body_text, description, source_name, source_url, sources, image_filename, image_url, image_width, image_height, image_bytes)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)`,
-    [slug, currentWorkspaceId(), postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, JSON.stringify(sources), image.fileName, image.url, image.width, image.height, image.bytes]
+    [slug, currentWorkspaceId(), postId, topicId, title, bodyText, description, sourceName || null, sourceUrl || null, pgJsonString(sources), image.fileName, image.url, image.width, image.height, image.bytes]
   );
 
   return {
@@ -4471,7 +4479,7 @@ async function backfillQueueImageEnhancements(options) {
               "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
               [
                 item.newsId,
-                JSON.stringify({
+                pgJsonString({
                   imageUrl: item.imageUrl || "",
                   enhancedImageUrl: item.enhancedImageUrl || "",
                   generatedImageUrl: item.generatedImageUrl || "",
@@ -5296,15 +5304,15 @@ async function saveNewsItem(item) {
         vk_media_attempts=GREATEST(COALESCE(EXCLUDED.vk_media_attempts,0),COALESCE(news_items.vk_media_attempts,0)),
         updated_at=NOW()`,
       [
-        item.id, currentWorkspaceId(), item.sourceId, item.sourceName, item.sourceUrl, item.originalUrl, item.originalTitle,
-        item.originalText, item.contentHash, item.rewrittenTitle || null, item.rewrittenText || null,
+        item.id, currentWorkspaceId(), item.sourceId, pgText(item.sourceName), item.sourceUrl, item.originalUrl, pgText(item.originalTitle),
+        pgText(item.originalText), item.contentHash, pgText(item.rewrittenTitle) || null, pgText(item.rewrittenText) || null,
         item.confidence || null, item.status, item.telegramMessageId || null, item.publishedAt || null,
         pgJsonString(item.metadata || {}),
         item.topicId || "default",
         vkPostIdForDb(item.vkPostId),
         item.vkStatus || null,
         item.vkErrorCode == null ? null : String(item.vkErrorCode),
-        item.vkError || item.vkErrorMsg || null,
+        pgText(item.vkError || item.vkErrorMsg) || null,
         Number(item.vkMediaAttempts || 0)
       ]
     );
@@ -6626,7 +6634,7 @@ async function publishDynamicSlotOnce(kind, opts) {
     if (db && dbReady && item.newsId) {
       try {
         await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
-          [item.newsId, JSON.stringify({ autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: publishConflict.workspace, channel: publishConflict.channel, by: publishConflict.by } }), currentWorkspaceId()]);
+          [item.newsId, pgJsonString({ autoPublishBlocked: "cross_channel_duplicate", crossChannel: { workspace: publishConflict.workspace, channel: publishConflict.channel, by: publishConflict.by } }), currentWorkspaceId()]);
       } catch (error) { console.warn("Cross-channel duplicate status update failed:", error.message); }
     }
     // The slot stays open: the next scheduler tick picks the next best post.
@@ -11146,7 +11154,7 @@ async function dedupeQueueOnce() {
       if (db && dbReady) {
         try {
           await db.query("UPDATE news_items SET status='duplicate_story', metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3 AND status NOT IN ('published','media_failed')",
-            [item.newsId, JSON.stringify({ storyRelation: compactStoryRelation(rel), autoPublishBlocked: "duplicate_story" }), currentWorkspaceId()]);
+            [item.newsId, pgJsonString({ storyRelation: compactStoryRelation(rel), autoPublishBlocked: "duplicate_story" }), currentWorkspaceId()]);
         } catch (error) { console.warn("Queue dedupe status update failed:", error.message); }
       }
     }
@@ -11646,7 +11654,7 @@ async function backfillRussianNewsTitles(limit) {
   for (const t of translated) {
     const updated = await db.query(
       "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
-      [t.id, JSON.stringify({ titleRu: t.titleRu }), currentWorkspaceId()]
+      [t.id, pgJsonString({ titleRu: t.titleRu }), currentWorkspaceId()]
     );
     count += updated.rowCount || 0;
   }
@@ -11755,7 +11763,7 @@ async function backfillRecentNewsEditorialScores(limit) {
       if (!allowedIds.has(score.id)) continue;
       const updated = await db.query(
         "UPDATE news_items SET metadata=COALESCE(metadata,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$1 AND workspace_id=$3",
-        [score.id, JSON.stringify({
+        [score.id, pgJsonString({
           editorialScore: score.editorialScore,
           scoreBreakdown: score.scoreBreakdown,
           scoreReason: score.scoreReason,

@@ -44,6 +44,7 @@ export function createPostmypostClient(options) {
   // (presigned fields are single-use). Nothing is published until the file id exists, so a retry is safe.
   const storageTries = Math.max(1, Math.floor(Number(opt.storageTries == null ? 3 : opt.storageTries) || 1));
   const storageRetryMs = Math.max(0, Number(opt.storageRetryMs == null ? 2000 : opt.storageRetryMs) || 0);
+  const storageRetryWindowMs = Math.max(0, Number(opt.storageRetryWindowMs == null ? 45000 : opt.storageRetryWindowMs) || 0);
 
   async function request(method, path, query, body) {
     if (!token) throw new PostmypostError("POSTMYPOST_TOKEN не задан", { pmpCode: "config_missing" });
@@ -113,6 +114,7 @@ export function createPostmypostClient(options) {
       const fileName = String(name || "image.jpg");
       let init = null;
       let uploadId = null;
+      const storageStarted = Date.now();
       for (let attempt = 1; ; attempt++) {
         init = await request("POST", "/upload/init", null, { project_id: Number(projectId), name: fileName, size: buf.length });
         uploadId = init && init.id;
@@ -136,7 +138,8 @@ export function createPostmypostClient(options) {
           retryable = err;
         }
         if (!retryable) break;
-        if (attempt >= storageTries) throw retryable;
+        // retry quick drops only: a storage that hung for a long time is not hammered (keeps the VK step bounded)
+        if (attempt >= storageTries || Date.now() - storageStarted > storageRetryWindowMs) throw retryable;
         await sleep(storageRetryMs * attempt);
       }
       const done = await request("POST", "/upload/complete", { id: uploadId });
