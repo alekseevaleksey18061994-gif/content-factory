@@ -209,3 +209,71 @@ export async function resolvePostmypostTarget(client, explicit, vkGroupId) {
   if (!pick.connected) throw new PostmypostError("Postmypost: аккаунт «" + pick.accountName + "» требует повторной авторизации", { pmpCode: "account_auth_required", candidates: candidates });
   return Object.assign({}, pick, { candidates: candidates });
 }
+
+// All accounts of all projects, marked vk/connected. -> [{projectId, projectName, accountId, accountName, externalId, channelId, vk, connected}]
+export async function listPostmypostAccounts(client, projectId) {
+  const projects = projectId ? [{ id: Number(projectId), name: "" }] : await client.listProjects();
+  let vkChannelIds = null;
+  try {
+    const channels = await client.listChannels();
+    vkChannelIds = new Set(channels.filter(function(c) { return /vk|vkontakte|вконтакте/i.test(String(c.code || "") + " " + String(c.name || "")); }).map(function(c) { return Number(c.id); }));
+  } catch { vkChannelIds = null; }
+  const out = [];
+  for (const project of projects) {
+    for (const a of await client.listAccounts(project.id)) {
+      const channelId = Number(a.chanel_id != null ? a.chanel_id : a.channel_id);
+      out.push({
+        projectId: Number(project.id), projectName: String(project.name || ""), accountId: Number(a.id), accountName: String(a.name || ""),
+        externalId: String(a.external_id || ""), channelId: channelId, vk: vkChannelIds ? vkChannelIds.has(channelId) : true,
+        connected: Number(a.connection_status) === CONNECTED
+      });
+    }
+  }
+  return out;
+}
+
+// "Что там у ИИ? | Новости нейросетей" -> "что там у ии"; ё = е; punctuation and emoji dropped.
+export function channelNameKey(name) {
+  const head = String(name || "").split(/\s[|•·—–-]\s/)[0];
+  return head.toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/gi, " ").trim();
+}
+
+// Pairs every workspace (channel) with its VK community in Postmypost.
+//  workspaces: [{id, name, telegramChannel}], accounts: listPostmypostAccounts()
+//  opts: { defaultWorkspaceId, vkGroupId (the default workspace's group), explicit: {wsId: accountId} }
+// Priority: explicit map -> default workspace by VK_GROUP_ID -> same channel name (part before " | ").
+// An account is given to one workspace only; ambiguous names (two accounts with the same name) are not guessed.
+// -> { byWorkspace: {wsId: {accountId, projectId, accountName, how}}, unmatchedAccounts: [...], problems: [...] }
+export function matchWorkspacesToAccounts(workspaces, accounts, opts) {
+  const o = opts || {};
+  const usable = (accounts || []).filter(function(a) { return a.vk && a.connected; });
+  const taken = new Set();
+  const byWorkspace = {};
+  const problems = [];
+  const give = function(ws, acc, how) { byWorkspace[ws.id] = { accountId: acc.accountId, projectId: acc.projectId, accountName: acc.accountName, how: how }; taken.add(acc.accountId); };
+  const explicit = o.explicit && typeof o.explicit === "object" ? o.explicit : {};
+  for (const ws of workspaces || []) {
+    const want = Number(explicit[ws.id] || 0);
+    if (!want) continue;
+    const acc = (accounts || []).find(function(a) { return a.accountId === want; });
+    if (!acc) { problems.push({ workspace: ws.id, problem: "account_not_found", accountId: want }); continue; }
+    if (!acc.connected) { problems.push({ workspace: ws.id, problem: "account_auth_required", accountId: want }); continue; }
+    give(ws, acc, "explicit");
+  }
+  const group = String(Math.abs(Number(o.vkGroupId) || 0) || "");
+  const def = (workspaces || []).find(function(ws) { return ws.id === o.defaultWorkspaceId; });
+  if (def && !byWorkspace[def.id] && group) {
+    const acc = usable.find(function(a) { return !taken.has(a.accountId) && a.externalId.replace(/^(club|public|-)/i, "") === group; });
+    if (acc) give(def, acc, "vk_group_id");
+  }
+  for (const ws of workspaces || []) {
+    if (byWorkspace[ws.id]) continue;
+    const key = channelNameKey(ws.name);
+    if (!key) continue;
+    const same = usable.filter(function(a) { return !taken.has(a.accountId) && channelNameKey(a.accountName) === key; });
+    if (same.length === 1) give(ws, same[0], "name");
+    else if (same.length > 1) problems.push({ workspace: ws.id, problem: "ambiguous_name", accounts: same.map(function(a) { return a.accountId; }) });
+  }
+  const unmatchedAccounts = usable.filter(function(a) { return !taken.has(a.accountId); }).map(function(a) { return { accountId: a.accountId, name: a.accountName }; });
+  return { byWorkspace: byWorkspace, unmatchedAccounts: unmatchedAccounts, problems: problems };
+}

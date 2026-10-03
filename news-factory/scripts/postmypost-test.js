@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createPostmypostClient, resolvePostmypostTarget } from "../lib/postmypost.js";
-import { loadServer, inWs, startTempPostgres } from "./dedupe-harness.js";
+import { createPostmypostClient, resolvePostmypostTarget, matchWorkspacesToAccounts, channelNameKey } from "../lib/postmypost.js";
+import { loadServer, inWs, startTempPostgres, dbRows } from "./dedupe-harness.js";
 
 const cases = {};
 function test(name, fn) { cases[name] = fn; }
@@ -117,6 +117,36 @@ test("C4 target: VK account matched by group id; Telegram account ignored; expli
   await assert.rejects(() => resolvePostmypostTarget(reauth, { accountId: 3 }, 241910449), (e) => e.pmpCode === "account_auth_required");
 });
 
+test("C6 channel names: part before ' | ', case/ё/punctuation-insensitive", async () => {
+  assert.equal(channelNameKey("Что там у ИИ? | Новости нейросетей"), "что там у ии");
+  assert.equal(channelNameKey("Что там у ИИ?"), "что там у ии");
+  assert.equal(channelNameKey("Что там у звёзд? — Шоу-бизнес"), "что там у звезд");
+  assert.equal(channelNameKey("ЧТО ТАМ У ТАЧЕК"), "что там у тачек");
+});
+
+test("C7 matching: VK_GROUP_ID for the main cabinet, names for the rest, explicit wins, no guessing on duplicates", async () => {
+  const ws = [{ id: "ai-main", name: "Что там у ИИ?" }, { id: "cars", name: "Что там у тачек?" }, { id: "money", name: "Что там с деньгами?" }, { id: "games", name: "Что там у игр?" }];
+  const acc = (id, name, ext, extra) => Object.assign({ projectId: 1, accountId: id, accountName: name, externalId: ext, vk: true, connected: true }, extra || {});
+  const accounts = [
+    acc(10, "Совсем другое название", "-241910449"),
+    acc(11, "Что там у тачек? | Автоновости", "-1"),
+    acc(12, "Что там с деньгами?", "-2", { connected: false }),
+    acc(13, "Что там у игр?", "-3"), acc(14, "Что там у игр? | копия", "-4"),
+    acc(15, "Чужая группа", "-5"),
+    acc(16, "Что там у тачек? TG", "-6", { vk: false })
+  ];
+  const m = matchWorkspacesToAccounts(ws, accounts, { defaultWorkspaceId: "ai-main", vkGroupId: 241910449, explicit: {} });
+  assert.equal(m.byWorkspace["ai-main"].accountId, 10); assert.equal(m.byWorkspace["ai-main"].how, "vk_group_id");
+  assert.equal(m.byWorkspace.cars.accountId, 11); assert.equal(m.byWorkspace.cars.how, "name");
+  assert.equal(m.byWorkspace.money, undefined, "disconnected account is not used");
+  assert.equal(m.byWorkspace.games, undefined, "two accounts with the same channel name: not guessed");
+  assert.ok(m.problems.some((p) => p.workspace === "games" && p.problem === "ambiguous_name"));
+  assert.ok(m.unmatchedAccounts.some((a) => a.accountId === 15));
+  const e = matchWorkspacesToAccounts(ws, accounts, { defaultWorkspaceId: "ai-main", vkGroupId: 241910449, explicit: { games: 14, money: 12 } });
+  assert.equal(e.byWorkspace.games.accountId, 14); assert.equal(e.byWorkspace.games.how, "explicit");
+  assert.ok(e.problems.some((p) => p.workspace === "money" && p.problem === "account_auth_required"));
+});
+
 // ---------------------------------------------------------------- the real server.js
 function installNet(t, pmp, vk) {
   const calls = { vk: [] };
@@ -147,10 +177,10 @@ const vkDirect = (m) => {
   if (m === "wall.post") return { response: { post_id: 55 } };
   return { response: {} };
 };
-async function boot(env) {
-  const t = await loadServer({ db: true, channels: [["ai-main", "ai", "Что там у ИИ?"]], env: Object.assign({
+async function boot(env, channels) {
+  const t = await loadServer({ db: true, channels: channels || [["ai-main", "ai", "Что там у ИИ?"]], env: Object.assign({
     VK_PUBLISH_ENABLED: "true", VK_ACCESS_TOKEN: "vk-test", VK_GROUP_ID: "241910449", VK_OWNER_ID: "", NEWS_FACTORY_PUBLIC_URL: BASE,
-    POSTMYPOST_TOKEN: TOKEN, VK_VIA_POSTMYPOST: "", POSTMYPOST_POLL_MS: "10", POSTMYPOST_WAIT_MS: "", POSTMYPOST_PROJECT_ID: "", POSTMYPOST_ACCOUNT_ID: "",
+    POSTMYPOST_TOKEN: TOKEN, VK_VIA_POSTMYPOST: "", POSTMYPOST_POLL_MS: "10", POSTMYPOST_WAIT_MS: "", POSTMYPOST_PROJECT_ID: "", POSTMYPOST_ACCOUNT_ID: "", POSTMYPOST_ACCOUNT_MAP: "",
     VK_MEDIA_ORDER: "", VK_LINK_CARD_RETRY_DELAYS_MS: ""
   }, env || {}) });
   for (let i = 0; i < 200 && !t.dbReadyFlag; i++) await new Promise((r) => setTimeout(r, 50));
@@ -232,8 +262,75 @@ test("S7 boot diagnostics name the chosen account and never print the token", as
   const info = await t.logPostmypostStatus();
   console.log = orig;
   assert.equal(info.ok, true); assert.equal(info.accountId, 502);
+  assert.deepEqual(info.channels.map((c) => c.workspace), ["ai-main"]);
   const line = lines.find((l) => l.startsWith("POSTMYPOST_STATUS "));
   assert.ok(line); assert.ok(!line.includes(TOKEN));
+});
+
+const twoCh = [["ai-main", "ai", "Что там у ИИ?"], ["chtotamtachki", "auto", "Что там у тачек?"], ["chtotamdengi", "money", "Что там с деньгами?"]];
+const NET_ACCOUNTS = [
+  { id: 502, chanel_id: 5, external_id: "-241910449", name: "Что там у ИИ? | Новости нейросетей", connection_status: 1 },
+  { id: 503, chanel_id: 5, external_id: "-300000001", name: "Что там у тачек? | Автоновости", connection_status: 1 },
+  { id: 504, chanel_id: 5, external_id: "-128806844", name: "Домашние Решения", connection_status: 1 },
+  { id: 505, chanel_id: 9, external_id: "-1004434374815", name: "Что там с деньгами?", connection_status: 1 }
+];
+
+test("N1 channels are paired with their VK communities; VK is switched on ONCE for a newly paired channel", async () => {
+  const t = await boot({}, twoCh);
+  installNet(t, fakePmp({ accounts: NET_ACCOUNTS }), vkDirect);
+  const lines = []; const orig = console.log; console.log = (...a) => lines.push(a.join(" "));
+  const info = await t.logPostmypostStatus();
+  console.log = orig;
+  assert.deepEqual(info.channels.map((c) => [c.workspace, c.account]), [["ai-main", 502], ["chtotamtachki", 503]]);
+  assert.deepEqual(info.withoutVk, ["Что там с деньгами?"], "Telegram account with the same name is not a VK community");
+  assert.deepEqual(info.newlyEnabled, ["chtotamtachki"]);
+  assert.ok(lines.some((l) => l.startsWith("VK_POSTMYPOST_CHANNEL_ENABLED ") && l.includes("chtotamtachki")));
+  const cars = t.ws("chtotamtachki");
+  assert.equal(cars.state.topicSettings.default.auto_publish_vk, true);
+  assert.equal(t.workspaceVkPublishingAllowed(cars), true);
+  assert.equal(t.workspaceVkPublishingAllowed(t.ws("chtotamdengi")), false);
+  // the owner turns VK off in the admin: a later refresh must not switch it back on
+  cars.state.topicSettings.default.auto_publish_vk = false;
+  const again = await t.logPostmypostStatus();
+  assert.deepEqual(again.newlyEnabled, []);
+  assert.equal(cars.state.topicSettings.default.auto_publish_vk, false);
+});
+
+test("N2 a post of another channel goes to THAT channel's community through Postmypost; VK API is never called", async () => {
+  const t = await boot({}, twoCh);
+  const pmp = fakePmp({ accounts: NET_ACCOUNTS });
+  const calls = installNet(t, pmp, vkDirect);
+  await t.logPostmypostStatus();
+  const res = await inWs(t, "chtotamtachki", () => t.publishVkPost(post()));
+  assert.equal(res.mediaMode, "postmypost");
+  const create = pmp.calls.find((c) => c.path === "/publications" && c.method === "POST");
+  assert.deepEqual(create.body.account_ids, [503]);
+  assert.equal(calls.vk.length, 0);
+});
+
+test("N3 another channel: Postmypost failure -> VK side fails, NO direct post into the main community", async () => {
+  const t = await boot({}, twoCh);
+  const calls = installNet(t, fakePmp({ accounts: NET_ACCOUNTS, createStatus: 402 }), vkDirect);
+  await t.logPostmypostStatus();
+  await assert.rejects(() => inWs(t, "chtotamtachki", () => t.publishVkPost(post())), (e) => e.mediaFailed === true && /402/.test(e.vkErrorMsg || e.message));
+  assert.equal(calls.vk.length, 0, "the main cabinet's VK token is never used for another channel");
+});
+
+test("N4 a channel without a VK community: config_missing, nothing is called", async () => {
+  const t = await boot({}, twoCh);
+  const pmp = fakePmp({ accounts: NET_ACCOUNTS });
+  const calls = installNet(t, pmp, vkDirect);
+  await t.logPostmypostStatus();
+  const before = pmp.calls.length;
+  await assert.rejects(() => inWs(t, "chtotamdengi", () => t.publishVkPost(post())), (e) => e.vkErrorCode === "config_missing");
+  assert.equal(pmp.calls.length, before); assert.equal(calls.vk.length, 0);
+});
+
+test("N5 explicit POSTMYPOST_ACCOUNT_MAP pairs a channel whose community has another name", async () => {
+  const t = await boot({ POSTMYPOST_ACCOUNT_MAP: JSON.stringify({ chtotamdengi: 504 }) }, twoCh);
+  installNet(t, fakePmp({ accounts: NET_ACCOUNTS }), vkDirect);
+  const info = await t.logPostmypostStatus();
+  assert.ok(info.channels.some((c) => c.workspace === "chtotamdengi" && c.account === 504 && c.how === "explicit"));
 });
 
 async function main() {
