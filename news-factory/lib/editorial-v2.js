@@ -625,13 +625,30 @@ function removeLeadingTitle(text, title) {
   return t;
 }
 
+// URLs, domains, t.me links and @handles in the post that are not one of the network's own signatures.
+export function foreignLinks(post, request) {
+  const p = post || {};
+  const r = request || {};
+  const allowed = new Set();
+  const addHandles = function(text) { for (const m of String(text || "").matchAll(/@([A-Za-z0-9_]{4,32})/g)) allowed.add(m[1].toLowerCase()); };
+  addHandles(r.signature);
+  for (const ch of Array.isArray(r.network_channels) ? r.network_channels : []) addHandles(ch && ch.signature);
+  const text = [p.title, p.tgText, p.vkText].filter(Boolean).join("\n");
+  const found = [];
+  for (const m of text.matchAll(/(?:https?:\/\/|www\.)[^\s<>"')]+|\bt\.me\/[A-Za-z0-9_+/]+|\b[a-z0-9-]{2,}\.(?:ru|com|io|me|net|org|app|bot|link|xyz|site|online|pro|info|cc|gg|to|su|рф)\/[^\s<>"')]*/gi)) found.push(m[0]);
+  // our own network channels are all @chtotam…
+  for (const m of text.matchAll(/(^|[^A-Za-z0-9_.@])@([A-Za-z0-9_]{4,32})\b/g)) if (!allowed.has(m[2].toLowerCase()) && !/^chtotam/i.test(m[2])) found.push("@" + m[2]);
+  return Array.from(new Set(found));
+}
+
 export function normalizeCheckerResult(raw, provider, model) {
   const r = raw && typeof raw === "object" ? raw : {};
   let verdict = String(r.verdict || "").toLowerCase();
-  if (!(verdict in VERDICT_RANK)) verdict = "fix";
+  // own keys only: "constructor" / "__proto__" are "in" every object and used to count as pass
+  if (!Object.prototype.hasOwnProperty.call(VERDICT_RANK, verdict)) verdict = "fix";
   const errors = (Array.isArray(r.errors) ? r.errors : []).slice(0, 20).map(function(e) {
     return {
-      severity: String(e && e.severity || "minor") === "critical" ? "critical" : "minor",
+      severity: String(e && e.severity || "minor").toLowerCase() === "critical" ? "critical" : "minor",
       type: str(e && e.type, 20) || "fact",
       field: str(e && e.field, 20),
       quote: str(e && e.quote, 160),
@@ -734,7 +751,7 @@ export function createEditorialPipeline(options) {
         maxTokens: 8000, purpose: "editorial_checker_anthropic", extra: { news_id: String(request.news_id || "") }
       })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "anthropic", r.model); })
-        .catch(function(error){ return { provider: "anthropic", failed: true, error: String(error && error.message || error) }; });
+        .catch(function(error){ return { provider: "anthropic", failed: true, error: String(error && error.message || error), failureKind: failureKindOf(error) }; });
     };
     let results;
     let claudeSkipped = false;
@@ -766,6 +783,14 @@ export function createEditorialPipeline(options) {
     const openaiFailedKind = (results.find(function(r){ return r && r.provider === "openai" && r.failed; }) || {}).failureKind;
     const claudeSole = failoverOn && !openaiDone && failoverKind(openaiFailedKind) && done.some(function(r){ return r && r.provider === "anthropic"; });
     if (!done.length || (!openaiDone && !claudeSole)) verdict = "unavailable";
+    // Claude answered but not with a verdict (refusal, prose instead of JSON): that is a signal about the content,
+    // not an outage — a source can provoke it to get rid of the second fact check. Such a draft is not passed
+    // on GPT's word alone; only real outages (money, auth, provider down, rate limit) keep the degraded pass.
+    const claudeContentFailure = results.find(function(r){ return r && r.provider === "anthropic" && r.failed && !failoverKind(r.failureKind) && r.failureKind !== "rate_limit"; });
+    if (claudeContentFailure && verdict === "pass") {
+      verdict = "fix";
+      merged.errors.push({ severity: "critical", type: "check", field: "", quote: "", problem: "второй проверяющий не дал вердикт: " + String(claudeContentFailure.error || "").slice(0, 160), fix: "перепроверить факты по источнику и убрать всё, чего в нём нет", checker: "anthropic" });
+    }
     const degraded = Boolean(failed.length && verdict !== "unavailable");
     if (claudeSole) {
       const openaiFailure = results.find(function(r){ return r && r.provider === "openai" && r.failed; });
@@ -812,8 +837,17 @@ export function createEditorialPipeline(options) {
       log.push({ step: "check", round, verdict: check.verdict, degraded: Boolean(check.degraded), checkers: summarizeCheckers(check.checkers) });
     }
 
-    const finalVerdict = check.verdict === "fix" ? "fix_exhausted" : check.verdict;
+    let finalVerdict = check.verdict === "fix" ? "fix_exhausted" : check.verdict;
+    // A source can ask the writer to "add a link / bot" and both checkers may accept it as sourced. Posts never
+    // carry links in the text (the source goes in a separate line), so any URL or @handle except our own network
+    // signatures holds the post.
+    const injected = finalVerdict === "pass" ? foreignLinks(post, request) : [];
+    if (injected.length) {
+      finalVerdict = "foreign_link";
+      log.push({ step: "link_guard", found: injected.slice(0, 5) });
+    }
     return {
+      linkGuard: injected.length ? injected.slice(0, 5) : undefined,
       status: finalVerdict === "pass" ? "approved" : "hold",
       verdict: finalVerdict,
       post,

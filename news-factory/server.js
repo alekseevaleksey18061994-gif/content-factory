@@ -5788,7 +5788,11 @@ async function collectOnce(trigger) {
         }
         const crossIndex = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex() : null;
         for (const link of links) {
-          if (selectedUrls.has(link.url)) continue;
+          // Claimed synchronously (before any await) and by the normalised URL: all sources run in parallel, and two
+          // feeds carrying the same article (or the same link with ?utm) used to both pass the check -> queued twice.
+          const linkKey = normalizeArticleUrl(link.url) || link.url;
+          if (selectedUrls.has(linkKey)) continue;
+          selectedUrls.add(linkKey);
           // Same article already queued / published by another channel: leave it, look at the next link.
           // Not recorded as seen, so the link is free again when the other channel's post is dropped.
           const linkConflict = crossIndex && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() }, { index: crossIndex });
@@ -5803,7 +5807,6 @@ async function collectOnce(trigger) {
             summary.skipped += 1;
             continue;
           }
-          selectedUrls.add(link.url);
           noteSourceEvent(source, "candidate");
           return { source: source, link: link, rest: links.slice(links.indexOf(link) + 1), extra: 0 };
         }
@@ -5835,10 +5838,11 @@ async function collectOnce(trigger) {
       let current = from;
       while (current && Array.isArray(current.rest) && current.rest.length && Number(current.extra || 0) < EXTRA_LINKS_PER_SOURCE) {
         const link = current.rest.shift();
-        if (selectedUrls.has(link.url)) continue;
+        const linkKey = normalizeArticleUrl(link.url) || link.url;
+        if (selectedUrls.has(linkKey)) continue;
+        selectedUrls.add(linkKey);
         if (CROSS_CHANNEL_DEDUPE_ENABLED && crossChannelConflict({ urls: new Set([normalizeArticleUrl(link.url)].filter(Boolean)), hashes: new Set() })) continue;
         if (await seenOriginalUrl(link.url)) continue;
-        selectedUrls.add(link.url);
         noteSourceEvent(current.source, "candidate");
         const next = { source: current.source, link: link, rest: current.rest, extra: Number(current.extra || 0) + 1 };
         const kept = await prefilterCandidates([next], summary);
@@ -7019,6 +7023,7 @@ async function publishDynamicSlotOnce(kind, opts) {
     item.vkPostId = result.vkPostId || null;
     item.vkStatus = "published";
     item.vkPublishedAt = publishedAt;
+    if (result.vkUncertain) { item.vkUncertain = true; item.vkStatus = "uncertain"; }
   } else if (result.vkStatus === "media_failed") {
     item.status = "media_failed";
     item.vkStatus = "media_failed";
@@ -8057,7 +8062,8 @@ async function sendTelegramPost(post) {
           }, "photo", imageUrl, "image"), target);
         } catch (fallbackError) {
           console.warn("Telegram generated photo fallback failed:", fallbackError.message);
-          if (MEDIA_REQUIRED) throw fallbackError;
+          // "maybe sent" / chat-level errors end here: the code below would send the same cover again
+          if (MEDIA_REQUIRED || isTelegramFatalError(fallbackError)) throw fallbackError;
         }
       } else if (MEDIA_REQUIRED) {
         throw error;
@@ -8085,12 +8091,19 @@ async function sendTelegramPost(post) {
       }, "photo", imageUrl, "image");
     }
     if (html && !telegramCaptionFits(html)) {
-      await telegramApi("sendMessage", {
-        chat_id: telegramChannel,
-        text: html,
-        parse_mode: "HTML",
-        disable_web_page_preview: true
-      });
+      try {
+        await telegramApi("sendMessage", {
+          chat_id: telegramChannel,
+          text: html,
+          parse_mode: "HTML",
+          disable_web_page_preview: true
+        });
+      } catch (textError) {
+        // The photo is already in the channel: failing the whole post here made the slot / repair loop send the
+        // photo again (up to 4 photos for one post). Keep it as published, report the missing text.
+        console.warn("TELEGRAM_TEXT_AFTER_PHOTO_FAILED " + JSON.stringify({ post_id: String(post.id || post.postId || ""), message_id: photo && photo.message_id, error: String(textError && textError.message || textError).slice(0, 200) }));
+        if (photo && typeof photo === "object") photo.textAfterPhotoFailed = true;
+      }
     }
     return assertTelegramPublishResult(photo, target);
   }
@@ -9030,6 +9043,18 @@ async function sendMultiPlatformPost(post, targets) {
         result.vkPreviewImageUrl = vk.previewImageUrl || "";
       }
     } else {
+      const error = vkSettled.reason || new Error("VK publish failed");
+      if (error && error.vkAmbiguous) {
+        // The publication may exist (Postmypost/VK did not answer after the create call): a retry would make a
+        // second VK post. Counted as published without an id, flagged for a manual check.
+        console.warn("VK_UNCERTAIN " + JSON.stringify({ workspace: currentWorkspaceId(), post_id: String(post.postId || post.id || ""), error: String(error.message || error).slice(0, 200) }));
+        result.vkPublished = true;
+        result.vkStatus = "uncertain";
+        result.vkUncertain = true;
+        result.vkError = String(error.vkErrorMsg || error.message || error);
+      }
+    }
+    if (selected.vk && !result.vkPublished && !(vkSettled.status === "fulfilled" && vkSettled.value)) {
       const error = vkSettled.reason || new Error("VK publish failed");
       result.vkStatus = error && error.mediaFailed ? "media_failed" : "failed";
       result.vkMediaAttempts = Number(error && error.mediaAttempts || 0);
@@ -12467,6 +12492,12 @@ const server = http.createServer(async function(req, res) {
         return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(loginGate.retryAfterSec), "cache-control": "no-store" });
       }
       const body = await readJsonObject(req);
+      // Check again after the body arrived: hundreds of parallel requests all passed the first check before any
+      // failure was booked, so the lockout never engaged. From here to the verdict everything is synchronous.
+      const loginGateAfterBody = authFailureLimiter.check(loginIp);
+      if (!loginGateAfterBody.allowed) {
+        return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(loginGateAfterBody.retryAfterSec), "cache-control": "no-store" });
+      }
       const providedPassword = String(body.password == null ? "" : body.password).slice(0, 1024);
       let passwordOk = false;
       if (ADMIN_UI_PASSWORD_SCRYPT) {
@@ -12501,6 +12532,8 @@ const server = http.createServer(async function(req, res) {
     }
 
     if (req.method === "POST" && p === "/internal/vk-preview-test-page") {
+      const internalGate = authFailureLimiter.check(requestClientIp(req));
+      if (!internalGate.allowed) return sendJson(res, 429, { ok: false, error: "too many attempts" }, { "retry-after": String(internalGate.retryAfterSec) });
       const smokeAuthorized = safeEqual(req.headers["x-admin-key"], ADMIN_KEY) ||
         (VK_OAUTH_HANDOFF_SECRET && secretMatches(req.headers["x-oauth-handoff-secret"], VK_OAUTH_HANDOFF_SECRET));
       if (!smokeAuthorized) {
@@ -13432,8 +13465,15 @@ const server = http.createServer(async function(req, res) {
       }
       let manualLockReleased = false;
       const releaseManualOnce = function() { if (!manualLockReleased) { manualLockReleased = true; releaseManualPublishLock(); } };
-      res.on("close", releaseManualOnce);
       res.on("finish", releaseManualOnce);
+      // The browser may give up (tab closed, proxy timeout) while Telegram/VK sending is still running: releasing
+      // the lock then let the next click publish the same post again. Without a finished response the lock is
+      // kept until the send is certainly over (it marks the post as published first).
+      res.on("close", function() {
+        if (manualLockReleased) return;
+        const t = setTimeout(releaseManualOnce, 10 * 60 * 1000);
+        if (t.unref) t.unref();
+      });
 
       let media = {
         imageUrl: item.imageUrl || "",
@@ -13523,6 +13563,7 @@ const server = http.createServer(async function(req, res) {
       if (result.vkPublished) {
         item.vkPublished = true;
         item.vkPostId = result.vkPostId || null;
+        if (result.vkUncertain) item.vkUncertain = true;
         item.vkStatus = "published";
         item.vkPublishedAt = publishedAt;
         item.status = "queued";
