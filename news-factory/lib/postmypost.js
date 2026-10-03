@@ -139,7 +139,7 @@ export function createPostmypostClient(options) {
         }
         if (!retryable) break;
         // retry quick drops only: a storage that hung for a long time is not hammered (keeps the VK step bounded)
-        if (attempt >= storageTries || Date.now() - storageStarted > storageRetryWindowMs) throw retryable;
+        if (attempt >= storageTries || Date.now() - storageStarted >= storageRetryWindowMs) throw retryable;
         await sleep(storageRetryMs * attempt);
       }
       const done = await request("POST", "/upload/complete", { id: uploadId });
