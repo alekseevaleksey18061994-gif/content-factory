@@ -8394,128 +8394,154 @@ async function publishVkPost(post) {
 
   const context = Object.assign({}, baseContext, { slug: preview.slug });
   const baseMessage = formatVkPost(post, { includeSource: true });
+  let attempts = 0;
 
-  // Primary mode: upload the prepared 1200x630 JPEG through the community-token messages
-  // upload server and attach it to the wall post as a real photo. VK's link snippet
-  // (link_preview below) is unreliable for community tokens ("link_photo_sizing_rule").
-  let photoAttempts = 0;
-  try {
-    const photo = await uploadVkMessagesPhotoWithRetry(preview.imageUrl, post, preview.slug);
-    photoAttempts = Number(photo.attempts || 1);
-    const photoResult = await vkApi(
-      "wall.post",
-      {
-        owner_id: VK_OWNER_ID,
-        from_group: 1,
-        message: baseMessage,
-        attachments: photo.attachment,
-        guid: vkPostGuid(post, "photo")
-      },
-      { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-    );
-
-    await markPublicPostPublished(preview.slug, photoResult && photoResult.post_id);
-    if (photoResult && typeof photoResult === "object") {
-      photoResult.mediaMode = "photo_upload";
-      photoResult.mediaAttempts = photoAttempts;
-      photoResult.previewSlug = preview.slug;
-      photoResult.previewUrl = preview.url;
-      photoResult.previewImageUrl = preview.imageUrl;
-      console.log("VK_POST_PUBLISHED " + JSON.stringify({
-        post_id: photoResult.post_id || null,
-        slug: preview.slug,
-        media_mode: photoResult.mediaMode,
-        attachment: photo.attachment
-      }));
-    }
-    return photoResult || null;
-  } catch (photoError) {
-    if (!photoAttempts) photoAttempts = Number(photoError && photoError.mediaAttempts || 1);
-    // A network error on wall.post itself is ambiguous (the post may already exist),
-    // so do not fall through to another mode and risk a duplicate.
-    if (photoError && photoError.vkMethod === "wall.post" && photoError.vkErrorCode === "network") {
-      photoError.mediaFailed = true;
-      photoError.mediaAttempts = photoAttempts || 1;
-      photoError.previewSlug = preview.slug;
-      await markPublicPostVkFailed(preview.slug, photoError);
-      await notifyVkMediaFailure(post, photoError, photoError.mediaAttempts);
-      throw photoError;
-    }
-    console.warn("VK_PHOTO_UPLOAD_MODE_FAILED " + JSON.stringify({
-      post_id: context.postId,
-      slug: preview.slug,
-      error_code: photoError && photoError.vkErrorCode != null ? photoError.vkErrorCode : null,
-      error_msg: String(photoError && (photoError.vkErrorMsg || photoError.message) || photoError)
-    }));
-  }
-
-  try {
-    const result = await vkApi(
-      "wall.post",
-      {
-        owner_id: VK_OWNER_ID,
-        from_group: 1,
-        message: baseMessage,
-        attachments: preview.url,
-        guid: vkPostGuid(post, "link")
-      },
-      { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-    );
-
-    await markPublicPostPublished(preview.slug, result && result.post_id);
+  // A network error on wall.post itself is ambiguous (the post may already exist): never fall through to another
+  // mode and risk a duplicate.
+  const ambiguous = async function(error) {
+    const code = error && error.vkErrorCode;
+    // network / VK "internal server error" (10) / HTTP 5xx: VK may have created the post anyway.
+    const unclear = code === "network" || Number(code) === 10 || (Number(code) >= 500 && Number(code) < 600);
+    if (!(error && error.vkMethod === "wall.post" && unclear)) return false;
+    error.mediaFailed = true;
+    error.vkAmbiguous = true;
+    error.mediaAttempts = attempts || 1;
+    error.previewSlug = preview.slug;
+    await markPublicPostVkFailed(preview.slug, error);
+    await notifyVkMediaFailure(post, error, error.mediaAttempts);
+    throw error;
+  };
+  // Runs AFTER VK created the post: nothing here may throw, or the caller would try another mode = a second post.
+  const published = async function(result, mode, extraLog) {
+    try { await markPublicPostPublished(preview.slug, result && result.post_id); }
+    catch (error) { console.warn("VK_PREVIEW_MARK_FAILED " + JSON.stringify({ slug: preview.slug, post_id: result && result.post_id || null, error: String(error && error.message || error).slice(0, 200) })); }
     if (result && typeof result === "object") {
-      result.mediaMode = "link_preview";
-      result.mediaAttempts = photoAttempts + 1;
+      result.mediaMode = mode;
+      result.mediaAttempts = attempts;
       result.previewSlug = preview.slug;
       result.previewUrl = preview.url;
       result.previewImageUrl = preview.imageUrl;
-      console.log("VK_POST_PUBLISHED " + JSON.stringify({
-        post_id: result.post_id || null,
-        slug: preview.slug,
-        media_mode: result.mediaMode
-      }));
+      console.log("VK_POST_PUBLISHED " + JSON.stringify(Object.assign({ post_id: result.post_id || null, slug: preview.slug, media_mode: mode }, extraLog || {})));
     }
     return result || null;
-  } catch (error) {
-    error.mediaAttempts = photoAttempts + 1;
-    error.previewSlug = preview.slug;
-    error.vkContext = Object.assign({}, error.vkContext || context, { slug: preview.slug });
-    await markPublicPostVkFailed(preview.slug, error);
+  };
 
-    if (!allowTextFallbackForPost(post)) {
-      error.mediaFailed = true;
-      await notifyVkMediaFailure(post, error, error.mediaAttempts);
+  // Link card: VK builds the snippet from the og:image of our public page (1200x630 JPEG). This is the only way a
+  // community token gets a picture that readers SEE: wall photo upload is closed for community tokens (error 27),
+  // and a "messages" photo is accepted by wall.post but not shown on the wall. VK crawls the page during the first
+  // wall.post and may answer "link_photo_sizing_rule. No photo given" before it has the image; that answer creates
+  // no post, so a retry after a pause (page now cached by VK) is safe.
+  async function tryLinkCard() {
+    const delays = vkLinkCardDelaysMs();
+    let lastError = null;
+    for (let i = 0; i <= delays.length; i++) {
+      if (i > 0) await sleepMs(delays[i - 1]);
+      attempts += 1;
+      let result;
+      try {
+        result = await vkApi(
+          "wall.post",
+          { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, attachments: preview.url, guid: vkPostGuid(post, "link") },
+          { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+        );
+      } catch (error) {
+        await ambiguous(error);
+        lastError = error;
+        const msg = String(error && (error.vkErrorMsg || error.message) || error);
+        console.warn("VK_LINK_CARD_FAILED " + JSON.stringify({ post_id: context.postId, slug: preview.slug, attempt: i + 1, error_code: error && error.vkErrorCode != null ? error.vkErrorCode : null, error_msg: msg.slice(0, 300), preview_url: preview.url }));
+        // Only the "VK has no picture for the link yet" answer is worth waiting for.
+        if (!/link_photo_sizing_rule|no photo given/i.test(msg)) break;
+        continue;
+      }
+      return published(result, "link_preview", { link_attempt: i + 1 });
+    }
+    throw lastError || createVkError("wall.post", "unknown", "VK link card failed", context);
+  }
+
+  async function tryMessagesPhoto() {
+    let photo;
+    try {
+      photo = await uploadVkMessagesPhotoWithRetry(preview.imageUrl, post, preview.slug);
+    } catch (error) {
+      attempts += Number(error && error.mediaAttempts || 1);
       throw error;
     }
-
-    await notifyVkMediaFailure(post, error, error.mediaAttempts);
-    const fallback = await vkApi(
-      "wall.post",
-      {
-        owner_id: VK_OWNER_ID,
-        from_group: 1,
-        message: baseMessage,
-        guid: vkPostGuid(post, "text")
-      },
-      { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
-    );
-
-    if (fallback && typeof fallback === "object") {
-      fallback.mediaMode = "text_fallback";
-      fallback.mediaAttempts = photoAttempts + 2;
-      fallback.previewSlug = preview.slug;
-      fallback.previewUrl = preview.url;
-      fallback.previewImageUrl = preview.imageUrl;
-      console.log("VK_POST_PUBLISHED " + JSON.stringify({
-        post_id: fallback.post_id || null,
-        slug: preview.slug,
-        media_mode: fallback.mediaMode
-      }));
+    attempts += Number(photo.attempts || 1);
+    let result;
+    try {
+      result = await vkApi(
+        "wall.post",
+        { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, attachments: photo.attachment, guid: vkPostGuid(post, "photo") },
+        { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+      );
+    } catch (error) {
+      await ambiguous(error);
+      throw error;
     }
-    return fallback || null;
+    return published(result, "photo_upload", { attachment: photo.attachment });
   }
+
+  let lastError = null;
+  let linkError = null;
+  for (const mode of vkMediaOrder()) {
+    try {
+      return mode === "link" ? await tryLinkCard() : await tryMessagesPhoto();
+    } catch (error) {
+      if (error && error.vkAmbiguous) throw error;
+      lastError = error;
+      if (mode === "link") linkError = error;
+      if (mode === "photo") {
+        console.warn("VK_PHOTO_UPLOAD_MODE_FAILED " + JSON.stringify({
+          post_id: context.postId,
+          slug: preview.slug,
+          error_code: error && error.vkErrorCode != null ? error.vkErrorCode : null,
+          error_msg: String(error && (error.vkErrorMsg || error.message) || error)
+        }));
+      }
+    }
+  }
+
+  // The link-card error is the one reported (as before this change): repair logic and alerts read its message.
+  const error = linkError || lastError || createVkError("wall.post", "unknown", "VK media modes failed", context);
+  error.mediaAttempts = attempts || 1;
+  error.previewSlug = preview.slug;
+  error.vkContext = Object.assign({}, error.vkContext || context, { slug: preview.slug });
+  await markPublicPostVkFailed(preview.slug, error);
+  if (!allowTextFallbackForPost(post)) {
+    error.mediaFailed = true;
+    await notifyVkMediaFailure(post, error, error.mediaAttempts);
+    throw error;
+  }
+  await notifyVkMediaFailure(post, error, error.mediaAttempts);
+  const fallback = await vkApi(
+    "wall.post",
+    { owner_id: VK_OWNER_ID, from_group: 1, message: baseMessage, guid: vkPostGuid(post, "text") },
+    { token: VK_ACCESS_TOKEN, tokenKind: "community", context: context }
+  );
+  attempts += 1;
+  return published(fallback, "text_fallback");
 }
 
+// VK_MEDIA_ORDER: "link,photo" (default: link card first, then the old messages-photo mode) or "photo,link" (old order).
+function vkMediaOrder() {
+  const raw = String(process.env.VK_MEDIA_ORDER || "link,photo").toLowerCase().split(/[\s,]+/).filter(function(m){ return m === "link" || m === "photo"; });
+  const order = raw.filter(function(m, i){ return raw.indexOf(m) === i; });
+  // A mode left out is appended, never dropped: "photo" alone means "photo, then link".
+  ["link", "photo"].forEach(function(m){ if (!order.includes(m)) order.push(m); });
+  return order;
+}
+
+// Pauses between link-card attempts, ms. VK_LINK_CARD_RETRY_DELAYS_MS="3000,8000" by default; "" or "0" = no retry.
+function vkLinkCardDelaysMs() {
+  const raw = process.env.VK_LINK_CARD_RETRY_DELAYS_MS;
+  if (raw === undefined || raw === "undefined") return [3000, 8000];
+  const list = String(raw).split(/[\s,;]+/).map(Number).filter(function(n){ return Number.isFinite(n) && n > 0; }).slice(0, 4).map(function(n){ return Math.min(n, 30000); });
+  if (!list.length && String(raw).trim() && String(raw).trim() !== "0" && !vkLinkCardDelaysMs.warned) {
+    vkLinkCardDelaysMs.warned = true;
+    console.warn("VK_LINK_CARD_DELAYS_INVALID " + JSON.stringify({ value: String(raw).slice(0, 60), hint: "milliseconds, e.g. 3000,8000" }));
+  }
+  return list;
+}
 
 function postForPlatform(post, platform) {
   const out = Object.assign({}, post || {});
