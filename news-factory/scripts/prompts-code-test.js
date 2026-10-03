@@ -12,9 +12,11 @@ import { SEED_SOURCES, RETIRED_SEED_URLS, retiredSeedSources, sourceKey, freshCa
 
 const PROMPT_FILE = fileURLToPath(new URL("../prompts/chto-tam.md", import.meta.url));
 const SERVER_FILE = fileURLToPath(new URL("../server.js", import.meta.url));
+const ADMIN_FILE = fileURLToPath(new URL("../public/admin.html", import.meta.url));
 const promptText = fs.readFileSync(PROMPT_FILE, "utf8");
 const parsed = parsePromptFile(promptText);
 const serverSrc = fs.readFileSync(SERVER_FILE, "utf8");
+const adminSrc = fs.readFileSync(ADMIN_FILE, "utf8");
 
 let passed = 0;
 async function test(name, fn) {
@@ -90,6 +92,23 @@ await test("P1: a GPT rewrite that lost hashtags/signature/legal mark is detecte
 await test("P1: server.js uses visible-length checks, not html.length, for captions", function() {
   assert.ok(!/html\.length\s*[<>]=?\s*(900|950|1000)/.test(serverSrc), "no html.length caption comparisons left");
   assert.ok(!/formatTelegramPost\([a-z]+\)\.length\s*<=\s*900/.test(serverSrc));
+});
+
+await test("MEDIA: queue cover enhances a usable source and generates on missing/broken source", function() {
+  const start = serverSrc.indexOf('if (req.method === "POST" && p === "/api/queue/enhance-media")');
+  const end = serverSrc.indexOf('if (req.method === "POST" && p === "/api/queue/publish")', start);
+  assert.ok(start >= 0 && end > start, "cover endpoint exists");
+  const block = serverSrc.slice(start, end);
+  assert.ok(block.includes("QUEUE_COVER_SOURCE_FALLBACK"), "broken source is logged and falls back");
+  assert.ok(block.includes('return await generateFreshCover(item.sourceImageError, "source_image_unavailable_generated")'), "broken source generates a fresh cover");
+  assert.ok(block.includes('knownBrokenSource ? (item.sourceImageError || "Исходное фото недоступно")'), "repeat click skips a source already known to be broken");
+  assert.ok(block.includes("item.imageUrl = enhanced.url"), "enhanced pixels become the publishing image");
+  assert.ok(block.includes("item.enhancedImageUrl = enhanced.url"), "enhanced pixels become the preview image");
+  assert.ok(block.includes('item.generatedImageUrl = ""'), "enhancement is not mislabelled as generated media");
+  assert.ok(!block.includes("У новости нет найденного фото для улучшения"), "missing source is no longer a dead-end 400");
+  assert.ok(serverSrc.includes("Channel editorial focus: "), "generated-cover prompt includes channel DNA");
+  assert.ok(adminSrc.includes("Готовлю обложку: улучшаю фото или создаю новую"), "UI explains automatic cover mode");
+  assert.ok(adminSrc.includes("j&&j.mode==='enhanced'?'Фото улучшено':'Новая AI-обложка готова'"), "UI reports which path was used");
 });
 
 // --- P2 ---------------------------------------------------------------------
