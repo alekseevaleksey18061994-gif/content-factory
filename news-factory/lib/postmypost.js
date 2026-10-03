@@ -234,8 +234,15 @@ export async function listPostmypostAccounts(client, projectId) {
 
 // "Что там у ИИ? | Новости нейросетей" -> "что там у ии"; ё = е; punctuation and emoji dropped.
 export function channelNameKey(name) {
-  const head = String(name || "").split(/\s[|•·—–-]\s/)[0];
+  // Only " | " (and "•", "·") separate a community's subtitle; dashes are part of channel names ("ИИ — Медицина").
+  const head = String(name || "").split(/\s*[|•·]\s*/)[0];
   return head.toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/gi, " ").trim();
+}
+
+// Digits of a VK community id in any spelling: "-241910449", "club241910449", "https://vk.com/public241910449".
+export function vkGroupDigits(value) {
+  const m = String(value || "").match(/(\d{3,})(?!.*\d)/);
+  return m ? m[1] : "";
 }
 
 // Pairs every workspace (channel) with its VK community in Postmypost.
@@ -257,19 +264,27 @@ export function matchWorkspacesToAccounts(workspaces, accounts, opts) {
     if (!want) continue;
     const acc = (accounts || []).find(function(a) { return a.accountId === want; });
     if (!acc) { problems.push({ workspace: ws.id, problem: "account_not_found", accountId: want }); continue; }
+    if (!acc.vk) { problems.push({ workspace: ws.id, problem: "account_not_vk", accountId: want }); continue; }
     if (!acc.connected) { problems.push({ workspace: ws.id, problem: "account_auth_required", accountId: want }); continue; }
+    if (taken.has(acc.accountId)) { problems.push({ workspace: ws.id, problem: "account_already_used", accountId: want }); continue; }
     give(ws, acc, "explicit");
   }
-  const group = String(Math.abs(Number(o.vkGroupId) || 0) || "");
+  const group = vkGroupDigits(o.vkGroupId);
   const def = (workspaces || []).find(function(ws) { return ws.id === o.defaultWorkspaceId; });
   if (def && !byWorkspace[def.id] && group) {
-    const acc = usable.find(function(a) { return !taken.has(a.accountId) && a.externalId.replace(/^(club|public|-)/i, "") === group; });
+    const acc = usable.find(function(a) { return !taken.has(a.accountId) && vkGroupDigits(a.externalId) === group; });
     if (acc) give(def, acc, "vk_group_id");
   }
+  // The main cabinet's own community is never handed to another channel by name.
+  if (group) usable.forEach(function(a) { if (vkGroupDigits(a.externalId) === group) taken.add(a.accountId); });
+  const keyCount = new Map();
+  for (const ws of workspaces || []) { const k = channelNameKey(ws.name); if (k) keyCount.set(k, (keyCount.get(k) || 0) + 1); }
   for (const ws of workspaces || []) {
     if (byWorkspace[ws.id]) continue;
     const key = channelNameKey(ws.name);
     if (!key) continue;
+    // Two channels with the same name head cannot be told apart by name: only an explicit map pairs them.
+    if (keyCount.get(key) > 1) { problems.push({ workspace: ws.id, problem: "ambiguous_channel_name" }); continue; }
     const same = usable.filter(function(a) { return !taken.has(a.accountId) && channelNameKey(a.accountName) === key; });
     if (same.length === 1) give(ws, same[0], "name");
     else if (same.length > 1) problems.push({ workspace: ws.id, problem: "ambiguous_name", accounts: same.map(function(a) { return a.accountId; }) });

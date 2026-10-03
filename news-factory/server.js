@@ -8398,7 +8398,13 @@ async function postmypostTarget() {
 let postmypostMap = { at: 0, byWorkspace: {}, unmatchedAccounts: [], problems: [], error: "" };
 function postmypostExplicitMap() {
   let map = {};
-  try { const parsed = JSON.parse(process.env.POSTMYPOST_ACCOUNT_MAP || "{}"); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) map = parsed; } catch {}
+  try {
+    const parsed = JSON.parse(process.env.POSTMYPOST_ACCOUNT_MAP || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) map = parsed;
+    else throw new Error("not an object");
+  } catch (error) {
+    if (!postmypostExplicitMap.warned) { postmypostExplicitMap.warned = true; console.warn("POSTMYPOST_ACCOUNT_MAP_INVALID " + JSON.stringify({ error: String(error && error.message || error).slice(0, 120), hint: '{"workspace_id": account_id}' })); }
+  }
   if (process.env.POSTMYPOST_ACCOUNT_ID && !map[workspaceStore.defaultWorkspaceId]) map[workspaceStore.defaultWorkspaceId] = process.env.POSTMYPOST_ACCOUNT_ID;
   return map;
 }
@@ -8410,7 +8416,12 @@ function enableVkForMappedChannels() {
     const entry = postmypostMap.byWorkspace[ws.id];
     if (!entry || ws.id === workspaceStore.defaultWorkspaceId) continue;
     workspaceContext.run({ workspaceId: ws.id }, function() {
-      if (Number(state.vkPostmypostAccountId || 0) === Number(entry.accountId)) return;
+      // Once per channel, ever: a re-connected community (new account id) or a map change never re-enables VK
+      // that the owner turned off. Only the account id is kept up to date.
+      if (state.vkPostmypostEnabledAt) {
+        if (Number(state.vkPostmypostAccountId || 0) !== Number(entry.accountId)) { state.vkPostmypostAccountId = Number(entry.accountId); saveState(); }
+        return;
+      }
       state.topicSettings = state.topicSettings || {};
       state.topicSettings.default = Object.assign({}, state.topicSettings.default || {}, { auto_publish_vk: true });
       state.vkPostmypostAccountId = Number(entry.accountId);
@@ -8459,7 +8470,7 @@ async function postmypostTargetForCurrent() {
   if (!postmypostMap.byWorkspace[wsId] && Date.now() - Number(postmypostMap.at || 0) > 5 * 60000) await refreshPostmypostMap("publish");
   const entry = postmypostMap.byWorkspace[wsId];
   if (entry) return { projectId: entry.projectId, accountId: entry.accountId, accountName: entry.accountName };
-  if (wsId === workspaceStore.defaultWorkspaceId) return postmypostTarget();
+  // No guessing (not even "the only connected community"): without its own pairing a channel does not use Postmypost.
   throw Object.assign(new Error("Для этого канала не найдена VK-группа в Postmypost"), { pmpCode: "target_not_found" });
 }
 
@@ -8647,8 +8658,20 @@ async function publishVkPost(post) {
       throw error;
     }
     const pubId = created && created.id;
-    if (!pubId) throw new Error("Postmypost не вернул id публикации");
-    const waited = await pmp.waitPublished(pubId, Math.max(100, Number(process.env.POSTMYPOST_WAIT_MS || 120000) || 120000));
+    if (!pubId) {
+      // 2xx without an id: the publication may exist -> stop, never post a second copy.
+      const err = createVkError("postmypost.publication", "network", "Postmypost не вернул id публикации", context);
+      err.vkMethod = "wall.post"; err.vkErrorCode = "network";
+      await ambiguous(err);
+    }
+    let waited;
+    try {
+      waited = await pmp.waitPublished(pubId, Math.max(100, Number(process.env.POSTMYPOST_WAIT_MS || 120000) || 120000));
+    } catch (error) {
+      // The publication exists; only the status check failed. Treat it as sent: a retry would post a duplicate.
+      console.warn("VK_POSTMYPOST_STATUS_UNKNOWN " + JSON.stringify(Object.assign({}, pmpContext, { publication_id: pubId, error: String(error && error.message || error).slice(0, 200) })));
+      waited = { status: PMP_STATUS.PENDING, timedOut: true };
+    }
     if (waited.status === PMP_STATUS.ERROR || waited.status === PMP_STATUS.DELETED) {
       // The publication exists in Postmypost but VK refused it: the post is not on the wall, direct VK may try.
       throw Object.assign(new Error("Postmypost: публикация " + pubId + " завершилась ошибкой (статус " + waited.status + ")"), { pmpCode: "publication_error", pmpPublicationId: pubId });
@@ -9242,7 +9265,12 @@ async function buildPlatformAnalytics(force) {
   const cached = analyticsCache.get(cacheKey);
   if (!force && cached && cached.value && now - cached.at < 5 * 60 * 1000) return cached.value;
   const telegram = await fetchTelegramAnalytics(force);
-  const vk = await fetchVkAnalytics();
+  // The community token belongs to the main cabinet: other channels must not show its VK numbers as their own.
+  const vk = workspaceVkDirectAllowed(currentWorkspace()) ? await fetchVkAnalytics() : {
+    connected: false, available: false, platform: "vk",
+    totals: { posts: 0, views: 0, likes: 0, comments: 0, reposts: 0, subscribers: null, avgViews: 0, engagementRate: 0 },
+    posts: [], note: workspaceVkPublishingAllowed(currentWorkspace()) ? "Посты в VK идут через Postmypost; статистика VK для этого канала пока не собирается." : "VK для этого канала не подключён."
+  };
   const value = {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -14216,7 +14244,8 @@ async function enableAutoPublishingAfterChecks(ws) {
   if (ok) {
     state.mode = "AUTO";
     state.topicSettings = state.topicSettings || {};
-    state.topicSettings.default = Object.assign({}, state.topicSettings.default || {}, { auto_publish_telegram: true, auto_publish_vk: false });
+    const vkKeep = Boolean(state.vkPostmypostEnabledAt) && state.topicSettings.default && state.topicSettings.default.auto_publish_vk === true;
+    state.topicSettings.default = Object.assign({}, state.topicSettings.default || {}, { auto_publish_telegram: true, auto_publish_vk: vkKeep });
     if (state.autoGate) state.autoGate = Object.assign({}, state.autoGate, { pending: false, enabledAt: new Date().toISOString() });
     saveState();
   }

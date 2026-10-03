@@ -50,7 +50,10 @@ function fakePmp(opts = {}) {
       if (opts.createStatus) return json({ message: "Validation failed", errors: [{ field: "post_at", message: "bad" }] }, opts.createStatus);
       return json({ id: 31337, publication_status: 5 });
     }
-    if (path === "/publications/31337") return json({ id: 31337, publication_status: pub.length ? pub.shift() : 1 });
+    if (path === "/publications/31337") {
+      if (opts.pollThrows) throw new Error("read ECONNRESET");
+      return json({ id: 31337, publication_status: pub.length ? pub.shift() : 1 });
+    }
     return json({}, 404);
   };
   return { calls, handler };
@@ -117,10 +120,11 @@ test("C4 target: VK account matched by group id; Telegram account ignored; expli
   await assert.rejects(() => resolvePostmypostTarget(reauth, { accountId: 3 }, 241910449), (e) => e.pmpCode === "account_auth_required");
 });
 
-test("C6 channel names: part before ' | ', case/ё/punctuation-insensitive", async () => {
+test("C6 channel names: part before ' | ' or '•', case/ё/punctuation-insensitive", async () => {
   assert.equal(channelNameKey("Что там у ИИ? | Новости нейросетей"), "что там у ии");
   assert.equal(channelNameKey("Что там у ИИ?"), "что там у ии");
-  assert.equal(channelNameKey("Что там у звёзд? — Шоу-бизнес"), "что там у звезд");
+  assert.equal(channelNameKey("Что там у звёзд? • Шоу-бизнес"), "что там у звезд");
+  assert.equal(channelNameKey("Что там у ИИ — Медицина"), "что там у ии медицина", "a dash is part of the name");
   assert.equal(channelNameKey("ЧТО ТАМ У ТАЧЕК"), "что там у тачек");
 });
 
@@ -145,6 +149,39 @@ test("C7 matching: VK_GROUP_ID for the main cabinet, names for the rest, explici
   const e = matchWorkspacesToAccounts(ws, accounts, { defaultWorkspaceId: "ai-main", vkGroupId: 241910449, explicit: { games: 14, money: 12 } });
   assert.equal(e.byWorkspace.games.accountId, 14); assert.equal(e.byWorkspace.games.how, "explicit");
   assert.ok(e.problems.some((p) => p.workspace === "money" && p.problem === "account_auth_required"));
+});
+
+// ---- regressions from the adversarial review ----
+test("R1 matching: channels with the same name head are never paired by name; dashes stay in names", async () => {
+  const acc = (id, name, ext) => ({ projectId: 1, accountId: id, accountName: name, externalId: ext, vk: true, connected: true });
+  const ws = [{ id: "ai-main", name: "Что там у ИИ?" }, { id: "med", name: "Что там у ИИ — Медицина" }, { id: "fin", name: "Что там у ИИ — Финансы" }];
+  let m = matchWorkspacesToAccounts(ws, [acc(20, "Что там у ИИ — Финансы", "-20")], { defaultWorkspaceId: "ai-main", vkGroupId: 0 });
+  assert.equal(m.byWorkspace.fin.accountId, 20); assert.equal(m.byWorkspace.med, undefined);
+  const twins = [{ id: "a", name: "Что там у тачек?" }, { id: "b", name: "Что там у тачек? | 2" }];
+  m = matchWorkspacesToAccounts(twins, [acc(30, "Что там у тачек? | Автоновости", "-30")], { defaultWorkspaceId: "x" });
+  assert.deepEqual(m.byWorkspace, {}, "two channels share the head: no guessing");
+  assert.ok(m.problems.some((p) => p.problem === "ambiguous_channel_name"));
+});
+
+test("R2 matching: the main community is found in any id spelling and is never given to another channel by name", async () => {
+  const acc = (id, name, ext) => ({ projectId: 1, accountId: id, accountName: name, externalId: ext, vk: true, connected: true });
+  const ws = [{ id: "ai-main", name: "Что там у ИИ?" }, { id: "ai-pro", name: "Что там у ИИ? PRO" }];
+  for (const ext of ["https://vk.com/club241910449", "public241910449", "-241910449", "241910449"]) {
+    const m = matchWorkspacesToAccounts(ws, [acc(10, "Что там у ИИ? PRO", ext)], { defaultWorkspaceId: "ai-main", vkGroupId: 241910449 });
+    assert.deepEqual(Object.keys(m.byWorkspace), ["ai-main"], ext);
+  }
+  const offline = [acc(10, "Что там у ИИ? PRO", "-241910449")]; offline[0].connected = false;
+  const m2 = matchWorkspacesToAccounts(ws, offline.concat([acc(11, "Другое", "-1")]), { defaultWorkspaceId: "ai-main", vkGroupId: 241910449 });
+  assert.equal(m2.byWorkspace["ai-main"], undefined);
+});
+
+test("R3 explicit map: an account already used or a non-VK account is refused", async () => {
+  const acc = (id, name, ext, vk) => ({ projectId: 1, accountId: id, accountName: name, externalId: ext, vk: vk !== false, connected: true });
+  const ws = [{ id: "ai-main", name: "Что там у ИИ?" }, { id: "cars", name: "Что там у тачек?" }, { id: "tg", name: "Канал" }];
+  const m = matchWorkspacesToAccounts(ws, [acc(502, "ИИ", "-241910449"), acc(9, "TG", "-100", false)], { defaultWorkspaceId: "ai-main", explicit: { "ai-main": 502, cars: 502, tg: 9 } });
+  assert.equal(m.byWorkspace["ai-main"].accountId, 502); assert.equal(m.byWorkspace.cars, undefined); assert.equal(m.byWorkspace.tg, undefined);
+  assert.ok(m.problems.some((p) => p.workspace === "cars" && p.problem === "account_already_used"));
+  assert.ok(m.problems.some((p) => p.workspace === "tg" && p.problem === "account_not_vk"));
 });
 
 // ---------------------------------------------------------------- the real server.js
@@ -331,6 +368,44 @@ test("N5 explicit POSTMYPOST_ACCOUNT_MAP pairs a channel whose community has ano
   installNet(t, fakePmp({ accounts: NET_ACCOUNTS }), vkDirect);
   const info = await t.logPostmypostStatus();
   assert.ok(info.channels.some((c) => c.workspace === "chtotamdengi" && c.account === 504 && c.how === "explicit"));
+});
+
+test("R4 owner turned VK off; the community is re-connected (new account id) -> VK stays OFF", async () => {
+  const t = await boot({}, twoCh);
+  const accounts = NET_ACCOUNTS.slice();
+  installNet(t, fakePmp({ accounts }), vkDirect);
+  await t.logPostmypostStatus();
+  const cars = t.ws("chtotamtachki");
+  cars.state.topicSettings.default.auto_publish_vk = false;
+  accounts[1] = Object.assign({}, accounts[1], { id: 603 });
+  installNet(t, fakePmp({ accounts }), vkDirect);
+  const info = await t.logPostmypostStatus();
+  assert.deepEqual(info.newlyEnabled, []);
+  assert.equal(cars.state.topicSettings.default.auto_publish_vk, false);
+  assert.equal(cars.state.vkPostmypostAccountId, 603, "the target follows the new account");
+});
+
+test("R5 main cabinet whose community needs re-auth never posts into the only other connected community", async () => {
+  const t = await boot({}, twoCh);
+  const accounts = [Object.assign({}, NET_ACCOUNTS[0], { connection_status: 2 }), NET_ACCOUNTS[1]];
+  const pmp = fakePmp({ accounts });
+  const calls = installNet(t, pmp, vkDirect);
+  await t.logPostmypostStatus();
+  const res = await inWs(t, "ai-main", () => t.publishVkPost(post()));
+  assert.equal(pmp.calls.filter((c) => c.path === "/publications" && c.method === "POST").length, 0);
+  assert.equal(res.mediaMode, "link_photo"); assert.equal(calls.vk.filter((c) => c.method === "wall.post").length, 1);
+});
+
+test("R6 publication created but the status check fails -> treated as sent (no duplicate), for any channel", async () => {
+  const t = await boot({}, twoCh);
+  const pmp = fakePmp({ accounts: NET_ACCOUNTS, pollThrows: true });
+  const calls = installNet(t, pmp, vkDirect);
+  await t.logPostmypostStatus();
+  for (const ws of ["chtotamtachki", "ai-main"]) {
+    const res = await inWs(t, ws, () => t.publishVkPost(post()));
+    assert.equal(res.mediaMode, "postmypost_pending", ws);
+  }
+  assert.equal(calls.vk.filter((c) => c.method === "wall.post").length, 0);
 });
 
 async function main() {
