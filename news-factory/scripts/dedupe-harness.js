@@ -104,7 +104,8 @@ const EXPORT_NAMES = [
   "normalizeArticleUrl", "itemArticleKeys", "crossChannelIndex", "editorialRecentPosts", "crossChannelConflict", "channelFreshnessHours", "isApprovedQueueItem", "queueMaxAgeHoursFor", "dbReadyFlag",
   "recoverMissingWorkspaces", "persistWorkspaceStore", "pendingAutoTargets", "acquirePublishLock", "currentWorkspace", "dynamicUsedQueueIds", "enforceCopyrightSafeMedia", "server",
   "runOffsiteBackup", "workspaceWatchdogTick", "readBackupStatus", "buildBackupPayload",
-  "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage", "publishVkPost", "logPostmypostStatus", "workspaceVkPublishingAllowed", "refreshPostmypostMap", "sendMultiPlatformPost"
+  "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage", "publishVkPost", "logPostmypostStatus", "workspaceVkPublishingAllowed", "refreshPostmypostMap", "sendMultiPlatformPost",
+  "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces"
 ];
 
 function bin(name) {
