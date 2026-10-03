@@ -92,6 +92,13 @@ export function autoPauseReason(source, stat, enabledInGroup) {
   if (Number(stat.errorStreak || 0) >= AUTO_PAUSE_ERROR_STREAK) {
     return "сайт не открывается " + stat.errorStreak + " проверок подряд";
   }
+  // A source added automatically is on trial: when the trial ends and none of its news passed the editors
+  // (queued or published), it is replaced by the next candidate.
+  const until = source.probationUntil ? Date.parse(source.probationUntil) : NaN;
+  if (Number.isFinite(until) && Date.now() > until) {
+    const good = Number(stat.useful || 0) + Number(stat.published || 0) + Number(stat.selected || 0);
+    if (!good) return "за пробный срок не дал ни одной новости, прошедшей отбор";
+  }
   const recent = Array.isArray(stat.recent) ? stat.recent : [];
   if (recent.length >= AUTO_PAUSE_JUNK_STREAK && recent.slice(-AUTO_PAUSE_JUNK_STREAK).every(function(x){ return x === "junk"; })) {
     return AUTO_PAUSE_JUNK_STREAK + " новостей подряд отсеяны: реклама, старьё или не по теме";

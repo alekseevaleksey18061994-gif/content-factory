@@ -5,7 +5,8 @@ import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { safeFetch, validateUrl as validateFetchUrl } from "./lib/safe-fetch.js";
+import { safeFetch, validateUrl as validateFetchUrl, parseProxyUrl } from "./lib/safe-fetch.js";
+import { createSourceFetcher, parseFeed, looksLikeFeed, discoverFeedUrl, guessFeedUrls } from "./lib/source-fetch.js";
 import { assertSafeRaster, SAFE_INPUT_PIXELS } from "./lib/image-guard.js";
 import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-security.js";
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
@@ -132,6 +133,7 @@ const DAILY_REPORT_ENABLED = String(process.env.DAILY_REPORT_ENABLED || "true").
 const DAILY_REPORT_TIME = normHHMM(process.env.DAILY_REPORT_TIME, "22:50");
 const SOURCES_MIN_ACTIVE = envNumber("SOURCES_MIN_ACTIVE", 40, 0, 200);
 const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 120));
+const SOURCE_PROBATION_HOURS = envNumber("SOURCE_PROBATION_HOURS", 48, 6, 24 * 14);
 const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
 const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
@@ -2824,8 +2826,15 @@ async function validateSourceCandidate(url) {
     }
     const links = extractArticleLinks(html, url).filter(function(l){ return String(l.title || "").trim().length >= 25; });
     if (links.length < 6) return { ok: false, reason: "на странице мало новостей (" + links.length + ")" };
-    return { ok: true, links: links.length };
+    return { ok: true, links: links.length, feedUrl: discoverFeedUrl(html, url) || "" };
   } catch (error) {
+    // The page is blocked from our server, but its RSS feed may open: then the source is usable through the feed.
+    if (!/^https?:\/\/t\.me\//i.test(url)) {
+      const probe = { url: url };
+      const feed = await sourceLinksFromFeed(probe).catch(function(){ return null; });
+      const fresh = feed ? feed.links.filter(function(x){ return x.publishedAt && Date.now() - new Date(x.publishedAt).getTime() < 7 * 24 * 3600000; }) : [];
+      if (feed && feed.links.length >= 6 && fresh.length >= 1) return { ok: true, links: feed.links.length, feedUrl: feed.feedUrl, viaFeed: true };
+    }
     return { ok: false, reason: "не открывается: " + String(error.message || error).slice(0, 80) };
   }
 }
@@ -2840,7 +2849,10 @@ async function discoverSourcesWithAI(count) {
     count: count,
     existingHosts: Array.from(new Set((state.sources || []).map(function(x){ return sourceHost(x && x.url); }).filter(Boolean)))
   });
-  for (const withSearch of [true, false]) {
+  const triedModes = [true, false];
+  let retriedAfterLimit = false;
+  while (triedModes.length) {
+    const withSearch = triedModes.shift();
     try {
       const body = { model: OPENAI_MODEL, input: prompt, max_output_tokens: 2500 };
       if (withSearch) body.tools = [{ type: "web_search" }];
@@ -2856,9 +2868,25 @@ async function discoverSourcesWithAI(count) {
       return parseDiscoveryResult(extractOpenAIText(data));
     } catch (error) {
       console.warn("SOURCE_DISCOVERY_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), webSearch: withSearch, error: error.message }));
+      // TPM limit: 16 channels discover at the same moment. Wait what OpenAI asks (capped) and try this mode once more.
+      const wait = rateLimitWaitMs(error.message);
+      if (wait && !retriedAfterLimit) {
+        retriedAfterLimit = true;
+        await new Promise(function(resolve){ setTimeout(resolve, wait); });
+        if (withSearch) { triedModes.unshift(true); }
+      }
     }
   }
   return [];
+}
+
+// "Please try again in 1.372s" / "in 862ms" -> ms to wait (+jitter, 2..30 s), or 0 when not a rate limit.
+function rateLimitWaitMs(message) {
+  const text = String(message || "");
+  if (!/rate limit/i.test(text)) return 0;
+  const m = text.match(/try again in ([\d.]+)\s*(ms|s)\b/i);
+  const base = m ? Number(m[1]) * (m[2].toLowerCase() === "ms" ? 1 : 1000) : 5000;
+  return Math.min(30000, Math.max(2000, Math.round(base + 1000 + Math.random() * 4000)));
 }
 
 async function replenishSources(reason) {
@@ -2889,8 +2917,11 @@ async function replenishSources(reason) {
         id: "auto-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
         name: c.name, type: "web", group: c.group === "official" ? "official" : "media", sourceClass: sourceClassFor(c), priority: 2,
         url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
-        autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" }
+        autoAdded: { at: new Date().toISOString(), from: from, why: c.why || "", reason: reason || "" },
+        // On trial: kept only if its news pass the editors within SOURCE_PROBATION_HOURS (see autoPauseReason).
+        probationUntil: new Date(Date.now() + SOURCE_PROBATION_HOURS * 3600000).toISOString()
       };
+      if (check.feedUrl) source.feedUrl = check.feedUrl;
       state.sources.push(source);
       added.push({ name: source.name, url: source.url, from: from });
       need -= 1;
@@ -5204,12 +5235,17 @@ function extractArticleLinks(html, sourceUrl) {
   return Array.from(out.values()).sort(function(a,b){ return b.score - a.score; }).slice(0, 12);
 }
 
+// Source pages: browser-like headers, IPv4 retry after a dropped connection, and the Russian proxy
+// (SOURCE_PROXY_URL) for sites that block or time out from abroad. See lib/source-fetch.js.
+let sourceProxy = null;
+try { sourceProxy = parseProxyUrl(process.env.SOURCE_PROXY_URL || ""); }
+catch (error) { console.error("SOURCE_PROXY_INVALID " + JSON.stringify({ error: error.message })); }
+const sourceFetcher = createSourceFetcher({ fetch: function(url, init) { return safeFetch(url, init); }, proxy: sourceProxy });
+if (sourceProxy) console.log("SOURCE_PROXY_ENABLED " + JSON.stringify({ proxy: sourceProxy.label }));
+
 async function fetchText(url, timeoutMs) {
   // Source pages are third-party: SSRF-safe client (public IPs only, re-validated redirects, size cap).
-  const response = await safeFetch(url, {
-    headers: {
-      "user-agent": "Mozilla/5.0 (compatible; NewsFactoryBot/0.6; +https://news-factory-api-production.up.railway.app)"
-    },
+  const response = await sourceFetcher.fetch(url, {
     timeoutMs: timeoutMs || 15000,
     maxBytes: 5 * 1024 * 1024
   });
@@ -5217,6 +5253,49 @@ async function fetchText(url, timeoutMs) {
   const type = response.headers.get("content-type") || "";
   if (!type.includes("text/html") && !type.includes("application/xhtml")) throw new Error("Unsupported content type: " + type);
   return decodeHtmlBody(await response.arrayBuffer(), type);
+}
+
+// RSS/Atom items of a feed -> [{url,title,text,publishedAt,imageUrl}]. Throws when the URL is not a feed.
+async function fetchFeedItems(url, timeoutMs) {
+  const response = await sourceFetcher.fetch(url, {
+    headers: { accept: "application/rss+xml,application/atom+xml,application/xml;q=0.9,text/xml;q=0.8,*/*;q=0.5" },
+    timeoutMs: timeoutMs || 15000,
+    maxBytes: 5 * 1024 * 1024
+  });
+  if (!response.ok) throw new Error("HTTP " + response.status + " " + url);
+  const type = response.headers.get("content-type") || "";
+  const text = decodeHtmlBody(await response.arrayBuffer(), type);
+  if (!looksLikeFeed(text)) throw new Error("not a feed: " + url);
+  return parseFeed(text, url);
+}
+
+// A blocked source page is read from its RSS feed instead: the known feed first, then (once a day) the usual
+// feed locations. Returns {links, feedUrl} or null.
+async function sourceLinksFromFeed(source) {
+  const known = String(source.feedUrl || "");
+  const probeAllowed = !source.feedProbeAt || Date.now() - new Date(source.feedProbeAt).getTime() > 24 * 3600000;
+  const candidates = known ? [known] : (probeAllowed ? guessFeedUrls(source.url) : []);
+  if (!known && probeAllowed) source.feedProbeAt = new Date().toISOString();
+  for (const feedUrl of candidates) {
+    try {
+      const items = await fetchFeedItems(feedUrl, 12000);
+      if (!items.length) continue;
+      return { feedUrl: feedUrl, links: items.slice(0, 12).map(function(x) {
+        return { url: canonicalizeUrl(x.url, feedUrl) || x.url, title: x.title, text: x.text, publishedAt: x.publishedAt, imageUrl: x.imageUrl, fromFeed: true, score: 10 };
+      }) };
+    } catch {}
+  }
+  return null;
+}
+
+// Article page that could not be opened, rebuilt from what the Telegram post / RSS item already carries.
+function articleHtmlFromLink(link) {
+  const text = String(link && link.text || "").trim();
+  if (!text) return "";
+  const image = link.imageUrl ? '<meta property="og:image" content="' + escapeHtml(link.imageUrl) + '">' : "";
+  const date = link.publishedAt ? '<meta property="article:published_time" content="' + escapeHtml(link.publishedAt) + '">' : "";
+  return "<html><head><title>" + escapeHtml(link.title || "") + "</title>" + image + date + "</head><body><article>" +
+    text.split(/\n+/).map(function(p) { return "<p>" + escapeHtml(p) + "</p>"; }).join("") + "</article></body></html>";
 }
 
 // Pages in windows-1251 / koi8-r (Пикабу, some Russian media) came out as
@@ -5494,17 +5573,38 @@ async function collectOnce(trigger) {
     const sourceResults = await Promise.all(rotatedSources.map(async function(source) {
       noteSourceEvent(source, "check");
       try {
-        const html = await fetchText(source.url, 15000);
-        noteSourceEvent(source, "fetch_ok");
-        // Refresh the site preview once a week (cheap: the page is already loaded).
-        if (!source.preview || Date.now() - new Date(source.preview.at || 0).getTime() > 7 * 24 * 3600000) {
-          try { source.preview = extractSitePreview(html, source.url); } catch {}
-        }
         const isTelegramCreator = source.group === "blogger" || source.group === "creator" || /^https?:\/\/t\.me\/s\//i.test(String(source.url || ""));
-        const links = (isTelegramCreator
-          ? extractTelegramSourcePosts(html, source.url)
-          : extractArticleLinks(html, source.url)
-        ).slice(0, isTelegramCreator ? 18 : 12);
+        let html = "";
+        let links;
+        try {
+          html = await fetchText(source.url, 15000);
+        } catch (pageError) {
+          // Page blocked / timed out: its RSS feed often still opens (and carries dates).
+          const feed = isTelegramCreator || /^https?:\/\/t\.me\//i.test(String(source.url || "")) ? null : await sourceLinksFromFeed(source);
+          if (!feed) throw pageError;
+          if (source.feedUrl !== feed.feedUrl) {
+            source.feedUrl = feed.feedUrl;
+            console.log("SOURCE_FEED_FALLBACK " + JSON.stringify({ workspace: currentWorkspaceId(), source: source.name, feed: feed.feedUrl, pageError: String(pageError.message || pageError).slice(0, 120) }));
+          }
+          summary.viaFeed = Number(summary.viaFeed || 0) + 1;
+          links = feed.links;
+        }
+        noteSourceEvent(source, "fetch_ok");
+        if (!links) {
+          // Refresh the site preview once a week (cheap: the page is already loaded).
+          if (!source.preview || Date.now() - new Date(source.preview.at || 0).getTime() > 7 * 24 * 3600000) {
+            try { source.preview = extractSitePreview(html, source.url); } catch {}
+          }
+          // Remember the page's own feed for the day the page gets blocked.
+          if (!source.feedUrl && !isTelegramCreator) {
+            const feedUrl = discoverFeedUrl(html, source.url);
+            if (feedUrl) source.feedUrl = feedUrl;
+          }
+          links = (isTelegramCreator
+            ? extractTelegramSourcePosts(html, source.url)
+            : extractArticleLinks(html, source.url)
+          ).slice(0, isTelegramCreator ? 18 : 12);
+        }
         const crossIndex = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex() : null;
         for (const link of links) {
           if (selectedUrls.has(link.url)) continue;
@@ -5577,7 +5677,16 @@ async function collectOnce(trigger) {
         let articleHtml;
         try {
           articleHtml = await fetchText(url, 15000);
-        } catch (fetchError) {
+        } catch (fetchErrorRaw) {
+          // The Telegram post / RSS item already carries the text: use it instead of losing the news.
+          const rebuilt = articleHtmlFromLink(candidate.link);
+          const minText = (source.group === "blogger" || source.group === "creator") ? 40 : 250;
+          if (rebuilt && String(candidate.link.text || "").length >= minText) {
+            articleHtml = rebuilt;
+            summary.fromLinkText = Number(summary.fromLinkText || 0) + 1;
+          }
+          if (!articleHtml) {
+          const fetchError = fetchErrorRaw;
           // A removed / forbidden page is final; a timeout or 5xx is retried a few times and then recorded as
           // seen. Before this the same dead link stayed the first unseen link of its source forever.
           noteSourceEvent(source, "error");
@@ -5588,6 +5697,7 @@ async function collectOnce(trigger) {
           }
           await advanceSource(candidate);
           continue;
+          }
         }
         const isBlogger = source.group === "blogger" || source.group === "creator";
         const originalTitle = isBlogger
@@ -6169,6 +6279,7 @@ async function collectOnce(trigger) {
       console.warn("SOURCE_REPLENISH_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: error.message }));
     });
     summary.finishedAt = new Date().toISOString();
+    if (summary.errors.length || summary.viaFeed || summary.fromLinkText) summary.sourceFetch = sourceFetcher.stats();
     lastCollectorRuns.set(currentWorkspaceId(), summary);
     if (db && dbReady && runId) {
       await db.query(
@@ -12873,6 +12984,7 @@ const server = http.createServer(async function(req, res) {
       if (src.enabled) {
         // Turned on by the editor: forget the automatic pause and its history.
         delete src.autoPaused;
+        delete src.probationUntil; // the editor vouched for it: no trial
         const stat = ensureSourceStat(src);
         if (stat) { stat.recent = []; stat.errorStreak = 0; }
       }
@@ -13540,7 +13652,8 @@ async function seedChannelSources(ws) {
       id: "seed-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
       name: c.name, type: "web", group: c.group || "media", sourceClass: sourceClassFor(c), priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
-      autoAdded: { at: new Date().toISOString(), from: "seed", why: "стартовый набор канала", reason: "seed" }
+      autoAdded: { at: new Date().toISOString(), from: "seed", why: "стартовый набор канала", reason: "seed" },
+      feedUrl: check.feedUrl || undefined
     });
     added.push(c.name);
   }

@@ -21,6 +21,7 @@ import https from "node:https";
 import dns from "node:dns";
 import net from "node:net";
 import zlib from "node:zlib";
+import tls from "node:tls";
 
 export class SafeFetchError extends Error {
   constructor(code, message) {
@@ -193,8 +194,54 @@ function decoderFor(encoding) {
 
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
+// Error text for socket failures. Happy-eyeballs (several addresses tried) fails with an AggregateError whose
+// message is empty, which reached the logs as a bare "AggregateError".
+export function networkErrorText(error) {
+  if (!error) return "network error";
+  if (Array.isArray(error.errors) && error.errors.length) {
+    const parts = error.errors.map(function(e) { return (e && (e.code || e.message)) || String(e); });
+    return "connect failed (" + Array.from(new Set(parts)).join(", ") + ")";
+  }
+  return String(error.message || error.code || error);
+}
+
+// Parses an operator-supplied HTTP proxy URL (http://user:pass@host:port). The proxy is a trusted, fixed value
+// from the environment; target URLs are still validated by validateUrl() before going through it.
+export function parseProxyUrl(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  let u;
+  try { u = new URL(text); } catch { throw new SafeFetchError("bad_proxy", "Некорректный адрес прокси"); }
+  if (u.protocol !== "http:") throw new SafeFetchError("bad_proxy", "Поддерживается только http:// прокси");
+  const auth = u.username ? "Basic " + Buffer.from(decodeURIComponent(u.username) + ":" + decodeURIComponent(u.password || "")).toString("base64") : "";
+  return { host: u.hostname.replace(/^\[|\]$/g, ""), port: Number(u.port || 80), auth: auth, label: u.hostname + ":" + (u.port || 80) };
+}
+
+// Opens a CONNECT tunnel through the proxy to host:port. Resolves with the raw socket.
+function openProxyTunnel(proxy, host, port, deadline) {
+  return new Promise(function(resolve, reject) {
+    const headers = { host: host + ":" + port };
+    if (proxy.auth) headers["proxy-authorization"] = proxy.auth;
+    const req = http.request({ host: proxy.host, port: proxy.port, method: "CONNECT", path: host + ":" + port, headers: headers, agent: false });
+    const timer = setTimeout(function() { req.destroy(); reject(new SafeFetchError("timeout", "Прокси не ответил вовремя")); }, Math.max(1, deadline - Date.now()));
+    req.on("connect", function(res, socket) {
+      clearTimeout(timer);
+      if (res.statusCode !== 200) { socket.destroy(); reject(new SafeFetchError("proxy", "Прокси отказал: HTTP " + res.statusCode)); return; }
+      resolve(socket);
+    });
+    req.on("error", function(error) { clearTimeout(timer); reject(new SafeFetchError("proxy", "Прокси недоступен: " + networkErrorText(error))); });
+    req.end();
+  });
+}
+
 // One hop. Resolves with { status, headers, location, body } where body is only read for non-redirects.
-function requestOnce(u, o) {
+async function requestOnce(u, o) {
+  let tunnel = null;
+  if (o.proxy && u.protocol === "https:") tunnel = await openProxyTunnel(o.proxy, u.hostname.replace(/^\[|\]$/g, ""), Number(u.port || 443), o.deadline);
+  return requestOnceRaw(u, o, tunnel);
+}
+
+function requestOnceRaw(u, o, tunnel) {
   return new Promise(function(resolve, reject) {
     const lib = u.protocol === "https:" ? https : http;
     const headers = Object.assign({ "accept-encoding": "gzip, deflate, br" }, o.headers || {});
@@ -212,16 +259,22 @@ function requestOnce(u, o) {
     const onAbort = function() { fail(new SafeFetchError("timeout", "Запрос отменён")); };
     if (o.signal) { if (o.signal.aborted) return onAbort(); o.signal.addEventListener("abort", onAbort); }
 
-    req = lib.request({
-      protocol: u.protocol,
-      hostname: u.hostname.replace(/^\[|\]$/g, ""),
-      port: u.port || (u.protocol === "https:" ? 443 : 80),
-      path: u.pathname + u.search,
-      method: o.method,
-      headers: headers,
-      lookup: o.lookup,
-      agent: false
-    }, function(res) {
+    const targetHost = u.hostname.replace(/^\[|\]$/g, "");
+    let reqOptions;
+    if (tunnel) {
+      // HTTPS through the proxy: TLS runs end-to-end over the CONNECT tunnel (the proxy sees only ciphertext).
+      reqOptions = { protocol: "https:", hostname: targetHost, port: u.port || 443, path: u.pathname + u.search, method: o.method, headers: headers, agent: false, servername: net.isIP(targetHost) ? undefined : targetHost,
+        createConnection: function() { return tls.connect({ socket: tunnel, servername: net.isIP(targetHost) ? undefined : targetHost }); } };
+    } else if (o.proxy) {
+      // plain HTTP through the proxy: absolute URL in the request line
+      const h = Object.assign({}, headers, { host: u.host });
+      if (o.proxy.auth) h["proxy-authorization"] = o.proxy.auth;
+      reqOptions = { protocol: "http:", hostname: o.proxy.host, port: o.proxy.port, path: u.href, method: o.method, headers: h, agent: false };
+    } else {
+      reqOptions = { protocol: u.protocol, hostname: targetHost, port: u.port || (u.protocol === "https:" ? 443 : 80), path: u.pathname + u.search, method: o.method, headers: headers, lookup: o.lookup, agent: false };
+      if (o.family === 4 || o.family === 6) { reqOptions.family = o.family; reqOptions.autoSelectFamily = false; }
+    }
+    req = (tunnel ? https : (o.proxy ? http : lib)).request(reqOptions, function(res) {
       const status = res.statusCode || 0;
       const rawHeaders = headersFromRaw(res.rawHeaders || []);
       if (REDIRECT_CODES.has(status)) {
@@ -260,7 +313,7 @@ function requestOnce(u, o) {
       stream.on("error", function(error) { fail(error instanceof SafeFetchError ? error : new SafeFetchError("network", error.message)); });
       res.on("aborted", function() { fail(new SafeFetchError("network", "Соединение прервано")); });
     });
-    req.on("error", function(error) { fail(error instanceof SafeFetchError ? error : (error && error.code && /^(blocked_address|dns)$/.test(error.code) ? error : new SafeFetchError("network", String(error && error.message || error)))); });
+    req.on("error", function(error) { fail(error instanceof SafeFetchError ? error : (error && error.code && /^(blocked_address|dns)$/.test(error.code) ? error : new SafeFetchError("network", networkErrorText(error)))); });
     req.end();
   });
 }
@@ -282,11 +335,14 @@ export function createSafeFetch(config) {
     const deadline = Date.now() + timeoutMs;
     const allowedPorts = cfg.allowedPorts || opts.allowedPorts || allowedPortsFromEnv();
 
+    // opts.proxy: parsed proxy (parseProxyUrl) or a URL string. Through an external proxy our own network is out of
+    // reach, but every hop is still validated (scheme, port, IP literals, blocked host names).
+    const proxy = opts.proxy ? (typeof opts.proxy === "string" ? parseProxyUrl(opts.proxy) : opts.proxy) : null;
     let current = String(rawUrl || "").trim();
     let redirected = false;
     for (let hop = 0; hop <= maxRedirects; hop++) {
       const u = validateUrl(current, { ipFilter: ipFilter, allowedPorts: allowedPorts, skipHostnameBlocklist: cfg.skipHostnameBlocklist });
-      const r = await requestOnce(u, { method: method, headers: opts.headers, maxBytes: maxBytes, timeoutMs: timeoutMs, deadline: deadline, signal: opts.signal, lookup: lookup, validateResponse: opts.validateResponse });
+      const r = await requestOnce(u, { method: method, headers: opts.headers, maxBytes: maxBytes, timeoutMs: timeoutMs, deadline: deadline, signal: opts.signal, lookup: lookup, validateResponse: opts.validateResponse, proxy: proxy, family: opts.family });
       if (REDIRECT_CODES.has(r.status) && r.location) {
         if (hop >= maxRedirects) throw new SafeFetchError("too_many_redirects", "Слишком много редиректов");
         try { current = new URL(r.location, u).href; } catch { throw new SafeFetchError("bad_url", "Некорректный redirect Location"); }
