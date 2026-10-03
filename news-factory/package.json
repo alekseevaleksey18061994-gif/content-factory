@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.47.2",
+  "version": "0.47.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -25,6 +25,7 @@
     "test:workspace-recovery": "node scripts/workspace-recovery-test.js",
     "test:data-protection": "node scripts/data-protection-test.js",
     "test:provider-failover": "node scripts/provider-failover-test.js",
+    "test:link-card-vk": "node scripts/vk-link-card-test.js",
     "test:cost-media-balance": "node scripts/cost-media-balance-test.js",
     "test:cover-fallback": "node scripts/cover-fallback-test.js"
   },
