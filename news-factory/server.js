@@ -4433,12 +4433,76 @@ async function ensureMediaForNews(payload) {
   // Source photo: cache it on our media domain so the admin, Telegram and VK do not depend on hotlinking.
   if (imageUrl) {
     const preparedImage = await prepareReusableSourceImage(imageUrl, payload.id || "photo");
-    const publishImageUrl = preparedImage.imageUrl || imageUrl;
+
+    // Never keep an expired/broken remote hotlink as publishable media.
+    // If the source photo cannot be cached, switch to a fresh AI cover.
+    if (!preparedImage.imageUrl) {
+      if (GENERATE_COVER_IF_MISSING) {
+        try {
+          const generated = await generateNewsCover(payload);
+          return {
+            videoUrl: "",
+            imageUrl: "",
+            originalImageUrl: preparedImage.originalImageUrl || imageUrl,
+            originalVideoUrl: "",
+            generatedImageUrl: generated.url,
+            mediaType: "generated",
+            mediaStatus: "generated",
+            mediaPriority: 3,
+            canEnhance: false,
+            mediaLicense: mediaLicense,
+            mediaOrigin: "ai_generated",
+            copyrightSafe: COPYRIGHT_SAFE_MODE,
+            copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+            copyrightMediaDecision: "source_image_unavailable_generated_cover",
+            generatedBy: generated.model,
+            mediaError: preparedImage.cacheError || ""
+          };
+        } catch (error) {
+          console.warn("Source image unavailable and cover generation failed:", error.message);
+          return {
+            videoUrl: "",
+            imageUrl: "",
+            originalImageUrl: preparedImage.originalImageUrl || imageUrl,
+            originalVideoUrl: "",
+            generatedImageUrl: "",
+            mediaType: "none",
+            mediaStatus: "generation_error",
+            mediaPriority: 99,
+            canEnhance: false,
+            mediaLicense: mediaLicense,
+            mediaOrigin: "source_image_unavailable",
+            copyrightSafe: COPYRIGHT_SAFE_MODE,
+            copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+            mediaError: String((preparedImage.cacheError || "") + "; " + error.message).slice(0, 600)
+          };
+        }
+      }
+      return {
+        videoUrl: "",
+        imageUrl: "",
+        originalImageUrl: preparedImage.originalImageUrl || imageUrl,
+        originalVideoUrl: "",
+        generatedImageUrl: "",
+        mediaType: "none",
+        mediaStatus: "missing",
+        mediaPriority: 99,
+        canEnhance: false,
+        mediaLicense: mediaLicense,
+        mediaOrigin: "source_image_unavailable",
+        copyrightSafe: COPYRIGHT_SAFE_MODE,
+        copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
+        mediaError: preparedImage.cacheError || "Фото источника недоступно"
+      };
+    }
+
+    const publishImageUrl = preparedImage.imageUrl;
     if (IMAGE_ENHANCEMENT_ENABLED && AUTO_ENHANCE_SOURCE_IMAGES && sourceReuseAllowed) {
       try {
         const enhanced = await enhanceNewsImage({
           id: payload.id || newId("enhance"),
           title: payload.title || "",
+          text: payload.text || "",
           imageUrl: publishImageUrl
         });
         return {
@@ -4454,19 +4518,20 @@ async function ensureMediaForNews(payload) {
           mediaPriority: 2,
           canEnhance: true,
           mediaLicense: mediaLicense,
-          mediaOrigin: "ai_enhanced_source",
+          mediaOrigin: "quality_enhanced_source",
           copyrightSafe: COPYRIGHT_SAFE_MODE,
           copyrightMediaMode: COPYRIGHT_MEDIA_MODE,
           enhancedBy: enhanced.model,
           enhancedAt: new Date().toISOString()
         };
       } catch (error) {
-        console.warn("Auto image enhancement failed, using licensed source photo:", error.message);
+        console.warn("Auto image enhancement failed, using cached source photo:", error.message);
       }
     }
     return {
       videoUrl: "",
       imageUrl: publishImageUrl,
+      cachedSourceImageUrl: publishImageUrl,
       originalImageUrl: preparedImage.originalImageUrl || imageUrl,
       originalVideoUrl: "",
       generatedImageUrl: "",
