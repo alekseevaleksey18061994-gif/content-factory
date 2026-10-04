@@ -24,6 +24,18 @@ function strong(over={}) {
   },over));
 }
 
+await test("M0 persisted money queue is safe while workspaceStore is still initializing", async () => {
+  const queued={
+    id:"startup-q",newsId:"startup-news",title:"Ставка вклада 18%",text:"Ставка 18%.",createdAt:msk(12,0),
+    articlePublishedAt:msk(11,0),contentBucket:"deposits",sourceRole:"official_primary",qualityScore:90,qcStatus:"pass",
+    editorialV2:{channelId:"money",status:"approved",verdict:"pass",importance:9,contentBucket:"deposits",channelSignals:{utility:10}},
+    channelSignals:{utility:10},imageUrl:"https://x/i.jpg"
+  };
+  const t=await loadServer({fixedNow:msk(14,0),state:{[M]:{queue:[queued]}}});
+  assert.equal(t.ws(M).state.queue.length,1);
+  t.restoreConsole();
+});
+
 await test("M1 DNA: 8 equal rubrics, five-source floor and approved 8 normal slots", async () => {
   const st=channelStrategy("money");
   assert.equal(st.rubrics.length,8);
