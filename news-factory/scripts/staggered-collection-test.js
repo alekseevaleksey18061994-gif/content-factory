@@ -126,6 +126,15 @@ test("S6 a late channel does not post at :00: neither the tick nor the catch-up 
   assert.ok(lines.some((l) => l.startsWith("Dynamic scheduler publish " + late)), lines.join("\n").slice(0, 500));
 });
 
+test("S7 catch-up still recovers a missed post up to :44, also for a channel that picks at :41", async () => {
+  const t0 = await loadServer({ fixedNow: mskToUtc(10, 42) });
+  const first = t0.workspaceStore.workspaces.map((w) => w.id).sort()[0];
+  assert.equal(t0.prepMinuteFor(first), 41);
+  const t = await loadServer({ fixedNow: mskToUtc(10, 42), env: { AUTO_PUBLISH_ENABLED: "true" }, autoPublish: true, state: { [first]: { mode: "AUTO", queue: [mkQueueItem({ id: "q1", newsId: "n1" })] } } });
+  const lines = await quiet(() => t.catchUpCurrentRegularSlotAllWorkspaces());
+  assert.ok(lines.some((l) => l.startsWith("SCHEDULER_CATCHUP_START") && l.includes(first)), lines.join("\n").slice(0, 500));
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {

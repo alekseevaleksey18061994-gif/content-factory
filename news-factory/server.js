@@ -191,16 +191,21 @@ const DYNAMIC_SLOT_PREP_MINUTE = 45; // default only; each channel picks at prep
 // minutes queued behind the global fetch limit, slowed each other down and once hung the whole morning). Each channel
 // now collects at its own minute between :10 and :40; :45 only picks the post from the queue it filled.
 const COLLECTION_STAGGER_ENABLED = String(process.env.COLLECTION_STAGGER_ENABLED || "true").toLowerCase() !== "false";
-const COLLECTION_STAGGER_FROM = Math.max(10, Math.min(40, Number(process.env.COLLECTION_STAGGER_FROM || 10) || 10));
-const COLLECTION_STAGGER_TO = Math.max(COLLECTION_STAGGER_FROM, Math.min(40, Number(process.env.COLLECTION_STAGGER_TO || 40) || 40));
+function staggerEnvMinute(name, fallback, min, max) {
+  const raw = process.env[name];
+  const n = raw == null || String(raw).trim() === "" ? NaN : Number(raw);
+  return Number.isFinite(n) ? Math.round(Math.max(min, Math.min(max, n))) : fallback;
+}
+const COLLECTION_STAGGER_FROM = staggerEnvMinute("COLLECTION_STAGGER_FROM", 10, 10, 40);
+const COLLECTION_STAGGER_TO = Math.max(COLLECTION_STAGGER_FROM, staggerEnvMinute("COLLECTION_STAGGER_TO", 40, 10, 40));
 const COLLECTION_STAGGER_WINDOW_MINUTES = 8;
 // The rest of the hour is spread the same way, in the same channel order: picking the post :41–:57 (was :45 for
 // everyone) and the post itself :00–:10 (was :00 for everyone).
-const SLOT_PREP_FROM = Math.max(41, Math.min(57, Number(process.env.SLOT_PREP_FROM || 41) || 41));
-const SLOT_PREP_TO = Math.max(SLOT_PREP_FROM, Math.min(57, Number(process.env.SLOT_PREP_TO || 57) || 57));
-const SLOT_PUBLISH_SPREAD_MINUTES = Math.max(0, Math.min(10, Number(process.env.SLOT_PUBLISH_SPREAD_MINUTES == null ? 10 : process.env.SLOT_PUBLISH_SPREAD_MINUTES) || 0));
+const SLOT_PREP_FROM = staggerEnvMinute("SLOT_PREP_FROM", 41, 41, 57);
+const SLOT_PREP_TO = Math.max(SLOT_PREP_FROM, staggerEnvMinute("SLOT_PREP_TO", 57, 41, 57));
+const SLOT_PUBLISH_SPREAD_MINUTES = staggerEnvMinute("SLOT_PUBLISH_SPREAD_MINUTES", 10, 0, 10);
 // An empty slot re-collects at most this often (was every 2 minutes for 44 minutes: ~20 full runs an hour per channel).
-const EMPTY_SLOT_RESCUE_MINUTES = Math.max(2, Math.min(30, Number(process.env.EMPTY_SLOT_RESCUE_MINUTES || 8) || 8));
+const EMPTY_SLOT_RESCUE_MINUTES = staggerEnvMinute("EMPTY_SLOT_RESCUE_MINUTES", 8, 2, 30);
 const SCHEDULER_SLOT_WINDOW_MINUTES = Math.max(1, Math.min(14, Number(process.env.SCHEDULER_SLOT_WINDOW_MINUTES || 10)));
 const DYNAMIC_SLOT_MAX_AGE_HOURS = Math.max(4, Math.min(48, Number(process.env.DYNAMIC_SLOT_MAX_AGE_HOURS || 24)));
 // Regular channel promise: one regular publication slot every hour from 08:00
@@ -7380,10 +7385,10 @@ async function dynamicSchedulerTick() {
   const publishAt = publishMinuteFor(currentWorkspaceId());
   if (!action && inWindow(prepAt) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
     action = "prepare";
-    windowStart = prepAt;
+    windowStart = DYNAMIC_SLOT_PREP_MINUTE; // key only: stable even if the channel's minute shifts mid-hour
   } else if (!action && inWindow(publishAt) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
     action = "publish";
-    windowStart = publishAt;
+    windowStart = 0;
   }
   // No slot action due (or it already completed in this window): use the free tick for this channel's own collection.
   if (!action || (state.dynamicScheduler && state.dynamicScheduler.lastTickKey === day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action)) {
@@ -7441,7 +7446,7 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
   // Give a slow collector/checker up to 44 minutes to recover the hourly post.
   // 20:45 is already the preparation window for 21:00, so stop before it.
   if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 44) return;
-  // (per channel below: not before its own publish minute, and stop once its picking for the next hour begins)
+  // (per channel below: not before its own publish minute)
 
   const day = moscowDateKey(now);
   const time = String(hour).padStart(2, "0") + ":00";
@@ -7449,8 +7454,8 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
 
   await Promise.all(workspaceStore.workspaces.map(async function(ws) {
     if (!ws || schedulerTickRunning.has(ws.id)) return;
-    // the catch-up must not post a channel before its own spread-out minute, nor run into its next preparation
-    if (minute < publishMinuteFor(ws.id) || minute >= prepMinuteFor(ws.id)) return;
+    // the catch-up must not post a channel before its own spread-out minute (it still recovers up to :44 as before)
+    if (minute < publishMinuteFor(ws.id)) return;
     schedulerTickRunning.add(ws.id);
     try {
       await workspaceContext.run({ workspaceId: ws.id }, async function() {
