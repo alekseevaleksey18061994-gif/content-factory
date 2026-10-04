@@ -22,7 +22,7 @@ export const CHANNEL_IDS = [
 
 // Freshness window per channel profile (prompts/chto-tam.md, section 2, step 4): 24 hours by
 // default, 72 hours for the slower channels. The collector scales its own limits by this factor.
-export const CHANNEL_FRESHNESS_HOURS = { science: 72, world: 72, home: 72, food: 72 };
+export const CHANNEL_FRESHNESS_HOURS = { money: 72, science: 72, world: 72, home: 72, food: 72 };
 
 export function channelFreshnessHours(channelId, defaultHours) {
   const base = Number(defaultHours) > 0 ? Number(defaultHours) : 24;
@@ -599,7 +599,7 @@ export function normalizeWriterResult(raw, channelId) {
     channelSignals: (function(){
       const src = r.channel_signals && typeof r.channel_signals === "object" ? r.channel_signals : {};
       const out = {};
-      ["virality","utility","discussion","visual","wow","local","deal"].forEach(function(key){
+      ["virality","utility","discussion","visual","wow","local","deal","impact","reliability","freshness","specificity","interest"].forEach(function(key){
         const n = Number(src[key]);
         if (Number.isFinite(n)) out[key] = Math.max(0, Math.min(10, Math.round(n)));
       });
