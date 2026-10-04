@@ -232,6 +232,7 @@ export function channelStrategy(channelId) {
     rubricMinSources: Number(dna.rubricMinSources || 0) || 0,
     rubricMaxSources: Number(dna.rubricMaxSources || 0) || 0,
     slotHours: Array.isArray(dna.slotHours) ? dna.slotHours.slice() : null,
+    slotRubrics: Object.assign({}, dna.slotRubrics || {}),
     preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
     scoreWeights: Object.assign({}, dna.scoreWeights || {})
   };
