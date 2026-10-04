@@ -6937,6 +6937,20 @@ function moneyChannelScore(item) {
     : 0;
 }
 
+function moneyVerificationEligible(item, rubric) {
+  if (editorialChannelId() !== "money") return true;
+  // Evergreen explainers may stand on one reputable source. Consequential financial changes need
+  // an official primary source or at least two independent sources, as agreed for this channel.
+  if (rubric === "money_knowhow") return true;
+  const cls = sourceClassFor(item);
+  if (cls === "OFFICIAL") return true;
+  const count = Math.max(
+    Array.isArray(item && item.storySources) ? item.storySources.length : 0,
+    item && item.storyCluster ? Number(item.storyCluster.sourceCount || 0) : 0
+  );
+  return count >= 2;
+}
+
 function dynamicItemScore(item) {
   const aiScore = Number(item && item.aiScore);
   const channelId = editorialChannelId();
@@ -7034,6 +7048,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (editorialChannelId() === "money") {
         const rubric = itemRubric(item, themes);
         if (strategyCfg.strictOnePerRubric && !wantsEmergency && (!rubric || themesToday.has(rubric))) return false;
+        if (!moneyVerificationEligible(item, rubric)) return false;
         const score = moneyChannelScore(item);
         const floor = wantsEmergency
           ? Number(strategyCfg.emergencyMin || 95)
