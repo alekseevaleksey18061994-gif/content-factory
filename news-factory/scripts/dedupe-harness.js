@@ -106,7 +106,8 @@ const EXPORT_NAMES = [
   "runOffsiteBackup", "workspaceWatchdogTick", "readBackupStatus", "buildBackupPayload",
   "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage", "publishVkPost", "logPostmypostStatus", "workspaceVkPublishingAllowed", "refreshPostmypostMap", "sendMultiPlatformPost",
   "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous", "applyChannelNotes", "flushWorkspaceStoreNow", "storeFlushStats", "bloggerSlotsFor", "bloggerTargetFor", "bloggerLaneActive", "channelExtraLane",
-  "withDeadline", "releaseStuckCollectors", "collectorRunInfo", "collectorRuns", "collectorRunningWorkspaces", "isCollectorRunning"
+  "withDeadline", "releaseStuckCollectors", "collectorRunInfo", "collectorRuns", "collectorRunningWorkspaces", "isCollectorRunning",
+  "collectionMinuteFor", "staggeredCollectTick", "prepareDynamicSlot", "prepMinuteFor", "publishMinuteFor"
 ];
 
 function bin(name) {
