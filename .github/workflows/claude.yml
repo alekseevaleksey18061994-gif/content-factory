@@ -37,4 +37,6 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
-            --max-turns 20
+            --max-turns 80
+            --allowedTools "Bash,WebFetch,WebSearch"
+            --append-system-prompt "For QA/audit issues, you may execute node, npm, npx, curl and other shell commands and use web access. Keep audits read-only with respect to production and repository contents unless the issue explicitly asks for a fix. Never print secrets or environment variable values."
