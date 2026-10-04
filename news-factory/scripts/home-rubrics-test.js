@@ -207,9 +207,11 @@ test("H11 per-group minimum: the editor's limit drives the theme search, auto-pa
   // validation
   assert.equal(call(() => t.setRubricLimit("nope", 5)).ok, false);
   assert.equal(call(() => t.setRubricLimit("storage", 0)).ok, false);
-  assert.equal(call(() => t.setRubricLimit("storage", 21)).ok, false);
   assert.equal(call(() => t.setRubricLimit("storage", "abc")).ok, false);
   assert.equal(ws.state.rubricLimits, undefined, "bad input stores nothing");
+  // no upper cap for an editor-defined minimum
+  assert.equal(call(() => t.setRubricLimit("storage", 100)).ok, true);
+  assert.equal(call(() => t.rubricMinFor("storage")), 100);
   // raise storage to 8: the ceiling (6) rises with it, the group shows up as short and is searched
   ws.state.sourceReplenish = { lastAt: new Date().toISOString(), misses: { rubric: { count: 0, until: new Date(Date.now() + 86400000).toISOString() } } };
   assert.equal(call(() => t.setRubricLimit("storage", 8)).ok, true);
