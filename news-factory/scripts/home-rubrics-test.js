@@ -168,7 +168,7 @@ test("H8 the editor re-enables a theme-paused source: it stays on (14 days)", as
 test("H9 theme search: one miss counter for all themes (3 empty searches -> rest); a starving theme channel grows its thinnest theme", async () => {
   const t = await loadServer({ fixedNow: msk(14, 0), env: { SOURCE_REPLENISH_INTERVAL_MINUTES: "1" }, state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
   const ws = t.ws(H);
-  for (const r of channelStrategy("home").rubrics) for (let i = 0; i < (r.id === "kitchen" ? 4 : 5); i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
+  for (const r of channelStrategy("home").rubrics) for (let i = 0; i < 5; i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
   const inner = globalThis.fetch; let calls = 0;
   globalThis.fetch = async (url, init) => {
     if (String(url).startsWith("https://api.openai.com/v1/responses") && String(JSON.parse(init.body).input || "").startsWith("Подбери")) { calls++; return new Response(JSON.stringify({ output_text: JSON.stringify({ sources: [] }), usage: {} }), { status: 200, headers: { "content-type": "application/json" } }); }
@@ -177,7 +177,8 @@ test("H9 theme search: one miss counter for all themes (3 empty searches -> rest
   // all themes at or above the minimum: no search
   await quiet(() => inWs(t, H, () => t.replenishSources("below_target")));
   assert.equal(calls, 0);
-  // starving: the thinnest theme (kitchen, 4) is searched; empty answers rest after 3
+  // starving: make kitchen the thinnest theme (4 active); empty answers rest after 3
+  ws.state.sources.find((x) => x.rubric === "kitchen").enabled = false;
   ws.state.sourceStarvingRuns = 5;
   for (let i = 0; i < 6; i++) { ws.state.sourceReplenish = Object.assign({}, ws.state.sourceReplenish, { lastAt: "" }); await quiet(() => inWs(t, H, () => t.replenishSources("starving"))); }
   assert.equal(calls, 3, "shared counter: " + calls);
