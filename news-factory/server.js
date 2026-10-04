@@ -2914,8 +2914,14 @@ function editorialLearningBonus(item) {
 function queueItemRating(item) {
   return postRating(queueItemRatingInput(item, editorialChannelId())).total;
 }
-function channelRatingMinAuto() { return editorialChannelId() === "money" ? 80 : POST_RATING_MIN_AUTO; }
-function channelRatingDropBelow() { return editorialChannelId() === "money" ? 70 : POST_RATING_DROP_BELOW; }
+function channelRatingMinAuto() {
+  const id = editorialChannelId();
+  return id === "money" ? 80 : (id === "shopping" ? 75 : POST_RATING_MIN_AUTO);
+}
+function channelRatingDropBelow() {
+  const id = editorialChannelId();
+  return id === "money" ? 70 : (id === "shopping" ? 65 : POST_RATING_DROP_BELOW);
+}
 
 function moneyFactConfirmationOk(item) {
   if (editorialChannelId() !== "money") return true;
