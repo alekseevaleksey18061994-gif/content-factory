@@ -628,6 +628,25 @@ function removeLeadingTitle(text, title) {
 }
 
 // URLs, domains, t.me links and @handles in the post that are not one of the network's own signatures.
+function applyChannelHardGuards(channelId, post, check) {
+  if (channelId !== "shopping" || !check || check.verdict !== "pass") return check;
+  const text = [post && post.title, post && post.tgText, post && post.vkText].filter(Boolean).join("\n");
+  const errors = [];
+  if (/\b\d[\d\s.,]*\s?(?:₽|руб(?:\.|лей|ля)?|р\.)\b/iu.test(text)) {
+    errors.push({ field: "tg_text", quote: "", problem: "В канале покупок запрещено публиковать цену", fix: "Убери цену полностью и переформулируй предложение без неё." });
+  }
+  if (/\b(?:рейтинг|оценк)[^\n]{0,24}\d(?:[.,]\d)?\b|\b\d(?:[.,]\d)?\s*(?:из|\/)[ ]*5\b/iu.test(text)) {
+    errors.push({ field: "tg_text", quote: "", problem: "В канале покупок запрещено публиковать рейтинг/оценку товара", fix: "Убери рейтинг и оценку полностью." });
+  }
+  if (/\b\d[\d\s]*\s+(?:отзыв|отзыва|отзывов)\b/iu.test(text)) {
+    errors.push({ field: "tg_text", quote: "", problem: "В канале покупок запрещено публиковать количество отзывов", fix: "Убери количество отзывов." });
+  }
+  if (/\b(?:промокод|promo\s*code|купон)\b/iu.test(text)) {
+    errors.push({ field: "tg_text", quote: "", problem: "В канале покупок запрещены промокоды и купоны", fix: "Убери промокод/купон и рекламный призыв." });
+  }
+  return errors.length ? Object.assign({}, check, { verdict: "fix", errors: errors }) : check;
+}
+
 export function foreignLinks(post, request) {
   const p = post || {};
   const r = request || {};
@@ -834,6 +853,7 @@ export function createEditorialPipeline(options) {
     }
     let post = writer.result;
     let check = await runCheckers(channelId, post, request);
+    check = applyChannelHardGuards(channelId, post, check);
     log.push({ step: "check", round: 0, verdict: check.verdict, degraded: Boolean(check.degraded), checkers: summarizeCheckers(check.checkers) });
 
     let round = 0;
@@ -850,6 +870,7 @@ export function createEditorialPipeline(options) {
       }
       post = writer.result;
       check = await runCheckers(channelId, post, request);
+      check = applyChannelHardGuards(channelId, post, check);
       log.push({ step: "check", round, verdict: check.verdict, degraded: Boolean(check.degraded), checkers: summarizeCheckers(check.checkers) });
     }
 
