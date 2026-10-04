@@ -38,7 +38,7 @@ test("L3 stars at 12:15 MSK: the scheduler prepares the extra slot (no blogger s
 
 test("L4 shopping: exact 20-slot Moscow schedule and rubric routing", async () => {
   const t = await loadServer({ fixedNow: "2026-10-05T06:00:00Z", state: {
-    chtotampokupki: { sources: [
+    chtotampokupki: { migrations:["v0.53.0-shopping-finds"], sources: [
       src("wb", "https://t.me/s/wildberriesru_official", { group:"creator", rubric:"wildberries", rubrics:["wildberries"] }),
       src("oz", "https://t.me/s/ozonru", { group:"creator", rubric:"ozon", rubrics:["ozon"] })
     ] }
