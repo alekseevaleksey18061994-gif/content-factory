@@ -1,6 +1,6 @@
 import { CHANNEL_DNA, SOURCE_CLASSES } from "./channel-dna.js";
 
-const SIGNALS = ["virality", "utility", "discussion", "visual", "wow", "local", "deal"];
+const SIGNALS = ["virality", "utility", "discussion", "visual", "wow", "local", "deal", "impact", "reliability", "freshness", "specificity", "interest"];
 
 function clamp(n, min, max) {
   const v = Number(n);
@@ -54,10 +54,14 @@ const BUCKET_RULES = {
     ["news", /.*/]
   ],
   money: [
-    ["scams", /мошенн|схем|обман|фишинг|крадут|краж/],
-    ["explainer", /как |что значит|разобрал|объясн|почему|вычет|налог/],
-    ["big_deal", /сделк|купил|продал|млрд|миллиард|поглощен|слиян/],
-    ["personal_impact", /.*/]
+    ["financial_scams", /мошенн|схем|обман|фишинг|дроппер|украл|крадут|краж/],
+    ["taxes", /налог|ндфл|вычет|фнс|декларац/],
+    ["loans_mortgage", /ипотек|кредит|заём|займ|досрочн|семейн.*ипотек/],
+    ["deposits_savings", /вклад|депозит|накопительн|сбережен|страхован.*вклад/],
+    ["cards_banks", /карт|перевод|комисси|банк|блокиров|сбп/],
+    ["income_benefits", /зарплат|пенси|пособ|выплат|мрот|маткапитал|больничн/],
+    ["ruble_inflation_cbr", /ключев.*ставк|банк россии|цб|инфляц|курс.*руб|рубл.*курс|доллар|евро/],
+    ["money_knowhow", /.*/]
   ],
   tech: [
     ["apps", /приложен|app|telegram|android|ios|обновлен|функц/],
@@ -188,6 +192,19 @@ export function normalizeChannelSignals(raw, item) {
   if (out.wow == null) out.wow = clamp(2 + 3*hit(text,/впервые|рекорд|необыч|удив|невозмож|гигант|самый|новый вид|открыли/) + 2*hit(text,/космос|динозавр|квант|робот/),0,10);
   if (out.local == null) out.local = clamp(2 + 5*hit(text,/росси|москв|рубл|₽|рф\b|для россиян/) + 2*hit(text,/ozon|wildberries|яндекс|авито/),0,10);
   if (out.deal == null) out.deal = clamp(1 + 4*hit(text,/скидк|дешев|выгод|цена|₽|рубл|доллар|млрд|миллиард|сделк|выручк|прибыл/) + 2*hit(text,/акци|распродаж|купил|продал/),0,10);
+  if (out.impact == null) out.impact = clamp(2 + 4*hit(text,/для россиян|клиент|вкладчик|заёмщик|заемщик|пенсион|работник|налогоплатель|семь|граждан/) + 3*hit(text,/ставк|комисси|налог|пособ|пенси|зарплат|ипотек|кредит|вклад/),0,10);
+  if (out.reliability == null) {
+    const cls = sourceClassFor(item);
+    out.reliability = cls === "OFFICIAL" ? 10 : (cls === "MEDIA" ? 8 : (cls === "CREATOR" ? 6 : 5));
+  }
+  if (out.freshness == null) {
+    const stamp = item && (item.articlePublishedAt || item.detectedAt || item.createdAt);
+    const ms = stamp ? new Date(stamp).getTime() : NaN;
+    const ageH = Number.isFinite(ms) ? Math.max(0, (Date.now() - ms) / 3600000) : 36;
+    out.freshness = ageH <= 12 ? 10 : ageH <= 24 ? 9 : ageH <= 36 ? 7 : ageH <= 48 ? 6 : ageH <= 72 ? 4 : 1;
+  }
+  if (out.specificity == null) out.specificity = clamp(2 + 3*hit(text,/\d+[\s.,]?\d*\s*(?:%|₽|руб|тыс|млн|млрд|п\.п\.)/) + 2*hit(text,/\b\d{1,2}[.\/-]\d{1,2}|с \d{1,2} [а-я]+|до \d{1,2} [а-я]+/) + 2*hit(text,/ставк|сумм|срок|лимит|комисси/),0,10);
+  if (out.interest == null) out.interest = clamp(Math.round((out.discussion + out.virality + out.wow) / 3),0,10);
   return out;
 }
 
