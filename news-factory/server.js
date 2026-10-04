@@ -137,6 +137,9 @@ const POST_RATING_MIN_AUTO = envNumber("POST_RATING_MIN_AUTO", 50, 0, 100);
 const POST_RATING_DROP_BELOW = envNumber("POST_RATING_DROP_BELOW", 35, 0, 100);
 function normHHMM(v, def) { const m = String(v || "").trim().match(/^(\d{1,2}):(\d{2})$/); if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return def; return m[1].padStart(2, "0") + ":" + m[2]; }
 const DIGEST_ENABLED = String(process.env.DIGEST_ENABLED || "true").toLowerCase() !== "false";
+// Product rule: public «Главное за день» is removed. Sunday «Топ недели» can remain enabled.
+// Set DIGEST_EVENING_ENABLED=true only if the editor explicitly restores the daily digest.
+const DIGEST_EVENING_ENABLED = String(process.env.DIGEST_EVENING_ENABLED || "false").toLowerCase() === "true";
 const DIGEST_EVENING_TIME = normHHMM(process.env.DIGEST_EVENING_TIME, "21:15");
 const DIGEST_SUNDAY_TIME = normHHMM(process.env.DIGEST_SUNDAY_TIME, "20:15");
 const DAILY_REPORT_ENABLED = String(process.env.DAILY_REPORT_ENABLED || "true").toLowerCase() !== "false";
@@ -11335,6 +11338,7 @@ async function publishDigest(kind, force) {
 }
 
 async function publishDigestUnlocked(kind, force) {
+  if (kind === "evening" && !DIGEST_EVENING_ENABLED) return { ok: true, skipped: "evening_digest_disabled" };
   if (!editorialV2Active()) return { ok: false, skipped: "editorial_v2_off" };
   state.digests = state.digests && typeof state.digests === "object" ? state.digests : {};
   const today = moscowParts(new Date()).day;
@@ -11394,7 +11398,7 @@ async function maybePublishDigest() {
   state.digests.attempts = state.digests.attempts && typeof state.digests.attempts === "object" ? state.digests.attempts : {};
   const jobs = [];
   if (now.weekday === 0) jobs.push({ kind: "sunday", time: DIGEST_SUNDAY_TIME, doneKey: "lastSunday", publishedKey: "publishedSunday" });
-  jobs.push({ kind: "evening", time: DIGEST_EVENING_TIME, doneKey: "lastEvening", publishedKey: "publishedEvening" });
+  if (DIGEST_EVENING_ENABLED) jobs.push({ kind: "evening", time: DIGEST_EVENING_TIME, doneKey: "lastEvening", publishedKey: "publishedEvening" });
   for (const job of jobs) {
     if (state.digests[job.doneKey] === now.day || state.digests[job.publishedKey] === now.day) continue;
     if (now.hhmm < job.time || now.hhmm > addMinutesHHMM(job.time, 40)) continue;
