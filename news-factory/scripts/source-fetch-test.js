@@ -256,12 +256,12 @@ test("C4 collector: removed article (HTTP 410) is NOT rebuilt from the feed text
 
 test("C5 starving channel: two empty preparations -> up to 15 new sources (Telegram allowed) beyond the target", async () => {
   const many = Array.from({ length: 45 }, (_, i) => shopSrc({ id: "s" + i, name: "S" + i, url: "https://site" + i + ".ru/news/" }));
-  const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", env: { CROSS_CHANNEL_DEDUPE_ENABLED: "false", SOURCES_MIN_ACTIVE: "40" }, state: { chtotampokupki: { sources: many } } });
+  const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", env: { CROSS_CHANNEL_DEDUPE_ENABLED: "false", SOURCES_MIN_ACTIVE: "40" }, state: { chtotamcrypto: { sources: many } } });
   for (let i = 0; i < 45; i++) net.pages.set("https://site" + i + ".ru/news/", listHtml([]));
   const cands = Array.from({ length: 20 }, (_, i) => ({ name: "Новый " + i, url: i % 2 ? "https://t.me/s/mp_news" + i : "https://new" + i + ".ru/news/", group: "media", why: "по теме" }));
   for (const c of cands) {
-    if (c.url.includes("t.me")) net.pages.set(c.url, "<html>" + [1, 2, 3, 4].map((n) => `<div class="tgme_widget_message_wrap"><div data-post="${c.url.split("/s/")[1]}/${n}"><div class="tgme_widget_message_text">Ozon и Wildberries меняют правила для покупателей номер ${n}</div><time datetime="2026-10-03T06:00:00+00:00"></time></div></div>`).join("") + "</html>");
-    else net.pages.set(c.url, listHtml(Array.from({ length: 8 }, (_, n) => ({ href: c.url + "item-" + n, text: "Маркетплейс объявил новые правила возврата товаров номер " + n }))));
+    if (c.url.includes("t.me")) net.pages.set(c.url, "<html>" + [1, 2, 3, 4].map((n) => `<div class="tgme_widget_message_wrap"><div data-post="${c.url.split("/s/")[1]}/${n}"><div class="tgme_widget_message_text">Bitcoin и Ethereum показали движение рынка номер ${n}</div><time datetime="2026-10-03T06:00:00+00:00"></time></div></div>`).join("") + "</html>");
+    else net.pages.set(c.url, listHtml(Array.from({ length: 8 }, (_, n) => ({ href: c.url + "item-" + n, text: "Крипторынок получил новый важный сигнал номер " + n }))));
   }
   const inner = globalThis.fetch;
   let discoveryAsked = 0;
@@ -272,15 +272,15 @@ test("C5 starving channel: two empty preparations -> up to 15 new sources (Teleg
     }
     return inner(url, init);
   };
-  const r0 = await inWs(t, "chtotampokupki", () => t.replenishSources("below_target"));
+  const r0 = await inWs(t, "chtotamcrypto", () => t.replenishSources("below_target"));
   assert.equal(r0.need, 0, "45 sources >= target 40: nothing to add while the channel still finds news");
-  await inWs(t, "chtotampokupki", () => t.collectOnce("slot-prep"));
-  await inWs(t, "chtotampokupki", () => t.collectOnce("slot-prep"));
-  assert.equal(t.ws("chtotampokupki").state.sourceStarvingRuns, 2);
+  await inWs(t, "chtotamcrypto", () => t.collectOnce("slot-prep"));
+  await inWs(t, "chtotamcrypto", () => t.collectOnce("slot-prep"));
+  assert.equal(t.ws("chtotamcrypto").state.sourceStarvingRuns, 2);
   // the collector tops up in the background after the second empty preparation
-  for (let i = 0; i < 100 && t.ws("chtotampokupki").state.sources.length < 60; i++) await new Promise((r) => setTimeout(r, 30));
+  for (let i = 0; i < 100 && t.ws("chtotamcrypto").state.sources.length < 60; i++) await new Promise((r) => setTimeout(r, 30));
   assert.ok(discoveryAsked >= 1);
-  const added = t.ws("chtotampokupki").state.sources.filter((x) => x.autoAdded && x.autoAdded.reason === "starving");
+  const added = t.ws("chtotamcrypto").state.sources.filter((x) => x.autoAdded && x.autoAdded.reason === "starving");
   assert.equal(added.length, 15);
   assert.ok(added.some((x) => x.group === "creator" && /t\.me\/s\//.test(x.url)), "Telegram channels are added as creator sources");
   assert.ok(added.every((x) => x.probationUntil), "all on trial");

@@ -150,9 +150,9 @@ test("U5 Postmypost /upload/init without an upload address: retried; finished-fi
 });
 
 test("U4 catch-up of an empty channel logs START/RESULT once per slot, not every 30 s", async () => {
-  const t = await loadServer({ channels: [["chtotampokupki", "shop", "Что там с покупками?"]], fixedNow: "2026-10-03T13:05:00Z", env: { AUTO_PUBLISH_ENABLED: "true", TELEGRAM_BOT_TOKEN: "123:test" } });
-  t.ws("chtotampokupki").state.mode = "AUTO";
-  t.ws("chtotampokupki").state.queue = [];
+  const t = await loadServer({ channels: [["chtotamcrypto", "crypto", "Что там у крипты?"]], fixedNow: "2026-10-03T13:05:00Z", env: { AUTO_PUBLISH_ENABLED: "true", TELEGRAM_BOT_TOKEN: "123:test" } });
+  t.ws("chtotamcrypto").state.mode = "AUTO";
+  t.ws("chtotamcrypto").state.queue = [];
   const lines = [];
   const ow = console.warn, ol = console.log;
   console.warn = (...a) => { lines.push(a.join(" ")); };
@@ -160,8 +160,8 @@ test("U4 catch-up of an empty channel logs START/RESULT once per slot, not every
   try {
     for (let i = 0; i < 4; i++) await t.catchUpCurrentRegularSlotAllWorkspaces();
   } finally { console.warn = ow; console.log = ol; }
-  assert.equal(lines.filter((l) => l.startsWith("SCHEDULER_CATCHUP_START") && l.includes("chtotampokupki")).length, 1, lines.join("\n"));
-  assert.equal(lines.filter((l) => l.startsWith("SCHEDULER_CATCHUP_RESULT") && l.includes("chtotampokupki")).length, 1, lines.join("\n"));
+  assert.equal(lines.filter((l) => l.startsWith("SCHEDULER_CATCHUP_START") && l.includes("chtotamcrypto")).length, 1, lines.join("\n"));
+  assert.equal(lines.filter((l) => l.startsWith("SCHEDULER_CATCHUP_RESULT") && l.includes("chtotamcrypto")).length, 1, lines.join("\n"));
 });
 
 test("U6 coalesced store writes: 50 saves -> 1-2 file writes, file has the last change, compact JSON", async () => {

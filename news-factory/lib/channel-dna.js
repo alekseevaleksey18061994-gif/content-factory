@@ -15,11 +15,41 @@ export const CHANNEL_DNA = {
   },
   auto: {
     type: "news_fun",
-    topic: "автомобили, авторынок России и мира",
-    focus: "Кроме обычных новостей оставляй реальные истории владельцев, видео, необычные машины, российские цены и практичные изменения для водителей.",
-    mix: { news: 0.45, owner_story: 0.20, unusual: 0.15, video: 0.10, practical: 0.10 },
+    topic: "всё интересное про автомобили для российской аудитории: премьеры, авторынок России, китайские машины, электро и гибриды, автотехнологии, блогеры и владельцы, вирусные автомобильные истории, важное водителю",
+    focus: "Не превращай канал в сухое автомобильное СМИ. Бери сильные премьеры и новости рынка, но также реальные истории владельцев, тесты российских автоблогеров, хорошие видео, необычные машины и вирусные автомобильные сюжеты. Лучше сильный материал чуть старше, чем свежая слабая новость. Слухи без нормального источника, мелкие ДТП и дилерский рекламный шум отсеивай.",
+    mix: { premieres: 0.20, russia_market: 0.20, china: 0.133, ev_hybrid: 0.067, auto_tech: 0.067, bloggers_tests: 0.133, viral_unusual: 0.133, driver_important: 0.067 },
+    rubrics: [
+      { id: "premieres", label: "Премьеры и новинки", hint: "новые модели, рестайлинги, официальные премьеры, старт продаж и важные характеристики" },
+      { id: "russia_market", label: "Авторынок России", hint: "российские продажи, цены и поставки, локальные бренды, рынок новых и подержанных автомобилей" },
+      { id: "china", label: "Китайские авто", hint: "Geely, Haval, Chery, Changan, Omoda, Exeed, BYD, Zeekr и другие китайские марки, особенно важные для России" },
+      { id: "ev_hybrid", label: "Электро и гибриды", hint: "электромобили, гибриды, батареи, зарядка, запас хода и новые силовые установки" },
+      { id: "auto_tech", label: "Автотехнологии", hint: "ADAS, автопилот, мультимедиа, безопасность, новые автомобильные технологии и инженерные решения" },
+      { id: "bloggers_tests", label: "Блогеры / тесты / владельцы", hint: "российские автоблогеры, сильные тесты, разборы, реальные истории владельцев; только самостоятельный инфоповод" },
+      { id: "viral_unusual", label: "Вирусное и необычное", hint: "необычные машины, рекорды, яркие видео, редкие проекты и автомобильные истории, которые хочется переслать" },
+      { id: "driver_important", label: "Важно водителю", hint: "изменения правил, штрафов, ОСАГО, техосмотра, топлива и другое, что реально влияет на водителя в России" }
+    ],
+    rubricMinSources: 5,
+    rubricMaxSources: 6,
+    slotHours: [8,9,10,11,12,13,14,15,16,17,18,19,20,21,22],
+    slotSchedule: [
+      { time: "08:00", rubric: "driver_important" },
+      { time: "09:00", rubric: "russia_market" },
+      { time: "10:00", rubric: "premieres" },
+      { time: "11:00", rubric: "china" },
+      { time: "12:00", rubric: "bloggers_tests" },
+      { time: "13:00", rubric: "russia_market" },
+      { time: "14:00", rubric: "premieres" },
+      { time: "15:00", rubric: "ev_hybrid" },
+      { time: "16:00", rubric: "viral_unusual" },
+      { time: "17:00", rubric: "china" },
+      { time: "18:00", rubric: "russia_market" },
+      { time: "19:00", rubric: "premieres" },
+      { time: "20:00", rubric: "bloggers_tests" },
+      { time: "21:00", rubric: "auto_tech" },
+      { time: "22:00", rubric: "viral_unusual" }
+    ],
     preferredSources: ["MEDIA", "CREATOR", "OFFICIAL", "COMMUNITY", "SOCIAL"],
-    scoreWeights: { utility: 0.24, local: 0.22, discussion: 0.14, visual: 0.14, wow: 0.13, deal: 0.13 }
+    scoreWeights: { utility: 0.22, local: 0.20, discussion: 0.16, visual: 0.16, wow: 0.14, virality: 0.12 }
   },
   money: {
     type: "news",
@@ -119,11 +149,42 @@ export const CHANNEL_DNA = {
   },
   shopping: {
     type: "trends",
-    topic: "покупки глазами обычного покупателя: распродажи и реальные скидки, интересные и вирусные товары, Ozon, Wildberries, Яндекс Маркет, Авито для покупателей (возвраты, доставка, ПВЗ), магазины, права потребителя, мошенники",
-    focus: "Только то, что важно покупателю. Новости для продавцов маркетплейсов, корпоративную выручку площадок и макроэкономику отсеивай.",
-    mix: { deal: 0.35, viral_product: 0.25, price_compare: 0.15, buyer_rights: 0.15, scam: 0.10 },
-    preferredSources: ["COMMUNITY", "SOCIAL", "CREATOR", "OFFICIAL", "MEDIA"],
-    scoreWeights: { deal: 0.28, utility: 0.26, virality: 0.16, discussion: 0.12, visual: 0.10, wow: 0.08 }
+    topic: "интересные товарные находки для обычного покупателя: Wildberries, Ozon, Яндекс Маркет, AliExpress и вирусные товары",
+    focus: "Это не канал новостей маркетплейсов и не канал для продавцов. Источник нужен, чтобы найти сильный товар. Даже рекламный исходник допустим: убери рекламу, ссылки, промокоды и продавца и сделай обычный редакционный пост о самом товаре. Не пытайся проверять карточку маркетплейса с сервера: цену, рейтинг, число отзывов и наличие в публичный пост не переносить. Никаких выдуманных характеристик.",
+    mix: { wildberries: 0.25, ozon: 0.25, yandex_market: 0.15, aliexpress: 0.15, viral_products: 0.20 },
+    rubrics: [
+      { id: "wildberries", label: "Находки Wildberries", hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Wildberries", minSources: 5 },
+      { id: "ozon", label: "Находки Ozon", hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Ozon", minSources: 5 },
+      { id: "yandex_market", label: "Находки Яндекс Маркета", hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Яндекс Маркета", minSources: 5 },
+      { id: "aliexpress", label: "Находки AliExpress", hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками AliExpress", minSources: 5 },
+      { id: "viral_products", label: "Вирусные товары", hint: "товары, которые активно расходятся по соцсетям и нескольким независимым подборкам; важен сам товар и хорошее медиа", minSources: 7 }
+    ],
+    rubricMinSources: 5,
+    rubricMaxSources: 7,
+    slotSchedule: [
+      { time: "08:00", rubric: "viral_products" },
+      { time: "08:45", rubric: "wildberries" },
+      { time: "09:30", rubric: "ozon" },
+      { time: "10:15", rubric: "yandex_market" },
+      { time: "11:00", rubric: "wildberries" },
+      { time: "11:45", rubric: "aliexpress" },
+      { time: "12:30", rubric: "ozon" },
+      { time: "13:15", rubric: "viral_products" },
+      { time: "14:00", rubric: "wildberries" },
+      { time: "14:45", rubric: "yandex_market" },
+      { time: "15:30", rubric: "ozon" },
+      { time: "16:15", rubric: "aliexpress" },
+      { time: "17:00", rubric: "wildberries" },
+      { time: "17:45", rubric: "viral_products" },
+      { time: "18:30", rubric: "ozon" },
+      { time: "19:15", rubric: "yandex_market" },
+      { time: "20:00", rubric: "wildberries" },
+      { time: "20:45", rubric: "aliexpress" },
+      { time: "21:30", rubric: "ozon" },
+      { time: "22:15", rubric: "viral_products" }
+    ],
+    preferredSources: ["COMMUNITY", "SOCIAL", "CREATOR", "MEDIA", "OFFICIAL"],
+    scoreWeights: { utility: 0.22, virality: 0.20, visual: 0.20, wow: 0.16, discussion: 0.12, local: 0.10 }
   },
   home: {
     type: "trends",
@@ -198,6 +259,7 @@ export function channelStrategy(channelId) {
     rubricMinSources: Number(dna.rubricMinSources || 0) || 0,
     rubricMaxSources: Number(dna.rubricMaxSources || 0) || 0,
     slotHours: Array.isArray(dna.slotHours) ? dna.slotHours.slice() : null,
+    slotSchedule: Array.isArray(dna.slotSchedule) ? dna.slotSchedule.map(function(s){ return Object.assign({}, s); }) : null,
     preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
     scoreWeights: Object.assign({}, dna.scoreWeights || {})
   };
@@ -495,3 +557,83 @@ export const MONEY_RUBRIC_SOURCES_V0526 = {
     "https://nsn.fm/economy"
   ]
 };
+
+// v0.53.0: approved source structures for «Что там у тачек?» and «Что там с покупками?».
+// Sources may feed several rubrics; production validates every new URL before enabling it.
+export const AUTO_RUBRIC_SOURCES_V0530 = {
+  add: [
+    { name: "Autonews.ru", url: "https://www.autonews.ru/", group: "media", rubrics: ["premieres","russia_market","china","driver_important"] },
+    { name: "Motor.ru", url: "https://motor.ru/", group: "media", rubrics: ["premieres","russia_market","china","viral_unusual"] },
+    { name: "Drom Новости", url: "https://news.drom.ru/", group: "media", rubrics: ["russia_market","china","driver_important"] },
+    { name: "За рулём", url: "https://www.zr.ru/", group: "media", rubrics: ["premieres","russia_market","driver_important","auto_tech"] },
+    { name: "Автостат", url: "https://www.autostat.ru/news/", group: "media", rubrics: ["russia_market","china"] },
+    { name: "Колёса.ру", url: "https://www.kolesa.ru/news", group: "media", rubrics: ["premieres","russia_market","driver_important"] },
+    { name: "Авторевю", url: "https://autoreview.ru/news", group: "media", rubrics: ["premieres","russia_market","china","auto_tech"] },
+    { name: "CarNewsChina", url: "https://carnewschina.com/", group: "media", rubrics: ["china","premieres","ev_hybrid","auto_tech"] },
+    { name: "CnEVPost", url: "https://cnevpost.com/", group: "media", rubrics: ["china","ev_hybrid","auto_tech"] },
+    { name: "Electrek", url: "https://electrek.co/", group: "media", rubrics: ["ev_hybrid","auto_tech"] },
+    { name: "InsideEVs", url: "https://insideevs.com/news/", group: "media", rubrics: ["ev_hybrid","premieres","auto_tech"] },
+    { name: "Carscoops", url: "https://www.carscoops.com/category/news/", group: "media", rubrics: ["premieres","viral_unusual","auto_tech"] },
+    { name: "Top Gear", url: "https://www.topgear.com/car-news", group: "media", rubrics: ["premieres","viral_unusual"] },
+    { name: "The Drive", url: "https://www.thedrive.com/news", group: "media", rubrics: ["viral_unusual","auto_tech","premieres"] },
+    { name: "BYD Global", url: "https://www.bydglobal.com/en/news", group: "official", rubrics: ["china","ev_hybrid","premieres"] },
+    { name: "Geely Newsroom", url: "https://newsroom.geely.com/", group: "official", rubrics: ["china","premieres","auto_tech"] },
+    { name: "Chery International", url: "https://www.cheryinternational.com/", group: "official", rubrics: ["china","premieres"] },
+    { name: "GWM Global", url: "https://www.gwm-global.com/news/", group: "official", rubrics: ["china","premieres"] },
+
+    { name: "Ильдар Авто-подбор", url: "https://t.me/s/ildar_auto_podbor", group: "creator", rubrics: ["bloggers_tests","viral_unusual"] },
+    { name: "Александр Булкин", url: "https://t.me/s/bulkin_live", group: "creator", rubrics: ["bloggers_tests","viral_unusual"] },
+    { name: "Михеев и Павлов", url: "https://t.me/s/miheevpavlov_pro", group: "creator", rubrics: ["bloggers_tests"] },
+    { name: "Туман", url: "https://t.me/s/sashatyman", group: "creator", rubrics: ["bloggers_tests","viral_unusual"] },
+    { name: "AcademeG", url: "https://t.me/s/academeg_true_original", group: "creator", rubrics: ["bloggers_tests","viral_unusual"] },
+    { name: "Клубный Сервис", url: "https://t.me/s/klubniy_servis", group: "creator", rubrics: ["bloggers_tests","russia_market"] },
+    { name: "Гараж 54", url: "https://t.me/s/garage54official", group: "creator", rubrics: ["bloggers_tests","viral_unusual"] },
+    { name: "Жекич Дубровский", url: "https://t.me/s/dubrovskiy_444", group: "creator", rubrics: ["bloggers_tests","viral_unusual"] },
+    { name: "Иван Зенкевич", url: "https://t.me/s/ivanzenkevich0", group: "creator", rubrics: ["bloggers_tests"] },
+    { name: "Денис Механик", url: "https://t.me/s/denismehanik", group: "creator", rubrics: ["bloggers_tests","driver_important"] }
+  ],
+  disable: [
+    "https://t.me/s/Strekalovsky",
+    "https://t.me/s/pel_video",
+    "https://t.me/s/lisacars",
+    "https://t.me/s/anton_avtoman"
+  ]
+};
+
+export const SHOPPING_RUBRIC_SOURCES_V0530 = {
+  add: [
+    { name: "Wildberries", url: "https://t.me/s/wildberriesru_official", group: "official", rubrics: ["wildberries","viral_products"] },
+    { name: "Wildberries Халява", url: "https://t.me/s/wildberries_xalyava", group: "creator", rubrics: ["wildberries","viral_products"] },
+    { name: "Находки с Wildberries", url: "https://t.me/s/HaxoDkiWBs", group: "creator", rubrics: ["wildberries","viral_products"] },
+    { name: "Империя Wildberries", url: "https://t.me/s/imperia_wb", group: "creator", rubrics: ["wildberries"] },
+    { name: "Скидки Ozon/WB", url: "https://t.me/s/skidki_ozon_wb_mm", group: "creator", rubrics: ["wildberries","ozon","viral_products"] },
+
+    { name: "Ozon", url: "https://t.me/s/ozonru", group: "official", rubrics: ["ozon","viral_products"] },
+    { name: "Ozon скидки", url: "https://t.me/s/ozon_skidki0", group: "creator", rubrics: ["ozon","viral_products"] },
+    { name: "Промокоды и находки Ozon", url: "https://t.me/s/promokody_ozon", group: "creator", rubrics: ["ozon"] },
+
+    { name: "Яндекс Маркет", url: "https://t.me/s/yndx_market", group: "official", rubrics: ["yandex_market","viral_products"] },
+    { name: "Яндекс Маркет — акции и находки", url: "https://t.me/s/yandex_market_proms", group: "creator", rubrics: ["yandex_market"] },
+    { name: "Путеводитель Яндекс Маркет", url: "https://t.me/s/putevoditel_yandeksmarket", group: "creator", rubrics: ["yandex_market"] },
+    { name: "Беру на всё", url: "https://t.me/s/berunavse", group: "creator", rubrics: ["yandex_market","viral_products"] },
+
+    { name: "AliExpress Россия", url: "https://t.me/s/AliExpressofficial_channel", group: "official", rubrics: ["aliexpress","viral_products"] },
+    { name: "AliExpress — Лайфхакер", url: "https://t.me/s/aliexprs", group: "creator", rubrics: ["aliexpress","viral_products"] },
+    { name: "Халявщики AliExpress", url: "https://t.me/s/HalyavshikiAli", group: "creator", rubrics: ["aliexpress"] },
+    { name: "AliExpress обзоры", url: "https://t.me/s/alliobzor", group: "creator", rubrics: ["aliexpress"] },
+
+    { name: "Pepper", url: "https://www.pepper.ru/", group: "community", rubrics: ["wildberries","ozon","yandex_market","aliexpress","viral_products"] }
+  ],
+  disable: [
+    "https://www.retail.ru/news/",
+    "https://vc.ru/marketplace",
+    "https://vc.ru/retail",
+    "https://www.rbc.ru/business/",
+    "https://www.vedomosti.ru/business/consumer",
+    "https://www.kommersant.ru/rubric/4",
+    "https://www.sostav.ru/news/",
+    "https://rb.ru/tag/e-commerce/",
+    "https://www.marketplacepulse.com/articles"
+  ]
+};
+

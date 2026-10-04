@@ -135,7 +135,7 @@ test("P4 Telegram links from the model are normalised; 3 empty discoveries -> 24
   assert.equal(asked.length, 3, "after 3 empty answers the Telegram discovery rests: " + asked.length);
 });
 
-test("P5 v0.51.2: money and shopping get a second source refresh once, even after the v0.50.0 notes ran", async () => {
+test("P5 v0.51.2: money keeps its refresh; shopping leaves generic boost at zero for v0.53 rubric top-up", async () => {
   const auto = (id) => src(id, "https://" + id + ".ru/", { autoAdded: { from: "ai" } });
   const t = await loadServer({ fixedNow: "2026-10-04T09:00:00Z", state: {
     chtotampokupki: { sources: [auto("p1"), auto("p2")], migrations: ["v0.50.0-channel-notes"] },
@@ -143,7 +143,7 @@ test("P5 v0.51.2: money and shopping get a second source refresh once, even afte
     chtotamsport: { sources: [auto("s1")], migrations: ["v0.50.0-channel-notes"] }
   } });
   const r = t.applyChannelNotes(t.ws("chtotampokupki"));
-  assert.equal(r.trial, 2); assert.equal(r.boost, 15); assert.equal(r.migration, "v0.51.2-channel-notes");
+  assert.equal(r.trial, 2); assert.equal(r.boost, 0); assert.equal(r.migration, "v0.51.2-channel-notes");
   assert.equal(t.applyChannelNotes(t.ws("chtotampokupki")), null, "once");
   assert.equal(t.applyChannelNotes(t.ws("chtotamdengi")).trial, 1);
   assert.equal(t.applyChannelNotes(t.ws("chtotamsport")), null, "other channels untouched");

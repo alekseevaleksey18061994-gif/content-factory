@@ -20,9 +20,10 @@ export const CHANNEL_IDS = [
   "world", "stars", "travel", "shopping", "home", "food", "business", "crypto"
 ];
 
-// Maximum collection window per channel profile. Money keeps candidates for up to 72 h so
-// durable taxes/benefits/how-to items survive; its scheduler applies the stricter 48 h normal limit.
-export const CHANNEL_FRESHNESS_HOURS = { money: 72, science: 72, world: 72, home: 72, food: 72 };
+// Maximum collection window per channel profile. Auto/shopping collect up to 72 h so their durable
+// blogger/driver/product-find rubrics can be judged by the prompt; routine auto news still has a stricter 24 h rule.
+// Money similarly keeps durable taxes/benefits/how-to candidates for up to 72 h.
+export const CHANNEL_FRESHNESS_HOURS = { auto: 72, shopping: 72, money: 72, science: 72, world: 72, home: 72, food: 72 };
 
 export function channelFreshnessHours(channelId, defaultHours) {
   const base = Number(defaultHours) > 0 ? Number(defaultHours) : 24;
