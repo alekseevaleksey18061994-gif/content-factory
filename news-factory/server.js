@@ -467,7 +467,6 @@ function channelRubricConfigReady(ws) {
   const id = resolveChannelId(target);
   const st = target && target.state ? target.state : state;
   const migrations = Array.isArray(st && st.migrations) ? st.migrations : [];
-  if (id === "home" && !migrations.includes("v0.51.3-home-rubrics")) return false;
   if (id === "shopping" && !migrations.includes("v0.53.0-shopping-finds")) return false;
   if (id === "auto" && !migrations.includes("v0.53.0-car-rubrics")) return false;
   return true;
