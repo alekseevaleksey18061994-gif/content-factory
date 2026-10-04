@@ -7089,13 +7089,13 @@ function dynamicUsedQueueIds() {
 }
 const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 
-function dynamicBestQueueItem(kind) {
+function dynamicBestQueueItem(kind, requiredRubric) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
-  const best = dynamicBestQueueItemRaw(kind, true);
-  return best || dynamicBestQueueItemRaw(kind, false);
+  const best = dynamicBestQueueItemRaw(kind, true, requiredRubric);
+  return best || dynamicBestQueueItemRaw(kind, false, requiredRubric);
 }
 
-function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
+function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, requiredRubric) {
   const used = dynamicUsedQueueIds();
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
@@ -7125,6 +7125,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (textCardBlocked(item)) return false;
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const itemTheme = itemRubric(item, themes);
+      if (requiredRubric && itemTheme !== String(requiredRubric)) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
         if (!wantsMoneyEmergency && themesToday.has(itemTheme)) return false; // exactly one normal post per rubric/day
@@ -7164,8 +7165,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
     })[0] || null;
 }
 
-function dynamicAssignBest(day, time, kind) {
-  const item = dynamicBestQueueItem(kind);
+function dynamicAssignBest(day, time, kind, requiredRubric) {
+  const item = dynamicBestQueueItem(kind, requiredRubric);
   const schedule = ensureScheduleShape(state);
   if (!schedule.assignments[day]) schedule.assignments[day] = {};
   if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
@@ -7206,6 +7207,7 @@ async function prepareDynamicSlot() {
 
   const schedule = ensureScheduleShape(state);
   const time = String(nextHour).padStart(2, "0") + ":00";
+  const requiredRubric = channelSlotRubric(time);
   if (schedule.suppressed[day] && schedule.suppressed[day][time]) {
     return { ok: true, skipped: "suppressed" };
   }
@@ -7214,19 +7216,43 @@ async function prepareDynamicSlot() {
   state.dynamicScheduler = state.dynamicScheduler || {};
   if (COLLECTION_STAGGER_ENABLED && state.dynamicScheduler.lastCollectKey === staggeredCollectKey(day, hour)) {
     await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-    const ready = dynamicAssignBest(day, time);
-    if (ready) return { ok: true, slot: time, collector: { ok: true, skipped: "staggered_collect_done" }, prepared: ready.id, title: ready.title };
+    const ready = dynamicAssignBest(day, time, undefined, requiredRubric);
+    if (ready) return { ok: true, slot: time, rubric: requiredRubric, collector: { ok: true, skipped: "staggered_collect_done" }, prepared: ready.id, title: ready.title };
   }
   const collector = await collectOnce("slot-prep");
   await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-  const item = dynamicAssignBest(day, time);
+  const item = dynamicAssignBest(day, time, undefined, requiredRubric);
   return {
     ok: true,
     slot: time,
+    rubric: requiredRubric,
     collector: collector,
     prepared: item ? item.id : null,
     title: item ? item.title : ""
   };
+}
+
+async function prepareCustomChannelSlot(time, requiredRubric) {
+  const plan = channelSlotSchedule();
+  const slotTime = String(time || "");
+  const slot = plan && plan.find(function(x){ return x && String(x.time) === slotTime; });
+  if (!slot) return { ok: true, skipped: "invalid_custom_slot", slot: slotTime };
+  const rubric = String(requiredRubric || slot.rubric || "");
+  const day = moscowDateKey(new Date());
+  if (dynamicDailyPublishedCount(day) >= channelDailyMax()) return { ok: true, skipped: "daily_max", slot: slotTime };
+
+  const schedule = ensureScheduleShape(state);
+  if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed", slot: slotTime };
+
+  await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
+  let item = dynamicAssignBest(day, slotTime, undefined, rubric);
+  let collector = { ok: true, skipped: "queue_ready" };
+  if (!item && !isCollectorRunning()) {
+    collector = await collectOnce("custom-slot-prep");
+    await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
+    item = dynamicAssignBest(day, slotTime, undefined, rubric);
+  }
+  return { ok: true, slot: slotTime, rubric: rubric, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
 }
 
 async function prepareBloggerSlot(time) {
@@ -7351,13 +7377,13 @@ async function staggeredCollectTick(day, hour, minute) {
 // One slot = one published post. If the chosen post fails, the next best post from the queue is tried right away,
 // up to SLOT_PUBLISH_TRIES posts, until one goes out. The failed post rests PUBLISH_RETRY_COOLDOWN_MIN minutes
 // (PUBLISH_FAILURE_MAX failures in total -> publish_failed for good).
-async function publishDynamicSlot(kind) {
+async function publishDynamicSlot(kind, forcedTime, requiredRubric) {
   let lastError = null;
   const failedIds = [];
   for (let attempt = 1; attempt <= SLOT_PUBLISH_TRIES; attempt++) {
     try {
       // Later attempts use only posts already in the queue: no costly last-chance collector run per failed post.
-      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 });
+      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 }, forcedTime, requiredRubric);
       if (failedIds.length) {
         console.log("SLOT_NEXT_ITEM_RESULT " + JSON.stringify({ workspace: currentWorkspaceId(), attempts: attempt, failed: failedIds, result: { published: Boolean(result && result.published), skipped: result && result.skipped || "" } }));
         return Object.assign({}, result, { slotAttempts: attempt, failedBefore: failedIds });
@@ -7378,7 +7404,7 @@ async function publishDynamicSlot(kind) {
   throw lastError || new Error("slot publish failed");
 }
 
-async function publishDynamicSlotOnce(kind, opts) {
+async function publishDynamicSlotOnce(kind, opts, forcedTime, requiredRubric) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
@@ -7388,11 +7414,16 @@ async function publishDynamicSlotOnce(kind, opts) {
   }
 
   const day = moscowDateKey(now);
-  const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00");
+  const exactTime = String(forcedTime || "").trim();
+  const time = exactTime || (String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00"));
+  if (exactTime) {
+    const plan = channelSlotSchedule();
+    if (!plan || !plan.some(function(slot){ return slot && String(slot.time) === exactTime; })) return { ok: true, skipped: "not_custom_slot", slot: exactTime };
+  }
   if (publishKind === "blogger" && !bloggerSlotsFor().includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
   if (publishKind === "money-emergency" && (editorialChannelId() !== "money" || time !== "22:30")) return { ok: true, skipped: "not_money_emergency_slot" };
-  if (publishKind === "regular" && !isChannelSlotHour(hour)) return { ok: true, skipped: "not_channel_slot" };
+  if (publishKind === "regular" && !exactTime && !isChannelSlotHour(hour)) return { ok: true, skipped: "not_channel_slot" };
   const slotKey = day + " " + time;
   state.dynamicScheduler = state.dynamicScheduler || {};
   state.bloggerScheduler = state.bloggerScheduler || {};
@@ -7422,10 +7453,17 @@ async function publishDynamicSlotOnce(kind, opts) {
 
   const schedule = ensureScheduleShape(state);
   let queueId = schedule.assignments[day] && schedule.assignments[day][time];
+  if (queueId && requiredRubric) {
+    const assigned = (state.queue || []).find(function(q){ return q && q.id === queueId; });
+    if (!assigned || itemRubric(assigned) !== String(requiredRubric)) {
+      delete schedule.assignments[day][time];
+      queueId = "";
+    }
+  }
 
   if (!queueId) {
     const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : (publishKind === "money-emergency" ? "money-emergency" : undefined));
-    let lastChanceItem = dynamicAssignBest(day, time, laneKind);
+    let lastChanceItem = dynamicAssignBest(day, time, laneKind, requiredRubric);
 
     if (!lastChanceItem && !(opts && opts.noRescue) && emptySlotCollectorAllowed(schedulerState, slotKey)) {
       schedulerState.lastEmptySlotKey = slotKey;
@@ -7438,7 +7476,7 @@ async function publishDynamicSlotOnce(kind, opts) {
       const rescue = await retryUnavailableEditorialQueueItems(2).catch(function(error){
         return { checked: 0, repaired: 0, held: 0, skipped: 0, error: String(error && error.message || error) };
       });
-      lastChanceItem = dynamicAssignBest(day, time, laneKind);
+      lastChanceItem = dynamicAssignBest(day, time, laneKind, requiredRubric);
       if (lastChanceItem) {
         console.log("SLOT_FAST_RESCUE " + JSON.stringify({
           workspace: currentWorkspaceId(),
@@ -7453,7 +7491,7 @@ async function publishDynamicSlotOnce(kind, opts) {
           ? "blogger-slot-last-chance"
           : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : (publishKind === "money-emergency" ? "money-emergency-last-chance" : "slot-last-chance"));
         const collectorResult = await collectOnce(lastChanceTrigger);
-        lastChanceItem = dynamicAssignBest(day, time, laneKind);
+        lastChanceItem = dynamicAssignBest(day, time, laneKind, requiredRubric);
         console.log("SLOT_FULL_RESCUE " + JSON.stringify({
           workspace: currentWorkspaceId(),
           slot: slotKey,
@@ -7761,46 +7799,75 @@ async function dynamicSchedulerTick() {
   let action = "";
   let bloggerTime = "";
   let russianAiTime = "";
-  // Each action has a window of SCHEDULER_SLOT_WINDOW_MINUTES instead of one exact minute:
-  // a tick delayed by another channel's work no longer silently loses the slot.
-  // lastTickKey (built from the window start, not the actual minute) keeps it idempotent.
-  const inWindow = function(start) { return minute >= start && minute < start + SCHEDULER_SLOT_WINDOW_MINUTES; };
+  let customTime = "";
+  let customRubric = "";
   let windowStart = minute;
-  if (inWindow(15)) {
-    windowStart = 15;
-    bloggerTime = String(hour).padStart(2, "0") + ":30";
-    russianAiTime = bloggerTime;
-    if (editorialChannelId() === "money" && bloggerTime === "22:30") {
-      action = "money_emergency_prepare";
-    } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
-      action = "blogger_prepare";
-    } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
-      action = "russian_ai_prepare";
+  const customPlan = channelSlotSchedule();
+
+  // Custom channels (currently «Что там с покупками?») can publish at :00/:15/:30/:45.
+  // Each slot is prepared 15 minutes before and gets the same retry window as the regular scheduler.
+  if (customPlan) {
+    for (const slot of customPlan) {
+      if (!slot || !slot.time) continue;
+      const publishAt = slotMinutes(slot.time);
+      const prepAt = publishAt - 15;
+      if (nowMinutes >= publishAt && nowMinutes < publishAt + SCHEDULER_SLOT_WINDOW_MINUTES) {
+        action = "custom_publish";
+        customTime = String(slot.time);
+        customRubric = String(slot.rubric || "");
+        windowStart = publishAt % 60;
+        break;
+      }
+      if (nowMinutes >= prepAt && nowMinutes < prepAt + SCHEDULER_SLOT_WINDOW_MINUTES) {
+        action = "custom_prepare";
+        customTime = String(slot.time);
+        customRubric = String(slot.rubric || "");
+        windowStart = ((prepAt % 60) + 60) % 60;
+        break;
+      }
+    }
+  } else {
+    // Each action has a window of SCHEDULER_SLOT_WINDOW_MINUTES instead of one exact minute:
+    // a tick delayed by another channel's work no longer silently loses the slot.
+    const inWindow = function(start) { return minute >= start && minute < start + SCHEDULER_SLOT_WINDOW_MINUTES; };
+    if (inWindow(15)) {
+      windowStart = 15;
+      bloggerTime = String(hour).padStart(2, "0") + ":30";
+      russianAiTime = bloggerTime;
+      if (editorialChannelId() === "money" && bloggerTime === "22:30") {
+        action = "money_emergency_prepare";
+      } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
+        action = "blogger_prepare";
+      } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
+        action = "russian_ai_prepare";
+      }
+    }
+    if (!action && inWindow(30)) {
+      windowStart = 30;
+      bloggerTime = String(hour).padStart(2, "0") + ":30";
+      russianAiTime = bloggerTime;
+      if (editorialChannelId() === "money" && bloggerTime === "22:30") {
+        action = "money_emergency_publish";
+      } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
+        action = "blogger_publish";
+      } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
+        action = "russian_ai_publish";
+      }
+    }
+    const prepAt = prepMinuteFor(currentWorkspaceId());
+    const publishAt = publishMinuteFor(currentWorkspaceId());
+    if (!action && inWindow(prepAt) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR && isChannelSlotHour(hour + 1)) {
+      action = "prepare";
+      windowStart = DYNAMIC_SLOT_PREP_MINUTE;
+    } else if (!action && inWindow(publishAt) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR && isChannelSlotHour(hour)) {
+      action = "publish";
+      windowStart = 0;
     }
   }
-  if (!action && inWindow(30)) {
-    windowStart = 30;
-    bloggerTime = String(hour).padStart(2, "0") + ":30";
-    russianAiTime = bloggerTime;
-    if (editorialChannelId() === "money" && bloggerTime === "22:30") {
-      action = "money_emergency_publish";
-    } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
-      action = "blogger_publish";
-    } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
-      action = "russian_ai_publish";
-    }
-  }
-  const prepAt = prepMinuteFor(currentWorkspaceId());
-  const publishAt = publishMinuteFor(currentWorkspaceId());
-  if (!action && inWindow(prepAt) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR && isChannelSlotHour(hour + 1)) {
-    action = "prepare";
-    windowStart = DYNAMIC_SLOT_PREP_MINUTE; // key only: stable even if the channel's minute shifts mid-hour
-  } else if (!action && inWindow(publishAt) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR && isChannelSlotHour(hour)) {
-    action = "publish";
-    windowStart = 0;
-  }
+
+  const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action + (customTime ? "-" + customTime : "");
   // No slot action due (or it already completed in this window): use the free tick for this channel's own collection.
-  if (!action || (state.dynamicScheduler && state.dynamicScheduler.lastTickKey === day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action)) {
+  if (!action || (state.dynamicScheduler && state.dynamicScheduler.lastTickKey === key)) {
     await staggeredCollectTick(day, hour, minute);
     return;
   }
@@ -7809,35 +7876,33 @@ async function dynamicSchedulerTick() {
   if (action.startsWith("money_emergency_") && editorialChannelId() !== "money") return;
 
   state.dynamicScheduler = state.dynamicScheduler || {};
-  const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action;
   if (state.dynamicScheduler.lastTickKey === key) return;
-
-  // Do not persist the tick as completed before the work succeeds.
-  // A deploy/restart in the middle of the slot must be able to retry it.
   state.dynamicScheduler.lastAttemptedTickKey = key;
   state.dynamicScheduler.lastAttemptedTickAt = new Date().toISOString();
 
   try {
-    const work = action === "prepare"
-      ? prepareDynamicSlot()
-      : action === "publish"
-        ? publishDynamicSlot()
-        : action === "blogger_prepare"
-          ? prepareBloggerSlot(bloggerTime)
-          : action === "blogger_publish"
-            ? publishDynamicSlot("blogger")
-            : action === "russian_ai_prepare"
-              ? prepareRussianAiSlot(russianAiTime)
-              : action === "russian_ai_publish"
-                ? publishDynamicSlot("russian-ai")
-                : action === "money_emergency_prepare"
-                  ? prepareMoneyEmergencySlot()
-                  : publishDynamicSlot("money-emergency");
-    // A preparation step that never settles must not hold this channel's scheduler lock forever (and with it every
-    // later slot). Publishing is not cut off: a cut-off publish could still go out later and double the post.
+    const work = action === "custom_prepare"
+      ? prepareCustomChannelSlot(customTime, customRubric)
+      : action === "custom_publish"
+        ? publishDynamicSlot(undefined, customTime, customRubric)
+        : action === "prepare"
+          ? prepareDynamicSlot()
+          : action === "publish"
+            ? publishDynamicSlot(undefined, undefined, channelSlotRubric(String(hour).padStart(2, "0") + ":00"))
+            : action === "blogger_prepare"
+              ? prepareBloggerSlot(bloggerTime)
+              : action === "blogger_publish"
+                ? publishDynamicSlot("blogger")
+                : action === "russian_ai_prepare"
+                  ? prepareRussianAiSlot(russianAiTime)
+                  : action === "russian_ai_publish"
+                    ? publishDynamicSlot("russian-ai")
+                    : action === "money_emergency_prepare"
+                      ? prepareMoneyEmergencySlot()
+                      : publishDynamicSlot("money-emergency");
     const result = !/prepare$/.test(action) ? await work : await withDeadline(work, SCHEDULER_PREPARE_TIMEOUT_MS, "scheduler " + action).catch(function(error) {
       if (error && error.code === "DEADLINE") {
-        console.error("SCHEDULER_TICK_TIMEOUT " + JSON.stringify({ workspace: currentWorkspaceId(), action: action, slot: key, collector: collectorRunInfo(currentWorkspaceId()) }));
+        console.error("SCHEDULER_TICK_TIMEOUT " + JSON.stringify({ workspace: currentWorkspaceId(), action: action, slot: customTime || key, collector: collectorRunInfo(currentWorkspaceId()) }));
       }
       throw error;
     });
@@ -7846,7 +7911,6 @@ async function dynamicSchedulerTick() {
     saveState();
     console.log("Dynamic scheduler " + action + " " + currentWorkspaceId() + ":", JSON.stringify(result));
   } catch (error) {
-    // Leave lastTickKey untouched: the next 30-second tick can retry inside the window.
     console.error("Dynamic scheduler " + action + " " + currentWorkspaceId() + " failed:", error.message);
   }
 }
@@ -7868,6 +7932,7 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
 
   await Promise.all(workspaceStore.workspaces.map(async function(ws) {
     if (!ws || schedulerTickRunning.has(ws.id)) return;
+    if (channelSlotSchedule(ws)) return; // custom :00/:15/:30/:45 channels are handled by their exact scheduler windows
     // the catch-up must not post a channel before its own spread-out minute (it still recovers up to :44 as before)
     if (minute < publishMinuteFor(ws.id)) return;
     if (!isChannelSlotHour(hour, ws)) return; // this channel has no post this hour
