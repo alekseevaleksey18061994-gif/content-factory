@@ -7124,7 +7124,9 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, requiredRubric) {
       if (!autoQualityEligible(item)) return false;
       if (textCardBlocked(item)) return false;
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
+      const rawBucket = String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || "");
       const itemTheme = itemRubric(item, themes);
+      if ((channelId === "auto" || channelId === "shopping") && themes.size && !themes.has(rawBucket)) return false;
       if (requiredRubric && itemTheme !== String(requiredRubric)) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
@@ -14958,6 +14960,126 @@ setTimeout(function runHomeRubricBalanceV0524() {
     }
   })().catch(function(error){ console.warn("Home rubric balance failed:", error.message); });
 }, 110000);
+
+// v0.52.9: apply the approved car/shopping rubric structures without deleting production data.
+// Known sources are tagged by rubric. Legacy shopping/car feeds outside the approved plans are paused, not removed.
+function normalizeApprovedRubricSourcesV0529(ws, plan, options) {
+  const opts = options || {};
+  const valid = rubricIds(ws);
+  const now = new Date().toISOString();
+  const normUrl = function(u) {
+    try {
+      const x = new URL(String(u || ""));
+      return (x.hostname.replace(/^www\./i, "") + x.pathname.replace(/\/+$/, "") + x.search).toLowerCase();
+    } catch { return ""; }
+  };
+  const planned = new Map();
+  const remember = function(cand) {
+    if (!cand || !cand.url) return;
+    const raw = Array.isArray(cand.rubrics) ? cand.rubrics : (cand.rubric ? [cand.rubric] : []);
+    const many = raw.map(String).filter(function(id){ return valid.has(id); });
+    if (many.length) planned.set(normUrl(cand.url), many);
+  };
+  for (const cand of (plan && plan.add || [])) remember(cand);
+  for (const url of Object.keys(plan && plan.assign || {})) {
+    const raw = plan.assign[url];
+    remember({ url: url, rubrics: Array.isArray(raw) ? raw : [raw] });
+  }
+
+  const assigned = [];
+  const paused = [];
+  for (const src of (state.sources || [])) {
+    if (!src || !src.enabled) continue;
+    const exact = planned.get(normUrl(src.url));
+    if (exact && exact.length) {
+      const before = JSON.stringify([src.rubric || "", src.rubrics || []]);
+      src.rubric = exact[0];
+      src.rubrics = exact.slice();
+      src.rubricAssignedAt = now;
+      if (before !== JSON.stringify([src.rubric, src.rubrics])) assigned.push(src.name || src.url || src.id);
+      continue;
+    }
+    const keep = new Set([String(src.rubric || "")].concat(Array.isArray(src.rubrics) ? src.rubrics.map(String) : []));
+    const validExisting = Array.from(keep).filter(function(id){ return valid.has(id); });
+    if (validExisting.length) {
+      src.rubric = validExisting[0];
+      src.rubrics = validExisting;
+      continue;
+    }
+    if (opts.quarantineUnknown) {
+      src.enabled = false;
+      src.autoPaused = { reason: "не входит в утверждённые источники/рубрики канала (v0.52.9)", at: now };
+      paused.push(src.name || src.url || src.id);
+    }
+  }
+
+  state.rubricLimits = state.rubricLimits && typeof state.rubricLimits === "object" && !Array.isArray(state.rubricLimits)
+    ? state.rubricLimits : {};
+  const strat = channelStrategy(resolveChannelId(ws));
+  for (const r of channelRubrics(ws)) {
+    const desired = Math.max(1, Number(strat.rubricDefaultMins && strat.rubricDefaultMins[r.id]) || Number(strat.rubricMinSources || 1));
+    const current = state.rubricLimits[r.id] && Number(state.rubricLimits[r.id].min);
+    if (!Number.isFinite(current) || current < desired) {
+      state.rubricLimits[r.id] = { min: desired, at: now, migration: "v0.52.9-auto-shopping-rubrics" };
+    }
+  }
+
+  // Old prepared assignments may belong to the previous channel profile.
+  const schedule = ensureScheduleShape(state);
+  schedule.assignments = {};
+  state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
+  state.sourceReplenish.lastAt = "";
+  if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+  return { assigned: assigned, paused: paused, rubrics: rubricSourceCounts(ws) };
+}
+
+setTimeout(function runAutoShoppingRubricsV0529() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      const channelId = resolveChannelId(ws);
+      if (channelId !== "auto" && channelId !== "shopping") continue;
+      const migration = "v0.52.9-auto-shopping-rubrics";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const plan = channelId === "auto" ? AUTO_RUBRIC_SOURCES_V0529 : SHOPPING_RUBRIC_SOURCES_V0529;
+        const sourceResult = await reworkChannelSources(ws, plan, "v0.52.9");
+        const normalized = normalizeApprovedRubricSourcesV0529(ws, plan, { quarantineUnknown: true });
+        const topups = [];
+
+        // Shopping has explicit floors 5/5/5/5/7. Cars already has a broad curated base and only needs missing groups filled.
+        const attempts = channelId === "shopping" ? 10 : 5;
+        for (let i = 0; i < attempts; i++) {
+          const counts = rubricSourceCounts(ws);
+          const short = channelRubrics(ws).filter(function(r){ return (counts[r.id] || 0) < rubricMinFor(r.id, ws); });
+          if (!short.length) break;
+          state.sourceReplenish.lastAt = "";
+          if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+          const result = await replenishSources(channelId + "_rubric_balance");
+          topups.push({ attempt: i + 1, added: result && Array.isArray(result.added) ? result.added.length : 0, before: counts, after: rubricSourceCounts(ws) });
+        }
+
+        if (!ws.channelId) ws.channelId = channelId;
+        ws.updatedAt = new Date().toISOString();
+        persistWorkspaceStore();
+        state.migrations.push(migration);
+        saveState();
+        console.log("AUTO_SHOPPING_RUBRICS_V0529 " + JSON.stringify({
+          workspace: ws.id,
+          channel: channelId,
+          assigned: normalized.assigned,
+          paused: normalized.paused,
+          rubrics: rubricSourceCounts(ws),
+          sourceAdded: sourceResult && sourceResult.added || [],
+          sourceFailed: sourceResult && sourceResult.failed || [],
+          topups: topups
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("Auto/shopping rubric migration failed:", error.message); });
+}, 55000);
 
 // v0.52.6: rebuild «Что там с деньгами?» as personal finance: 8 rubrics, 5+ sources each,
 // one normal post per rubric/day. Unknown legacy feeds are quarantined, not deleted.
