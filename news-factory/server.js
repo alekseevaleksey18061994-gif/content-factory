@@ -14533,14 +14533,26 @@ async function reworkChannelSources(ws, customPlan, tag) {
   }
   const added = [];
   const failed = [];
-  // themes for sources the channel already has (by exact URL), and for a planned source that is already there
+  // Themes for sources the channel already has. v0.52.6 allows one physical source to feed several rubrics.
   const assigned = [];
-  const themeByUrl = new Map();
-  for (const url of Object.keys(plan.assign || {})) themeByUrl.set(normUrl(url), plan.assign[url]);
-  for (const c of (plan.add || [])) if (c.rubric) themeByUrl.set(normUrl(c.url), c.rubric);
+  const themesByUrl = new Map();
+  for (const url of Object.keys(plan.assign || {})) {
+    const raw = plan.assign[url];
+    themesByUrl.set(normUrl(url), Array.isArray(raw) ? raw.map(String) : [String(raw)]);
+  }
+  for (const cand of (plan.add || [])) {
+    const many = Array.isArray(cand.rubrics) ? cand.rubrics.map(String) : (cand.rubric ? [String(cand.rubric)] : []);
+    if (many.length) themesByUrl.set(normUrl(cand.url), many);
+  }
   for (const src of (state.sources || [])) {
-    const theme = src && themeByUrl.get(normUrl(src.url));
-    if (theme && src.rubric !== theme) { src.rubric = theme; src.rubricAssignedAt = now; assigned.push(src.name); }
+    const themes = src && themesByUrl.get(normUrl(src.url));
+    if (!themes || !themes.length) continue;
+    const before = JSON.stringify([String(src.rubric || ""), Array.isArray(src.rubrics) ? src.rubrics : []]);
+    src.rubric = themes[0];
+    src.rubrics = themes.slice();
+    src.rubricAssignedAt = now;
+    const after = JSON.stringify([src.rubric, src.rubrics]);
+    if (before !== after) assigned.push(src.name);
   }
   for (const c of freshCandidates(plan.add || [], state.sources, state.sourceBlockedHosts || [])) {
     const check = await validateSourceCandidate(c.url);
@@ -14552,8 +14564,9 @@ async function reworkChannelSources(ws, customPlan, tag) {
       name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
       autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: reworkTag },
-      rubric: c.rubric || undefined,
-      rubricAssignedAt: c.rubric ? now : undefined
+      rubric: c.rubric || (Array.isArray(c.rubrics) && c.rubrics[0]) || undefined,
+      rubrics: Array.isArray(c.rubrics) ? c.rubrics.map(String) : (c.rubric ? [String(c.rubric)] : undefined),
+      rubricAssignedAt: (c.rubric || (Array.isArray(c.rubrics) && c.rubrics.length)) ? now : undefined
     });
     added.push(c.name);
   }
@@ -14777,6 +14790,125 @@ setTimeout(function runHomeRubricBalanceV0524() {
     }
   })().catch(function(error){ console.warn("Home rubric balance failed:", error.message); });
 }, 110000);
+
+// v0.52.6: rebuild «Что там с деньгами?» as personal finance: 8 rubrics, 5+ sources each,
+// one normal post per rubric/day. Unknown legacy feeds are quarantined, not deleted.
+function normalizeMoneyRubricSourcesV0526(ws) {
+  const valid = rubricIds(ws);
+  const now = new Date().toISOString();
+  const normUrl = function(u) {
+    try {
+      const x = new URL(String(u || ""));
+      return (x.hostname.replace(/^www\./i, "") + x.pathname.replace(/\/+$/, "") + x.search).toLowerCase();
+    } catch { return ""; }
+  };
+  const planned = new Map();
+  for (const cand of (MONEY_RUBRIC_SOURCES_V0526.add || [])) {
+    const many = (Array.isArray(cand.rubrics) ? cand.rubrics : (cand.rubric ? [cand.rubric] : []))
+      .map(String).filter(function(id){ return valid.has(id); });
+    if (many.length) planned.set(normUrl(cand.url), many);
+  }
+
+  const assigned = [];
+  const paused = [];
+  for (const src of (state.sources || [])) {
+    if (!src || !src.enabled) continue;
+    const exact = planned.get(normUrl(src.url));
+    if (exact && exact.length) {
+      const before = JSON.stringify([src.rubric || "", src.rubrics || []]);
+      src.rubric = exact[0];
+      src.rubrics = exact.slice();
+      src.rubricAssignedAt = now;
+      if (before !== JSON.stringify([src.rubric, src.rubrics])) assigned.push(src.name || src.url || src.id);
+      continue;
+    }
+
+    const known = new Set([String(src.rubric || "")].concat(Array.isArray(src.rubrics) ? src.rubrics.map(String) : []));
+    const keep = Array.from(known).filter(function(id){ return valid.has(id); });
+    if (keep.length) {
+      src.rubric = keep[0];
+      src.rubrics = keep;
+      continue;
+    }
+
+    src.enabled = false;
+    src.autoPaused = { reason: "нет рубрики личных финансов «Что там с деньгами?» (v0.52.6)", at: now };
+    paused.push(src.name || src.url || src.id);
+  }
+
+  state.rubricLimits = state.rubricLimits && typeof state.rubricLimits === "object" && !Array.isArray(state.rubricLimits)
+    ? state.rubricLimits : {};
+  for (const r of channelRubrics(ws)) {
+    const current = state.rubricLimits[r.id] && Number(state.rubricLimits[r.id].min);
+    if (!Number.isFinite(current) || current < 5) {
+      state.rubricLimits[r.id] = { min: 5, at: now, migration: "v0.52.6-money-personal-finance" };
+    }
+  }
+
+  state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
+  state.sourceReplenish.lastAt = "";
+  if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+  return { assigned: assigned, paused: paused, rubrics: rubricSourceCounts(ws) };
+}
+
+setTimeout(function runMoneyPersonalFinanceV0526() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "money") continue;
+      const migration = "v0.52.6-money-personal-finance";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const sourceResult = await reworkChannelSources(ws, MONEY_RUBRIC_SOURCES_V0526, "v0.52.6");
+        const normalized = normalizeMoneyRubricSourcesV0526(ws);
+        const topups = [];
+
+        // One weak rubric per pass, OpenAI discovery only. No Claude/Anthropic calls.
+        for (let i = 0; i < 8; i++) {
+          const counts = rubricSourceCounts(ws);
+          const short = channelRubrics(ws).filter(function(r){ return (counts[r.id] || 0) < rubricMinFor(r.id, ws); });
+          if (!short.length) break;
+          state.sourceReplenish.lastAt = "";
+          if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+          const result = await replenishSources("money_rubric_balance");
+          topups.push({ attempt: i + 1, added: result && Array.isArray(result.added) ? result.added.length : 0, before: counts, after: rubricSourceCounts(ws) });
+        }
+
+        ws.name = "Что там с деньгами? | Личные финансы";
+        if (!ws.channelId) ws.channelId = "money";
+        ws.updatedAt = new Date().toISOString();
+        persistWorkspaceStore();
+
+        let telegramTitle = "skipped";
+        try {
+          const target = await ensureTelegramPublishTarget(ws, true);
+          await telegramApi("setChatTitle", { chat_id: target.chatId, title: "Что там с деньгами? | Личные финансы" });
+          await telegramApi("setChatDescription", {
+            chat_id: target.chatId,
+            description: "Личные финансы без шума: карты и банки, вклады, кредиты и ипотека, налоги, рубль и ставка ЦБ, зарплаты и выплаты, мошенники и полезные финансовые правила."
+          });
+          telegramTitle = "updated";
+        } catch (error) {
+          telegramTitle = "error: " + String(error && error.message || error).slice(0, 140);
+        }
+
+        state.migrations.push(migration);
+        saveState();
+        console.log("MONEY_RUBRIC_BALANCE " + JSON.stringify({
+          workspace: ws.id,
+          assigned: normalized.assigned,
+          paused: normalized.paused,
+          rubrics: rubricSourceCounts(ws),
+          sourceAdded: sourceResult && sourceResult.added || [],
+          sourceFailed: sourceResult && sourceResult.failed || [],
+          topups: topups,
+          telegramTitle: telegramTitle
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("Money personal-finance migration failed:", error.message); });
+}, 115000);
 
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
