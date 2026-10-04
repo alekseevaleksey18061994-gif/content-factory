@@ -76,7 +76,7 @@ test("H4 scheduler: home prepares and posts only in its own hours (no 11:00 post
 });
 
 test("H5 theme search: the theme with the fewest sources gets its own discovery; new sources carry the theme", async () => {
-  const t = await loadServer({ fixedNow: msk(14, 0), state: { [H]: { sources: [] } } });
+  const t = await loadServer({ fixedNow: msk(14, 0), state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
   const ws = t.ws(H);
   // every theme has 4 sources except kitchen (1)
   for (const r of channelStrategy("home").rubrics) {
@@ -93,6 +93,12 @@ test("H5 theme search: the theme with the fewest sources gets its own discovery;
     }
     return inner(url, init);
   };
+  // before the theme migration ran nothing is searched (the start-up race)
+  ws.state.migrations = [];
+  await quiet(() => inWs(t, H, () => t.replenishSources("startup")));
+  assert.equal(asked.length, 0, "waits for the migration");
+  ws.state.migrations = ["v0.51.3-home-rubrics"];
+  ws.state.sourceReplenish = Object.assign({}, ws.state.sourceReplenish, { lastAt: "" });
   const lines = await quiet(() => inWs(t, H, () => t.replenishSources("below_target")));
   assert.ok(asked.some((x) => /Кухня и посуда/.test(x)), asked.join("\n").slice(0, 400));
   const counts = inWs(t, H, () => t.rubricSourceCounts());
@@ -118,18 +124,16 @@ test("H6 source migration: off-topic paused + blocked, existing kept sources get
   assert.ok(added.every((x) => x.rubric === "marketplace_finds"));
 });
 
-test("H7 scorecard: good / weak verdicts; a weak themed source older than 7 days is replaced (max 2 per run)", async () => {
+test("H7 scorecard: good / weak verdicts; a weak themed source is replaced only after 2 weeks, one per run, never below the theme minimum", async () => {
   const t = await loadServer({ fixedNow: msk(14, 0), state: { [H]: { sources: [] } } });
   const ws = t.ws(H);
-  const old = new Date(Date.parse(msk(14, 0)) - 10 * 86400000).toISOString();
-  ws.state.sources = [
-    src("good", "https://good.example/", { rubric: "storage", autoAdded: { at: old, from: "ai" } }),
-    src("w1", "https://w1.example/", { rubric: "storage", autoAdded: { at: old, from: "ai" } }),
-    src("w2", "https://w2.example/", { rubric: "kitchen", autoAdded: { at: old, from: "ai" } }),
-    src("w3", "https://w3.example/", { rubric: "kitchen", autoAdded: { at: old, from: "ai" } }),
-    src("fresh", "https://fresh.example/", { rubric: "kitchen", autoAdded: { at: msk(12, 0), from: "ai" } })
-  ];
-  ws.state.sourceStats = { good: { useful: 8, junk: 4, mediaGood: 9, mediaBad: 1 }, w1: { useful: 1, junk: 12 }, w2: { useful: 0, junk: 0 }, w3: { useful: 0, junk: 0 }, fresh: {} };
+  const ago = (d) => new Date(Date.parse(msk(14, 0)) - d * 86400000).toISOString();
+  const s6 = ["good", "w1", "w2", "w3", "w4", "w5"].map((id) => src(id, "https://" + id + ".example/", { rubric: "storage", autoAdded: { at: ago(20), from: "ai" } }));
+  ws.state.sources = s6.concat([
+    src("fresh", "https://fresh.example/", { rubric: "kitchen", autoAdded: { at: msk(12, 0), from: "ai" } }),
+    src("nodate", "https://nodate.example/", { rubric: "kitchen" })
+  ]);
+  ws.state.sourceStats = { good: { useful: 8, junk: 4, mediaGood: 9, mediaBad: 1 }, w1: { useful: 1, junk: 12 } };
   ws.state.history = [1, 2, 3].map((n) => ({ id: "h" + n, publishedAt: msk(10, n), sourceId: "good", contentBucket: "storage", views: 1000 + n }));
   const rows = inWs(t, H, () => t.buildSourceRankings());
   const card = (id) => rows.find((r) => r.id === id).scorecard;
@@ -138,9 +142,59 @@ test("H7 scorecard: good / weak verdicts; a weak themed source older than 7 days
   assert.equal(card("good").avgViews, 1002);
   assert.equal(card("w1").verdict, "Слабый");
   assert.equal(card("fresh").verdict, "Собираем данные");
-  const paused = await quiet(() => inWs(t, H, () => t.autoPauseWeakSources())).then(() => ws.state.sources.filter((x) => !x.enabled).map((x) => x.id));
-  assert.equal(paused.length, 2, JSON.stringify(paused));
-  assert.ok(!paused.includes("good") && !paused.includes("fresh"));
+  assert.equal(card("nodate").verdict, "Собираем данные", "a source of unknown age is never judged");
+  const off = () => ws.state.sources.filter((x) => !x.enabled).map((x) => x.id);
+  await quiet(() => inWs(t, H, () => t.autoPauseWeakSources()));
+  assert.equal(off().length, 1, "one per run: " + off());
+  for (let i = 0; i < 5; i++) await quiet(() => inWs(t, H, () => t.autoPauseWeakSources()));
+  const storageLeft = ws.state.sources.filter((x) => x.enabled && x.rubric === "storage").length;
+  assert.equal(storageLeft, 4, "never below the theme minimum (4)");
+  assert.ok(ws.state.sources.find((x) => x.id === "good").enabled);
+});
+
+test("H8 the editor re-enables a theme-paused source: it stays on (14 days)", async () => {
+  const t = await loadServer({ fixedNow: msk(14, 0), state: { [H]: { sources: [] } } });
+  const ws = t.ws(H);
+  const ago = new Date(Date.parse(msk(14, 0)) - 20 * 86400000).toISOString();
+  ws.state.sources = ["a", "b", "c", "d", "e", "f"].map((id) => src(id, "https://" + id + ".example/", { rubric: "storage", autoAdded: { at: ago, from: "ai" } }));
+  await quiet(() => inWs(t, H, () => t.autoPauseWeakSources()));
+  const paused = ws.state.sources.find((x) => !x.enabled);
+  assert.ok(paused);
+  paused.enabled = true; paused.editorEnabledAt = new Date(Date.parse(msk(14, 0))).toISOString(); delete paused.autoPaused;
+  for (let i = 0; i < 3; i++) await quiet(() => inWs(t, H, () => t.autoPauseWeakSources()));
+  assert.ok(paused.enabled, "the editor's choice wins");
+});
+
+test("H9 theme search: one miss counter for all themes (3 empty searches -> rest); a starving theme channel grows its thinnest theme", async () => {
+  const t = await loadServer({ fixedNow: msk(14, 0), env: { SOURCE_REPLENISH_INTERVAL_MINUTES: "1" }, state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
+  const ws = t.ws(H);
+  for (const r of channelStrategy("home").rubrics) for (let i = 0; i < (r.id === "kitchen" ? 4 : 5); i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
+  const inner = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("https://api.openai.com/v1/responses") && String(JSON.parse(init.body).input || "").startsWith("Подбери")) { calls++; return new Response(JSON.stringify({ output_text: JSON.stringify({ sources: [] }), usage: {} }), { status: 200, headers: { "content-type": "application/json" } }); }
+    return inner(url, init);
+  };
+  // all themes at or above the minimum: no search
+  await quiet(() => inWs(t, H, () => t.replenishSources("below_target")));
+  assert.equal(calls, 0);
+  // starving: the thinnest theme (kitchen, 4) is searched; empty answers rest after 3
+  ws.state.sourceStarvingRuns = 5;
+  for (let i = 0; i < 6; i++) { ws.state.sourceReplenish = Object.assign({}, ws.state.sourceReplenish, { lastAt: "" }); await quiet(() => inWs(t, H, () => t.replenishSources("starving"))); }
+  assert.equal(calls, 3, "shared counter: " + calls);
+});
+
+test("H10 calendar offers home only its 10 hours; curated sources are not put on trial by the notes step", async () => {
+  const t = await loadServer({ fixedNow: msk(14, 0), state: { [H]: { sources: [src("cur", "https://t.me/s/alexis_home", { autoAdded: { at: msk(12, 0), from: "dna" } }), src("ai1", "https://ai1.example/", { autoAdded: { at: msk(12, 0), from: "ai" } })], migrations: ["v0.50.0-channel-notes", "v0.51.2-channel-notes"] } } });
+  const sch = inWs(t, H, () => t.ensureScheduleShape(t.ws(H).state));
+  const hourly = (sch.slots || []).filter((x) => /:00$/.test(x.time) && x.kind !== "blogger" && x.kind !== "russian-ai").map((x) => Number(x.time.slice(0, 2)));
+  assert.deepEqual(hourly, [9, 10, 12, 13, 15, 17, 18, 19, 21, 22]);
+  const other = inWs(t, "chtotamtech", () => t.ensureScheduleShape(t.ws("chtotamtech").state));
+  assert.equal((other.slots || []).filter((x) => /:00$/.test(x.time)).length, 16);
+  const r = t.applyChannelNotes(t.ws(H));
+  assert.equal(r.migration, "v0.51.3-channel-notes");
+  assert.equal(t.ws(H).state.sources.find((x) => x.id === "cur").probationUntil, undefined, "curated list stays");
+  assert.ok(t.ws(H).state.sources.find((x) => x.id === "ai1").probationUntil);
+  assert.equal(t.ws(H).state.sourceBoostRemaining, 0, "no generic boost for home");
 });
 
 async function main() {

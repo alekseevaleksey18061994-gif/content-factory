@@ -3727,7 +3727,7 @@ function render(){
     return '<div class="sc-card'+(!s.enabled?' sc-off':'')+'">'+
       '<div class="sc-head">'+sourceThumbHtml(s,r.rank)+'<div class="sc-name"><b>'+esc(s.name)+'</b><span>'+group+' · '+(s.enabled?'включён':'выключен')+' · '+esc(mediaLicenseLabel(s.mediaLicense).replace('Медиа источника · используем','медиа используем'))+'</span></div><span class="source-rating sc-rating '+cls+'">'+esc(rating)+'<small>/100</small><i>'+esc(r.status)+'</i></span></div>'+
       '<a class="sc-url" href="'+esc(safeHref(s.url))+'" target="_blank" rel="noopener">'+esc(String(s.url||'').replace(/^https?:\/\/(www\.)?/,''))+'</a>'+
-      (s.autoAdded?'<div class="source-added-note">Добавлен автоматически '+esc(safeDate(s.autoAdded.at))+(s.autoAdded.from==='ai'?' · найден AI-поиском':' · из резерва')+(s.autoAdded.why?' · '+esc(s.autoAdded.why):'')+'</div>':'')+
+      (s.autoAdded?'<div class="source-added-note">Добавлен автоматически '+esc(safeDate(s.autoAdded.at))+(s.autoAdded.from==='ai'||s.autoAdded.from==='ai-rubric'||s.autoAdded.from==='ai-telegram'||s.autoAdded.from==='ai-lane'?' · найден AI-поиском':(s.autoAdded.from==='dna'||s.autoAdded.from==='seed'?' · из подобранного списка':' · из резерва'))+(s.autoAdded.why?' · '+esc(s.autoAdded.why):'')+'</div>':'')+
       (s.autoPaused&&!s.enabled?'<div class="source-paused-note">Выключен автоматически: '+esc(s.autoPaused.reason||'')+'. Можно включить вручную.</div>':'')+
       (r.scorecard&&r.scorecard.rubricLabel?'<div class="source-added-note"><b>Тема: '+esc(r.scorecard.rubricLabel)+'</b> · оценка источника: '+esc(r.scorecard.verdict)+'</div>':'')+
       (r.scorecard&&r.scorecard.rubricLabel?'<div class="sc-metrics">'+

@@ -574,6 +574,22 @@ function ensureScheduleShape(targetState) {
   const schedule = targetState.publicationSchedule;
   if (!schedule.assignments || typeof schedule.assignments !== "object") schedule.assignments = {};
   if (!schedule.suppressed || typeof schedule.suppressed !== "object") schedule.suppressed = {};
+  // a channel with its own hours (home: 10 a day) offers only those hourly slots in the calendar
+  let wsList = [];
+  try { wsList = workspaceStore.workspaces || []; } catch { wsList = []; } // called while the store is still loading
+  // `state` is the per-request proxy of the current workspace; other callers pass a workspace's own state object
+  let ownerWs = null;
+  try { ownerWs = targetState === state ? currentWorkspace() : null; } catch { ownerWs = null; }
+  if (!ownerWs) ownerWs = wsList.find(function(w){ return w && w.state === targetState; }) || null;
+  const ownHours = ownerWs ? channelSlotHours(ownerWs) : null;
+  if (ownHours && Array.isArray(schedule.slots)) {
+    schedule.slots = schedule.slots.filter(function(slot){
+      if (!slot || slot.kind === "blogger" || slot.kind === "russian-ai" || !/^\d{2}:00$/.test(String(slot.time || ""))) return true;
+      return ownHours.includes(Number(String(slot.time).slice(0, 2)));
+    });
+    schedule.maxPerDay = Math.min(Number(schedule.maxPerDay || ownHours.length), ownHours.length);
+    schedule.targetPerDay = Math.min(Number(schedule.targetPerDay || ownHours.length), ownHours.length);
+  }
   return schedule;
 }
 
@@ -2982,16 +2998,24 @@ function autoPauseWeakSources() {
     const labels = {};
     for (const r of channelRubrics()) labels[r.id] = r.label;
     let themePaused = 0;
+    const minPerTheme = Math.max(1, channelStrategy(editorialChannelId()).rubricMinSources || 1);
+    const counts = rubricSourceCounts();
     for (const source of (state.sources || [])) {
-      if (themePaused >= 2) break;
+      if (themePaused >= 1) break; // one per run: the theme search replaces it before the next one goes
       if (!source || !source.enabled || source.autoPauseExempt || !ids.has(String(source.rubric || ""))) continue;
+      // the editor switched it on by hand: never paused by this rule for 14 days
+      if (source.editorEnabledAt && Date.now() - Date.parse(source.editorEnabledAt) < 14 * 86400000) continue;
+      if (source.probationUntil && Date.parse(source.probationUntil) > Date.now()) continue; // still on trial
+      if (counts[source.rubric] <= minPerTheme) continue; // never below the theme's minimum
       const card = sourceScorecard(source, ensureSourceStat(source) || {}, ids, labels);
-      if (card.verdict !== "Слабый" || card.ageDays < SCORECARD_DAYS) continue;
+      // weak = nothing published for two weeks in its theme, or almost everything rejected
+      if (card.verdict !== "Слабый" || card.ageDays < 2 * SCORECARD_DAYS) continue;
       const reason = "слабый источник темы «" + (labels[source.rubric] || source.rubric) + "»: " + card.publishedWeek + " публикаций в неделю" + (card.passRate != null ? ", проходимость " + Math.round(card.passRate * 100) + "%" : "");
       source.enabled = false;
       source.autoPaused = { reason: reason, at: new Date().toISOString() };
       paused.push({ id: source.id, name: source.name, reason: reason });
       themePaused += 1;
+      counts[source.rubric] -= 1;
       console.log("SOURCE_AUTO_PAUSED " + JSON.stringify({ workspace: currentWorkspaceId(), id: source.id, name: source.name, reason: reason, rubric: source.rubric }));
     }
   }
@@ -3132,10 +3156,15 @@ async function replenishSourcesInner(reason) {
   // Theme channels: the theme with the fewest sources below its minimum gets its own search (one theme per run).
   const strategyNow = channelStrategy(resolveChannelId(currentWorkspace()));
   let rubricTarget = null;
-  if (Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0) {
+  const themedReady = !(resolveChannelId(currentWorkspace()) === "home" && !(state.migrations || []).includes("v0.51.3-home-rubrics")); // themes are tagged by the migration first
+  // one miss counter for all themes: 3 empty searches in a row -> the whole theme search rests 24 h (paid web search)
+  if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0 && discoveryAllowed("rubric")) {
     const counts = rubricSourceCounts();
+    // below the minimum first; a starving channel or a raised target grows its thinnest theme up to the maximum
+    const ceilingAll = strategyNow.rubricMaxSources || strategyNow.rubricMinSources;
+    const wantsMore = need > 0 || starving;
     const short = strategyNow.rubrics
-      .filter(function(r){ return counts[r.id] < strategyNow.rubricMinSources && discoveryAllowed("rubric:" + r.id); })
+      .filter(function(r){ return counts[r.id] < strategyNow.rubricMinSources || (wantsMore && counts[r.id] < ceilingAll); })
       .sort(function(a, b){ return counts[a.id] - counts[b.id]; })[0];
     if (short) {
       const ceiling = strategyNow.rubricMaxSources || strategyNow.rubricMinSources;
@@ -3217,10 +3246,10 @@ async function replenishSourcesInner(reason) {
     // the new sources belong to the theme they were found for
     for (const a of added.slice(before)) {
       const src = (state.sources || []).find(function(x){ return x && x.url === a.url; });
-      if (src) src.rubric = theme.id;
+      if (src) { src.rubric = theme.id; src.rubricAssignedAt = new Date().toISOString(); }
       a.rubric = theme.id;
     }
-    noteDiscoveryResult("rubric:" + theme.id, added.length - before);
+    noteDiscoveryResult("rubric", added.length - before);
     console.log("SOURCE_RUBRIC_REPLENISH " + JSON.stringify({ workspace: currentWorkspaceId(), rubric: theme.id, added: added.length - before, sources: rubricSourceCounts()[theme.id] }));
   }
   if (Number(state.sourceBoostRemaining || 0) > 0) state.sourceBoostRemaining = Math.max(0, Number(state.sourceBoostRemaining) - addedMain);
@@ -3328,8 +3357,9 @@ const SCORECARD_DAYS = 7;
 function sourceScorecard(source, stat, ids, rubricLabels) {
   const now = Date.now();
   const since = now - SCORECARD_DAYS * 86400000;
-  const addedAt = Date.parse(source && source.autoAdded && source.autoAdded.at || "") || NaN;
-  const ageDays = Number.isFinite(addedAt) ? Math.max(0, (now - addedAt) / 86400000) : SCORECARD_DAYS;
+  // age in its theme: a source given a theme today starts from zero; unknown age = no verdict yet
+  const since0 = Date.parse(source && source.rubricAssignedAt || "") || Date.parse(source && source.autoAdded && source.autoAdded.at || "") || NaN;
+  const ageDays = Number.isFinite(since0) ? Math.max(0, (now - since0) / 86400000) : 0;
   const mine = (state.history || []).filter(function(h){
     if (!h || !h.publishedAt || Date.parse(h.publishedAt) < since) return false;
     return (h.sourceId && String(h.sourceId) === String(source.id)) || (!h.sourceId && h.sourceName && h.sourceName === source.name);
@@ -3347,8 +3377,9 @@ function sourceScorecard(source, stat, ids, rubricLabels) {
   const publishedWeek = Math.round(mine.length * weekFactor * 10) / 10;
   let verdict = "Собираем данные";
   if (ageDays >= 2 || useful + junk >= 10) {
-    if (publishedWeek >= 2 && (passRate == null || passRate >= 0.3)) verdict = "Хороший";
-    else if ((ageDays >= SCORECARD_DAYS && publishedWeek < 1) || (useful + junk >= 10 && passRate != null && passRate < 0.15)) verdict = "Слабый";
+    // one post per theme a day shared by 4–6 sources: ~1–2 posts a week each is normal
+    if (publishedWeek >= 1.5 && (passRate == null || passRate >= 0.3)) verdict = "Хороший";
+    else if ((ageDays >= SCORECARD_DAYS && mine.length === 0) || (useful + junk >= 10 && passRate != null && passRate < 0.15)) verdict = "Слабый";
     else verdict = "Средний";
   }
   return { rubric: rubric, rubricLabel: rubric ? (rubricLabels[rubric] || rubric) : "", ageDays: Math.round(ageDays * 10) / 10,
@@ -13601,6 +13632,7 @@ const server = http.createServer(async function(req, res) {
       if (src.enabled) {
         // Turned on by the editor: forget the automatic pause and its history.
         delete src.autoPaused;
+        src.editorEnabledAt = new Date().toISOString();
         delete src.probationUntil; // the editor vouched for it: no trial
         const stat = ensureSourceStat(src);
         if (stat) { stat.recent = []; stat.errorStreak = 0; }
@@ -14386,17 +14418,20 @@ async function reworkChannelSources(ws, customPlan, tag) {
   for (const c of (plan.add || [])) if (c.rubric) themeByUrl.set(normUrl(c.url), c.rubric);
   for (const src of (state.sources || [])) {
     const theme = src && themeByUrl.get(normUrl(src.url));
-    if (theme && src.rubric !== theme) { src.rubric = theme; assigned.push(src.name); }
+    if (theme && src.rubric !== theme) { src.rubric = theme; src.rubricAssignedAt = now; assigned.push(src.name); }
   }
   for (const c of freshCandidates(plan.add || [], state.sources, state.sourceBlockedHosts || [])) {
     const check = await validateSourceCandidate(c.url);
     if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
+    // added meanwhile (discovery runs while this validates)
+    if ((state.sources || []).some(function(x){ return x && sourceKey(x.url) === sourceKey(c.url); })) continue;
     state.sources.push({
       id: "dna-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
       name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
       autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: reworkTag },
-      rubric: c.rubric || undefined
+      rubric: c.rubric || undefined,
+      rubricAssignedAt: c.rubric ? now : undefined
     });
     added.push(c.name);
   }
@@ -14778,7 +14813,7 @@ function applyChannelNotes(ws) {
     // judged — and paused — all in the same collector run
     let i = 0;
     for (const src of st.sources || []) {
-      if (src && src.enabled && src.autoAdded && src.autoAdded.from !== "seed" && !src.probationUntil && !src.autoPauseExempt) {
+      if (src && src.enabled && src.autoAdded && src.autoAdded.from !== "seed" && src.autoAdded.from !== "dna" && !src.probationUntil && !src.autoPauseExempt) { // seed / curated (dna) lists stay
         src.probationUntil = new Date(Date.now() + (24 + (i++ % 24)) * 3600000).toISOString();
         result.trial += 1;
       }
