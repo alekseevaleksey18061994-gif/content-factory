@@ -38,7 +38,8 @@
     "test:no-text-card": "node scripts/no-text-card-test.js",
     "test:home-rubrics": "node scripts/home-rubrics-test.js",
     "test:no-evening-digest": "node scripts/no-evening-digest-test.js",
-    "test:money-rubrics": "node scripts/money-rubrics-test.js"
+    "test:money-rubrics": "node scripts/money-rubrics-test.js",
+    "test:auto-shopping-rubrics": "node scripts/auto-shopping-rubrics-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
