@@ -90,6 +90,11 @@ const shoppingSourceCounts = {};
 SHOPPING_FIND_SOURCES.forEach((s)=>{ shoppingSourceCounts[s.rubric]=(shoppingSourceCounts[s.rubric]||0)+1; });
 assert.equal(SHOPPING_FIND_SOURCES.length, 27);
 assert.deepEqual(shoppingSourceCounts, {wildberries:5,ozon:5,yandex_market:5,aliexpress:5,viral_products:7});
+for (const handle of ["wildberriesru_official","wildberries_khalyava","nashlawb","valberisz"]) {
+  assert.ok(SHOPPING_FIND_SOURCES.some((s)=>String(s.url||"").toLowerCase().includes("/"+handle.toLowerCase())), "missing approved WB source: "+handle);
+}
+const serverSource = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.url)), "utf8");
+assert.ok(serverSource.includes("normalizeAutoRubricSources(cars.state, APPROVED_AUTO_BLOGGER_SOURCES, BLOGGER_SLOTS"), "production car migration must use approved blogger pack");
 
 const shoppingState = {sources:[{id:"old",name:"Retail news",url:"https://example.com/retail",group:"media",enabled:true}],sourceReplenish:{}};
 const shoppingMigration = normalizeShoppingFindSources(shoppingState, SHOPPING_FIND_SOURCES, new Set(shoppingStrategy.rubrics.map((r)=>r.id)), "2026-10-05T00:00:00.000Z");
