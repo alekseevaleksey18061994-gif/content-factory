@@ -4277,6 +4277,8 @@ async function prepareVkPreviewImage(post, slug) {
 }
 
 function normalizePublicPostSources(post) {
+  // Shopping provenance stays in history/state but is intentionally absent from public posts.
+  if (editorialChannelId() === "shopping") return [];
   const p = post || {};
   const out = [];
   const seen = new Set();
