@@ -77,7 +77,7 @@ await test("AS5 shopping: runtime schedule is exactly 20 custom slots and no sou
   assert.ok(sch.slots.every(x=>x.kind==="channel-custom"));
   assert.equal(inWs(t,S,()=>t.rubricMinFor("wildberries")),5);
   assert.equal(inWs(t,S,()=>t.rubricMinFor("viral_products")),7);
-  const post={title:"Находка",text:"Полезная вещь для дома.",sourceName:"Test Store",sourceUrl:"https://example.com/product",originalUrl:"https://example.com/product"};
+  const post={title:"Находка",text:"Полезная вещь для дома. https://example.com/product",sourceName:"Test Store",sourceUrl:"https://example.com/product",originalUrl:"https://example.com/product"};
   const tg=inWs(t,S,()=>t.formatTelegramPost(post));
   const vk=inWs(t,S,()=>t.formatVkPost(post,{includeSource:true}));
   assert.ok(!/Источник|Источники|example\.com/.test(tg),tg);
