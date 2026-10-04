@@ -12,7 +12,7 @@ import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-securi
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
-import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451 } from "./lib/channel-dna.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_SOURCE_FIX_V0513 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
@@ -371,6 +371,7 @@ const CHANNEL_EXTRA_LANES = {
 // refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
+  home: { refresh: true, boost: 15, hint: "Telegram-каналы и сайты с находками и подборками товаров для дома (Wildberries, Ozon, AliExpress, IKEA), идеями обустройства маленьких квартир, до/после, лайфхаками хранения, уборки и ремонта своими руками; НЕ рынок недвижимости, НЕ IT-новости, НЕ городские новости" },
   shopping: { refresh: true, boost: 15, hint: "новости для покупателей, а не для продавцов: скидки и распродажи, цены в магазинах, новинки и вирусные товары, возвраты и доставка на Ozon, Wildberries, Яндекс Маркете и Авито, права потребителей, мошенники; Telegram-каналы и сайты для покупателей" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
@@ -6782,6 +6783,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const anySourceLane = wantsBlogger && Boolean(channelExtraLane() && channelExtraLane().anySource);
   // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
   const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
+  const excludedBuckets = new Set(channelStrategy(editorialChannelId()).excludeBuckets || []);
   return (state.queue || [])
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && item.status !== "publish_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
@@ -6790,6 +6792,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
       if (textCardBlocked(item)) return false;
+      if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
@@ -14341,6 +14344,32 @@ setTimeout(function runInternetSourceFixV0451() {
   })().catch(function(error){ console.warn("Internet source fix failed:", error.message); });
 }, 100000);
 
+// v0.51.3: «Что там для дома?» — trending home goods and ideas instead of news and real estate. Off-topic sources
+// are paused (kept) and their sections blocked for discovery; the niche's biggest Telegram channels are added.
+setTimeout(function runHomeSourceFixV0513() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "home") continue;
+      const migration = "v0.51.3-home-sources";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws, HOME_SOURCE_FIX_V0513, "v0.51.3");
+        state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+        for (const url of HOME_SOURCE_FIX_V0513.disable) {
+          const key = sourceKey(url);
+          if (key && !state.sourceBlockedHosts.includes(key)) state.sourceBlockedHosts.push(key);
+        }
+        state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+        state.seedAttempts[migration] = Number(state.seedAttempts[migration] || 0) + 1;
+        if ((result && result.added.length > 0) || state.seedAttempts[migration] >= 3) state.migrations.push(migration);
+        saveState();
+        console.log("HOME_SOURCE_FIX " + JSON.stringify(Object.assign({ workspace: ws.id }, result || {})));
+      });
+    }
+  })().catch(function(error){ console.warn("Home source fix failed:", error.message); });
+}, 105000);
+
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
 async function recoverMissingWorkspaces() {
@@ -14585,13 +14614,18 @@ setTimeout(function() {
 const CHANNEL_NOTES_MIGRATION = "v0.50.0-channel-notes";
 const CHANNEL_NOTES_MIGRATION_V0512 = "v0.51.2-channel-notes";
 const CHANNEL_NOTES_V0512 = new Set(["money", "shopping"]);
+// later one-off refreshes: [migration key, channels]
+const CHANNEL_NOTES_STEPS = [
+  [CHANNEL_NOTES_MIGRATION_V0512, CHANNEL_NOTES_V0512],
+  ["v0.51.3-channel-notes", new Set(["home"])]
+];
 function applyChannelNotes(ws) {
   const st = ws.state;
   st.migrations = Array.isArray(st.migrations) ? st.migrations : [];
   const channelId = resolveChannelId(ws);
   // v0.51.2: money and shopping get their source refresh again (shopping had no plan in v0.50.0)
-  const migration = !st.migrations.includes(CHANNEL_NOTES_MIGRATION) ? CHANNEL_NOTES_MIGRATION
-    : (CHANNEL_NOTES_V0512.has(channelId) && !st.migrations.includes(CHANNEL_NOTES_MIGRATION_V0512) ? CHANNEL_NOTES_MIGRATION_V0512 : "");
+  const pendingStep = CHANNEL_NOTES_STEPS.find(function(step){ return step[1].has(channelId) && !st.migrations.includes(step[0]); });
+  const migration = !st.migrations.includes(CHANNEL_NOTES_MIGRATION) ? CHANNEL_NOTES_MIGRATION : (pendingStep ? pendingStep[0] : "");
   if (!migration) return null;
   const plan = CHANNEL_SOURCE_PLANS[channelId] || null;
   const result = { workspace: ws.id, trial: 0, boost: 0 };
@@ -14614,7 +14648,10 @@ function applyChannelNotes(ws) {
   }
   st.migrations.push(migration);
   // a fresh workspace takes both steps at once
-  if (migration === CHANNEL_NOTES_MIGRATION && CHANNEL_NOTES_V0512.has(channelId)) st.migrations.push(CHANNEL_NOTES_MIGRATION_V0512);
+  // a fresh workspace takes all steps at once
+  if (migration === CHANNEL_NOTES_MIGRATION) {
+    for (const step of CHANNEL_NOTES_STEPS) if (step[1].has(channelId) && !st.migrations.includes(step[0])) st.migrations.push(step[0]);
+  }
   result.migration = migration;
   return result;
 }

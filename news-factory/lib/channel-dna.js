@@ -103,11 +103,15 @@ export const CHANNEL_DNA = {
   },
   home: {
     type: "trends",
-    topic: "дом: интерьер, ремонт, организация пространства, бытовая техника, умный дом, ЖКХ для жильцов; недвижимость — немного",
-    focus: "Интерьеры, ремонт, до/после, бытовая техника, умный дом и полезные решения. Недвижимость — максимум около 10% ленты, не деловая хроника девелоперов.",
-    mix: { interior: 0.25, renovation: 0.25, organization: 0.15, appliance: 0.15, smart_home: 0.10, real_estate: 0.10 },
+    // v0.51.3 (editor, 2026-10-04): not news, not real estate — trending home goods, finds and ideas, the way the
+    // biggest home channels do it (product finds, before/after of ordinary flats, storage and cleaning hacks).
+    topic: "дом и уют: трендовые и вирусные товары для дома, находки и подборки, обустройство и ремонт своими руками, идеи интерьера обычных квартир (до/после), хранение и уборка, полезная техника для дома",
+    focus: "Канал не новостной: нужны находки и подборки товаров для дома (что купить, сколько стоит, чем удобно), вирусные и необычные вещи для квартиры, идеи обустройства маленьких квартир, до/после, лайфхаки хранения, уборки и ремонта своими руками, техника для дома, которую можно купить сейчас. Находка товара или подборка — НЕ реклама, если нет явных признаков платной интеграции (промокод, «на правах рекламы», erid). Отсеивай: рынок недвижимости и цены новостроек, ипотеку, аналитику девелоперов; слухи и анонсы IT-компаний (Apple, Samsung и т.п. — это канал технологий), если это не конкретное устройство для дома в продаже; интерьеры баров, ресторанов, офисов и отелей; городские новости, благоустройство дворов, указы и законы (кроме важного для жильцов ЖКХ); выставки, конкурсы и книги о дизайне.",
+    mix: { trend_find: 0.30, interior: 0.20, renovation: 0.20, organization: 0.15, appliance: 0.10, zhkh: 0.05 },
+    // never picked for a slot in this channel, whatever the editor scored
+    excludeBuckets: ["real_estate"],
     preferredSources: ["CREATOR", "SOCIAL", "COMMUNITY", "MEDIA", "OFFICIAL"],
-    scoreWeights: { utility: 0.28, visual: 0.24, wow: 0.14, discussion: 0.12, deal: 0.12, virality: 0.10 }
+    scoreWeights: { visual: 0.26, virality: 0.20, utility: 0.20, wow: 0.14, deal: 0.12, discussion: 0.08 }
   },
   food: {
     type: "blogger",
@@ -148,6 +152,7 @@ export function channelStrategy(channelId) {
   return {
     type: dna.type || "news",
     mix: Object.assign({}, dna.mix || {}),
+    excludeBuckets: Array.isArray(dna.excludeBuckets) ? dna.excludeBuckets.slice() : [],
     preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
     scoreWeights: Object.assign({}, dna.scoreWeights || {})
   };
@@ -328,5 +333,70 @@ export const INTERNET_SOURCE_FIX_V0451 = {
     "https://www.socialmediatoday.com/",
     "https://www.theverge.com/social-media",
     "https://www.boredpanda.com/"
+  ]
+};
+
+// v0.51.3 — «Что там для дома?» becomes a channel about trending home goods, finds and ideas (editor, 2026-10-04).
+// Disable: real-estate market desks, gadget/IT news, city and agency news (a third of the posts were off-topic).
+// Add: the biggest Telegram channels of the niche (home finds, storage, before/after) and home media.
+export const HOME_SOURCE_FIX_V0513 = {
+  add: [
+    { name: "Квартира в порядке (Telegram)", url: "https://t.me/s/laifkhaky_remont_interero", group: "creator" },
+    { name: "Alexis_home (Telegram)", url: "https://t.me/s/alexis_home", group: "creator" },
+    { name: "торшерчики & фужерчики (Telegram)", url: "https://t.me/s/not_ikea", group: "creator" },
+    { name: "Хитрости дизайна и уюта (Telegram)", url: "https://t.me/s/HomeDesignLife", group: "creator" },
+    { name: "Дизигн интерьера (Telegram)", url: "https://t.me/s/desingokey", group: "creator" },
+    { name: "COZY HOME (Telegram)", url: "https://t.me/s/cozyhomerus", group: "creator" },
+    { name: "Уютиль — интересные находки (Telegram)", url: "https://t.me/s/ahuytno", group: "creator" },
+    { name: "Дом минималиста (Telegram)", url: "https://t.me/s/minimalist_dom", group: "creator" },
+    { name: "материал, найдись! (Telegram)", url: "https://t.me/s/mtrl_mag", group: "creator" },
+    { name: "Дизайн и ремонт (Telegram)", url: "https://t.me/s/decor_journal", group: "creator" },
+    { name: "Идеи дизайна интерьера (Telegram)", url: "https://t.me/s/dsgn_interior", group: "creator" },
+    { name: "Идеи дизайна (Telegram)", url: "https://t.me/s/ideas_of_design", group: "creator" },
+    { name: "Design Mate (Telegram)", url: "https://t.me/s/designmate", group: "creator" },
+    { name: "Идеи дизайна интерьера 🏡 (Telegram)", url: "https://t.me/s/interdizru", group: "creator" },
+    { name: "Нам такое надо! (Telegram)", url: "https://t.me/s/gdekupilakatya", group: "creator" },
+    { name: "Home Wish List (Telegram)", url: "https://t.me/s/homewishlist", group: "creator" },
+    { name: "Находки для дома с WB и ОЗОН (Telegram)", url: "https://t.me/s/pin_room", group: "creator" },
+    { name: "INMYROOM (Telegram)", url: "https://t.me/s/inmyroom", group: "creator" },
+    { name: "Идеи вашего дома (Telegram)", url: "https://t.me/s/ivd_ru", group: "creator" },
+    { name: "Идеи вашего дома", url: "https://www.ivd.ru/", group: "media" },
+    { name: "Дом Mail", url: "https://dom.mail.ru/", group: "media" },
+    { name: "Лайфхакер", url: "https://lifehacker.ru/", group: "media" },
+    { name: "Старший по дому | ЖКХ (Telegram)", url: "https://t.me/s/starshijpodomu", group: "creator" }
+  ],
+  disable: [
+    "https://realty.rbc.ru/news/",
+    "https://realty.ria.ru/",
+    "https://realty.yandex.ru/journal/",
+    "https://iz.ru/rubric/nedvizhimost",
+    "https://www.vedomosti.ru/realty",
+    "https://www.kommersant.ru/rubric/5",
+    "https://lenta.ru/rubrics/realty/",
+    "https://t.me/s/domclick",
+    "https://t.me/s/cian_ru",
+    "https://t.me/s/yandexrealty",
+    "https://tass.ru/nedvizhimost",
+    "https://asninfo.ru/news",
+    "https://aif.ru/realty",
+    "https://archi.ru/news/",
+    "https://hi-tech.mail.ru/news/",
+    "https://3dnews.ru/news/",
+    "https://4pda.to/news/",
+    "https://ichip.ru/novosti",
+    "https://news.samsung.com/global/",
+    "https://www.mvideoeldorado.ru/ru/press-center",
+    "https://www.company.rt.ru/press/news/",
+    "https://www.tadviser.ru/index.php/Новости",
+    "https://csa-iot.org/newsroom/",
+    "https://www.the-ambient.com/news",
+    "https://www.retail.ru/news/",
+    "https://www.mos.ru/news/",
+    "https://mchs.gov.ru/deyatelnost/press-centr/novosti",
+    "https://t.me/s/mchs_official",
+    "https://t.me/s/fasrussia",
+    "https://t.me/s/minstroyrf",
+    "https://minstroyrf.gov.ru/press/",
+    "https://rosreestr.gov.ru/press/archive/"
   ]
 };
