@@ -1,0 +1,57 @@
+name: Claude Full QA
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  audit:
+    if: contains(github.event.comment.body, '/qa-full')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run read-only Claude QA
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are running a FULL READ-ONLY QA audit for News Factory.
+
+            Repository: ${{ github.repository }}
+            Issue: #${{ github.event.issue.number }}
+            Issue title: ${{ github.event.issue.title }}
+
+            Audit scope from the issue:
+            ${{ github.event.issue.body }}
+
+            Trigger comment:
+            ${{ github.event.comment.body }}
+
+            Production URL:
+            https://news-factory-api-production.up.railway.app
+
+            Requirements:
+            - Follow CLAUDE.md.
+            - Do not modify repository files, create commits, branches, PRs, or production data.
+            - Run the relevant node/npm/npx tests and syntax checks.
+            - Use curl and/or WebFetch for read-only production probes.
+            - Never print secrets, tokens, cookies, environment variable values, or authorization headers.
+            - Every reported defect must have a runnable reproduction or a concrete read-only request demonstrating it.
+            - Separate confirmed defects from risks/observations.
+            - Finish with PASS / FAIL / INCONCLUSIVE, severity, root cause, and recommended fix.
+            - Post the final report as a comment on this same issue.
+          claude_args: |
+            --max-turns 80
+            --allowedTools "Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(curl:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(grep:*),Bash(find:*),Bash(ls:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(timeout:*),Bash(sleep:*),WebFetch,WebSearch"
+            --disallowedTools "Edit,Write,NotebookEditCell"
