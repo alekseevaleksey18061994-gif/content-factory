@@ -14610,6 +14610,113 @@ setTimeout(function runHomeRubricSourcesV0513() {
   })().catch(function(error){ console.warn("Home rubric sources failed:", error.message); });
 }, 105000);
 
+// v0.52.4: finish the «Что там для дома?» source structure.
+// Every active source must belong to one of the 10 rubrics; unknown leftovers are paused.
+// Weak groups now have a floor of 5 sources (ceiling 6).
+function normalizeHomeRubricSourcesV0524(ws) {
+  const valid = rubricIds(ws);
+  const now = new Date().toISOString();
+  const themeByUrl = new Map();
+  const normUrl = function(u) {
+    try {
+      const x = new URL(String(u || ""));
+      return (x.hostname.replace(/^www\./i, "") + x.pathname.replace(/\/+$/, "") + x.search).toLowerCase();
+    } catch { return ""; }
+  };
+
+  for (const url of Object.keys(HOME_RUBRIC_SOURCES_V0513.assign || {})) {
+    themeByUrl.set(normUrl(url), HOME_RUBRIC_SOURCES_V0513.assign[url]);
+  }
+  for (const cand of (HOME_RUBRIC_SOURCES_V0513.add || [])) {
+    if (cand && cand.rubric) themeByUrl.set(normUrl(cand.url), cand.rubric);
+  }
+
+  const assigned = [];
+  const paused = [];
+  for (const src of (state.sources || [])) {
+    if (!src || !src.enabled) continue;
+    const current = String(src.rubric || "");
+    if (valid.has(current)) continue;
+
+    const inferred = themeByUrl.get(normUrl(src.url)) || "";
+    if (inferred && valid.has(inferred)) {
+      src.rubric = inferred;
+      src.rubricAssignedAt = now;
+      assigned.push(src.name || src.url || src.id);
+      continue;
+    }
+
+    // An enabled source with no known theme bypasses theme balancing and can leak
+    // generic real-estate/IT/city content into the home feed, so quarantine it.
+    src.enabled = false;
+    src.autoPaused = {
+      reason: "нет тематической рубрики «Что там для дома?» (v0.52.4)",
+      at: now
+    };
+    paused.push(src.name || src.url || src.id);
+  }
+
+  state.rubricLimits = state.rubricLimits && typeof state.rubricLimits === "object" && !Array.isArray(state.rubricLimits)
+    ? state.rubricLimits
+    : {};
+  for (const r of channelRubrics(ws)) {
+    const current = state.rubricLimits[r.id] && Number(state.rubricLimits[r.id].min);
+    if (!Number.isFinite(current) || current < 5) {
+      state.rubricLimits[r.id] = { min: 5, at: now, migration: "v0.52.4-home-rubric-balance" };
+    }
+  }
+
+  state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
+  state.sourceReplenish.lastAt = "";
+  if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+
+  return { assigned: assigned, paused: paused, rubrics: rubricSourceCounts(ws) };
+}
+
+setTimeout(function runHomeRubricBalanceV0524() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "home") continue;
+      const migration = "v0.52.4-home-rubric-balance";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const normalized = normalizeHomeRubricSourcesV0524(ws);
+        const topups = [];
+
+        // Use the existing OpenAI source discovery, one weak rubric per pass.
+        // No Claude/Anthropic calls are used here.
+        for (let i = 0; i < 6; i++) {
+          const counts = rubricSourceCounts(ws);
+          const short = channelRubrics(ws).filter(function(r){ return (counts[r.id] || 0) < rubricMinFor(r.id, ws); });
+          if (!short.length) break;
+
+          state.sourceReplenish.lastAt = "";
+          if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+          const result = await replenishSources("home_rubric_balance");
+          topups.push({
+            attempt: i + 1,
+            added: result && Array.isArray(result.added) ? result.added.length : 0,
+            before: counts,
+            after: rubricSourceCounts(ws)
+          });
+        }
+
+        state.migrations.push(migration);
+        saveState();
+        console.log("HOME_RUBRIC_BALANCE " + JSON.stringify({
+          workspace: ws.id,
+          assigned: normalized.assigned,
+          paused: normalized.paused,
+          rubrics: rubricSourceCounts(ws),
+          topups: topups
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("Home rubric balance failed:", error.message); });
+}, 110000);
+
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
 async function recoverMissingWorkspaces() {

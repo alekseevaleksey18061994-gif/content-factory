@@ -78,9 +78,9 @@ test("H4 scheduler: home prepares and posts only in its own hours (no 11:00 post
 test("H5 theme search: the theme with the fewest sources gets its own discovery; new sources carry the theme", async () => {
   const t = await loadServer({ fixedNow: msk(14, 0), state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
   const ws = t.ws(H);
-  // every theme has 4 sources except kitchen (1)
+  // every theme has 5 sources except kitchen (1)
   for (const r of channelStrategy("home").rubrics) {
-    const n = r.id === "kitchen" ? 1 : 4;
+    const n = r.id === "kitchen" ? 1 : 5;
     for (let i = 0; i < n; i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
   }
   const cands = Array.from({ length: 10 }, (_, i) => ({ name: "Kitchen " + i, url: "https://kitchensite" + i + ".ru/news/", group: "media" }));
@@ -148,7 +148,7 @@ test("H7 scorecard: good / weak verdicts; a weak themed source is replaced only 
   assert.equal(off().length, 1, "one per run: " + off());
   for (let i = 0; i < 5; i++) await quiet(() => inWs(t, H, () => t.autoPauseWeakSources()));
   const storageLeft = ws.state.sources.filter((x) => x.enabled && x.rubric === "storage").length;
-  assert.equal(storageLeft, 4, "never below the theme minimum (4)");
+  assert.equal(storageLeft, 5, "never below the theme minimum (5)");
   assert.ok(ws.state.sources.find((x) => x.id === "good").enabled);
 });
 
@@ -168,7 +168,7 @@ test("H8 the editor re-enables a theme-paused source: it stays on (14 days)", as
 test("H9 theme search: one miss counter for all themes (3 empty searches -> rest); a starving theme channel grows its thinnest theme", async () => {
   const t = await loadServer({ fixedNow: msk(14, 0), env: { SOURCE_REPLENISH_INTERVAL_MINUTES: "1" }, state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
   const ws = t.ws(H);
-  for (const r of channelStrategy("home").rubrics) for (let i = 0; i < (r.id === "kitchen" ? 4 : 5); i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
+  for (const r of channelStrategy("home").rubrics) for (let i = 0; i < 5; i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
   const inner = globalThis.fetch; let calls = 0;
   globalThis.fetch = async (url, init) => {
     if (String(url).startsWith("https://api.openai.com/v1/responses") && String(JSON.parse(init.body).input || "").startsWith("Подбери")) { calls++; return new Response(JSON.stringify({ output_text: JSON.stringify({ sources: [] }), usage: {} }), { status: 200, headers: { "content-type": "application/json" } }); }
@@ -177,7 +177,8 @@ test("H9 theme search: one miss counter for all themes (3 empty searches -> rest
   // all themes at or above the minimum: no search
   await quiet(() => inWs(t, H, () => t.replenishSources("below_target")));
   assert.equal(calls, 0);
-  // starving: the thinnest theme (kitchen, 4) is searched; empty answers rest after 3
+  // starving: make kitchen the thinnest theme (4 active); empty answers rest after 3
+  ws.state.sources.find((x) => x.rubric === "kitchen").enabled = false;
   ws.state.sourceStarvingRuns = 5;
   for (let i = 0; i < 6; i++) { ws.state.sourceReplenish = Object.assign({}, ws.state.sourceReplenish, { lastAt: "" }); await quiet(() => inWs(t, H, () => t.replenishSources("starving"))); }
   assert.equal(calls, 3, "shared counter: " + calls);
@@ -202,7 +203,7 @@ test("H11 per-group minimum: the editor's limit drives the theme search, auto-pa
   const ws = t.ws(H);
   for (const r of channelStrategy("home").rubrics) for (let i = 0; i < 5; i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
   const call = (fn) => inWs(t, H, fn);
-  assert.equal(call(() => t.rubricMinFor("storage")), 4, "default");
+  assert.equal(call(() => t.rubricMinFor("storage")), 5, "default");
   // validation
   assert.equal(call(() => t.setRubricLimit("nope", 5)).ok, false);
   assert.equal(call(() => t.setRubricLimit("storage", 0)).ok, false);
@@ -244,6 +245,27 @@ test("H11 per-group minimum: the editor's limit drives the theme search, auto-pa
   assert.equal(ws.state.sources.filter((x) => x.enabled && x.rubric === "storage").length, 5);
 });
 
+test("H13 v0.52.4 source cleanup: active untagged source is quarantined, known URL is assigned, all rubric floors become 5", async () => {
+  const t = await loadServer({ fixedNow: msk(14, 0), state: { [H]: {
+    sources: [
+      src("unknown", "https://generic.example/news"),
+      src("salon", "https://www.salon.ru/news"),
+      src("ok", "https://ok.example/", { rubric: "storage" })
+    ],
+    rubricLimits: { storage: { min: 4 }, kitchen: { min: 7 } }
+  } } });
+  const ws = t.ws(H);
+  const result = inWs(t, H, () => t.normalizeHomeRubricSourcesV0524(ws));
+
+  assert.ok(result.paused.includes("unknown"));
+  assert.equal(ws.state.sources.find((x) => x.id === "unknown").enabled, false, "untagged source cannot stay active");
+  assert.equal(ws.state.sources.find((x) => x.id === "salon").rubric, "interior_trends", "known source gets its exact rubric");
+  assert.equal(ws.state.sources.find((x) => x.id === "ok").enabled, true);
+  assert.equal(inWs(t, H, () => t.rubricMinFor("storage")), 5, "old lower custom minimum is lifted");
+  assert.equal(inWs(t, H, () => t.rubricMinFor("kitchen")), 7, "higher editor minimum is preserved");
+  for (const r of channelStrategy("home").rubrics) assert.ok(inWs(t, H, () => t.rubricMinFor(r.id)) >= 5, r.id);
+});
+
 test("H12 review fixes: groups take turns (an unfillable group does not starve the others); the same limit or a rapid re-save triggers no extra paid search", async () => {
   const t = await loadServer({ fixedNow: msk(14, 0), env: { SOURCE_REPLENISH_INTERVAL_MINUTES: "1" }, state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
   const ws = t.ws(H);
@@ -255,7 +277,7 @@ test("H12 review fixes: groups take turns (an unfillable group does not starve t
     if (String(url).startsWith("https://api.openai.com/v1/responses") && String(JSON.parse(init.body).input || "").startsWith("Подбери")) { asked.push(String(JSON.parse(init.body).input)); return new Response(JSON.stringify({ output_text: JSON.stringify({ sources: [] }), usage: {} }), { status: 200, headers: { "content-type": "application/json" } }); }
     return inner(url, init);
   };
-  // storage (min 20, 10 active) and kitchen (min 4, 0 active) are both short: they alternate instead of storage winning forever
+  // storage (min 20, 10 active) and kitchen (min 5, 0 active) are both short: they alternate instead of storage winning forever
   for (let i = 0; i < 2; i++) { ws.state.sourceReplenish = Object.assign({}, ws.state.sourceReplenish, { lastAt: "", misses: {} }); await quiet(() => call(() => t.replenishSources("below_target"))); }
   assert.equal(asked.length, 2);
   assert.ok(asked.some((x) => /Кухня и посуда/.test(x)), "kitchen got its turn: " + asked.map((x) => x.slice(0, 60)).join(" | "));

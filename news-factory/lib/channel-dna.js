@@ -121,7 +121,7 @@ export const CHANNEL_DNA = {
       { id: "interior_trends", label: "Тренды интерьера", hint: "сайты и Telegram-каналы о трендах интерьера: цвета, декор, мебель сезона, что устарело" },
       { id: "kitchen", label: "Кухня и посуда", hint: "сайты и Telegram-каналы про кухню: гаджеты, посуда, организация кухни, кухонные находки" }
     ],
-    rubricMinSources: 4,
+    rubricMinSources: 5,
     rubricMaxSources: 6,
     // 10 posts a day (Moscow hours), one per theme
     slotHours: [9, 10, 12, 13, 15, 17, 18, 19, 21, 22],
