@@ -171,3 +171,4 @@ await test("M8 money cannot bypass rubric scheduler through legacy direct auto-p
 });
 
 console.log("money-rubrics: "+passed+" passed");
+process.exit(0);
