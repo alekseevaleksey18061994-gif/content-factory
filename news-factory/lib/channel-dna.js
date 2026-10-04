@@ -535,7 +535,11 @@ export const AUTO_RUBRIC_SOURCES_V0529 = {
     { name:"AcademeG", url:"https://t.me/s/academeg_true_original", group:"creator", rubrics:["bloggers_owners","viral_unusual"] },
     { name:"Клубный Сервис", url:"https://t.me/s/klubniy_servis", group:"creator", rubrics:["bloggers_owners"] },
     { name:"Жекич Дубровский", url:"https://t.me/s/dubrovskiy_444", group:"creator", rubrics:["bloggers_owners"] },
-    { name:"Михеев и Павлов", url:"https://t.me/s/miheevpavlov_pro", group:"creator", rubrics:["bloggers_owners"] }
+    { name:"Михеев и Павлов", url:"https://t.me/s/miheevpavlov_pro", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"Александр Булкин", url:"https://t.me/s/bulkin_live", group:"creator", rubrics:["bloggers_owners","viral_unusual"] },
+    { name:"Туман", url:"https://t.me/s/sashatyman", group:"creator", rubrics:["bloggers_owners","viral_unusual"] },
+    { name:"Иван Зенкевич PRO автомобили", url:"https://t.me/s/ivanzenkevich0", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"Денис Механик", url:"https://t.me/s/denismehanik", group:"creator", rubrics:["bloggers_owners","auto_tech"] }
   ],
   assign: {
     "https://www.autonews.ru/": ["russia_market","driver_important"],
