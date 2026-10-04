@@ -6604,6 +6604,8 @@ async function collectOnce(trigger) {
         const lastPublishedAt = lastPublished ? new Date(lastPublished.publishedAt).getTime() : 0;
         const enoughTimePassed = !lastPublishedAt || (Date.now() - lastPublishedAt) >= AUTO_PUBLISH_MIN_INTERVAL_MINUTES * 60 * 1000;
         const canAutoPublish =
+          // Money is slot-only: direct legacy auto-publish would bypass one-post-per-rubric and the approved cadence.
+          editorialChannelId() !== "money" &&
           trigger === "legacy-auto" &&
           state.mode === "AUTO" &&
           AUTO_PUBLISH_ENABLED &&
