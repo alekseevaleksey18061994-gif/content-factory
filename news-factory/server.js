@@ -113,7 +113,13 @@ const EDITORIAL_V2_PROMPT_FILE = fileURLToPath(new URL("./prompts/chto-tam.md", 
 const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.EDITORIAL_V2_MAX_FIX_ROUNDS || 2)));
 const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
+// Cost control: routine second-pass fact checking and helper failover use Haiku.
+// Sonnet is reserved for high-risk/high-importance checks and writer failover.
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+const ANTHROPIC_CHECKER_MODEL = String(process.env.ANTHROPIC_CHECKER_MODEL || "claude-haiku-4-5").trim();
+const ANTHROPIC_STRONG_CHECKER_MODEL = String(process.env.ANTHROPIC_STRONG_CHECKER_MODEL || ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+const ANTHROPIC_ASSIST_MODEL = String(process.env.ANTHROPIC_ASSIST_MODEL || ANTHROPIC_CHECKER_MODEL).trim();
+const ANTHROPIC_STRONG_IMPORTANCE = Math.max(7, Math.min(10, Number(process.env.ANTHROPIC_STRONG_IMPORTANCE || 9) || 9));
 const ANTHROPIC_HEALTH_CACHE_MIN = Math.max(10, Math.min(360, Number(process.env.ANTHROPIC_HEALTH_CACHE_MIN || 120) || 120));
 // Provider failover: OpenAI or Claude out of money (or down) -> the other one writes and checks, publishing goes on.
 const PROVIDER_FAILOVER_ENABLED = String(process.env.EDITORIAL_V2_PROVIDER_FAILOVER || "true").toLowerCase() !== "false";
@@ -1981,7 +1987,7 @@ const providerBreaker = createProviderBreaker({
 const llmResponsesFetch = createResponsesFailover({
   breaker: providerBreaker,
   get anthropicApiKey() { return PROVIDER_FAILOVER_ENABLED ? ANTHROPIC_API_KEY : ""; },
-  get anthropicModel() { return ANTHROPIC_MODEL; },
+  get anthropicModel() { return ANTHROPIC_ASSIST_MODEL; },
   onUsage: function(event) { return recordCostUsage(event); },
   onFailover: function(info) {
     const now = Date.now();
@@ -10325,7 +10331,7 @@ async function anthropicEditorialProbe(force) {
   try {
     const clients = createModelClients({
       anthropicApiKey: ANTHROPIC_API_KEY,
-      anthropicModel: ANTHROPIC_MODEL,
+      anthropicModel: ANTHROPIC_CHECKER_MODEL,
       timeoutMs: 30000,
       onUsage: recordCostUsage
     });
@@ -10347,7 +10353,7 @@ async function anthropicEditorialProbe(force) {
     const parsed = result && result.parsed || {};
     const ok = ["pass", "fix", "reject"].includes(String(parsed.verdict || "").toLowerCase()) && Array.isArray(parsed.errors);
     const value = ok
-      ? { ok: true, model: result.model || ANTHROPIC_MODEL, structured: result.structured !== false }
+      ? { ok: true, model: result.model || ANTHROPIC_CHECKER_MODEL, structured: result.structured !== false }
       : { ok: false, error: "Claude вернул ответ вне схемы" };
     anthropicProbeCache = { at: now, value };
     return value;
@@ -10636,7 +10642,9 @@ function editorialPipeline() {
         openaiModel: OPENAI_MODEL,
         openaiFallbackModel: OPENAI_FALLBACK_MODEL,
         anthropicApiKey: ANTHROPIC_API_KEY,
-        anthropicModel: ANTHROPIC_MODEL,
+        anthropicModel: ANTHROPIC_CHECKER_MODEL,
+        anthropicStrongModel: ANTHROPIC_STRONG_CHECKER_MODEL,
+        anthropicStrongImportance: ANTHROPIC_STRONG_IMPORTANCE,
         anthropicWriterModel: ANTHROPIC_FALLBACK_WRITER_MODEL,
         providerFailover: PROVIDER_FAILOVER_ENABLED,
         breaker: providerBreaker,

@@ -383,7 +383,7 @@ export function createModelClients(config) {
 
   async function callAnthropicRaw(system, input, opts) {
     if (!cfg.anthropicApiKey) throw new Error("ANTHROPIC_API_KEY не настроен");
-    const model = cfg.anthropicModel || "claude-sonnet-5-5";
+    const model = String(opts && opts.model || cfg.anthropicModel || "claude-haiku-4-5");
     const schema = anthropicOutputSchema(opts);
     const errMsg = function(d){ return String(d && d.error && d.error.message || ""); };
 
@@ -451,7 +451,9 @@ export function createModelClients(config) {
       // refused. Log why and retry once with a larger budget.
       const text = anthropicText(result.data);
       console.warn("EDITORIAL_V2_CLAUDE_BAD_JSON " + JSON.stringify({ model: model, stop_reason: result.data && result.data.stop_reason || "", blocks: (Array.isArray(result.data && result.data.content) ? result.data.content : []).map(function(b){ return b && b.type; }), output_tokens: result.data && result.data.usage && result.data.usage.output_tokens || 0, length: String(text || "").length, head: String(text || "").slice(0, 160), tail: String(text || "").slice(-120) }));
-      const bigger = Math.max(16000, ((opts && opts.maxTokens) || 3000) * 2);
+      // Checker output is tiny JSON. The old 16k retry ceiling could burn a large
+      // amount of credit on a malformed answer; cap the one retry at 6k.
+      const bigger = Math.min(6000, Math.max(4000, ((opts && opts.maxTokens) || 3000) * 2));
       const retryOpts = Object.assign({}, opts || {}, { maxTokens: bigger });
       const prevOpts = opts;
       opts = retryOpts;
@@ -746,9 +748,21 @@ export function createEditorialPipeline(options) {
         .then(function(r){ return normalizeCheckerResult(r.parsed, "openai", r.model); })
         .catch(function(error){ return { provider: "openai", failed: true, error: String(error && error.message || error), failureKind: failureKindOf(error) }; });
     };
-    const claudeJob = function() {
+    const strongImportance = Math.max(7, Math.min(10, Number(opt.config && opt.config.anthropicStrongImportance || 9) || 9));
+    const needsStrongClaude = Boolean(
+      Number(post.importance || 0) >= strongImportance ||
+      (Array.isArray(post.legalFlags) && post.legalFlags.length)
+    );
+    const claudeJob = function(forceStrong) {
+      const strong = Boolean(forceStrong || needsStrongClaude);
+      const model = strong
+        ? String(opt.config && opt.config.anthropicStrongModel || opt.config && opt.config.anthropicModel || "claude-sonnet-5-5")
+        : String(opt.config && opt.config.anthropicModel || "claude-haiku-4-5");
       return clients.callAnthropic(system, input, {
-        maxTokens: 8000, purpose: "editorial_checker_anthropic", extra: { news_id: String(request.news_id || "") }
+        model: model,
+        maxTokens: strong ? 3500 : 2500,
+        purpose: strong ? "editorial_checker_anthropic_strong" : "editorial_checker_anthropic",
+        extra: { news_id: String(request.news_id || ""), strong: strong }
       })
         .then(function(r){ return normalizeCheckerResult(r.parsed, "anthropic", r.model); })
         .catch(function(error){ return { provider: "anthropic", failed: true, error: String(error && error.message || error), failureKind: failureKindOf(error) }; });
@@ -756,7 +770,7 @@ export function createEditorialPipeline(options) {
     let results;
     let claudeSkipped = false;
     if (useClaude() && claudeCheckMode === "always") {
-      results = await Promise.all([openaiJob(), claudeJob()]);
+      results = await Promise.all([openaiJob(), claudeJob(false)]);
     } else {
       const first = await openaiJob();
       results = [first];
@@ -764,8 +778,10 @@ export function createEditorialPipeline(options) {
         // Claude only sees a draft GPT passed. If GPT asked for fixes or rejected, the verdict is already decided,
         // so the call would be wasted. If GPT could not answer at all (no money, outage), Claude takes over as the
         // only checker (provider failover); with failover off that stays "unavailable" and the post waits.
-        if (!first.failed && first.verdict === "pass") results.push(await claudeJob());
-        else if (first.failed && failoverOn && failoverKind(first.failureKind)) results.push(await claudeJob());
+        if (!first.failed && first.verdict === "pass") results.push(await claudeJob(false));
+        // When Claude becomes the ONLY checker because OpenAI is down, use the
+        // strong model regardless of importance — this is failover, not routine QC.
+        else if (first.failed && failoverOn && failoverKind(first.failureKind)) results.push(await claudeJob(true));
         else claudeSkipped = true;
       }
     }
