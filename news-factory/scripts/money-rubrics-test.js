@@ -182,5 +182,15 @@ await test("M8 money cannot bypass rubric scheduler through legacy direct auto-p
   assert.match(server,/const canAutoPublish =\s*\/\/[^\n]*\n\s*editorialChannelId\(\) !== "money" &&/);
 });
 
+await test("M9 curated source plan covers every rubric with at least five candidates", async () => {
+  const counts=Object.fromEntries(channelStrategy("money").rubrics.map(r=>[r.id,0]));
+  for(const source of MONEY_RUBRIC_SOURCES_V0526.add){
+    for(const rubric of (source.rubrics||[])) if(Object.prototype.hasOwnProperty.call(counts,rubric)) counts[rubric]+=1;
+  }
+  for(const [rubric,count] of Object.entries(counts)) assert.ok(count>=5,rubric+" has only "+count+" planned sources");
+  assert.ok(counts.ruble_inflation_cb>=6,"macro rubric has one redundant shared source after production validation");
+  assert.ok(counts.income_benefits>=7,"benefits rubric has two redundant shared sources after production validation");
+});
+
 console.log("money-rubrics: "+passed+" passed");
 process.exit(0);
