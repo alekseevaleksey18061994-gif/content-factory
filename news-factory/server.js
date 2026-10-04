@@ -4347,8 +4347,9 @@ async function createPublicPostPage(post) {
   const description = previewDescription(post);
   const sources = normalizePublicPostSources(post);
   const primarySource = sources[0] || {};
-  const sourceName = String(primarySource.name || post && post.sourceName || "").trim();
-  const sourceUrl = String(primarySource.url || post && post.sourceUrl || "").trim();
+  const hidePublicSources = Boolean(post && post.hidePublicSources === true);
+  const sourceName = hidePublicSources ? "" : String(primarySource.name || post && post.sourceName || "").trim();
+  const sourceUrl = hidePublicSources ? "" : String(primarySource.url || post && post.sourceUrl || "").trim();
   const postId = String(post && (post.postId || post.id || post.newsId) || slug);
   const topicId = String(post && (post.topicId || post.topic_id) || "default");
 
