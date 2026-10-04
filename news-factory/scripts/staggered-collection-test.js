@@ -10,7 +10,8 @@ import { loadServer, inWs, net, listHtml, mkQueueItem, setNow } from "./dedupe-h
 const cases = {};
 function test(name, fn) { cases[name] = fn; }
 const src = (id, url) => ({ id, name: id, url, enabled: true, group: "media", type: "web", priority: 2 });
-const WS = "chtotampokupki";
+// Use a legacy hourly channel here: auto/shopping now have exact rubric slots and collect in their own prep windows.
+const WS = "chtotamcrypto";
 const mskToUtc = (hh, mm) => `2026-10-04T${String(hh - 3).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00Z`;
 function quiet(fn) {
   const lines = []; const o = { log: console.log, warn: console.warn, error: console.error };
