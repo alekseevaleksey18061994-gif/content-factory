@@ -14962,6 +14962,31 @@ setTimeout(function runMoneyPersonalFinanceV0526() {
   })().catch(function(error){ console.warn("Money personal-finance migration failed:", error.message); });
 }, 115000);
 
+// v0.52.8: two planned Telegram fallbacks already active in the workspace also cover
+// ruble/inflation and income/benefits. Apply the expanded rubric tags even when v0.52.6 already ran.
+setTimeout(function runMoneyRubricFallbacksV0528() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "money") continue;
+      const migration = "v0.52.8-money-rubric-fallbacks";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const normalized = normalizeMoneyRubricSourcesV0526(ws);
+        state.migrations.push(migration);
+        saveState();
+        console.log("MONEY_RUBRIC_FALLBACKS " + JSON.stringify({
+          workspace: ws.id,
+          assigned: normalized.assigned,
+          paused: normalized.paused,
+          rubrics: rubricSourceCounts(ws)
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("Money rubric fallback migration failed:", error.message); });
+}, 35000);
+
+
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
 async function recoverMissingWorkspaces() {
