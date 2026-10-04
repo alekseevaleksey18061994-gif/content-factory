@@ -2530,13 +2530,13 @@ body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.
             <span class="chip">рейтинг эффективности</span>
           </div>
           <div class="source-ranking-summary">
-            <div class="source-summary-box"><b id="sourceStrongCount">0</b><span>Сильные</span></div>
-            <div class="source-summary-box"><b id="sourceWorkingCount">0</b><span>Рабочие</span></div>
-            <div class="source-summary-box"><b id="sourceWeakCount">0</b><span>Слабые</span></div>
-            <div class="source-summary-box source-summary-bad"><b id="sourceReplaceCount">0</b><span>На замену</span></div>
+            <div class="source-summary-box"><b id="sourceStrongCount">0</b><span id="sourceStrongLabel">Сильные</span></div>
+            <div class="source-summary-box"><b id="sourceWorkingCount">0</b><span id="sourceWorkingLabel">Рабочие</span></div>
+            <div class="source-summary-box"><b id="sourceWeakCount">0</b><span id="sourceWeakLabel">Слабые</span></div>
+            <div class="source-summary-box source-summary-bad" id="sourceReplaceBox"><b id="sourceReplaceCount">0</b><span id="sourceReplaceLabel">На замену</span></div>
           </div>
           <div class="source-target-box"><div><b>Минимум активных источников</b><span id="sourceTargetInfo">—</span></div><div class="source-target-form"><input id="sourceTargetInput" type="number" min="0" max="200" inputmode="numeric"><button onclick="saveSourceTarget()">Сохранить</button></div></div>
-          <div class="notice source-rating-note">Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.</div>
+          <div class="notice source-rating-note" id="sourceRatingNote">Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.</div>
           <div class="notice copyright-safe-note"><b>Balanced Media включён.</b> Фото и видео из новостного источника используются по умолчанию с сохранением ссылки на источник. AI-обложка создаётся только как запасной вариант, если медиа нет или источник помечен «Медиа запрещено».</div>
           <div id="sources" class="source-ranked-list"></div>
           <div class="two" style="margin-top:14px"><input id="sourceName" placeholder="Название источника"><input id="sourceUrl" placeholder="https://..."></div>
@@ -3702,13 +3702,30 @@ function render(){
     if(br!==ar)return br-ar;
     return String(a.name||'').localeCompare(String(b.name||''),'ru');
   });
+  // Only switched-on sources are counted: paused ones are already replaced and must not show up as "to replace".
+  var enabledIds={};(state.sources||[]).forEach(function(x){if(x&&x.enabled)enabledIds[x.id]=true});
+  var activeRankings=sourceRankings.filter(function(r){return enabledIds[r.id]});
+  // Theme channels are judged by the theme scorecard (posts a week in its theme), not by the old news rating.
+  var themed=activeRankings.some(function(r){return r.scorecard&&r.scorecard.rubric});
   var statusCounts={strong:0,working:0,weak:0,replace:0};
-  sourceRankings.forEach(function(r){
+  activeRankings.forEach(function(r){
+    if(themed){
+      var v=r.scorecard&&r.scorecard.rubric?r.scorecard.verdict:'Собираем данные';
+      if(v==='Хороший')statusCounts.strong++;else if(v==='Средний')statusCounts.working++;else if(v==='Слабый')statusCounts.weak++;else statusCounts.replace++;
+      return;
+    }
     if(r.status==='Сильный')statusCounts.strong++;
     else if(r.status==='Рабочий')statusCounts.working++;
     else if(r.status==='Слабый')statusCounts.weak++;
     else if(r.status==='На замену'||r.status==='Не используется')statusCounts.replace++;
   });
+  var setLabel=function(id,t){if(el(id))el(id).textContent=t};
+  setLabel('sourceStrongLabel',themed?'Хорошие':'Сильные');
+  setLabel('sourceWorkingLabel',themed?'Средние':'Рабочие');
+  setLabel('sourceWeakLabel',themed?'Слабые':'Слабые');
+  setLabel('sourceReplaceLabel',themed?'Собираем данные':'На замену');
+  if(el('sourceReplaceBox'))el('sourceReplaceBox').classList.toggle('source-summary-bad',!themed);
+  if(el('sourceRatingNote'))el('sourceRatingNote').textContent=themed?'Оценка источника считается по его теме за 7 дней: сколько постов в неделю он дал каналу (норма 1,5+), какая доля его новостей прошла отбор (норма от 30%), попадание в тему и фото. Первые 2 дня — сбор данных. Слабый источник заменяется поиском по теме только через 14 дней и не чаще одного за раз.':'Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.';
   if(el('sourceStrongCount'))el('sourceStrongCount').textContent=statusCounts.strong;
   if(el('sourceWorkingCount'))el('sourceWorkingCount').textContent=statusCounts.working;
   if(el('sourceWeakCount'))el('sourceWeakCount').textContent=statusCounts.weak;
@@ -3722,10 +3739,16 @@ function render(){
     var r=rankingMap[s.id]||{rating:null,status:'Собираем данные',rank:'—',checks:0,scored:0,strong:0,selected:0,published:0,errors:0,avgScore:null};
     var rating=r.rating==null?'—':r.rating;
     var cls=r.status==='Сильный'?'source-rank-good':r.status==='Рабочий'?'source-rank-ok':r.status==='Слабый'?'source-rank-weak':(r.status==='На замену'||r.status==='Не используется')?'source-rank-bad':'source-rank-new';
+    var badgeStatus=r.status;
+    if(themed&&r.scorecard&&r.scorecard.rubric){
+      // theme channel: the badge shows posts a week and the theme verdict instead of the old news rating
+      var v=r.scorecard.verdict;rating=r.scorecard.publishedWeek;badgeStatus=v;
+      cls=v==='Хороший'?'source-rank-good':v==='Средний'?'source-rank-ok':v==='Слабый'?'source-rank-weak':'source-rank-new';
+    }
     var avg=r.avgScore==null?'—':r.avgScore;
     var metric=function(v,l,cls,title){return '<div class="sc-m'+(cls?' '+cls:'')+'"'+(title?' title="'+esc(title)+'"':'')+'><b>'+esc(v)+'</b><span>'+l+'</span></div>'};
     return '<div class="sc-card'+(!s.enabled?' sc-off':'')+'">'+
-      '<div class="sc-head">'+sourceThumbHtml(s,r.rank)+'<div class="sc-name"><b>'+esc(s.name)+'</b><span>'+group+' · '+(s.enabled?'включён':'выключен')+' · '+esc(mediaLicenseLabel(s.mediaLicense).replace('Медиа источника · используем','медиа используем'))+'</span></div><span class="source-rating sc-rating '+cls+'">'+esc(rating)+'<small>/100</small><i>'+esc(r.status)+'</i></span></div>'+
+      '<div class="sc-head">'+sourceThumbHtml(s,r.rank)+'<div class="sc-name"><b>'+esc(s.name)+'</b><span>'+group+' · '+(s.enabled?'включён':'выключен')+' · '+esc(mediaLicenseLabel(s.mediaLicense).replace('Медиа источника · используем','медиа используем'))+'</span></div><span class="source-rating sc-rating '+cls+'">'+esc(rating)+'<small>'+(themed&&r.scorecard&&r.scorecard.rubric?' в нед.':'/100')+'</small><i>'+esc(badgeStatus)+'</i></span></div>'+
       '<a class="sc-url" href="'+esc(safeHref(s.url))+'" target="_blank" rel="noopener">'+esc(String(s.url||'').replace(/^https?:\/\/(www\.)?/,''))+'</a>'+
       (s.autoAdded?'<div class="source-added-note">Добавлен автоматически '+esc(safeDate(s.autoAdded.at))+(s.autoAdded.from==='ai'||s.autoAdded.from==='ai-rubric'||s.autoAdded.from==='ai-telegram'||s.autoAdded.from==='ai-lane'?' · найден AI-поиском':(s.autoAdded.from==='dna'||s.autoAdded.from==='seed'?' · из подобранного списка':' · из резерва'))+(s.autoAdded.why?' · '+esc(s.autoAdded.why):'')+'</div>':'')+
       (s.autoPaused&&!s.enabled?'<div class="source-paused-note">Выключен автоматически: '+esc(s.autoPaused.reason||'')+'. Можно включить вручную.</div>':'')+
