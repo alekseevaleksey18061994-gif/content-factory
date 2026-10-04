@@ -32,20 +32,20 @@ const REJECT = { verdict: "reject", errors: [{ severity: "critical", type: "fact
 
 function mockClients(script) {
   const calls = { openai: [], anthropic: [] };
-  const next = function(provider, system, input) {
+  const next = function(provider, system, input, opts) {
     const role = JSON.parse(input).role;
-    calls[provider].push({ role, input: JSON.parse(input), system });
+    calls[provider].push({ role, input: JSON.parse(input), system, opts: opts || {} });
     const queue = script[provider + ":" + role];
     const answer = Array.isArray(queue) ? (queue.length > 1 ? queue.shift() : queue[0]) : queue;
     if (answer instanceof Error) return Promise.reject(answer);
-    return Promise.resolve({ parsed: structuredClone(answer), model: provider + "-model", provider });
+    return Promise.resolve({ parsed: structuredClone(answer), model: String(opts && opts.model || provider + "-model"), provider });
   };
   return {
     calls,
     clients: {
-      callOpenAI: function(system, input){ return next("openai", system, input); },
-      callAnthropic: function(system, input){ return next("anthropic", system, input); },
-      callAnthropicWriter: function(system, input){ return next("anthropic", system, input); }
+      callOpenAI: function(system, input, opts){ return next("openai", system, input, opts); },
+      callAnthropic: function(system, input, opts){ return next("anthropic", system, input, opts); },
+      callAnthropicWriter: function(system, input, opts){ return next("anthropic", system, input, opts); }
     }
   };
 }
@@ -174,6 +174,51 @@ await test("pipeline: OpenAI checker outage with failover switched off → hold 
   const out = await p.run("auto", REQUEST);
   assert.equal(out.status, "hold");
   assert.equal(out.verdict, "unavailable");
+});
+
+await test("claude cost: routine second check uses Haiku with a small output budget", async function() {
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": PASS, "anthropic:checker": PASS });
+  const p = createEditorialPipeline({
+    promptFile: PROMPT,
+    clients: mock.clients,
+    config: { anthropicApiKey: "test", anthropicModel: "claude-haiku-4-5", anthropicStrongModel: "claude-sonnet-5-5", anthropicStrongImportance: 9 }
+  });
+  const out = await p.run("auto", REQUEST);
+  assert.equal(out.status, "approved");
+  const call = mock.calls.anthropic.find(function(c){ return c.role === "checker"; });
+  assert.equal(call.opts.model, "claude-haiku-4-5");
+  assert.equal(call.opts.maxTokens, 2500);
+  assert.equal(call.opts.extra.strong, false);
+});
+
+await test("claude cost: importance 9+ escalates only that second check to Sonnet", async function() {
+  const important = Object.assign({}, WRITER_OK, { importance: 9 });
+  const mock = mockClients({ "openai:writer": important, "openai:checker": PASS, "anthropic:checker": PASS });
+  const p = createEditorialPipeline({
+    promptFile: PROMPT,
+    clients: mock.clients,
+    config: { anthropicApiKey: "test", anthropicModel: "claude-haiku-4-5", anthropicStrongModel: "claude-sonnet-5-5", anthropicStrongImportance: 9 }
+  });
+  await p.run("auto", REQUEST);
+  const call = mock.calls.anthropic.find(function(c){ return c.role === "checker"; });
+  assert.equal(call.opts.model, "claude-sonnet-5-5");
+  assert.equal(call.opts.maxTokens, 3500);
+  assert.equal(call.opts.extra.strong, true);
+});
+
+await test("claude cost: if OpenAI checker is unavailable, Claude sole checker uses Sonnet", async function() {
+  const billing = Object.assign(new Error("quota"), { failureKind: "billing" });
+  const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": billing, "anthropic:checker": PASS });
+  const p = createEditorialPipeline({
+    promptFile: PROMPT,
+    clients: mock.clients,
+    config: { anthropicApiKey: "test", anthropicModel: "claude-haiku-4-5", anthropicStrongModel: "claude-sonnet-5-5", anthropicStrongImportance: 9 }
+  });
+  const out = await p.run("auto", REQUEST);
+  assert.equal(out.status, "approved");
+  const call = mock.calls.anthropic.find(function(c){ return c.role === "checker"; });
+  assert.equal(call.opts.model, "claude-sonnet-5-5");
+  assert.equal(call.opts.extra.strong, true);
 });
 
 await test("claude cost: default mode calls Claude only for a draft GPT passed (one call across fix rounds)", async function() {
