@@ -80,18 +80,18 @@ test("W4 a collection that runs past COLLECTOR_MAX_RUN_MINUTES stops cleanly bef
 });
 
 test("W5 a hung 07:45 preparation is cut off: the tick returns, logs where it hung, and does not mark the slot done", async () => {
-  const t = await loadServer({ fixedNow: "2026-10-04T04:45:00Z", env: { SCHEDULER_PREPARE_TIMEOUT_MINUTES: "0.02", AUTO_PUBLISH_ENABLED: "true" }, state: { chtotampokupki: { sources: [src("a", "https://a.example/")] } } });
+  const t = await loadServer({ fixedNow: "2026-10-04T04:45:00Z", env: { SCHEDULER_PREPARE_TIMEOUT_MINUTES: "0.02", AUTO_PUBLISH_ENABLED: "true" }, state: { chtotamcrypto: { sources: [src("a", "https://a.example/")] } } });
   net.pages.set("https://a.example/", () => new Promise(() => {})); // never answers
-  setNow("2026-10-04T04:" + String(t.prepMinuteFor("chtotampokupki")).padStart(2, "0") + ":00Z"); // its own picking minute
+  setNow("2026-10-04T04:" + String(t.prepMinuteFor("chtotamcrypto")).padStart(2, "0") + ":00Z"); // its own picking minute
   const c = captureLogs();
   const started = performance.now();
-  try { await inWs(t, "chtotampokupki", () => t.dynamicSchedulerTick()); } finally { c.restore(); }
+  try { await inWs(t, "chtotamcrypto", () => t.dynamicSchedulerTick()); } finally { c.restore(); }
   assert.ok(performance.now() - started < 20000, "tick returned");
   const line = c.lines.find((l) => l.startsWith("SCHEDULER_TICK_TIMEOUT"));
   assert.ok(line, c.lines.join("\n").slice(0, 600));
   assert.match(line, /"action":"prepare"/);
   assert.match(line, /"step":"sources:1"/, "the log names the hung step");
-  assert.notEqual(t.ws("chtotampokupki").state.dynamicScheduler.lastTickKey, t.ws("chtotampokupki").state.dynamicScheduler.lastAttemptedTickKey, "slot not marked done");
+  assert.notEqual(t.ws("chtotamcrypto").state.dynamicScheduler.lastTickKey, t.ws("chtotamcrypto").state.dynamicScheduler.lastAttemptedTickKey, "slot not marked done");
 });
 
 test("W6 a released (zombie) run that wakes up stops instead of queueing next to the new run: the article is queued once", async () => {
