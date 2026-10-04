@@ -600,8 +600,17 @@ function queueMaxAgeHoursFor(ws) { return Math.min(96, QUEUE_MAX_AGE_HOURS * cha
 // A queue item whose article carried no date lives shorter: its age is only known from the fetch time.
 function dynamicItemMaxAgeMs(item) {
   let base = dynamicSlotMaxAgeMs();
-  if (editorialChannelId() === "money") {
-    const rubric = itemRubric(item);
+  // This function is also called while persisted workspaces are being normalized, before
+  // workspaceStore itself has finished initializing. Never require currentWorkspace() here.
+  let channelId = String(item && (item.channelId || (item.editorialV2 && item.editorialV2.channelId)) || "");
+  if (!channelId) {
+    try { channelId = editorialChannelId(); } catch {}
+  }
+  if (channelId === "money") {
+    let rubric = String(item && (item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket)) || "");
+    if (!rubric) {
+      try { rubric = itemRubric(item); } catch {}
+    }
     const durable = rubric === "taxes" || rubric === "income_benefits" || rubric === "money_howto";
     base = (durable ? 72 : 48) * 3600000;
   }
