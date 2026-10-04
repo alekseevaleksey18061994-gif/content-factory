@@ -123,3 +123,23 @@ export function normalizeAutoRubricSources(state, approvedBloggers, oldBloggerSl
   if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
   return { added, paused, assigned };
 }
+
+
+export function resetApprovedAutoBloggers(state, approvedBloggers, nowIso) {
+  const now = nowIso || new Date().toISOString();
+  const approvedIds = new Set((Array.isArray(approvedBloggers) ? approvedBloggers : []).map(function(source){ return String(source && source.id || ""); }).filter(Boolean));
+  state.sourceStats = state.sourceStats && typeof state.sourceStats === "object" && !Array.isArray(state.sourceStats) ? state.sourceStats : {};
+  const reset = [];
+  for (const source of (state.sources || [])) {
+    if (!source || !approvedIds.has(String(source.id || ""))) continue;
+    source.enabled = true;
+    delete source.autoPaused;
+    source.editorEnabledAt = now;
+    source.rubric = "bloggers_tests";
+    source.rubrics = ["bloggers_tests"];
+    source.rubricAssignedAt = now;
+    if (Object.prototype.hasOwnProperty.call(state.sourceStats, source.id)) delete state.sourceStats[source.id];
+    reset.push(source.name || source.id);
+  }
+  return { reset: reset };
+}
