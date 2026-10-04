@@ -83,6 +83,9 @@ const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase() !== "false";
 const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
+// Editor's rule (2026-10-04): a post whose only picture is our text card (title on a coloured background) is not
+// published automatically — readers want a real photo. TEXT_CARD_POSTS_ALLOWED=true restores the old behaviour.
+const TEXT_CARD_POSTS_ALLOWED = String(process.env.TEXT_CARD_POSTS_ALLOWED || "false").toLowerCase() === "true";
 const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
 const AUTO_ENHANCE_SOURCE_IMAGES = String(process.env.AUTO_ENHANCE_SOURCE_IMAGES || "true").toLowerCase() !== "false";
 // Golden-mean pipeline: cheap validation first; expensive/generated media only after editorial approval.
@@ -2369,6 +2372,16 @@ async function enforceCopyrightSafeMedia(post) {
         out.mediaQualityRejectedAtPublish = true;
       }
     }
+    if (!out.imageUrl && !out.videoUrl && !out.generatedImageUrl && GENERATE_COVER_IF_MISSING && !TEXT_CARD_POSTS_ALLOWED) {
+      const error = new Error("Нет подходящего фото: пост с текстовой карточкой не публикуется");
+      error.code = "NO_PHOTO"; error.permanent = true; // this post never gets a photo: free the slot for the next one
+      throw error;
+    }
+    if (textCardBlocked(out)) {
+      const error = new Error("Нет фото: пост с текстовой карточкой не публикуется");
+      error.code = "NO_PHOTO"; error.permanent = true; // this post never gets a photo: free the slot for the next one
+      throw error;
+    }
     if (!out.imageUrl && !out.videoUrl && !out.generatedImageUrl && GENERATE_COVER_IF_MISSING) {
       const local = await renderEconomyTextCard({
         id: out.newsId || out.postId || out.id || newId("media_gate"),
@@ -2406,6 +2419,11 @@ async function enforceCopyrightSafeMedia(post) {
   out.mediaPackUrls = [];
 
   if (!generatedIndependent) out.generatedImageUrl = "";
+  if (!TEXT_CARD_POSTS_ALLOWED && GENERATE_COVER_IF_MISSING && (!out.generatedImageUrl || /(?:^|\/)budget_card_/.test(out.generatedImageUrl))) {
+    const error = new Error("Фото источника запрещено, а пост с текстовой карточкой не публикуется");
+    error.code = "NO_PHOTO"; error.permanent = true; // this post never gets a photo: free the slot for the next one
+    throw error;
+  }
   if (!out.generatedImageUrl) {
     if (!GENERATE_COVER_IF_MISSING) {
       if (MEDIA_REQUIRED) throw new Error("Медиа этого источника запрещено настройками, а генерация резервной обложки отключена");
@@ -5403,6 +5421,18 @@ async function finalizeApprovedMedia(media, payload, tier) {
   return current;
 }
 
+// True when the post has no photo/video of its own and would go out with the locally drawn text card only.
+function isTextCardOnly(item) {
+  if (!item) return false;
+  const meta = item.metadata || {};
+  if (item.videoUrl || item.imageUrl || meta.videoUrl || meta.imageUrl) return false;
+  const generated = String(item.generatedImageUrl || meta.generatedImageUrl || "");
+  if (!generated) return false;
+  return item.mediaOrigin === "local_branded_card" || item.mediaStatus === "local_card" ||
+    /^local-branded-card/.test(String(item.generatedBy || "")) || /(?:^|\/)budget_card_[^/]*\.webp(?:\?|$)/.test(generated);
+}
+function textCardBlocked(item) { return !TEXT_CARD_POSTS_ALLOWED && isTextCardOnly(item); }
+
 function hasPublishableMedia(item) {
   return Boolean(item && (item.videoUrl || item.imageUrl || item.generatedImageUrl || (item.metadata && (item.metadata.videoUrl || item.metadata.imageUrl || item.metadata.generatedImageUrl))));
 }
@@ -6758,6 +6788,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       { const pending = pendingAutoTargets(item); if (!pending.telegram && !pending.vk) return false; }
       if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
+      if (textCardBlocked(item)) return false;
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
