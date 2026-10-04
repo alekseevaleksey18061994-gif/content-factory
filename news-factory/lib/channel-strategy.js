@@ -259,6 +259,16 @@ export function channelFit(channelId, item) {
   const weights = dna.scoreWeights || {};
   const explicit = item && (item.channelSignals || item.channel_signals || (item.editorialV2 && item.editorialV2.channelSignals));
   const signals = normalizeChannelSignals(explicit, item);
+  if (channelId === "money") {
+    const cls = sourceClassFor(item);
+    const independent = Math.max(
+      Array.isArray(item && item.storySources) ? item.storySources.length : 0,
+      item && item.storyCluster ? Number(item.storyCluster.sourceCount || 0) : 0
+    );
+    const evidenceCap = cls === "OFFICIAL" ? 10 : (independent >= 2 ? 9 : (cls === "MEDIA" ? 8 : (cls === "CREATOR" ? 6 : 5)));
+    // Reliability is evidence, not an opinion: the model may score lower, but never higher than the source support.
+    signals.reliability = Math.min(Number.isFinite(Number(signals.reliability)) ? Number(signals.reliability) : evidenceCap, evidenceCap);
+  }
   let weightSum=0, weighted=0;
   for (const [key, weightRaw] of Object.entries(weights)) {
     const weight = Number(weightRaw);
