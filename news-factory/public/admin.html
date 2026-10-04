@@ -3691,6 +3691,9 @@ function render(){
   var rankingMap={};(sourceRankings||[]).forEach(function(r){rankingMap[r.id]=r});
   var sortedSources=(state.sources||[]).slice().sort(function(a,b){
     var ra=rankingMap[a.id]||{},rb=rankingMap[b.id]||{};
+    // theme channels: sources grouped by theme
+    var ta=(ra.scorecard&&ra.scorecard.rubricLabel)||'',tb=(rb.scorecard&&rb.scorecard.rubricLabel)||'';
+    if(ta!==tb){if(!ta)return 1;if(!tb)return -1;return ta.localeCompare(tb,'ru')}
     var rankA=Number(ra.rank),rankB=Number(rb.rank);
     var hasRankA=Number.isFinite(rankA)&&rankA>0,hasRankB=Number.isFinite(rankB)&&rankB>0;
     if(hasRankA&&hasRankB&&rankA!==rankB)return rankA-rankB;
@@ -3726,6 +3729,14 @@ function render(){
       '<a class="sc-url" href="'+esc(safeHref(s.url))+'" target="_blank" rel="noopener">'+esc(String(s.url||'').replace(/^https?:\/\/(www\.)?/,''))+'</a>'+
       (s.autoAdded?'<div class="source-added-note">Добавлен автоматически '+esc(safeDate(s.autoAdded.at))+(s.autoAdded.from==='ai'?' · найден AI-поиском':' · из резерва')+(s.autoAdded.why?' · '+esc(s.autoAdded.why):'')+'</div>':'')+
       (s.autoPaused&&!s.enabled?'<div class="source-paused-note">Выключен автоматически: '+esc(s.autoPaused.reason||'')+'. Можно включить вручную.</div>':'')+
+      (r.scorecard&&r.scorecard.rubricLabel?'<div class="source-added-note"><b>Тема: '+esc(r.scorecard.rubricLabel)+'</b> · оценка источника: '+esc(r.scorecard.verdict)+'</div>':'')+
+      (r.scorecard&&r.scorecard.rubricLabel?'<div class="sc-metrics">'+
+        metric(r.scorecard.publishedWeek,'в неделю',r.scorecard.publishedWeek>=2?'good':(r.scorecard.verdict==='Слабый'?'bad':''),'Сколько постов источника выходит в канале за неделю (норма от 2)')+
+        metric(r.scorecard.passRate==null?'—':Math.round(r.scorecard.passRate*100)+'%','проходимость','','Доля новостей, прошедших фильтр и редактора (норма от 30%)')+
+        metric(r.scorecard.topicHit==null?'—':Math.round(r.scorecard.topicHit*100)+'%','в тему','','Доля его постов, попавших в свою тему (норма от 70%)')+
+        metric(r.scorecard.photoRate==null?'—':Math.round(r.scorecard.photoRate*100)+'%','с фото','','Доля новостей с нормальной картинкой (норма от 70%)')+
+        metric(r.scorecard.avgViews==null?'—':r.scorecard.avgViews,'просмотры','','Средние просмотры его постов в Telegram')+
+      '</div>':'')+
       '<div class="sc-metrics">'+
         metric(r.useful||0,'полезных','good')+
         metric(r.junk||0,'отсеяно','',r.lastJunkReason||'')+

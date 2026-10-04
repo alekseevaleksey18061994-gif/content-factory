@@ -39,8 +39,9 @@ const newsMix = contentMixBalance("ai",{contentBucket:"important_news",title:"Н
 assert.ok(viralMix.bonus > 0, "underrepresented AI viral content must get a positive mix bonus");
 assert.ok(newsMix.bonus < 0, "overrepresented AI news must get a penalty");
 
-const homeHistory = Array.from({length:10},(_,i)=>({contentBucket:"real_estate",title:"Недвижимость "+i}));
-assert.ok(contentMixBalance("home",{contentBucket:"real_estate"},homeHistory,24).bonus < 0, "home real estate must be capped by mix");
+// v0.51.3: home is 10 equal themes (real estate is excluded outright, see home-rubrics-test): an overrepresented theme is penalised
+const homeHistory = Array.from({length:10},(_,i)=>({contentBucket:"marketplace_finds",title:"Находка "+i}));
+assert.ok(contentMixBalance("home",{contentBucket:"marketplace_finds"},homeHistory,24).bonus < 0, "an overrepresented home theme must be capped by mix");
 
 const digestHeavy = [
   ...Array.from({length:4},()=>({contentBucket:"important_news"})),

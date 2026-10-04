@@ -12,7 +12,7 @@ import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-securi
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
-import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_SOURCE_FIX_V0513 } from "./lib/channel-dna.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
@@ -371,7 +371,7 @@ const CHANNEL_EXTRA_LANES = {
 // refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
-  home: { refresh: true, boost: 15, hint: "Telegram-каналы и сайты с находками и подборками товаров для дома (Wildberries, Ozon, AliExpress, IKEA), идеями обустройства маленьких квартир, до/после, лайфхаками хранения, уборки и ремонта своими руками; НЕ рынок недвижимости, НЕ IT-новости, НЕ городские новости" },
+  home: { refresh: true, boost: 0, hint: "находки и подборки товаров для дома, до/после обычных квартир, хранение, уборка, ремонт своими руками, тренды интерьера, кухня; НЕ рынок недвижимости, НЕ ЖКХ, НЕ IT-новости, НЕ городские новости" },
   shopping: { refresh: true, boost: 15, hint: "новости для покупателей, а не для продавцов: скидки и распродажи, цены в магазинах, новинки и вирусные товары, возвраты и доставка на Ozon, Wildberries, Яндекс Маркете и Авито, права потребителей, мошенники; Telegram-каналы и сайты для покупателей" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
@@ -382,6 +382,37 @@ const CHANNEL_SOURCE_PLANS = {
   kino: { laneHint: "Telegram-каналы с мемами и юмором про кино и сериалы (подписанные кадры, шутки про премьеры и актёров)", laneMin: 6 }
 };
 function channelSourcePlan() { return CHANNEL_SOURCE_PLANS[resolveChannelId(currentWorkspace())] || null; }
+// ---- themes (rubrics) and own hours per channel (v0.51.3, «Что там для дома?»: 10 themes, one post a day each)
+function channelRubrics(ws) { return channelStrategy(resolveChannelId(ws || currentWorkspace())).rubrics || []; }
+function rubricIds(ws) { return new Set(channelRubrics(ws).map(function(r){ return r.id; })); }
+// Theme of a queue/history item: the writer's content_bucket when it is a theme, else the theme of its source.
+function itemRubric(item, ids) {
+  const set = ids || rubricIds();
+  if (!item || !set.size) return "";
+  const bucket = String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || "");
+  if (set.has(bucket)) return bucket;
+  const source = findSourceForItem(item);
+  return source && set.has(String(source.rubric || "")) ? String(source.rubric) : "";
+}
+function rubricSourceCounts(ws) {
+  const counts = {};
+  for (const r of channelRubrics(ws)) counts[r.id] = 0;
+  const st = ws && ws.state ? ws.state : state;
+  for (const src of (st.sources || [])) if (src && src.enabled && Object.prototype.hasOwnProperty.call(counts, String(src.rubric || ""))) counts[src.rubric] += 1;
+  return counts;
+}
+function channelSlotHours(ws) {
+  const hours = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotHours;
+  return Array.isArray(hours) && hours.length ? hours : null;
+}
+function isChannelSlotHour(hour, ws) {
+  const hours = channelSlotHours(ws);
+  return hours ? hours.includes(Number(hour)) : (hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR);
+}
+function channelDailyMax(ws) {
+  const hours = channelSlotHours(ws);
+  return hours ? Math.min(DYNAMIC_DAILY_MAX, hours.length) : DYNAMIC_DAILY_MAX;
+}
 function channelExtraLane() {
   const ws = currentWorkspace();
   return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
@@ -2944,6 +2975,26 @@ function autoPauseWeakSources() {
     paused.push({ id: source.id, name: source.name, reason: reason });
     console.log("SOURCE_AUTO_PAUSED " + JSON.stringify({ workspace: currentWorkspaceId(), id: source.id, name: source.name, reason: reason }));
   }
+  // Theme channels: a source that gives its theme less than one post a week after 7 days (or whose news are almost
+  // all rejected) is replaced by the theme search — at most 2 per run.
+  const ids = rubricIds();
+  if (ids.size) {
+    const labels = {};
+    for (const r of channelRubrics()) labels[r.id] = r.label;
+    let themePaused = 0;
+    for (const source of (state.sources || [])) {
+      if (themePaused >= 2) break;
+      if (!source || !source.enabled || source.autoPauseExempt || !ids.has(String(source.rubric || ""))) continue;
+      const card = sourceScorecard(source, ensureSourceStat(source) || {}, ids, labels);
+      if (card.verdict !== "Слабый" || card.ageDays < SCORECARD_DAYS) continue;
+      const reason = "слабый источник темы «" + (labels[source.rubric] || source.rubric) + "»: " + card.publishedWeek + " публикаций в неделю" + (card.passRate != null ? ", проходимость " + Math.round(card.passRate * 100) + "%" : "");
+      source.enabled = false;
+      source.autoPaused = { reason: reason, at: new Date().toISOString() };
+      paused.push({ id: source.id, name: source.name, reason: reason });
+      themePaused += 1;
+      console.log("SOURCE_AUTO_PAUSED " + JSON.stringify({ workspace: currentWorkspaceId(), id: source.id, name: source.name, reason: reason, rubric: source.rubric }));
+    }
+  }
   return paused;
 }
 
@@ -3078,7 +3129,23 @@ async function replenishSourcesInner(reason) {
   const roomLeft = Math.max(0, SOURCES_MAX_ACTIVE - (state.sources || []).filter(function(x){ return x && x.enabled; }).length);
   const needTelegram = plan && plan.telegramMin && discoveryAllowed("telegram") ? Math.max(0, Math.min(SOURCES_ADDED_PER_RUN, roomLeft, plan.telegramMin - enabledTelegram.length)) : 0;
   const needLane = plan && plan.laneMin && discoveryAllowed("lane") ? Math.max(0, Math.min(SOURCES_ADDED_PER_RUN, roomLeft, plan.laneMin - laneSources.length)) : 0;
-  if (!need && !needTelegram && !needLane) return { added: [], need: 0 };
+  // Theme channels: the theme with the fewest sources below its minimum gets its own search (one theme per run).
+  const strategyNow = channelStrategy(resolveChannelId(currentWorkspace()));
+  let rubricTarget = null;
+  if (Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0) {
+    const counts = rubricSourceCounts();
+    const short = strategyNow.rubrics
+      .filter(function(r){ return counts[r.id] < strategyNow.rubricMinSources && discoveryAllowed("rubric:" + r.id); })
+      .sort(function(a, b){ return counts[a.id] - counts[b.id]; })[0];
+    if (short) {
+      const ceiling = strategyNow.rubricMaxSources || strategyNow.rubricMinSources;
+      rubricTarget = { rubric: short, need: Math.max(0, Math.min(SOURCES_ADDED_PER_RUN, roomLeft, ceiling - counts[short.id])) };
+      if (!rubricTarget.need) rubricTarget = null;
+    }
+  }
+  // theme channels grow theme by theme only: a generic search would add sources that belong to no theme
+  if (Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length) need = 0;
+  if (!need && !needTelegram && !needLane && !rubricTarget) return { added: [], need: 0 };
   state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
   const last = new Date(state.sourceReplenish.lastAt || 0).getTime();
   if (Date.now() - last < SOURCE_REPLENISH_INTERVAL_MINUTES * 60000) return { added: [], need: need, throttled: true };
@@ -3141,6 +3208,20 @@ async function replenishSourcesInner(reason) {
     const before = added.length;
     await tryList(await discoverSourcesWithAI(Math.min(30, needLane * 2 + 4), { telegramOnly: true, hint: plan.laneHint }), "ai-lane", "blogger");
     noteDiscoveryResult("lane", added.length - before);
+  }
+  if (rubricTarget) {
+    need = rubricTarget.need;
+    const before = added.length;
+    const theme = rubricTarget.rubric;
+    await tryList(await discoverSourcesWithAI(Math.min(30, need * 2 + 4), { hint: "тема «" + theme.label + "»: " + theme.hint + ". Только про эту тему." }), "ai-rubric");
+    // the new sources belong to the theme they were found for
+    for (const a of added.slice(before)) {
+      const src = (state.sources || []).find(function(x){ return x && x.url === a.url; });
+      if (src) src.rubric = theme.id;
+      a.rubric = theme.id;
+    }
+    noteDiscoveryResult("rubric:" + theme.id, added.length - before);
+    console.log("SOURCE_RUBRIC_REPLENISH " + JSON.stringify({ workspace: currentWorkspaceId(), rubric: theme.id, added: added.length - before, sources: rubricSourceCounts()[theme.id] }));
   }
   if (Number(state.sourceBoostRemaining || 0) > 0) state.sourceBoostRemaining = Math.max(0, Number(state.sourceBoostRemaining) - addedMain);
   if (added.length) console.log("SOURCE_REPLENISH " + JSON.stringify({ workspace: currentWorkspaceId(), reason: reason || "", added: added.length, stillNeeded: need }));
@@ -3241,7 +3322,43 @@ async function prefilterCandidates(candidates, summary) {
   });
 }
 
+// Source scorecard (v0.51.3): what the source really gives the channel over the last 7 days.
+//   published/week, pass rate (useful vs junk), on-theme share, photo share, AI interest, real Telegram views.
+const SCORECARD_DAYS = 7;
+function sourceScorecard(source, stat, ids, rubricLabels) {
+  const now = Date.now();
+  const since = now - SCORECARD_DAYS * 86400000;
+  const addedAt = Date.parse(source && source.autoAdded && source.autoAdded.at || "") || NaN;
+  const ageDays = Number.isFinite(addedAt) ? Math.max(0, (now - addedAt) / 86400000) : SCORECARD_DAYS;
+  const mine = (state.history || []).filter(function(h){
+    if (!h || !h.publishedAt || Date.parse(h.publishedAt) < since) return false;
+    return (h.sourceId && String(h.sourceId) === String(source.id)) || (!h.sourceId && h.sourceName && h.sourceName === source.name);
+  });
+  const useful = Number(stat.useful || 0), junk = Number(stat.junk || 0);
+  const passRate = useful + junk ? useful / (useful + junk) : null;
+  const rubric = ids.has(String(source.rubric || "")) ? String(source.rubric) : "";
+  const themed = rubric ? mine.filter(function(h){ const t = String(h.contentBucket || ""); return ids.has(t); }) : [];
+  const topicHit = themed.length ? themed.filter(function(h){ return String(h.contentBucket) === rubric; }).length / themed.length : null;
+  const mediaGood = Number(stat.mediaGood || 0), mediaBad = Number(stat.mediaBad || 0);
+  const photoRate = mediaGood + mediaBad ? mediaGood / (mediaGood + mediaBad) : null;
+  const viewed = mine.filter(function(h){ return Number(h.views || 0) > 0; });
+  const avgViews = viewed.length ? Math.round(viewed.reduce(function(a, h){ return a + Number(h.views || 0); }, 0) / viewed.length) : null;
+  const weekFactor = SCORECARD_DAYS / Math.max(1, Math.min(SCORECARD_DAYS, ageDays));
+  const publishedWeek = Math.round(mine.length * weekFactor * 10) / 10;
+  let verdict = "Собираем данные";
+  if (ageDays >= 2 || useful + junk >= 10) {
+    if (publishedWeek >= 2 && (passRate == null || passRate >= 0.3)) verdict = "Хороший";
+    else if ((ageDays >= SCORECARD_DAYS && publishedWeek < 1) || (useful + junk >= 10 && passRate != null && passRate < 0.15)) verdict = "Слабый";
+    else verdict = "Средний";
+  }
+  return { rubric: rubric, rubricLabel: rubric ? (rubricLabels[rubric] || rubric) : "", ageDays: Math.round(ageDays * 10) / 10,
+    publishedWeek: publishedWeek, passRate: passRate, topicHit: topicHit, photoRate: photoRate, avgViews: avgViews, verdict: verdict };
+}
+
 function buildSourceRankings() {
+  const ids = rubricIds();
+  const rubricLabels = {};
+  for (const r of channelRubrics()) rubricLabels[r.id] = r.label;
   const rows = (state.sources || []).map(function(source) {
     const stat = ensureSourceStat(source) || {};
     const checks = Number(stat.checks || 0);
@@ -3295,7 +3412,8 @@ function buildSourceRankings() {
       mediaBad: Number(stat.mediaBad || 0),
       mediaGoodRate: (Number(stat.mediaGood || 0) + Number(stat.mediaBad || 0)) ? Number(stat.mediaGood || 0) / (Number(stat.mediaGood || 0) + Number(stat.mediaBad || 0)) : null,
       lastJunkReason: stat.lastJunkReason || "",
-      autoPaused: source.autoPaused || null
+      autoPaused: source.autoPaused || null,
+      scorecard: sourceScorecard(source, stat, ids, rubricLabels)
     };
   });
   rows.sort(function(a,b){
@@ -6784,6 +6902,16 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
   const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
   const excludedBuckets = new Set(channelStrategy(editorialChannelId()).excludeBuckets || []);
+  // one post per theme a day: a theme already posted today waits while another theme has a candidate
+  const themes = rubricIds();
+  const today = moscowDateKey(new Date());
+  const themesToday = new Set();
+  if (themes.size) {
+    for (const h of (state.history || [])) {
+      if (h && h.publishedAt && moscowDateKey(new Date(h.publishedAt)) === today) { const t = itemRubric(h, themes); if (t) themesToday.add(t); }
+    }
+  }
+  const themeRank = function(item) { if (!themes.size) return 0; const t = itemRubric(item, themes); return !t ? 1 : (themesToday.has(t) ? 0 : 2); };
   return (state.queue || [])
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && item.status !== "publish_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
@@ -6799,6 +6927,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       return !isBloggerSource(item) && !isRussianAISource(item);
     })
     .sort(function(a, b) {
+      const themeDiff = themeRank(b) - themeRank(a);
+      if (themeDiff) return themeDiff;
       const scoreDiff = dynamicItemScore(b) - dynamicItemScore(a);
       if (scoreDiff) return scoreDiff;
 
@@ -6851,9 +6981,10 @@ async function prepareDynamicSlot() {
   if (nextHour < DYNAMIC_SLOT_START_HOUR || nextHour > DYNAMIC_SLOT_END_HOUR) {
     return { ok: true, skipped: "outside_hours" };
   }
+  if (!isChannelSlotHour(nextHour)) return { ok: true, skipped: "not_channel_slot" };
 
   const day = moscowDateKey(now);
-  if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
+  if (dynamicDailyPublishedCount(day) >= channelDailyMax()) {
     return { ok: true, skipped: "daily_max" };
   }
 
@@ -6958,13 +7089,14 @@ function staggeredCollectKey(day, hour) {
 async function staggeredCollectTick(day, hour, minute) {
   if (!COLLECTION_STAGGER_ENABLED || !COLLECTOR_ENABLED) return null;
   if (hour < DYNAMIC_SLOT_START_HOUR - 1 || hour >= DYNAMIC_SLOT_END_HOUR) return null;
+  if (!isChannelSlotHour(hour + 1)) return null; // no post next hour in this channel: nothing to collect for
   const at = collectionMinuteFor(currentWorkspaceId());
   if (minute < at || minute >= Math.min(at + COLLECTION_STAGGER_WINDOW_MINUTES, prepMinuteFor(currentWorkspaceId()))) return null;
   state.dynamicScheduler = state.dynamicScheduler || {};
   const key = staggeredCollectKey(day, hour);
   if (state.dynamicScheduler.lastCollectKey === key) return null;
   if (state.mode !== "AUTO") return null;
-  if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) return null;
+  if (dynamicDailyPublishedCount(day) >= channelDailyMax()) return null;
   const started = Date.now();
   try {
     const result = await withDeadline(collectOnce("slot-collect"), SCHEDULER_PREPARE_TIMEOUT_MS, "staggered collect");
@@ -7027,6 +7159,7 @@ async function publishDynamicSlotOnce(kind, opts) {
   const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai") ? ":30" : ":00");
   if (publishKind === "blogger" && !bloggerSlotsFor().includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
+  if (publishKind === "regular" && !isChannelSlotHour(hour)) return { ok: true, skipped: "not_channel_slot" };
   const slotKey = day + " " + time;
   state.dynamicScheduler = state.dynamicScheduler || {};
   state.bloggerScheduler = state.bloggerScheduler || {};
@@ -7046,7 +7179,7 @@ async function publishDynamicSlotOnce(kind, opts) {
     if (bloggerDailyPublishedCount(day) >= bloggerTargetFor()) return { ok: true, skipped: "blogger_daily_target" };
   } else if (publishKind === "russian-ai") {
     if (russianAiDailyPublishedCount(day) >= RUSSIAN_AI_DAILY_TARGET) return { ok: true, skipped: "russian_ai_daily_target" };
-  } else if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) {
+  } else if (dynamicDailyPublishedCount(day) >= channelDailyMax()) {
     return { ok: true, skipped: "daily_max" };
   }
 
@@ -7418,10 +7551,10 @@ async function dynamicSchedulerTick() {
   }
   const prepAt = prepMinuteFor(currentWorkspaceId());
   const publishAt = publishMinuteFor(currentWorkspaceId());
-  if (!action && inWindow(prepAt) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
+  if (!action && inWindow(prepAt) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR && isChannelSlotHour(hour + 1)) {
     action = "prepare";
     windowStart = DYNAMIC_SLOT_PREP_MINUTE; // key only: stable even if the channel's minute shifts mid-hour
-  } else if (!action && inWindow(publishAt) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
+  } else if (!action && inWindow(publishAt) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR && isChannelSlotHour(hour)) {
     action = "publish";
     windowStart = 0;
   }
@@ -7491,6 +7624,7 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
     if (!ws || schedulerTickRunning.has(ws.id)) return;
     // the catch-up must not post a channel before its own spread-out minute (it still recovers up to :44 as before)
     if (minute < publishMinuteFor(ws.id)) return;
+    if (!isChannelSlotHour(hour, ws)) return; // this channel has no post this hour
     schedulerTickRunning.add(ws.id);
     try {
       await workspaceContext.run({ workspaceId: ws.id }, async function() {
@@ -10650,7 +10784,7 @@ function editorialPostsToday() {
 
 function editorialDailyLimit() {
   const sources = state.sources || [];
-  let limit = DYNAMIC_DAILY_MAX;
+  let limit = channelDailyMax();
   if (bloggerLaneActive()) limit += bloggerTargetFor();
   if (sources.some(function(s){ return s && s.enabled && isRussianAISource(s); })) limit += RUSSIAN_AI_DAILY_TARGET;
   return limit;
@@ -14245,6 +14379,15 @@ async function reworkChannelSources(ws, customPlan, tag) {
   }
   const added = [];
   const failed = [];
+  // themes for sources the channel already has (by exact URL), and for a planned source that is already there
+  const assigned = [];
+  const themeByUrl = new Map();
+  for (const url of Object.keys(plan.assign || {})) themeByUrl.set(normUrl(url), plan.assign[url]);
+  for (const c of (plan.add || [])) if (c.rubric) themeByUrl.set(normUrl(c.url), c.rubric);
+  for (const src of (state.sources || [])) {
+    const theme = src && themeByUrl.get(normUrl(src.url));
+    if (theme && src.rubric !== theme) { src.rubric = theme; assigned.push(src.name); }
+  }
   for (const c of freshCandidates(plan.add || [], state.sources, state.sourceBlockedHosts || [])) {
     const check = await validateSourceCandidate(c.url);
     if (!check.ok) { failed.push(c.name + " — " + check.reason); continue; }
@@ -14252,7 +14395,8 @@ async function reworkChannelSources(ws, customPlan, tag) {
       id: "dna-" + crypto.createHash("sha256").update(c.url).digest("hex").slice(0, 10),
       name: c.name, type: "web", group: c.group || "media", priority: c.group === "official" ? 1 : 2,
       url: c.url, enabled: true, mediaLicense: "unknown", copyrightMode: "facts_only",
-      autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: reworkTag }
+      autoAdded: { at: now, from: "dna", why: "пересборка источников канала", reason: reworkTag },
+      rubric: c.rubric || undefined
     });
     added.push(c.name);
   }
@@ -14266,7 +14410,7 @@ async function reworkChannelSources(ws, customPlan, tag) {
   }
   saveState();
   if (renamed) persistWorkspaceStore();
-  return { channel: channelId, paused: paused, added: added, failed: failed, renamed: renamed, active: (state.sources || []).filter(function(x){ return x && x.enabled; }).length };
+  return { channel: channelId, paused: paused, added: added, failed: failed, assigned: assigned.length ? assigned : undefined, renamed: renamed, active: (state.sources || []).filter(function(x){ return x && x.enabled; }).length };
 }
 let sourceReworkRetryTimer = null;
 function scheduleSourceReworkRetry() {
@@ -14344,19 +14488,19 @@ setTimeout(function runInternetSourceFixV0451() {
   })().catch(function(error){ console.warn("Internet source fix failed:", error.message); });
 }, 100000);
 
-// v0.51.3: «Что там для дома?» — trending home goods and ideas instead of news and real estate. Off-topic sources
-// are paused (kept) and their sections blocked for discovery; the niche's biggest Telegram channels are added.
-setTimeout(function runHomeSourceFixV0513() {
+// v0.51.3: «Что там для дома?» — 10 themes, one post a day each. Off-topic sources are paused (kept) and their
+// sections blocked for discovery; the niche's biggest Telegram channels are added and every source gets its theme.
+setTimeout(function runHomeRubricSourcesV0513() {
   (async function(){
     for (const ws of workspaceStore.workspaces) {
       if (!ws || !ws.state || resolveChannelId(ws) !== "home") continue;
-      const migration = "v0.51.3-home-sources";
+      const migration = "v0.51.3-home-rubrics";
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       if (ws.state.migrations.includes(migration)) continue;
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
-        const result = await reworkChannelSources(ws, HOME_SOURCE_FIX_V0513, "v0.51.3");
+        const result = await reworkChannelSources(ws, HOME_RUBRIC_SOURCES_V0513, "v0.51.3");
         state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
-        for (const url of HOME_SOURCE_FIX_V0513.disable) {
+        for (const url of HOME_RUBRIC_SOURCES_V0513.disable) {
           const key = sourceKey(url);
           if (key && !state.sourceBlockedHosts.includes(key)) state.sourceBlockedHosts.push(key);
         }
@@ -14364,10 +14508,10 @@ setTimeout(function runHomeSourceFixV0513() {
         state.seedAttempts[migration] = Number(state.seedAttempts[migration] || 0) + 1;
         if ((result && result.added.length > 0) || state.seedAttempts[migration] >= 3) state.migrations.push(migration);
         saveState();
-        console.log("HOME_SOURCE_FIX " + JSON.stringify(Object.assign({ workspace: ws.id }, result || {})));
+        console.log("HOME_RUBRIC_SOURCES " + JSON.stringify(Object.assign({ workspace: ws.id, rubrics: rubricSourceCounts() }, result || {})));
       });
     }
-  })().catch(function(error){ console.warn("Home source fix failed:", error.message); });
+  })().catch(function(error){ console.warn("Home rubric sources failed:", error.message); });
 }, 105000);
 
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
@@ -14641,7 +14785,7 @@ function applyChannelNotes(ws) {
     }
   }
   if (plan && (plan.refresh || plan.boost)) {
-    st.sourceBoostRemaining = Number(plan.boost || 15);
+    st.sourceBoostRemaining = plan.boost != null ? Math.max(0, Number(plan.boost) || 0) : 15;
     st.sourceBoostUntil = new Date(Date.now() + 72 * 3600000).toISOString();
     st.sourceReplenish = Object.assign({}, st.sourceReplenish || {}, { lastAt: "" });
     result.boost = st.sourceBoostRemaining;

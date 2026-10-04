@@ -149,24 +149,6 @@ test("P5 v0.51.2: money and shopping get a second source refresh once, even afte
   assert.equal(t.applyChannelNotes(t.ws("chtotamsport")), null, "other channels untouched");
 });
 
-test("P6 v0.51.3: home gets its source refresh once; a real-estate post is never picked for a home slot", async () => {
-  const auto = (id) => src(id, "https://" + id + ".ru/", { autoAdded: { from: "ai" } });
-  const t = await loadServer({ fixedNow: "2026-10-04T09:00:00Z", state: {
-    chtotamdom: { sources: [auto("h1")], migrations: ["v0.50.0-channel-notes"] }
-  } });
-  const r = t.applyChannelNotes(t.ws("chtotamdom"));
-  assert.equal(r.migration, "v0.51.3-channel-notes"); assert.equal(r.trial, 1); assert.equal(r.boost, 15);
-  assert.equal(t.applyChannelNotes(t.ws("chtotamdom")), null);
-  t.ws("chtotamdom").state.queue = [
-    mkQueueItem({ id: "re", newsId: "nre", aiScore: 99, contentBucket: "real_estate" }),
-    mkQueueItem({ id: "tf", newsId: "ntf", aiScore: 60, contentBucket: "trend_find" })
-  ];
-  assert.equal(inWs(t, "chtotamdom", () => t.dynamicBestQueueItemRaw("", false)).id, "tf");
-  // other channels keep real-estate posts
-  t.ws("chtotamdengi").state.queue = [mkQueueItem({ id: "re2", newsId: "nre2", contentBucket: "real_estate" })];
-  assert.equal(inWs(t, "chtotamdengi", () => t.dynamicBestQueueItemRaw("", false)).id, "re2");
-});
-
 async function main() {
   const only1 = process.argv[2];
   if (only1) {
