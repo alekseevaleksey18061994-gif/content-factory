@@ -197,6 +197,83 @@ test("H10 calendar offers home only its 10 hours; curated sources are not put on
   assert.equal(t.ws(H).state.sourceBoostRemaining, 0, "no generic boost for home");
 });
 
+test("H11 per-group minimum: the editor's limit drives the theme search, auto-pause and validation; the ceiling follows it", async () => {
+  const t = await loadServer({ fixedNow: msk(14, 0), env: { SOURCE_REPLENISH_INTERVAL_MINUTES: "1" }, state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
+  const ws = t.ws(H);
+  for (const r of channelStrategy("home").rubrics) for (let i = 0; i < 5; i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
+  const call = (fn) => inWs(t, H, fn);
+  assert.equal(call(() => t.rubricMinFor("storage")), 4, "default");
+  // validation
+  assert.equal(call(() => t.setRubricLimit("nope", 5)).ok, false);
+  assert.equal(call(() => t.setRubricLimit("storage", 0)).ok, false);
+  assert.equal(call(() => t.setRubricLimit("storage", 21)).ok, false);
+  assert.equal(call(() => t.setRubricLimit("storage", "abc")).ok, false);
+  assert.equal(ws.state.rubricLimits, undefined, "bad input stores nothing");
+  // raise storage to 8: the ceiling (6) rises with it, the group shows up as short and is searched
+  ws.state.sourceReplenish = { lastAt: new Date().toISOString(), misses: { rubric: { count: 0, until: new Date(Date.now() + 86400000).toISOString() } } };
+  assert.equal(call(() => t.setRubricLimit("storage", 8)).ok, true);
+  assert.equal(call(() => t.rubricMinFor("storage")), 8);
+  assert.equal(call(() => t.rubricMaxFor("storage")), 8, "ceiling never below the minimum");
+  assert.equal(call(() => t.rubricMaxFor("kitchen")), 6, "other groups untouched");
+  assert.equal(ws.state.sourceReplenish.lastAt, "", "throttle cleared by the editor's change");
+  assert.equal(ws.state.sourceReplenish.misses.rubric, undefined, "rest cleared by the editor's change");
+  const asked = []; const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("https://api.openai.com/v1/responses") && String(JSON.parse(init.body).input || "").startsWith("Подбери")) { asked.push(String(JSON.parse(init.body).input)); return new Response(JSON.stringify({ output_text: JSON.stringify({ sources: [] }), usage: {} }), { status: 200, headers: { "content-type": "application/json" } }); }
+    return inner(url, init);
+  };
+  await quiet(() => call(() => t.replenishSources("rubric_limit_changed")));
+  assert.equal(asked.length, 1);
+  assert.ok(/Хранение/.test(asked[0]), "the short group is searched: " + asked[0].slice(0, 200));
+  // groups info for the admin
+  const info = call(() => t.rubricGroupsInfo());
+  const st = info.find((x) => x.id === "storage");
+  assert.deepEqual([st.active, st.min, st.max, st.custom], [5, 8, 8, true]);
+  assert.equal(info.find((x) => x.id === "kitchen").custom, false);
+  assert.equal(info.length, 10);
+  // lowering a minimum never switches anything off; auto-pause may now trim down to the lower minimum but not below
+  assert.equal(call(() => t.setRubricLimit("kitchen", 2)).ok, true);
+  assert.equal(ws.state.sources.filter((x) => x.enabled && x.rubric === "kitchen").length, 5);
+  const ago = new Date(Date.parse(msk(14, 0)) - 20 * 86400000).toISOString();
+  for (const x of ws.state.sources.filter((y) => y.rubric === "kitchen")) x.autoAdded = { at: ago, from: "ai" };
+  for (let i = 0; i < 8; i++) await quiet(() => call(() => t.autoPauseWeakSources()));
+  assert.equal(ws.state.sources.filter((x) => x.enabled && x.rubric === "kitchen").length, 2, "stops at the editor's minimum, not at 4");
+  // a raised minimum protects the group: storage (min 8, 5 active) is never trimmed
+  for (const x of ws.state.sources.filter((y) => y.rubric === "storage")) x.autoAdded = { at: ago, from: "ai" };
+  for (let i = 0; i < 4; i++) await quiet(() => call(() => t.autoPauseWeakSources()));
+  assert.equal(ws.state.sources.filter((x) => x.enabled && x.rubric === "storage").length, 5);
+});
+
+test("H12 review fixes: groups take turns (an unfillable group does not starve the others); the same limit or a rapid re-save triggers no extra paid search", async () => {
+  const t = await loadServer({ fixedNow: msk(14, 0), env: { SOURCE_REPLENISH_INTERVAL_MINUTES: "1" }, state: { [H]: { sources: [], migrations: ["v0.51.3-home-rubrics"] } } });
+  const ws = t.ws(H);
+  for (const r of channelStrategy("home").rubrics) for (let i = 0; i < (r.id === "kitchen" ? 0 : 10); i++) ws.state.sources.push(src(r.id + i, "https://" + r.id + i + ".example/", { rubric: r.id }));
+  const call = (fn) => inWs(t, H, fn);
+  assert.equal(call(() => t.setRubricLimit("storage", 20)).ok, true);
+  const asked = []; const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith("https://api.openai.com/v1/responses") && String(JSON.parse(init.body).input || "").startsWith("Подбери")) { asked.push(String(JSON.parse(init.body).input)); return new Response(JSON.stringify({ output_text: JSON.stringify({ sources: [] }), usage: {} }), { status: 200, headers: { "content-type": "application/json" } }); }
+    return inner(url, init);
+  };
+  // storage (min 20, 10 active) and kitchen (min 4, 0 active) are both short: they alternate instead of storage winning forever
+  for (let i = 0; i < 2; i++) { ws.state.sourceReplenish = Object.assign({}, ws.state.sourceReplenish, { lastAt: "", misses: {} }); await quiet(() => call(() => t.replenishSources("below_target"))); }
+  assert.equal(asked.length, 2);
+  assert.ok(asked.some((x) => /Кухня и посуда/.test(x)), "kitchen got its turn: " + asked.map((x) => x.slice(0, 60)).join(" | "));
+  assert.ok(asked.some((x) => /Хранение/.test(x)), "storage too");
+  // an unchanged limit: no reset, no search
+  const same = call(() => t.setRubricLimit("storage", 20));
+  assert.deepEqual([same.ok, same.changed, same.search], [true, false, false]);
+  // a changed limit searches once, a second change within 10 minutes does not search again
+  ws.state.sourceReplenish.editorSearchAt = "";
+  const a = call(() => t.setRubricLimit("storage", 12));
+  assert.deepEqual([a.changed, a.search], [true, true]);
+  const b = call(() => t.setRubricLimit("storage", 13));
+  assert.deepEqual([b.changed, b.search], [true, false], "cooldown: saved, but no extra paid search");
+  assert.equal(call(() => t.rubricMinFor("storage")), 13);
+  // a hostile id never lands in the limits
+  for (const bad of ["__proto__", "constructor", "toString"]) assert.equal(call(() => t.setRubricLimit(bad, 5)).ok, false);
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {

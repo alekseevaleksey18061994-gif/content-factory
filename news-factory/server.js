@@ -401,6 +401,49 @@ function rubricSourceCounts(ws) {
   for (const src of (st.sources || [])) if (src && src.enabled && Object.prototype.hasOwnProperty.call(counts, String(src.rubric || ""))) counts[src.rubric] += 1;
   return counts;
 }
+// Per-theme source limits: the editor can raise or lower the minimum of each theme group (state.rubricLimits[id].min).
+const RUBRIC_MIN_LIMIT = 1, RUBRIC_MAX_LIMIT = 20;
+function rubricMinFor(rubricId, ws) {
+  const st = ws && ws.state ? ws.state : state;
+  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const own = st.rubricLimits && st.rubricLimits[rubricId] && Number(st.rubricLimits[rubricId].min);
+  return Number.isFinite(own) && own >= RUBRIC_MIN_LIMIT ? Math.min(RUBRIC_MAX_LIMIT, Math.round(own)) : base;
+}
+// the ceiling never sits below the editor's minimum
+function rubricMaxFor(rubricId, ws) {
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  return Math.max(strat.rubricMaxSources || strat.rubricMinSources || 1, rubricMinFor(rubricId, ws));
+}
+function rubricGroupsInfo(ws) {
+  const counts = rubricSourceCounts(ws);
+  const st = ws && ws.state ? ws.state : state;
+  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  return channelRubrics(ws).map(function(r){
+    return { id: r.id, label: r.label, hint: r.hint || "", active: counts[r.id] || 0, min: rubricMinFor(r.id, ws), defaultMin: base, max: rubricMaxFor(r.id, ws),
+      custom: !!(st.rubricLimits && st.rubricLimits[r.id]) };
+  });
+}
+const RUBRIC_LIMIT_SEARCH_COOLDOWN_MS = 10 * 60000;
+function setRubricLimit(rubricId, min) {
+  if (!rubricIds().has(String(rubricId))) return { ok: false, error: "Такой группы нет" };
+  const n = Math.round(Number(min));
+  if (!Number.isFinite(n) || n < RUBRIC_MIN_LIMIT || n > RUBRIC_MAX_LIMIT) return { ok: false, error: "Минимум — от " + RUBRIC_MIN_LIMIT + " до " + RUBRIC_MAX_LIMIT };
+  if (!state.rubricLimits || typeof state.rubricLimits !== "object" || Array.isArray(state.rubricLimits)) state.rubricLimits = {};
+  const before = rubricMinFor(rubricId);
+  if (before === n && state.rubricLimits[rubricId]) return { ok: true, rubric: rubricId, min: n, changed: false, search: false };
+  state.rubricLimits[rubricId] = { min: n, at: new Date().toISOString() };
+  // A changed limit is a fresh request: the hourly throttle and the "3 empty searches" rest are lifted — but at most
+  // once per 10 minutes, so repeated clicks cannot turn into unlimited paid searches.
+  state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
+  const lastEditor = Date.parse(state.sourceReplenish.editorSearchAt || "") || 0;
+  const search = Date.now() - lastEditor >= RUBRIC_LIMIT_SEARCH_COOLDOWN_MS;
+  if (search) {
+    state.sourceReplenish.editorSearchAt = new Date().toISOString();
+    state.sourceReplenish.lastAt = "";
+    if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+  }
+  return { ok: true, rubric: rubricId, min: n, changed: before !== n, search: search };
+}
 function channelSlotHours(ws) {
   const hours = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotHours;
   return Array.isArray(hours) && hours.length ? hours : null;
@@ -2998,7 +3041,6 @@ function autoPauseWeakSources() {
     const labels = {};
     for (const r of channelRubrics()) labels[r.id] = r.label;
     let themePaused = 0;
-    const minPerTheme = Math.max(1, channelStrategy(editorialChannelId()).rubricMinSources || 1);
     const counts = rubricSourceCounts();
     for (const source of (state.sources || [])) {
       if (themePaused >= 1) break; // one per run: the theme search replaces it before the next one goes
@@ -3006,7 +3048,7 @@ function autoPauseWeakSources() {
       // the editor switched it on by hand: never paused by this rule for 14 days
       if (source.editorEnabledAt && Date.now() - Date.parse(source.editorEnabledAt) < 14 * 86400000) continue;
       if (source.probationUntil && Date.parse(source.probationUntil) > Date.now()) continue; // still on trial
-      if (counts[source.rubric] <= minPerTheme) continue; // never below the theme's minimum
+      if (counts[source.rubric] <= rubricMinFor(source.rubric)) continue; // never below the theme's minimum (the editor's own limit counts)
       const card = sourceScorecard(source, ensureSourceStat(source) || {}, ids, labels);
       // weak = nothing published for two weeks in its theme, or almost everything rejected
       if (card.verdict !== "Слабый" || card.ageDays < 2 * SCORECARD_DAYS) continue;
@@ -3161,13 +3203,20 @@ async function replenishSourcesInner(reason) {
   if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0 && discoveryAllowed("rubric")) {
     const counts = rubricSourceCounts();
     // below the minimum first; a starving channel or a raised target grows its thinnest theme up to the maximum
-    const ceilingAll = strategyNow.rubricMaxSources || strategyNow.rubricMinSources;
     const wantsMore = need > 0 || starving;
+    // the group furthest below its own minimum goes first; then the thinnest one growing toward its ceiling
+    // groups take turns: the one searched longest ago goes first, so a group whose minimum cannot be filled
+    // (candidates ran out) never starves the others; the deficit decides between equals
+    const lastTried = (state.sourceReplenish && state.sourceReplenish.rubricLast) || {};
+    const triedAt = function(id){ return Date.parse(lastTried[id] || "") || 0; };
     const short = strategyNow.rubrics
-      .filter(function(r){ return counts[r.id] < strategyNow.rubricMinSources || (wantsMore && counts[r.id] < ceilingAll); })
-      .sort(function(a, b){ return counts[a.id] - counts[b.id]; })[0];
+      .filter(function(r){ return counts[r.id] < rubricMinFor(r.id) || (wantsMore && counts[r.id] < rubricMaxFor(r.id)); })
+      .sort(function(a, b){
+        const belowA = counts[a.id] < rubricMinFor(a.id) ? 0 : 1, belowB = counts[b.id] < rubricMinFor(b.id) ? 0 : 1;
+        return belowA - belowB || triedAt(a.id) - triedAt(b.id) || (counts[a.id] - rubricMinFor(a.id)) - (counts[b.id] - rubricMinFor(b.id)) || counts[a.id] - counts[b.id];
+      })[0];
     if (short) {
-      const ceiling = strategyNow.rubricMaxSources || strategyNow.rubricMinSources;
+      const ceiling = rubricMaxFor(short.id);
       rubricTarget = { rubric: short, need: Math.max(0, Math.min(SOURCES_ADDED_PER_RUN, roomLeft, ceiling - counts[short.id])) };
       if (!rubricTarget.need) rubricTarget = null;
     }
@@ -3239,6 +3288,8 @@ async function replenishSourcesInner(reason) {
     noteDiscoveryResult("lane", added.length - before);
   }
   if (rubricTarget) {
+    state.sourceReplenish.rubricLast = state.sourceReplenish.rubricLast && typeof state.sourceReplenish.rubricLast === "object" ? state.sourceReplenish.rubricLast : {};
+    state.sourceReplenish.rubricLast[rubricTarget.rubric.id] = new Date().toISOString();
     need = rubricTarget.need;
     const before = added.length;
     const theme = rubricTarget.rubric;
@@ -13251,7 +13302,7 @@ const server = http.createServer(async function(req, res) {
         item.decisionExplanation = buildDecisionExplanation(item);
         item.decisionExplanation.priorityScore = item.priorityScore;
       }
-      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), ratingMinAuto: POST_RATING_MIN_AUTO, ratingDropBelow: POST_RATING_DROP_BELOW });
+      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), rubricGroups: rubricGroupsInfo(), ratingMinAuto: POST_RATING_MIN_AUTO, ratingDropBelow: POST_RATING_DROP_BELOW });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
@@ -13608,6 +13659,16 @@ const server = http.createServer(async function(req, res) {
       saveState();
       const result = await replenishSources("target_changed");
       return sendJson(res, 200, { ok: true, target: target, result: result });
+    }
+
+    if (req.method === "POST" && p === "/api/sources/rubric-limit") {
+      const body = await readJsonObject(req);
+      const set = setRubricLimit(String(body.rubric || ""), body.min);
+      if (!set.ok) return sendJson(res, 400, set);
+      saveState();
+      let result = null;
+      if (set.search) { try { result = await replenishSources("rubric_limit_changed"); } catch (error) { result = { error: error.message }; } }
+      return sendJson(res, 200, { ok: true, rubric: set.rubric, min: set.min, changed: set.changed, searched: !!set.search, result: result });
     }
 
     if (req.method === "POST" && p === "/api/sources/media-license") {

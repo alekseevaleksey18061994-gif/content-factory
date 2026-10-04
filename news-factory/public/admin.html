@@ -2126,6 +2126,7 @@ button{line-height:1.2!important}
 .cal-stat{border:1px solid rgba(71,133,188,.16);background:rgba(255,255,255,.7);border-radius:14px;padding:10px 12px;min-width:0}
 .cal-stat b{display:block;font-size:22px;font-weight:900;line-height:1.1;white-space:nowrap}.cal-stat b small{font-size:14px;opacity:.55;font-weight:800}
 .cal-stat span{display:block;font-size:11px;opacity:.7;margin-top:3px;line-height:1.25}
+.rg-panel{margin-top:14px;padding:12px;border-radius:18px;border:1px solid rgba(71,133,188,.22);background:rgba(255,255,255,.55)}.rg-panel.rg-low{border-color:rgba(255,190,85,.55);background:rgba(255,190,85,.07)}.rg-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.rg-title b{display:block;font-size:16px}.rg-title span{display:block;font-size:12px;opacity:.7;margin-top:3px;line-height:1.4}.rg-status{flex:none;text-align:center;padding:6px 10px;border-radius:12px;font-weight:800;font-size:15px;background:rgba(47,160,100,.12);color:#1f7a4c}.rg-status.bad{background:rgba(255,190,85,.2);color:#a5541a}.rg-status small{display:block;font-size:10px;font-weight:600;opacity:.8}.rg-limit{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 4px;padding:8px 10px;border-radius:12px;background:rgba(111,147,255,.07);border:1px solid rgba(111,147,255,.22)}.rg-limit label{font-size:12px;font-weight:700}.rg-limit input{width:70px}.rg-note{font-size:11px;opacity:.65}.rg-body>summary,.rg-loose>summary{cursor:pointer;font-size:13px;font-weight:700;padding:8px 2px;list-style:none}.rg-loose>summary span{font-weight:400;font-size:12px;opacity:.7}.rg-loose{opacity:.85}
 .sc-card{border:1px solid rgba(71,133,188,.16);background:rgba(255,255,255,.75);border-radius:16px;padding:12px 14px;margin-top:10px}.sc-card.sc-off{opacity:.62}
 .sc-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center}
 .sc-rank{font-size:12px;font-weight:900;color:#2f6fe0;background:rgba(47,111,224,.08);border-radius:9px;padding:5px 7px}
@@ -2535,7 +2536,7 @@ body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.
             <div class="source-summary-box"><b id="sourceWeakCount">0</b><span id="sourceWeakLabel">Слабые</span></div>
             <div class="source-summary-box source-summary-bad" id="sourceReplaceBox"><b id="sourceReplaceCount">0</b><span id="sourceReplaceLabel">На замену</span></div>
           </div>
-          <div class="source-target-box"><div><b>Минимум активных источников</b><span id="sourceTargetInfo">—</span></div><div class="source-target-form"><input id="sourceTargetInput" type="number" min="0" max="200" inputmode="numeric"><button onclick="saveSourceTarget()">Сохранить</button></div></div>
+          <div class="source-target-box" id="sourceTargetBox"><div><b>Минимум активных источников</b><span id="sourceTargetInfo">—</span></div><div class="source-target-form"><input id="sourceTargetInput" type="number" min="0" max="200" inputmode="numeric"><button onclick="saveSourceTarget()">Сохранить</button></div></div>
           <div class="notice source-rating-note" id="sourceRatingNote">Рейтинг считается автоматически по качеству новостей, частоте попадания в календарь, количеству сильных материалов и ошибкам источника. Первые 5–15 проверок система собирает статистику.</div>
           <div class="notice copyright-safe-note"><b>Balanced Media включён.</b> Фото и видео из новостного источника используются по умолчанию с сохранением ссылки на источник. AI-обложка создаётся только как запасной вариант, если медиа нет или источник помечен «Медиа запрещено».</div>
           <div id="sources" class="source-ranked-list"></div>
@@ -3005,7 +3006,7 @@ body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.
 <div id="toast" class="toast"></div>
 
 <script>
-var ratingMinAuto=50,ratingDropBelow=35,state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],previewCurrentItem=null;
+var ratingMinAuto=50,ratingDropBelow=35,state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],rubricGroups=[],previewCurrentItem=null;
 var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
@@ -3168,6 +3169,17 @@ function whyPostHtml(q){
   var d=q&&q.decisionExplanation||{},f=Array.isArray(d.factors)?d.factors:[];
   var summary=d.summary||q.decisionSummary||'Система учитывает рейтинг новости, качество текста, разнообразие ленты и медиа.';
   return '<div class="why-panel" id="why_'+esc(q.id)+'"><b>'+esc(summary)+'</b>'+(f.length?'<ul>'+f.map(function(x){return '<li>'+esc(x)+'</li>'}).join('')+'</ul>':'')+'</div>';
+}
+async function saveRubricLimit(id){
+  var inp=el('rgMin_'+id);
+  var v=Math.round(Number(inp&&inp.value));
+  if(!Number.isFinite(v)||v<1||v>20){toast('Минимум — от 1 до 20');return}
+  try{
+    var r=await api('/api/sources/rubric-limit',{method:'POST',body:JSON.stringify({rubric:id,min:v})});
+    var n=r.result&&r.result.added?r.result.added.length:0;
+    toast('Минимум группы: '+v+(n?' · добавлено источников: '+n:''));
+    await load();
+  }catch(e){toast(e.message)}
 }
 async function saveSourceTarget(){
   var v=Number(el('sourceTargetInput').value);
@@ -3682,7 +3694,7 @@ document.addEventListener('click',function(e){var sw=el('accountSwitcher');if(sw
 document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListener('click',function(){goPage(btn.dataset.page)})});
 
 async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});if(activeWorkspaceId)opt.headers['x-workspace-id']=activeWorkspaceId;var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
-async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderNetworkDashboard();renderConnections(false).catch(function(e){toast(e.message)})}
+async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];rubricGroups=Array.isArray(j.rubricGroups)?j.rubricGroups:[];if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderNetworkDashboard();renderConnections(false).catch(function(e){toast(e.message)})}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode('+ja(m)+')">'+labels[m]+'</button>'}).join('');
@@ -3706,7 +3718,7 @@ function render(){
   var enabledIds={};(state.sources||[]).forEach(function(x){if(x&&x.enabled)enabledIds[x.id]=true});
   var activeRankings=sourceRankings.filter(function(r){return enabledIds[r.id]});
   // Theme channels are judged by the theme scorecard (posts a week in its theme), not by the old news rating.
-  var themed=activeRankings.some(function(r){return r.scorecard&&r.scorecard.rubric});
+  var themed=(rubricGroups&&rubricGroups.length>0)||sourceRankings.some(function(r){return r.scorecard&&r.scorecard.rubric});
   var statusCounts={strong:0,working:0,weak:0,replace:0};
   activeRankings.forEach(function(r){
     if(themed){
@@ -3734,7 +3746,7 @@ function render(){
   var target=(state.sourceTarget!=null&&state.sourceTarget!=='')?Number(state.sourceTarget):40;
   if(el('sourceTargetInfo'))el('sourceTargetInfo').textContent='Активных '+activeCount+' из '+target+'. Если источник отключится, система сама подберёт и проверит замену: сначала из резервного списка, потом через поиск AI.';
   if(el('sourceTargetInput')&&document.activeElement!==el('sourceTargetInput'))el('sourceTargetInput').value=target;
-  el('sources').innerHTML=sortedSources.map(function(s){
+  var cardHtml=function(s){
     var group=s.group==='official'?'Официальный':s.group==='media'?'СМИ':s.group==='blogger'?'Автоблогер':s.group==='creator'?'Блогер':'Свой';
     var r=rankingMap[s.id]||{rating:null,status:'Собираем данные',rank:'—',checks:0,scored:0,strong:0,selected:0,published:0,errors:0,avgScore:null};
     var rating=r.rating==null?'—':r.rating;
@@ -3776,7 +3788,31 @@ function render(){
         '<button class="sc-remove" onclick="removeSource('+ja(s.id)+')" aria-label="Удалить источник" title="Удалить источник">✕</button>'+
       '</div>'+
     '</div>';
-  }).join('');
+  };
+  if(themed&&rubricGroups.length){
+    // theme channel: one panel per group, only its own sources, and a minimum limit for the group
+    var byGroup={},loose=[];
+    sortedSources.forEach(function(s){var g=String(s.rubric||'');if(g&&rubricGroups.some(function(x){return x.id===g}))(byGroup[g]=byGroup[g]||[]).push(s);else loose.push(s)});
+    var panels=rubricGroups.map(function(g){
+      var list=byGroup[g.id]||[];
+      var active=list.filter(function(x){return x.enabled}).length;
+      var low=active<g.min;
+      return '<div class="rg-panel'+(low?' rg-low':'')+'">'+
+        '<div class="rg-head"><div class="rg-title"><b>'+esc(g.label)+'</b><span>'+(g.hint?esc(g.hint):'')+'</span></div>'+
+          '<div class="rg-status '+(low?'bad':'ok')+'">'+active+' из '+g.min+'<small>'+(low?'добираем':'активных')+'</small></div></div>'+
+        '<div class="rg-limit"><label for="rgMin_'+esc(g.id)+'">Минимум источников</label>'+
+          '<input id="rgMin_'+esc(g.id)+'" type="number" min="1" max="20" inputmode="numeric" value="'+g.min+'">'+
+          '<button onclick="saveRubricLimit('+ja(g.id)+')">Сохранить</button>'+
+          '<span class="rg-note">'+(g.custom?'ваш лимит':'по умолчанию '+g.defaultMin)+' · максимум '+g.max+'</span></div>'+
+        '<details class="rg-body" open><summary>Источники группы ('+list.length+')</summary>'+(list.length?list.map(cardHtml).join(''):'<div class="notice">В группе пока нет источников — система подберёт их поиском по теме.</div>')+'</details>'+
+      '</div>';
+    }).join('');
+    var extra=loose.length?'<details class="rg-panel rg-loose"><summary><b>Вне групп · '+loose.length+'</b> <span>выключенные и старые источники, в рейтинг тем не входят</span></summary>'+loose.map(cardHtml).join('')+'</details>':'';
+    el('sources').innerHTML=panels+extra;
+  }else{
+    el('sources').innerHTML=sortedSources.map(cardHtml).join('');
+  }
+  if(el('sourceTargetBox'))el('sourceTargetBox').style.display=(themed&&rubricGroups.length)?'none':'';
   el('queueCount').textContent=(state.queue||[]).length;
   var qp=state.queuePolicy||{};
   if(el('queuePolicyInfo'))el('queuePolicyInfo').textContent='Очередь отсортирована по рейтингу: сверху лучшие. В слот выходит лучший пост; с рейтингом ниже '+ratingMinAuto+' — запасные, ниже '+ratingDropBelow+' система убирает сама. Автоочистка: старше '+(qp.queueMaxAgeHours||12)+' ч, максимум '+(qp.queueMaxAutoItems||20)+' автоматических новостей.';
