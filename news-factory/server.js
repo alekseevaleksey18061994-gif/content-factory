@@ -14771,6 +14771,32 @@ setTimeout(function runInternetSourceFixV0451() {
   })().catch(function(error){ console.warn("Internet source fix failed:", error.message); });
 }, 100000);
 
+// v0.53.0: «Что там с покупками?» — five product-find rubrics and the approved source set.
+setTimeout(function runShoppingFindsV0530() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "shopping") continue;
+      const migration = "v0.53.0-shopping-finds";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = normalizeShoppingFindSources(state, SHOPPING_FIND_SOURCES, rubricIds(ws), new Date().toISOString());
+        if (!ws.channelId) ws.channelId = "shopping";
+        ws.updatedAt = new Date().toISOString();
+        persistWorkspaceStore();
+        state.migrations.push(migration);
+        saveState();
+        console.log("SHOPPING_FINDS_V0530 " + JSON.stringify({
+          workspace: ws.id,
+          added: result.added.length,
+          paused: result.paused.length,
+          rubrics: rubricSourceCounts(ws)
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("Shopping finds migration failed:", error.message); });
+}, 108000);
+
 // v0.51.3: «Что там для дома?» — 10 themes, one post a day each. Off-topic sources are paused (kept) and their
 // sections blocked for discovery; the niche's biggest Telegram channels are added and every source gets its theme.
 setTimeout(function runHomeRubricSourcesV0513() {
