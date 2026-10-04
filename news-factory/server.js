@@ -2572,6 +2572,11 @@ async function enforceCopyrightSafeMedia(post) {
     if (MEDIA_REQUIRED && !out.imageUrl && !out.videoUrl && !out.generatedImageUrl) {
       throw new Error("Публикация запрещена: качественное медиа не подготовлено");
     }
+    if (editorialChannelId() === "shopping" && !shoppingHasRealProductMedia(out)) {
+      const error = new Error("Для товарного поста нет реального фото или видео: AI-перерисовка товара запрещена");
+      error.code = "NO_PRODUCT_MEDIA"; error.permanent = true;
+      throw error;
+    }
     return out;
   }
 
@@ -2589,6 +2594,11 @@ async function enforceCopyrightSafeMedia(post) {
   // The album pack holds third-party photos too: when the source media is not reusable it must not bypass the filter.
   out.mediaPackUrls = [];
 
+  if (editorialChannelId() === "shopping") {
+    const error = new Error("Медиа товара нельзя безопасно переиспользовать; AI-перерисовка товара запрещена");
+    error.code = "NO_PRODUCT_MEDIA"; error.permanent = true;
+    throw error;
+  }
   if (!generatedIndependent) out.generatedImageUrl = "";
   if (!TEXT_CARD_POSTS_ALLOWED && GENERATE_COVER_IF_MISSING && (!out.generatedImageUrl || /(?:^|\/)budget_card_/.test(out.generatedImageUrl))) {
     const error = new Error("Фото источника запрещено, а пост с текстовой карточкой не публикуется");
@@ -2997,6 +3007,7 @@ function autoQualityEligible(item) {
 // Why a queue item can never be published automatically (removed by autoResolveQueue).
 function autoRejectReason(item) {
   if (!item || !item.newsId) return "";
+  if (editorialChannelId() === "shopping" && !shoppingHasRealProductMedia(item)) return "для товара нет реального фото или видео";
   const rating = queueItemRating(item);
   const dropBelow = channelRatingDropBelow();
   if (dropBelow > 0 && rating < dropBelow) return "рейтинг " + rating + " из 100 ниже " + dropBelow;
@@ -5751,6 +5762,11 @@ function textCardBlocked(item) { return !TEXT_CARD_POSTS_ALLOWED && isTextCardOn
 function hasPublishableMedia(item) {
   return Boolean(item && (item.videoUrl || item.imageUrl || item.generatedImageUrl || (item.metadata && (item.metadata.videoUrl || item.metadata.imageUrl || item.metadata.generatedImageUrl))));
 }
+function shoppingHasRealProductMedia(item) {
+  if (!item) return false;
+  const meta = item.metadata || {};
+  return Boolean(item.videoUrl || item.imageUrl || meta.videoUrl || meta.imageUrl);
+}
 
 
 function extractTelegramSourcePosts(html, sourceUrl) {
@@ -7128,6 +7144,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, requiredRubric) {
       { const pending = pendingAutoTargets(item); if (!pending.telegram && !pending.vk) return false; }
       if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
       if (!autoQualityEligible(item)) return false;
+      if (channelId === "shopping" && !shoppingHasRealProductMedia(item)) return false;
       if (textCardBlocked(item)) return false;
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const itemTheme = itemRubric(item, themes);
