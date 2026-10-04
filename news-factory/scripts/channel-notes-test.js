@@ -36,6 +36,32 @@ test("L3 stars at 12:15 MSK: the scheduler prepares the extra slot (no blogger s
   assert.ok(lines.some((l) => l.startsWith("Dynamic scheduler blogger_prepare chtotamstars")), lines.join("\n").slice(0, 500));
 });
 
+test("L4 shopping: exact 20-slot Moscow schedule and rubric routing", async () => {
+  const t = await loadServer({ fixedNow: "2026-10-05T06:00:00Z", state: {
+    chtotampokupki: { sources: [
+      src("wb", "https://t.me/s/wildberriesru_official", { group:"creator", rubric:"wildberries", rubrics:["wildberries"] }),
+      src("oz", "https://t.me/s/ozonru", { group:"creator", rubric:"ozon", rubrics:["ozon"] })
+    ] }
+  } });
+  const expected = ["08:00","08:45","09:30","10:15","11:00","11:45","12:30","13:15","14:00","14:45","15:30","16:15","17:00","17:45","18:30","19:15","20:00","20:45","21:30","22:15"];
+  assert.deepEqual(inWs(t, "chtotampokupki", () => t.ensureScheduleShape(t.ws("chtotampokupki").state).slots.map((s)=>s.time).filter((x)=>expected.includes(x))), expected);
+  assert.equal(inWs(t, "chtotampokupki", () => t.ensureScheduleShape(t.ws("chtotampokupki").state).targetPerDay), 20);
+  assert.equal(inWs(t, "chtotampokupki", () => t.ensureScheduleShape(t.ws("chtotampokupki").state).maxPerDay), 20);
+  assert.deepEqual(inWs(t, "chtotampokupki", () => t.bloggerSlotsFor()), expected.filter((x)=>!["08:00","11:00","14:00","17:00","20:00"].includes(x)));
+  assert.equal(inWs(t, "chtotampokupki", () => t.bloggerTargetFor()), 15);
+
+  const wb = mkQueueItem({ id:"qwb", newsId:"nwb", sourceId:"wb", sourceName:"wb", contentBucket:"wildberries",
+    channelSignals:{utility:10,visual:10,virality:8,wow:7,discussion:5,deal:2},
+    editorialV2:{channelId:"shopping",status:"approved",verdict:"pass",importance:9,contentBucket:"wildberries",channelSignals:{utility:10,visual:10,virality:8,wow:7,discussion:5,deal:2}} });
+  const oz = mkQueueItem({ id:"qoz", newsId:"noz", sourceId:"oz", sourceName:"oz", contentBucket:"ozon",
+    channelSignals:{utility:10,visual:10,virality:8,wow:7,discussion:5,deal:2},
+    editorialV2:{channelId:"shopping",status:"approved",verdict:"pass",importance:9,contentBucket:"ozon",channelSignals:{utility:10,visual:10,virality:8,wow:7,discussion:5,deal:2}} });
+  t.ws("chtotampokupki").state.queue=[oz,wb];
+  assert.equal(inWs(t, "chtotampokupki", () => t.dynamicBestQueueItemRaw("blogger", false, "08:45")).id, "qwb");
+  assert.equal(inWs(t, "chtotampokupki", () => t.dynamicBestQueueItemRaw("blogger", false, "09:30")).id, "qoz");
+  t.restoreConsole();
+});
+
 test("L2 kino: meme lane only once it has meme (blogger) sources; slots 12:30/16:30/20:30", async () => {
   const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", state: { chtotamkino: { sources: [src("k1", "https://kino.ru/news/")] } } });
   assert.equal(inWs(t, "chtotamkino", () => t.bloggerLaneActive()), false);
