@@ -87,7 +87,7 @@ assert.match(server, /function rubricDefaultMinFor\(/);
 const prompt = fs.readFileSync(new URL("../prompts/chto-tam.md", import.meta.url), "utf8");
 for (const id of auto.rubrics.map(r => r.id)) assert.ok(prompt.includes("\`" + id + "\`"), "auto prompt rubric " + id);
 for (const id of shopping.rubrics.map(r => r.id)) assert.ok(prompt.includes("\`" + id + "\`"), "shopping prompt rubric " + id);
-assert.match(prompt, /Для \x60shopping\x60, рекламный пост можно использовать как сырьё/);
+assert.match(prompt, /Для \x60shopping\x60 рекламный пост можно использовать как сырьё/);
 assert.match(prompt, /В публичном тексте НЕ указывай цену, рейтинг товара, число отзывов/);
 assert.match(prompt, /в \x60tg_text\x60 и \x60vk_text\x60 не должно быть ссылки на товар, ссылки на источник/);
 
