@@ -14962,6 +14962,31 @@ setTimeout(function runMoneyPersonalFinanceV0526() {
   })().catch(function(error){ console.warn("Money personal-finance migration failed:", error.message); });
 }, 115000);
 
+// v0.52.8: the first production pass showed two money rubrics below the five-source floor because
+// otherwise-good Telegram candidates were stale/unavailable. Reuse already validated shared personal-finance
+// feeds for those rubrics, then let the normal replenisher replace them later if their quality drops.
+setTimeout(function repairMoneyRubricFloorV0528() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "money") continue;
+      const migration = "v0.52.8-money-rubric-floor";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = normalizeMoneyRubricSourcesV0526(ws);
+        state.migrations.push(migration);
+        saveState();
+        console.log("MONEY_RUBRIC_FLOOR_REPAIR " + JSON.stringify({
+          workspace: ws.id,
+          assigned: result.assigned,
+          paused: result.paused,
+          rubrics: rubricSourceCounts(ws)
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("Money rubric floor repair failed:", error.message); });
+}, 45000);
+
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
 async function recoverMissingWorkspaces() {
