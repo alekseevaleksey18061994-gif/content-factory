@@ -368,7 +368,8 @@ const CHANNEL_EXTRA_LANES = {
   stars: { slots: ["12:30", "18:30", "21:30"], anySource: true, label: "Доп. посты" },
   kino: { slots: ["12:30", "16:30", "20:30"], anySource: false, label: "Кино-мемы" },
   // Approved money cadence: six :00 slots + these two flexible :30 slots = max 8 normal posts/day.
-  money: { slots: ["14:30", "21:30"], targetPerDay: 2, anySource: true, label: "Личные финансы" }
+  money: { slots: ["14:30", "21:30"], targetPerDay: 2, anySource: true, label: "Личные финансы" },
+  shopping: { slots: ["08:45","09:30","10:15","11:45","12:30","13:15","14:45","15:30","16:15","17:45","18:30","19:15","20:45","21:30","22:15"], targetPerDay: 15, anySource: true, label: "Покупки" }
 };
 // Editor's notes per channel (2026-10-03): what discovery should look for, which channels get their sources
 // refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
