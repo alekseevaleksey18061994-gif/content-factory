@@ -7100,8 +7100,10 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time, urgentOverride)
       const itemTheme = itemRubric(item, themes);
       const desiredRubric = channelSlotRubric(time);
       if (desiredRubric && itemTheme !== desiredRubric) {
+        const source = findSourceForItem(item);
+        const sourceRubrics = new Set([String(source && source.rubric || "")].concat(Array.isArray(source && source.rubrics) ? source.rubrics.map(String) : []));
         const importance = Number(item && item.editorialV2 && item.editorialV2.importance);
-        if (!(urgentOverride && channelId === "auto" && Number.isFinite(importance) && importance >= 9)) return false;
+        if (!sourceRubrics.has(desiredRubric) && !(urgentOverride && channelId === "auto" && Number.isFinite(importance) && importance >= 9)) return false;
       }
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
