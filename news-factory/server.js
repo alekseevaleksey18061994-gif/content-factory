@@ -12,7 +12,7 @@ import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-securi
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
-import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526, AUTO_RUBRIC_SOURCES_V0529, SHOPPING_RUBRIC_SOURCES_V0529 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
@@ -385,7 +385,8 @@ const CHANNEL_EXTRA_LANES = {
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
   home: { refresh: true, boost: 0, hint: "находки и подборки товаров для дома, до/после обычных квартир, хранение, уборка, ремонт своими руками, тренды интерьера, кухня; НЕ рынок недвижимости, НЕ ЖКХ, НЕ IT-новости, НЕ городские новости" },
-  shopping: { refresh: true, boost: 15, hint: "новости для покупателей, а не для продавцов: скидки и распродажи, цены в магазинах, новинки и вирусные товары, возвраты и доставка на Ozon, Wildberries, Яндекс Маркете и Авито, права потребителей, мошенники; Telegram-каналы и сайты для покупателей" },
+  auto: { refresh: true, boost: 12, hint: "автомобили: премьеры и новинки, авторынок России, китайские авто, электро и гибриды, автотехнологии, сильные российские автоблогеры и владельцы, вирусные автомобильные истории, важное водителю; без мелких ДТП, жести и дилерской рекламы без инфоповода" },
+  shopping: { refresh: true, boost: 15, hint: "конкретные товарные находки для Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; Telegram-каналы и сайты с фото или видео товара; рекламный исходник допустим как источник находки; НЕ новости маркетплейсов, НЕ контент для продавцов, НЕ корпоративный ритейл" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
   games: { hint: "игровые новостные Telegram-каналы: релизы, скидки и раздачи, утечки, трейлеры, игровое сообщество", telegramMin: 12 },
@@ -427,7 +428,9 @@ function rubricSourceCounts(ws) {
 const RUBRIC_MIN_LIMIT = 1;
 function rubricMinFor(rubricId, ws) {
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  const ownDefault = Number(strat.rubricDefaultMins && strat.rubricDefaultMins[rubricId]);
+  const base = Math.max(1, (Number.isFinite(ownDefault) && ownDefault >= 1 ? ownDefault : Number(strat.rubricMinSources || 1)));
   const own = st.rubricLimits && st.rubricLimits[rubricId] && Number(st.rubricLimits[rubricId].min);
   return Number.isFinite(own) && own >= RUBRIC_MIN_LIMIT ? Math.round(own) : base;
 }
@@ -439,8 +442,10 @@ function rubricMaxFor(rubricId, ws) {
 function rubricGroupsInfo(ws) {
   const counts = rubricSourceCounts(ws);
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
   return channelRubrics(ws).map(function(r){
+    const ownDefault = Number(strat.rubricDefaultMins && strat.rubricDefaultMins[r.id]);
+    const base = Math.max(1, (Number.isFinite(ownDefault) && ownDefault >= 1 ? ownDefault : Number(strat.rubricMinSources || 1)));
     return { id: r.id, label: r.label, hint: r.hint || "", active: counts[r.id] || 0, min: rubricMinFor(r.id, ws), defaultMin: base, max: rubricMaxFor(r.id, ws),
       custom: !!(st.rubricLimits && st.rubricLimits[r.id]) };
   });
@@ -470,19 +475,39 @@ function channelSlotHours(ws) {
   const hours = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotHours;
   return Array.isArray(hours) && hours.length ? hours : null;
 }
+function channelSlotSchedule(ws) {
+  const slots = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotSchedule;
+  return Array.isArray(slots) && slots.length ? slots : null;
+}
+function channelSlotRubric(time, ws) {
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  const direct = strat.slotRubrics && strat.slotRubrics[String(time || "")];
+  if (direct) return String(direct);
+  const plan = Array.isArray(strat.slotSchedule) ? strat.slotSchedule : [];
+  const found = plan.find(function(slot){ return slot && String(slot.time) === String(time || ""); });
+  return found && found.rubric ? String(found.rubric) : "";
+}
 function isChannelSlotHour(hour, ws) {
   const hours = channelSlotHours(ws);
   return hours ? hours.includes(Number(hour)) : (hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR);
 }
 function channelDailyMax(ws) {
+  const custom = channelSlotSchedule(ws);
+  if (custom) return custom.length;
   const hours = channelSlotHours(ws);
-  return hours ? Math.min(DYNAMIC_DAILY_MAX, hours.length) : DYNAMIC_DAILY_MAX;
+  return hours ? hours.length : DYNAMIC_DAILY_MAX;
 }
 function channelExtraLane() {
   const ws = currentWorkspace();
   return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
 }
-function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : BLOGGER_SLOTS; }
+function bloggerSlotsFor() {
+  // «Что там у тачек?» now has blogger posts inside its approved 15 regular rubric slots (12:00 and 20:00).
+  // The old five :30 blogger lane would create unapproved extra publications.
+  if (editorialChannelId() === "auto") return [];
+  const lane = channelExtraLane();
+  return lane ? lane.slots : BLOGGER_SLOTS;
+}
 function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? Math.max(0, Number(lane.targetPerDay == null ? lane.slots.length : lane.targetPerDay)) : BLOGGER_DAILY_TARGET; }
 // The extra lane runs when the channel has blogger sources (or, for an anySource lane, any enabled source).
 function bloggerLaneActive() {
@@ -658,10 +683,25 @@ function ensureScheduleShape(targetState) {
   let ownerWs = null;
   try { ownerWs = targetState === state ? currentWorkspace() : null; } catch { ownerWs = null; }
   if (!ownerWs) ownerWs = wsList.find(function(w){ return w && w.state === targetState; }) || null;
+  const customPlan = ownerWs ? channelSlotSchedule(ownerWs) : null;
+  if (customPlan) {
+    const labels = new Map(channelRubrics(ownerWs).map(function(r){ return [r.id, r.label]; }));
+    schedule.slots = customPlan.map(function(slot){
+      return { time: String(slot.time), kind: "channel-custom", label: labels.get(String(slot.rubric || "")) || "Тематический слот", rubric: String(slot.rubric || "") };
+    });
+    schedule.strategy = "channel-custom";
+    schedule.prepareMinutesBefore = 15;
+    schedule.maxPerDay = customPlan.length;
+    schedule.targetPerDay = customPlan.length;
+    return schedule;
+  }
   const ownHours = ownerWs ? channelSlotHours(ownerWs) : null;
   if (ownHours && Array.isArray(schedule.slots)) {
+    const ownerChannel = ownerWs ? resolveChannelId(ownerWs) : "";
     schedule.slots = schedule.slots.filter(function(slot){
-      if (!slot || slot.kind === "blogger" || slot.kind === "russian-ai" || slot.kind === "money-emergency" || !/^\d{2}:00$/.test(String(slot.time || ""))) return true;
+      if (!slot) return false;
+      if (ownerChannel === "auto" && slot.kind === "blogger") return false;
+      if (slot.kind === "blogger" || slot.kind === "russian-ai" || slot.kind === "money-emergency" || !/^\d{2}:00$/.test(String(slot.time || ""))) return true;
       return ownHours.includes(Number(String(slot.time).slice(0, 2)));
     });
     schedule.maxPerDay = Math.min(Number(schedule.maxPerDay || ownHours.length), ownHours.length);
@@ -2915,8 +2955,18 @@ function editorialLearningBonus(item) {
 function queueItemRating(item) {
   return postRating(queueItemRatingInput(item, editorialChannelId())).total;
 }
-function channelRatingMinAuto() { return editorialChannelId() === "money" ? 80 : POST_RATING_MIN_AUTO; }
-function channelRatingDropBelow() { return editorialChannelId() === "money" ? 70 : POST_RATING_DROP_BELOW; }
+function channelRatingMinAuto() {
+  const id = editorialChannelId();
+  if (id === "money") return 80;
+  if (id === "shopping") return 75;
+  return POST_RATING_MIN_AUTO;
+}
+function channelRatingDropBelow() {
+  const id = editorialChannelId();
+  if (id === "money") return 70;
+  if (id === "shopping") return 65;
+  return POST_RATING_DROP_BELOW;
+}
 
 function moneyFactConfirmationOk(item) {
   if (editorialChannelId() !== "money") return true;
@@ -8089,7 +8139,7 @@ function formatTelegramBody(value) {
 function formatTelegramPost(post) {
   const title = String(post.title || "").trim();
   const text = String(post.text || "").trim();
-  const sources = normalizePublicPostSources(post).slice(0, 5);
+  const sources = editorialChannelId() === "shopping" ? [] : normalizePublicPostSources(post).slice(0, 5);
   let html = "";
   if (title) html += "<b>" + escapeTelegramHtml(title) + "</b>";
   if (text) html += (html ? "\n\n" : "") + formatTelegramBody(text);
@@ -8939,7 +8989,7 @@ function formatVkPost(post, options) {
   let out = "";
   if (title) out += title;
   if (text) out += (out ? "\n\n" : "") + text;
-  const sources = normalizePublicPostSources(post).slice(0, 5);
+  const sources = editorialChannelId() === "shopping" ? [] : normalizePublicPostSources(post).slice(0, 5);
   if (opts.includeSource !== false && sources.length === 1) {
     out += (out ? "\n\n" : "") + "Источник: " + sources[0].url;
   } else if (opts.includeSource !== false && sources.length > 1) {
