@@ -108,7 +108,7 @@ const EXPORT_NAMES = [
   "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous", "applyChannelNotes", "flushWorkspaceStoreNow", "storeFlushStats", "bloggerSlotsFor", "bloggerTargetFor", "bloggerLaneActive", "channelExtraLane",
   "withDeadline", "releaseStuckCollectors", "collectorRunInfo", "collectorRuns", "collectorRunningWorkspaces", "isCollectorRunning",
   "collectionMinuteFor", "staggeredCollectTick", "prepareDynamicSlot", "prepMinuteFor", "publishMinuteFor", "isTextCardOnly",
-  "reworkChannelSources", "sourceScorecard", "itemRubric", "channelSlotHours", "isChannelSlotHour", "channelDailyMax", "rubricSourceCounts", "autoPauseWeakSources", "buildSourceRankings", "rubricMinFor", "rubricMaxFor", "rubricGroupsInfo", "setRubricLimit", "normalizeHomeRubricSourcesV0524", "normalizeMoneyRubricSourcesV0526",
+  "reworkChannelSources", "sourceScorecard", "itemRubric", "channelSlotHours", "channelSlotSchedule", "channelSlotRubric", "isChannelSlotHour", "channelDailyMax", "rubricSourceCounts", "autoPauseWeakSources", "buildSourceRankings", "rubricMinFor", "rubricMaxFor", "rubricGroupsInfo", "setRubricLimit", "normalizeHomeRubricSourcesV0524", "normalizeMoneyRubricSourcesV0526", "normalizeApprovedRubricSourcesV0529", "formatTelegramPost", "formatVkPost",
   "queueItemRating", "ratingBelowAutoThreshold", "autoQualityEligible", "moneyFactConfirmationOk", "channelRatingMinAuto", "channelRatingDropBelow", "prepareMoneyEmergencySlot", "moneyNormalPublishedCount", "moneyEmergencyDailyPublishedCount"
 ];
 
