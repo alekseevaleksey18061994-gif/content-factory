@@ -488,6 +488,8 @@ function channelSlotRubric(time, ws) {
   return found && found.rubric ? String(found.rubric) : "";
 }
 function isChannelSlotHour(hour, ws) {
+  const custom = channelSlotSchedule(ws);
+  if (custom) return custom.some(function(slot){ const m=/^(\d{2}):(\d{2})$/.exec(String(slot && slot.time || "")); return m && Number(m[1]) === Number(hour); });
   const hours = channelSlotHours(ws);
   return hours ? hours.includes(Number(hour)) : (hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR);
 }
