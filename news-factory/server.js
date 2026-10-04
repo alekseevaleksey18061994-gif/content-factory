@@ -7773,8 +7773,57 @@ async function publishDynamicSlotOnce(kind, opts) {
   }
 }
 
+async function structuredRubricSchedulerTick() {
+  const slots = channelSlotSchedule();
+  if (!slots || !slots.length) return false;
+  const now = new Date();
+  const nowMinutes = moscowMinutes(now);
+  const day = moscowDateKey(now);
+  const window = SCHEDULER_SLOT_WINDOW_MINUTES;
+  let due = null;
+
+  for (const slot of slots) {
+    const sm = slotMinutes(slot.time);
+    if (!Number.isFinite(sm)) continue;
+    const prep = sm - 15;
+    if (nowMinutes >= prep && nowMinutes < prep + window) {
+      due = { action: "prepare", slot: slot };
+      break;
+    }
+    if (nowMinutes >= sm && nowMinutes < sm + window) {
+      due = { action: "publish", slot: slot };
+      break;
+    }
+  }
+  if (!due) return true;
+
+  state.dynamicScheduler = state.dynamicScheduler || {};
+  const key = day + "-" + due.slot.time + "-" + due.action;
+  if (state.dynamicScheduler.lastTickKey === key) return true;
+  if (state.mode !== "AUTO" || !AUTO_PUBLISH_ENABLED) return true;
+
+  state.dynamicScheduler.lastAttemptedTickKey = key;
+  state.dynamicScheduler.lastAttemptedTickAt = new Date().toISOString();
+  try {
+    const work = due.action === "prepare"
+      ? prepareStructuredSlot(due.slot.time)
+      : publishDynamicSlot(undefined, due.slot.time);
+    const result = due.action === "prepare"
+      ? await withDeadline(work, SCHEDULER_PREPARE_TIMEOUT_MS, "structured scheduler prepare")
+      : await work;
+    state.dynamicScheduler.lastTickKey = key;
+    state.dynamicScheduler.lastTickCompletedAt = new Date().toISOString();
+    saveState();
+    console.log("Structured scheduler " + due.action + " " + currentWorkspaceId() + ": " + JSON.stringify(result));
+  } catch (error) {
+    console.error("Structured scheduler " + due.action + " " + currentWorkspaceId() + " failed:", error.message);
+  }
+  return true;
+}
+
 async function dynamicSchedulerTick() {
   if (isCollectorRunning()) return;
+  if (await structuredRubricSchedulerTick()) return;
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
   const hour = Math.floor(nowMinutes / 60);
@@ -7891,6 +7940,8 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
 
   await Promise.all(workspaceStore.workspaces.map(async function(ws) {
     if (!ws || schedulerTickRunning.has(ws.id)) return;
+    // Structured channels own exact minute slots (including :15/:30/:45); their scheduler handles them directly.
+    if (channelSlotSchedule(ws)) return;
     // the catch-up must not post a channel before its own spread-out minute (it still recovers up to :44 as before)
     if (minute < publishMinuteFor(ws.id)) return;
     if (!isChannelSlotHour(hour, ws)) return; // this channel has no post this hour
@@ -7953,7 +8004,7 @@ function startCollectorScheduler() {
   dynamicSchedulerTickAllWorkspaces()
     .then(function(){ return catchUpCurrentRegularSlotAllWorkspaces(); })
     .catch(function(error){ console.error("Dynamic scheduler startup failed:", error.message); });
-  console.log("Dynamic scheduler: regular hourly + restart catch-up + autoblogger slots + Russian AI slots 09:30/11:30/13:30/16:30/19:30/22:30 Moscow");
+  console.log("Dynamic scheduler: exact rubric slots + regular hourly restart catch-up + configured extra lanes, Europe/Moscow");
 }
 
 function sendJson(res, status, payload, headers) {
