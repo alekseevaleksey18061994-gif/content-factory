@@ -45,6 +45,11 @@ await test("AS3 cars: a slot only selects its assigned rubric", async()=>{
   const best=inWs(t,A,()=>t.dynamicBestQueueItemRaw("",true,"premieres"));
   assert.equal(best && best.id,"prem");
   assert.equal(inWs(t,A,()=>t.channelSlotRubric("10:00")),"premieres");
+  ws.state.sources=[{id:"blog",name:"Ильдар Авто-подбор",url:"https://t.me/s/ildar_auto_podbor",enabled:true,group:"blogger",rubric:"bloggers_owners",rubrics:["bloggers_owners"]}];
+  ws.state.queue=[
+    mkQueueItem({id:"blogq",newsId:"nblog",sourceId:"blog",sourceName:"Ильдар Авто-подбор",contentBucket:"bloggers_owners",editorialV2:{channelId:"auto",status:"approved",verdict:"pass",importance:9,contentBucket:"bloggers_owners"},aiScore:90})
+  ];
+  assert.equal(inWs(t,A,()=>t.dynamicBestQueueItemRaw("",true,"bloggers_owners")).id,"blogq");
   t.restoreConsole();
 });
 
