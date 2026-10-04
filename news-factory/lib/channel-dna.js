@@ -23,11 +23,39 @@ export const CHANNEL_DNA = {
   },
   money: {
     type: "news",
-    topic: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии",
-    focus: "В приоритете то, что влияет на деньги обычного человека: цены, банки, кредиты, комиссии, налоги, мошенничество и понятные объяснения.",
-    mix: { personal_impact: 0.55, explainer: 0.20, scams: 0.15, big_deal: 0.10 },
+    topic: "личные финансы обычного человека в России: банковские карты и банки, вклады и накопления, кредиты и ипотека, налоги, рубль/инфляция/ключевая ставка, зарплаты/пенсии/выплаты, финансовые мошенники, практические денежные правила",
+    focus: "Только то, что прямо влияет на кошелёк обычного человека в России. Не тащи сюда корпоративные результаты, сделки компаний, ОПЕК/сырьё, мировой экспорт, биржу без практического эффекта, крипту, скидки маркетплейсов и общую макроэкономику. Пост отвечает: что произошло → кого касается → сколько в ₽/% → что делать.",
+    mix: {
+      cards_banks: 0.125,
+      deposits_savings: 0.125,
+      loans_mortgage: 0.125,
+      taxes: 0.125,
+      ruble_inflation_cbr: 0.125,
+      income_benefits: 0.125,
+      financial_scams: 0.125,
+      money_knowhow: 0.125
+    },
+    rubrics: [
+      { id: "cards_banks", label: "Карты и банки", hint: "карты, переводы, комиссии, блокировки, банковские правила и изменения условий для клиентов" },
+      { id: "deposits_savings", label: "Вклады и накопления", hint: "ставки вкладов и накопительных счетов, условия банков, страхование вкладов, правила сбережений" },
+      { id: "loans_mortgage", label: "Кредиты и ипотека", hint: "потребкредиты, ипотека, льготные программы, ставки, требования банков, досрочное погашение" },
+      { id: "taxes", label: "Налоги", hint: "НДФЛ, налог на проценты по вкладам, имущественные налоги, вычеты, сроки и изменения ФНС для физлиц", freshnessHours: 72 },
+      { id: "ruble_inflation_cbr", label: "Рубль, инфляция и ставка ЦБ", hint: "курс рубля, ключевая ставка и инфляция только когда понятно влияние на вклады, кредиты, цены и сбережения" },
+      { id: "income_benefits", label: "Зарплаты, пенсии и выплаты", hint: "зарплаты, МРОТ, пенсии, пособия, маткапитал, больничные и изменения доходов граждан" },
+      { id: "financial_scams", label: "Финансовые мошенники", hint: "новые массовые схемы обмана, карты, переводы, звонки, фишинг, дропперы и способы защиты денег" },
+      { id: "money_knowhow", label: "Полезно знать", hint: "возвраты, страховки, банковские права, ошибки списаний, практические денежные правила и разборы", freshnessHours: 72 }
+    ],
+    rubricMinSources: 5,
+    rubricMaxSources: 6,
+    // Six regular hourly posts + two :30 money slots = 8 planned posts/day.
+    slotHours: [9, 11, 13, 16, 18, 20],
+    strictOnePerRubric: true,
+    qualityMin: 80,
+    qualityFallbackMin: 70,
+    emergencyMin: 95,
     preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
-    scoreWeights: { utility: 0.36, local: 0.28, deal: 0.18, discussion: 0.10, wow: 0.08 }
+    // Individual money score: utility 30 + impact 20 + reliability 20 + freshness 15 + specificity 10 + interest 5.
+    scoreWeights: { utility: 0.30, impact: 0.20, reliability: 0.20, freshness: 0.15, specificity: 0.10, interest: 0.05 }
   },
   tech: {
     type: "news",
@@ -174,6 +202,10 @@ export function channelStrategy(channelId) {
     rubricMinSources: Number(dna.rubricMinSources || 0) || 0,
     rubricMaxSources: Number(dna.rubricMaxSources || 0) || 0,
     slotHours: Array.isArray(dna.slotHours) ? dna.slotHours.slice() : null,
+    strictOnePerRubric: dna.strictOnePerRubric === true,
+    qualityMin: Number(dna.qualityMin || 0) || 0,
+    qualityFallbackMin: Number(dna.qualityFallbackMin || 0) || 0,
+    emergencyMin: Number(dna.emergencyMin || 0) || 0,
     preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
     scoreWeights: Object.assign({}, dna.scoreWeights || {})
   };
@@ -354,6 +386,70 @@ export const INTERNET_SOURCE_FIX_V0451 = {
     "https://www.socialmediatoday.com/",
     "https://www.theverge.com/social-media",
     "https://www.boredpanda.com/"
+  ]
+};
+
+// v0.53.0 — «Что там с деньгами?»: 8 personal-finance rubrics.
+// Telegram is the fast discovery layer; official/media pages provide confirmation and depth.
+// A source has one primary rubric for balancing; the writer can still classify an individual story into another money rubric.
+export const MONEY_RUBRIC_SOURCES_V0530 = {
+  add: [
+    { rubric: "cards_banks", name: "Банки.ру (Telegram)", url: "https://t.me/s/bankiruofficial", group: "media" },
+    { rubric: "cards_banks", name: "Frank Media (Telegram)", url: "https://t.me/s/frank_media", group: "media" },
+    { rubric: "cards_banks", name: "Банк России (Telegram)", url: "https://t.me/s/centralbank_russia", group: "official" },
+    { rubric: "cards_banks", name: "MarketOverview (Telegram)", url: "https://t.me/s/MarketOverview", group: "creator" },
+    { rubric: "cards_banks", name: "Финуслуги (Telegram)", url: "https://t.me/s/MoexFinuslugi", group: "official" },
+
+    { rubric: "deposits_savings", name: "Мои финансы (Telegram)", url: "https://t.me/s/FinZozhExpert", group: "official" },
+    { rubric: "deposits_savings", name: "Банки.ру — вклады", url: "https://www.banki.ru/products/deposits/news/", group: "media" },
+    { rubric: "deposits_savings", name: "Финуслуги — вклады", url: "https://finuslugi.ru/vklady", group: "official" },
+    { rubric: "deposits_savings", name: "АСВ — новости", url: "https://www.asv.org.ru/news", group: "official" },
+    { rubric: "deposits_savings", name: "Сравни — вклады", url: "https://www.sravni.ru/vklady/info/", group: "media" },
+
+    { rubric: "loans_mortgage", name: "Домклик (Telegram)", url: "https://t.me/s/domclick", group: "official" },
+    { rubric: "loans_mortgage", name: "Ипотека и недвижимость (Telegram)", url: "https://t.me/s/ipotekahouse", group: "creator" },
+    { rubric: "loans_mortgage", name: "СПРОСИ.ДОМ.РФ (Telegram)", url: "https://t.me/s/sprosidomrf", group: "official" },
+    { rubric: "loans_mortgage", name: "РБК Недвижимость (Telegram)", url: "https://t.me/s/realty_rbc", group: "media" },
+    { rubric: "loans_mortgage", name: "IT-ипотека (Telegram)", url: "https://t.me/s/IT_ipoteka", group: "creator" },
+
+    { rubric: "taxes", name: "ФНС России (Telegram)", url: "https://t.me/s/nalog_gov_ru", group: "official" },
+    { rubric: "taxes", name: "Личные налоги (Telegram)", url: "https://t.me/s/persontaxes", group: "creator" },
+    { rubric: "taxes", name: "Минфин России (Telegram)", url: "https://t.me/s/minfin", group: "official" },
+    { rubric: "taxes", name: "Госуслуги (Telegram)", url: "https://t.me/s/gosuslugi", group: "official" },
+    { rubric: "taxes", name: "ФНС — новости", url: "https://www.nalog.gov.ru/rn77/news/", group: "official" },
+
+    { rubric: "ruble_inflation_cbr", name: "Твердые цифры (Telegram)", url: "https://t.me/s/xtxixty", group: "creator" },
+    { rubric: "ruble_inflation_cbr", name: "MMI (Telegram)", url: "https://t.me/s/russianmacro", group: "creator" },
+    { rubric: "ruble_inflation_cbr", name: "Простая экономика (Telegram)", url: "https://t.me/s/prostoecon", group: "creator" },
+    { rubric: "ruble_inflation_cbr", name: "Банк России — ключевая ставка", url: "https://www.cbr.ru/press/keypr/", group: "official" },
+    { rubric: "ruble_inflation_cbr", name: "Росстат — цены", url: "https://rosstat.gov.ru/price", group: "official" },
+
+    { rubric: "income_benefits", name: "Социальный фонд России (Telegram)", url: "https://t.me/s/sfr_gov", group: "official" },
+    { rubric: "income_benefits", name: "Соцфонд.Контекст (Telegram)", url: "https://t.me/s/socfond_kontekst", group: "official" },
+    { rubric: "income_benefits", name: "Минтруд России (Telegram)", url: "https://t.me/s/mintrudrf", group: "official" },
+    { rubric: "income_benefits", name: "Роструд (Telegram)", url: "https://t.me/s/rostrud_official", group: "official" },
+    { rubric: "income_benefits", name: "Объясняем.РФ (Telegram)", url: "https://t.me/s/obyasnayemrf", group: "official" },
+
+    { rubric: "financial_scams", name: "Вестник Киберполиции России (Telegram)", url: "https://t.me/s/cyberpolice_rus", group: "official" },
+    { rubric: "financial_scams", name: "МОШЕЛОВКА.РФ (Telegram)", url: "https://t.me/s/moshelovka", group: "creator" },
+    { rubric: "financial_scams", name: "Финансовая культура (Telegram)", url: "https://t.me/s/fincult_info", group: "official" },
+    { rubric: "financial_scams", name: "МВД МЕДИА (Telegram)", url: "https://t.me/s/mediamvd", group: "official" },
+    { rubric: "financial_scams", name: "Киберполиция МВД — новости", url: "https://мвд.рф/news", group: "official" },
+
+    { rubric: "money_knowhow", name: "Т—Ж", url: "https://journal.tbank.ru/", group: "media" },
+    { rubric: "money_knowhow", name: "Финансовая культура", url: "https://fincult.info/", group: "official" },
+    { rubric: "money_knowhow", name: "Мои финансы", url: "https://моифинансы.рф/", group: "official" },
+    { rubric: "money_knowhow", name: "Банки.ру — статьи", url: "https://www.banki.ru/news/daytheme/", group: "media" },
+    { rubric: "money_knowhow", name: "Финуслуги — журнал", url: "https://finuslugi.ru/navigator", group: "official" }
+  ],
+  assign: {},
+  // Generic business/macro feeds were the main source of OPEC, grain, geopolitics and company-news leakage.
+  // Unknown active sources are also quarantined by the v0.53.0 normalizer.
+  disable: [
+    "https://t.me/s/forbesrussia",
+    "https://t.me/s/rian_ru",
+    "https://svpressa.ru/economy/",
+    "https://nsn.fm/economy"
   ]
 };
 
