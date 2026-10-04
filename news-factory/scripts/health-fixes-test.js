@@ -10,6 +10,9 @@ import { fileURLToPath } from "node:url";
 import { createPostmypostClient } from "../lib/postmypost.js";
 import { foreignLinks, normalizeCheckerResult } from "../lib/editorial-v2.js";
 import { visibleLength } from "../lib/telegram-caption.js";
+import { readJsonBody } from "../lib/http-body.js";
+import { Readable } from "node:stream";
+import fs from "node:fs";
 import { loadServer, inWs, startTempPostgres, dbRows } from "./dedupe-harness.js";
 
 const cases = {};
@@ -185,9 +188,46 @@ test("U7 SIGTERM flushes pending changes before exit", async () => {
   assert.match(out, /listening/);
   const code = await new Promise((resolve) => { child.on("exit", resolve); child.kill("SIGTERM"); });
   assert.equal(code, 0, out.slice(-500));
+  assert.match(out, /GRACEFUL_SHUTDOWN_START SIGTERM/);
   assert.match(out, /STATE_FLUSHED_ON_SIGTERM/);
+  assert.match(out, /GRACEFUL_SHUTDOWN_DONE SIGTERM/);
   const parsed = JSON.parse(fs.readFileSync(path.join(dir, "workspaces.json"), "utf8"));
   assert.ok(parsed.workspaces.length >= 1);
+});
+
+test("U9 JSON body keeps Cyrillic when UTF-8 bytes are split across chunks", async () => {
+  const payload = JSON.stringify({ title: "Привет, мир 🤖", text: "Кириллица не должна ломаться" });
+  const buf = Buffer.from(payload, "utf8");
+  const split = buf.indexOf(Buffer.from("р", "utf8")) + 1; // split inside a 2-byte Cyrillic character
+  const req = Readable.from([buf.subarray(0, split), buf.subarray(split)]);
+  const parsed = await readJsonBody(req, 1024 * 1024);
+  assert.equal(parsed.title, "Привет, мир 🤖");
+  assert.equal(parsed.text, "Кириллица не должна ломаться");
+
+  const tooBig = Readable.from([Buffer.alloc(1100, 1)]);
+  await assert.rejects(() => readJsonBody(tooBig, 1024), /request too large/);
+});
+
+test("U10 startup media repair runs after HTTP listen, not before health readiness", async () => {
+  const src = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.url)), "utf8");
+  const listen = src.indexOf('server.listen(PORT, "0.0.0.0"');
+  const repairCall = src.indexOf("repairBalancedQueueMediaAllWorkspaces().catch", listen);
+  assert.ok(listen > 0 && repairCall > listen, "media repair must start only after server.listen");
+  const startup = src.slice(src.indexOf("await initDb();"), listen);
+  assert.ok(!/startPromotionSnapshotMonitor\(\);\s*for \(const ws of workspaceStore\.workspaces\)/.test(startup), "startup must not synchronously loop over workspaces for media repair");
+  assert.ok(startup.includes("async function repairBalancedQueueMediaAllWorkspaces()"), "repair is defined for background execution only");
+});
+
+test("U11 graceful shutdown closes HTTP, waits boundedly, flushes state, then closes DB", async () => {
+  const src = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.url)), "utf8");
+  const start = src.indexOf("async function gracefulShutdown(signal)");
+  const end = src.indexOf('server.listen(PORT, "0.0.0.0"', start);
+  const block = src.slice(start, end);
+  assert.ok(block.includes("server.close(done)"), "stop accepting new HTTP work");
+  assert.ok(block.includes("criticalWorkInFlight()"), "wait for critical background work");
+  assert.ok(block.includes("flushWorkspaceStoreNow()"), "flush durable state");
+  assert.ok(block.includes("await db.end()"), "close PostgreSQL pool cleanly");
+  assert.ok(block.indexOf("flushWorkspaceStoreNow()") < block.indexOf("process.exit(0)"), "flush before exit");
 });
 
 test("U8 review bots: foreign links hold a post; prototype verdicts / 'Critical' never pass; UTF-16 caption length", async () => {
