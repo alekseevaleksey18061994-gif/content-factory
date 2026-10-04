@@ -12,7 +12,7 @@ import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-securi
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
-import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526, AUTO_RUBRIC_SOURCES_V0530, SHOPPING_RUBRIC_SOURCES_V0530 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
@@ -385,7 +385,8 @@ const CHANNEL_EXTRA_LANES = {
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
   home: { refresh: true, boost: 0, hint: "находки и подборки товаров для дома, до/после обычных квартир, хранение, уборка, ремонт своими руками, тренды интерьера, кухня; НЕ рынок недвижимости, НЕ ЖКХ, НЕ IT-новости, НЕ городские новости" },
-  shopping: { refresh: true, boost: 15, hint: "новости для покупателей, а не для продавцов: скидки и распродажи, цены в магазинах, новинки и вирусные товары, возвраты и доставка на Ozon, Wildberries, Яндекс Маркете и Авито, права потребителей, мошенники; Telegram-каналы и сайты для покупателей" },
+  auto: { refresh: true, boost: 0, hint: "всё интересное про автомобили для России: премьеры, российский авторынок, китайские авто, электро и гибриды, автотехнологии, сильные российские автоблогеры и владельцы, вирусные автомобильные истории, важное водителю; не дилерская реклама и не мелкие ДТП" },
+  shopping: { refresh: true, boost: 0, hint: "конкретные интересные товарные находки Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; рекламный исходник допустим как источник товара, но не ищи новости для селлеров, корпоративные новости маркетплейсов, права потребителей и общие распродажи без конкретного товара" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
   games: { hint: "игровые новостные Telegram-каналы: релизы, скидки и раздачи, утечки, трейлеры, игровое сообщество", telegramMin: 12 },
@@ -425,9 +426,17 @@ function rubricSourceCounts(ws) {
 // Per-theme source limits: the editor can raise or lower the minimum of each theme group (state.rubricLimits[id].min).
 // Editor-defined rubric minimum has no upper cap. Automatic replenishment is still rate-limited per run/cooldown.
 const RUBRIC_MIN_LIMIT = 1;
+function rubricDefaultMinFor(rubricId, ws) {
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  const rubric = (strat.rubrics || []).find(function(r){ return r && r.id === rubricId; });
+  const ownDefault = rubric && Number(rubric.minSources);
+  return Number.isFinite(ownDefault) && ownDefault >= RUBRIC_MIN_LIMIT
+    ? Math.round(ownDefault)
+    : Math.max(1, strat.rubricMinSources || 1);
+}
 function rubricMinFor(rubricId, ws) {
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const base = rubricDefaultMinFor(rubricId, ws);
   const own = st.rubricLimits && st.rubricLimits[rubricId] && Number(st.rubricLimits[rubricId].min);
   return Number.isFinite(own) && own >= RUBRIC_MIN_LIMIT ? Math.round(own) : base;
 }
@@ -439,8 +448,8 @@ function rubricMaxFor(rubricId, ws) {
 function rubricGroupsInfo(ws) {
   const counts = rubricSourceCounts(ws);
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
   return channelRubrics(ws).map(function(r){
+    const base = rubricDefaultMinFor(r.id, ws);
     return { id: r.id, label: r.label, hint: r.hint || "", active: counts[r.id] || 0, min: rubricMinFor(r.id, ws), defaultMin: base, max: rubricMaxFor(r.id, ws),
       custom: !!(st.rubricLimits && st.rubricLimits[r.id]) };
   });
@@ -470,11 +479,28 @@ function channelSlotHours(ws) {
   const hours = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotHours;
   return Array.isArray(hours) && hours.length ? hours : null;
 }
+function channelSlotSchedule(ws) {
+  const slots = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotSchedule;
+  return Array.isArray(slots) && slots.length ? slots.map(function(s){ return Object.assign({}, s); }) : null;
+}
+function channelRubricForTime(time, ws) {
+  const slots = channelSlotSchedule(ws) || [];
+  const found = slots.find(function(s){ return s && String(s.time) === String(time); });
+  return found ? String(found.rubric || "") : "";
+}
+function isChannelSlotTime(time, ws) {
+  const slots = channelSlotSchedule(ws);
+  return slots ? slots.some(function(s){ return s && String(s.time) === String(time); }) : false;
+}
 function isChannelSlotHour(hour, ws) {
+  const slots = channelSlotSchedule(ws);
+  if (slots) return slots.some(function(s){ return Number(String(s.time || "00:00").slice(0, 2)) === Number(hour); });
   const hours = channelSlotHours(ws);
   return hours ? hours.includes(Number(hour)) : (hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR);
 }
 function channelDailyMax(ws) {
+  const slots = channelSlotSchedule(ws);
+  if (slots) return slots.length;
   const hours = channelSlotHours(ws);
   return hours ? Math.min(DYNAMIC_DAILY_MAX, hours.length) : DYNAMIC_DAILY_MAX;
 }
@@ -484,8 +510,9 @@ function channelExtraLane() {
 }
 function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : BLOGGER_SLOTS; }
 function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? Math.max(0, Number(lane.targetPerDay == null ? lane.slots.length : lane.targetPerDay)) : BLOGGER_DAILY_TARGET; }
-// The extra lane runs when the channel has blogger sources (or, for an anySource lane, any enabled source).
+// Structured channels include blogger/editorial rubrics inside their own main schedule: never add the legacy :30 lane.
 function bloggerLaneActive() {
+  if (channelSlotSchedule()) return false;
   const lane = channelExtraLane();
   return (state.sources || []).some(function(source){ return source && source.enabled && (source.group === "blogger" || Boolean(lane && lane.anySource && !isRussianAISource(source))); });
 }
@@ -658,8 +685,19 @@ function ensureScheduleShape(targetState) {
   let ownerWs = null;
   try { ownerWs = targetState === state ? currentWorkspace() : null; } catch { ownerWs = null; }
   if (!ownerWs) ownerWs = wsList.find(function(w){ return w && w.state === targetState; }) || null;
+  const ownSchedule = ownerWs ? channelSlotSchedule(ownerWs) : null;
   const ownHours = ownerWs ? channelSlotHours(ownerWs) : null;
-  if (ownHours && Array.isArray(schedule.slots)) {
+  if (ownSchedule && Array.isArray(schedule.slots)) {
+    const rubrics = new Map(channelRubrics(ownerWs).map(function(r){ return [r.id, r.label]; }));
+    schedule.slots = ownSchedule.map(function(slot){
+      return { time: String(slot.time), kind: "dynamic", rubric: String(slot.rubric || ""), label: rubrics.get(slot.rubric) || "Динамическое окно" };
+    });
+    schedule.strategy = "rubric-slots";
+    schedule.prepareMinutesBefore = 15;
+    schedule.minIntervalMinutes = ownSchedule.length > 1 ? Math.min.apply(null, ownSchedule.slice(1).map(function(s, i){ return slotMinutes(s.time) - slotMinutes(ownSchedule[i].time); }).filter(function(n){ return n > 0; })) : 60;
+    schedule.maxPerDay = ownSchedule.length;
+    schedule.targetPerDay = ownSchedule.length;
+  } else if (ownHours && Array.isArray(schedule.slots)) {
     schedule.slots = schedule.slots.filter(function(slot){
       if (!slot || slot.kind === "blogger" || slot.kind === "russian-ai" || slot.kind === "money-emergency" || !/^\d{2}:00$/.test(String(slot.time || ""))) return true;
       return ownHours.includes(Number(String(slot.time).slice(0, 2)));
@@ -667,7 +705,7 @@ function ensureScheduleShape(targetState) {
     schedule.maxPerDay = Math.min(Number(schedule.maxPerDay || ownHours.length), ownHours.length);
     schedule.targetPerDay = Math.min(Number(schedule.targetPerDay || ownHours.length), ownHours.length);
   }
-  const ownerLane = ownerWs ? CHANNEL_EXTRA_LANES[resolveChannelId(ownerWs)] : null;
+  const ownerLane = ownSchedule ? null : (ownerWs ? CHANNEL_EXTRA_LANES[resolveChannelId(ownerWs)] : null);
   if (ownerLane && Array.isArray(schedule.slots)) {
     const existing = new Set(schedule.slots.map(function(slot){ return String(slot && slot.time || ""); }));
     for (const time of ownerLane.slots || []) {
@@ -2915,8 +2953,19 @@ function editorialLearningBonus(item) {
 function queueItemRating(item) {
   return postRating(queueItemRatingInput(item, editorialChannelId())).total;
 }
-function channelRatingMinAuto() { return editorialChannelId() === "money" ? 80 : POST_RATING_MIN_AUTO; }
-function channelRatingDropBelow() { return editorialChannelId() === "money" ? 70 : POST_RATING_DROP_BELOW; }
+function channelRatingMinAuto() {
+  const id = editorialChannelId();
+  if (id === "money") return 80;
+  if (id === "shopping") return 75;
+  if (id === "auto") return 65;
+  return POST_RATING_MIN_AUTO;
+}
+function channelRatingDropBelow() {
+  const id = editorialChannelId();
+  if (id === "money") return 70;
+  if (id === "shopping" || id === "auto") return 65;
+  return POST_RATING_DROP_BELOW;
+}
 
 function moneyFactConfirmationOk(item) {
   if (editorialChannelId() !== "money") return true;
@@ -4272,6 +4321,9 @@ async function prepareVkPreviewImage(post, slug) {
 }
 
 function normalizePublicPostSources(post) {
+  // «Что там с покупками?» intentionally publishes an editorial product note with no product/source links.
+  // Source metadata stays internal in queue/history for audit and dedupe.
+  if (editorialChannelId() === "shopping") return [];
   const p = post || {};
   const out = [];
   const seen = new Set();
@@ -6613,7 +6665,7 @@ async function collectOnce(trigger) {
         const enoughTimePassed = !lastPublishedAt || (Date.now() - lastPublishedAt) >= AUTO_PUBLISH_MIN_INTERVAL_MINUTES * 60 * 1000;
         const canAutoPublish =
           // Money is slot-only: direct legacy auto-publish would bypass one-post-per-rubric and the approved cadence.
-          editorialChannelId() !== "money" &&
+          !["money","auto","shopping"].includes(editorialChannelId()) &&
           trigger === "legacy-auto" &&
           state.mode === "AUTO" &&
           AUTO_PUBLISH_ENABLED &&
@@ -7039,13 +7091,13 @@ function dynamicUsedQueueIds() {
 }
 const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 
-function dynamicBestQueueItem(kind) {
+function dynamicBestQueueItem(kind, requiredRubric) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
-  const best = dynamicBestQueueItemRaw(kind, true);
-  return best || dynamicBestQueueItemRaw(kind, false);
+  const best = dynamicBestQueueItemRaw(kind, true, requiredRubric);
+  return best || dynamicBestQueueItemRaw(kind, false, requiredRubric);
 }
 
-function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
+function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, requiredRubric) {
   const used = dynamicUsedQueueIds();
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
@@ -7075,6 +7127,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (textCardBlocked(item)) return false;
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const itemTheme = itemRubric(item, themes);
+      if (requiredRubric && itemTheme !== requiredRubric) return false;
+      if (channelSlotSchedule() && !itemTheme) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
         if (!wantsMoneyEmergency && themesToday.has(itemTheme)) return false; // exactly one normal post per rubric/day
@@ -7088,6 +7142,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
         return channelId === "money" && queueItemRating(item) >= 95 && Number.isFinite(importance) && importance >= 9 && !isRussianAISource(item);
       }
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
+      // A structured regular slot may explicitly request the blogger rubric; its exact rubric wins over the legacy source-lane split.
+      if (requiredRubric) return !isRussianAISource(item);
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
       return !isBloggerSource(item) && !isRussianAISource(item);
@@ -7115,7 +7171,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
 }
 
 function dynamicAssignBest(day, time, kind) {
-  const item = dynamicBestQueueItem(kind);
+  const requiredRubric = !kind ? channelRubricForTime(time) : "";
+  const item = dynamicBestQueueItem(kind, requiredRubric);
   const schedule = ensureScheduleShape(state);
   if (!schedule.assignments[day]) schedule.assignments[day] = {};
   if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
@@ -7177,6 +7234,20 @@ async function prepareDynamicSlot() {
     prepared: item ? item.id : null,
     title: item ? item.title : ""
   };
+}
+
+async function prepareStructuredSlot(time) {
+  const slotTime = String(time || "");
+  if (!isChannelSlotTime(slotTime)) return { ok: true, skipped: "not_channel_slot" };
+  const day = moscowDateKey(new Date());
+  if (dynamicDailyPublishedCount(day) >= channelDailyMax()) return { ok: true, skipped: "daily_max" };
+  const schedule = ensureScheduleShape(state);
+  if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
+
+  const collector = await collectOnce("rubric-slot-prep");
+  await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
+  const item = dynamicAssignBest(day, slotTime);
+  return { ok: true, slot: slotTime, rubric: channelRubricForTime(slotTime), collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
 }
 
 async function prepareBloggerSlot(time) {
@@ -7301,13 +7372,13 @@ async function staggeredCollectTick(day, hour, minute) {
 // One slot = one published post. If the chosen post fails, the next best post from the queue is tried right away,
 // up to SLOT_PUBLISH_TRIES posts, until one goes out. The failed post rests PUBLISH_RETRY_COOLDOWN_MIN minutes
 // (PUBLISH_FAILURE_MAX failures in total -> publish_failed for good).
-async function publishDynamicSlot(kind) {
+async function publishDynamicSlot(kind, explicitTime) {
   let lastError = null;
   const failedIds = [];
   for (let attempt = 1; attempt <= SLOT_PUBLISH_TRIES; attempt++) {
     try {
       // Later attempts use only posts already in the queue: no costly last-chance collector run per failed post.
-      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 });
+      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1, explicitTime: explicitTime });
       if (failedIds.length) {
         console.log("SLOT_NEXT_ITEM_RESULT " + JSON.stringify({ workspace: currentWorkspaceId(), attempts: attempt, failed: failedIds, result: { published: Boolean(result && result.published), skipped: result && result.skipped || "" } }));
         return Object.assign({}, result, { slotAttempts: attempt, failedBefore: failedIds });
@@ -7338,11 +7409,13 @@ async function publishDynamicSlotOnce(kind, opts) {
   }
 
   const day = moscowDateKey(now);
-  const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00");
+  const explicitRegularTime = publishKind === "regular" && opts && /^\d{2}:\d{2}$/.test(String(opts.explicitTime || "")) ? String(opts.explicitTime) : "";
+  const time = explicitRegularTime || (String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00"));
   if (publishKind === "blogger" && !bloggerSlotsFor().includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
   if (publishKind === "money-emergency" && (editorialChannelId() !== "money" || time !== "22:30")) return { ok: true, skipped: "not_money_emergency_slot" };
-  if (publishKind === "regular" && !isChannelSlotHour(hour)) return { ok: true, skipped: "not_channel_slot" };
+  if (publishKind === "regular" && channelSlotSchedule() && !isChannelSlotTime(time)) return { ok: true, skipped: "not_channel_slot" };
+  if (publishKind === "regular" && !channelSlotSchedule() && !isChannelSlotHour(hour)) return { ok: true, skipped: "not_channel_slot" };
   const slotKey = day + " " + time;
   state.dynamicScheduler = state.dynamicScheduler || {};
   state.bloggerScheduler = state.bloggerScheduler || {};
