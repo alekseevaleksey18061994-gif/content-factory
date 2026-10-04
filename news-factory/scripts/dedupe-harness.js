@@ -107,7 +107,8 @@ const EXPORT_NAMES = [
   "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage", "publishVkPost", "logPostmypostStatus", "workspaceVkPublishingAllowed", "refreshPostmypostMap", "sendMultiPlatformPost",
   "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous", "applyChannelNotes", "flushWorkspaceStoreNow", "storeFlushStats", "bloggerSlotsFor", "bloggerTargetFor", "bloggerLaneActive", "channelExtraLane",
   "withDeadline", "releaseStuckCollectors", "collectorRunInfo", "collectorRuns", "collectorRunningWorkspaces", "isCollectorRunning",
-  "collectionMinuteFor", "staggeredCollectTick", "prepareDynamicSlot", "prepMinuteFor", "publishMinuteFor", "isTextCardOnly"
+  "collectionMinuteFor", "staggeredCollectTick", "prepareDynamicSlot", "prepMinuteFor", "publishMinuteFor", "isTextCardOnly",
+  "reworkChannelSources", "sourceScorecard", "itemRubric", "channelSlotHours", "isChannelSlotHour", "channelDailyMax", "rubricSourceCounts", "autoPauseWeakSources", "buildSourceRankings"
 ];
 
 function bin(name) {

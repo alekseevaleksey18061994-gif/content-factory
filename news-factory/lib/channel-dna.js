@@ -103,11 +103,32 @@ export const CHANNEL_DNA = {
   },
   home: {
     type: "trends",
-    topic: "дом: интерьер, ремонт, организация пространства, бытовая техника, умный дом, ЖКХ для жильцов; недвижимость — немного",
-    focus: "Интерьеры, ремонт, до/после, бытовая техника, умный дом и полезные решения. Недвижимость — максимум около 10% ленты, не деловая хроника девелоперов.",
-    mix: { interior: 0.25, renovation: 0.25, organization: 0.15, appliance: 0.15, smart_home: 0.10, real_estate: 0.10 },
+    // v0.51.3 (editor, 2026-10-04): not news, not real estate, not ЖКХ — 10 themes, one post a day each, the way the
+    // biggest home channels do it (finds, before/after of ordinary flats, storage and cleaning hacks).
+    topic: "дом и уют: находки и трендовые товары для дома, до/после, техника для дома, хранение, мебель для маленьких квартир, бюджетный уют, лайфхаки уборки, ремонт своими руками, тренды интерьера, кухня и посуда",
+    focus: "Канал не новостной. Нужны находки и подборки товаров для дома (что это, чем удобно, сколько стоит, где искать), вирусные и необычные вещи для квартиры, до/после обычных квартир, идеи для маленьких метров, хранение, уборка, ремонт своими руками, техника для дома в продаже, тренды интерьера, кухня. Находка товара или подборка — НЕ реклама, если нет явных признаков платной интеграции (промокод, «на правах рекламы», erid). Отсеивай: ЖКХ, тарифы, управляющие компании и законы; рынок недвижимости, цены новостроек и ипотеку; слухи и анонсы IT-компаний (это канал технологий), если это не конкретное устройство для дома в продаже; интерьеры баров, ресторанов, офисов и отелей; городские новости и благоустройство; выставки, конкурсы и книги о дизайне.",
+    // content_bucket = theme: the writer picks one key; the scheduler posts one theme a day each (see rubrics)
+    mix: { marketplace_finds: 0.1, before_after: 0.1, home_appliances: 0.1, storage: 0.1, small_space_furniture: 0.1, budget_cozy: 0.1, cleaning_hacks: 0.1, diy_repair: 0.1, interior_trends: 0.1, kitchen: 0.1 },
+    rubrics: [
+      { id: "marketplace_finds", label: "Находки с маркетплейсов", hint: "Telegram-каналы и сайты с находками товаров для дома на Wildberries, Ozon, AliExpress: вирусные и необычные вещи для квартиры" },
+      { id: "before_after", label: "До/после", hint: "Telegram-каналы и сайты с преображениями обычных квартир до/после: маленькие кухни, ванные, комнаты, бюджетный ремонт" },
+      { id: "home_appliances", label: "Техника для дома", hint: "сайты и Telegram-каналы об обзорах и новинках бытовой техники для дома: роботы-пылесосы, увлажнители, кухонная техника, умные устройства в продаже" },
+      { id: "storage", label: "Хранение и порядок", hint: "Telegram-каналы и сайты про системы хранения и организацию пространства: шкафы, кухня, прихожая, минимализм" },
+      { id: "small_space_furniture", label: "Мебель и маленькие квартиры", hint: "Telegram-каналы и сайты про мебель-трансформер, зонирование студий и решения для маленьких квартир" },
+      { id: "budget_cozy", label: "Бюджетный уют", hint: "Telegram-каналы с бюджетными находками для уюта: Фикс Прайс, IKEA, супермаркеты, аналоги дорогих вещей «как на Pinterest»" },
+      { id: "cleaning_hacks", label: "Лайфхаки уборки", hint: "Telegram-каналы и сайты с лайфхаками уборки и быта: как отмыть, чем почистить, как сэкономить время" },
+      { id: "diy_repair", label: "Ремонт своими руками", hint: "Telegram-каналы и сайты про ремонт своими руками: простые работы без мастера, материалы, ошибки ремонта" },
+      { id: "interior_trends", label: "Тренды интерьера", hint: "сайты и Telegram-каналы о трендах интерьера: цвета, декор, мебель сезона, что устарело" },
+      { id: "kitchen", label: "Кухня и посуда", hint: "сайты и Telegram-каналы про кухню: гаджеты, посуда, организация кухни, кухонные находки" }
+    ],
+    rubricMinSources: 4,
+    rubricMaxSources: 6,
+    // 10 posts a day (Moscow hours), one per theme
+    slotHours: [9, 10, 12, 13, 15, 17, 18, 19, 21, 22],
+    // never picked for a slot in this channel, whatever the editor scored
+    excludeBuckets: ["real_estate", "zhkh", "smart_home"],
     preferredSources: ["CREATOR", "SOCIAL", "COMMUNITY", "MEDIA", "OFFICIAL"],
-    scoreWeights: { utility: 0.28, visual: 0.24, wow: 0.14, discussion: 0.12, deal: 0.12, virality: 0.10 }
+    scoreWeights: { visual: 0.26, virality: 0.20, utility: 0.20, wow: 0.14, deal: 0.12, discussion: 0.08 }
   },
   food: {
     type: "blogger",
@@ -148,6 +169,11 @@ export function channelStrategy(channelId) {
   return {
     type: dna.type || "news",
     mix: Object.assign({}, dna.mix || {}),
+    excludeBuckets: Array.isArray(dna.excludeBuckets) ? dna.excludeBuckets.slice() : [],
+    rubrics: Array.isArray(dna.rubrics) ? dna.rubrics.map(function(r){ return Object.assign({}, r); }) : [],
+    rubricMinSources: Number(dna.rubricMinSources || 0) || 0,
+    rubricMaxSources: Number(dna.rubricMaxSources || 0) || 0,
+    slotHours: Array.isArray(dna.slotHours) ? dna.slotHours.slice() : null,
     preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
     scoreWeights: Object.assign({}, dna.scoreWeights || {})
   };
@@ -328,5 +354,74 @@ export const INTERNET_SOURCE_FIX_V0451 = {
     "https://www.socialmediatoday.com/",
     "https://www.theverge.com/social-media",
     "https://www.boredpanda.com/"
+  ]
+};
+
+// v0.51.3 — «Что там для дома?»: 10 themes, sources tagged by theme (rubric). Off-topic sources (real-estate market,
+// gadget/IT news, city/agency news, ЖКХ) are paused and blocked for discovery; the niche's biggest Telegram channels
+// and home media are added per theme; sources already kept get their theme by URL (assign).
+export const HOME_RUBRIC_SOURCES_V0513 = {
+  add: [
+    { rubric: "marketplace_finds", name: "Alexis_home (Telegram)", url: "https://t.me/s/alexis_home", group: "creator" },
+    { rubric: "marketplace_finds", name: "Уютиль — интересные находки (Telegram)", url: "https://t.me/s/ahuytno", group: "creator" },
+    { rubric: "marketplace_finds", name: "Нам такое надо! (Telegram)", url: "https://t.me/s/gdekupilakatya", group: "creator" },
+    { rubric: "marketplace_finds", name: "Находки для дома с WB и ОЗОН (Telegram)", url: "https://t.me/s/pin_room", group: "creator" },
+    { rubric: "marketplace_finds", name: "MY HOME (Telegram)", url: "https://t.me/s/MyHomeFinds", group: "creator" },
+    { rubric: "before_after", name: "Квартира в порядке (Telegram)", url: "https://t.me/s/laifkhaky_remont_interero", group: "creator" },
+    { rubric: "before_after", name: "Идеи дизайна интерьера (Telegram)", url: "https://t.me/s/dsgn_interior", group: "creator" },
+    { rubric: "before_after", name: "Дизигн интерьера (Telegram)", url: "https://t.me/s/desingokey", group: "creator" },
+    { rubric: "before_after", name: "Идеи дизайна интерьера 🏡 (Telegram)", url: "https://t.me/s/interdizru", group: "creator" },
+    { rubric: "before_after", name: "INMYROOM (Telegram)", url: "https://t.me/s/inmyroom", group: "creator" },
+    { rubric: "home_appliances", name: "Хитрости дизайна и уюта (Telegram)", url: "https://t.me/s/HomeDesignLife", group: "creator" },
+    { rubric: "home_appliances", name: "The Verge — Smart Home", url: "https://www.theverge.com/smart-home", group: "media" },
+    { rubric: "storage", name: "Дом минималиста (Telegram)", url: "https://t.me/s/minimalist_dom", group: "creator" },
+    { rubric: "storage", name: "Идеи вашего дома (Telegram)", url: "https://t.me/s/ivd_ru", group: "creator" },
+    { rubric: "storage", name: "Real Simple — Organizing", url: "https://www.realsimple.com/home-organizing", group: "media" },
+    { rubric: "storage", name: "Дом Mail", url: "https://dom.mail.ru/", group: "media" },
+    { rubric: "small_space_furniture", name: "Идеи дизайна (Telegram)", url: "https://t.me/s/ideas_of_design", group: "creator" },
+    { rubric: "small_space_furniture", name: "Эстетика в деталях (Telegram)", url: "https://t.me/s/design_andrey", group: "creator" },
+    { rubric: "budget_cozy", name: "торшерчики & фужерчики (Telegram)", url: "https://t.me/s/not_ikea", group: "creator" },
+    { rubric: "budget_cozy", name: "COZY HOME (Telegram)", url: "https://t.me/s/cozyhomerus", group: "creator" },
+    { rubric: "budget_cozy", name: "Алиэкспресс Home (Telegram)", url: "https://t.me/s/aliehome", group: "creator" },
+    { rubric: "budget_cozy", name: "Home Look (Telegram)", url: "https://t.me/s/homelook", group: "creator" },
+    { rubric: "budget_cozy", name: "Home Wish List (Telegram)", url: "https://t.me/s/homewishlist", group: "creator" },
+    { rubric: "cleaning_hacks", name: "Лайфхакер", url: "https://lifehacker.ru/", group: "media" },
+    { rubric: "cleaning_hacks", name: "Домашний очаг — Дом", url: "https://www.goodhouse.ru/home/", group: "media" },
+    { rubric: "cleaning_hacks", name: "Real Simple — Cleaning", url: "https://www.realsimple.com/home-organizing/cleaning", group: "media" },
+    { rubric: "diy_repair", name: "Дизайн и ремонт (Telegram)", url: "https://t.me/s/decor_journal", group: "creator" },
+    { rubric: "diy_repair", name: "материал, найдись! (Telegram)", url: "https://t.me/s/mtrl_mag", group: "creator" },
+    { rubric: "diy_repair", name: "Bob Vila", url: "https://www.bobvila.com/", group: "media" },
+    { rubric: "interior_trends", name: "Design Mate (Telegram)", url: "https://t.me/s/designmate", group: "creator" },
+    { rubric: "interior_trends", name: "Идеи вашего дома", url: "https://www.ivd.ru/", group: "media" },
+    { rubric: "kitchen", name: "The Kitchn", url: "https://www.thekitchn.com/", group: "media" }
+  ],
+  // sources the channel already has: theme by URL
+  assign: {
+    "https://www.salon.ru/news": "interior_trends",
+    "https://design-mate.ru/read": "interior_trends",
+    "https://www.homesandgardens.com/news": "interior_trends",
+    "https://www.inmyroom.ru/news": "before_after",
+    "https://www.realhomes.com/news": "kitchen",
+    "https://www.idealhome.co.uk/news": "kitchen",
+    "https://www.tomsguide.com/home/smart-home/news": "home_appliances",
+    "https://www.engadget.com/home/": "home_appliances",
+    "https://www.wired.com/tag/smart-home/": "home_appliances",
+    "https://www.ikea.com/global/en/newsroom/": "small_space_furniture",
+    "https://www.dwell.com/": "small_space_furniture",
+    "https://www.housebeautiful.com/home-remodeling/": "diy_repair",
+    "https://www.homebuilding.co.uk/news": "diy_repair"
+  },
+  disable: [
+    "https://realty.rbc.ru/news/", "https://realty.ria.ru/", "https://realty.yandex.ru/journal/", "https://iz.ru/rubric/nedvizhimost",
+    "https://www.vedomosti.ru/realty", "https://www.kommersant.ru/rubric/5", "https://lenta.ru/rubrics/realty/", "https://t.me/s/domclick",
+    "https://t.me/s/cian_ru", "https://t.me/s/yandexrealty", "https://tass.ru/nedvizhimost", "https://asninfo.ru/news", "https://aif.ru/realty",
+    "https://archi.ru/news/", "https://hi-tech.mail.ru/news/", "https://3dnews.ru/news/", "https://4pda.to/news/", "https://ichip.ru/novosti",
+    "https://news.samsung.com/global/", "https://www.mvideoeldorado.ru/ru/press-center", "https://www.company.rt.ru/press/news/",
+    "https://www.tadviser.ru/index.php/Новости", "https://csa-iot.org/newsroom/", "https://www.the-ambient.com/news", "https://www.retail.ru/news/",
+    "https://www.mos.ru/news/", "https://mchs.gov.ru/deyatelnost/press-centr/novosti", "https://t.me/s/mchs_official", "https://t.me/s/fasrussia",
+    "https://t.me/s/minstroyrf", "https://minstroyrf.gov.ru/press/", "https://rosreestr.gov.ru/press/archive/",
+    // ЖКХ is out of the channel (editor, 2026-10-04)
+    "https://riamo.ru/tag/zhkh/", "https://gkhnews.ru/", "https://t.me/s/gkhnewsru", "https://t.me/s/starshijpodomu", "https://www.reformagkh.ru/news",
+    "https://rg.ru/tema/ekonomika/zhkh", "https://xn--b1agapfwapgcl.xn--p1ai/news/", "https://всеостройке.рф/news/"
   ]
 };
