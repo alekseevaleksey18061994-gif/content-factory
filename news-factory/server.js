@@ -377,7 +377,7 @@ const CHANNEL_EXTRA_LANES = {
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
   home: { refresh: true, boost: 0, hint: "находки и подборки товаров для дома, до/после обычных квартир, хранение, уборка, ремонт своими руками, тренды интерьера, кухня; НЕ рынок недвижимости, НЕ ЖКХ, НЕ IT-новости, НЕ городские новости" },
-  auto: { refresh: true, boost: 10, hint: "автоисточники по 8 рубрикам: премьеры, авторынок России, китайские авто, электро и гибриды, автотехнологии, сильные блогерские тесты, вирусное и важное водителю; без мелких ДТП, дилерской рекламы и слухов без надёжного источника" },
+  auto: { refresh: false, boost: 0, hint: "автоисточники по 8 рубрикам: премьеры, авторынок России, китайские авто, электро и гибриды, автотехнологии, сильные блогерские тесты, вирусное и важное водителю; без мелких ДТП, дилерской рекламы и слухов без надёжного источника" },
   shopping: { refresh: true, boost: 15, hint: "товарные находки Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; рекламные посты допустимы как источник товара; не нужны новости для селлеров, права потребителей и корпоративные новости ритейла" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
@@ -4286,9 +4286,8 @@ async function prepareVkPreviewImage(post, slug) {
 }
 
 function normalizePublicPostSources(post) {
-  // Shopping provenance stays in history/state but is intentionally absent from public posts.
-  if (editorialChannelId() === "shopping") return [];
   const p = post || {};
+  if (p.hidePublicSources === true) return [];
   const out = [];
   const seen = new Set();
 
@@ -7754,7 +7753,7 @@ async function dynamicSchedulerTick() {
 
   // Extra lanes may use :15/:30/:45 as well as the legacy :30 slots.
   const ownerLane = channelExtraLane();
-  if (ownerLane && Array.isArray(ownerLane.slots)) {
+  if (editorialChannelId() === "shopping" && ownerLane && Array.isArray(ownerLane.slots)) {
     for (const candidateTime of ownerLane.slots) {
       const sm = slotMinutes(candidateTime);
       const prep = sm - 15;
@@ -9416,6 +9415,7 @@ async function publishVkPost(post) {
 
 function postForPlatform(post, platform) {
   const out = Object.assign({}, post || {});
+  if (editorialChannelId() === "shopping") out.hidePublicSources = true;
   const variants = out.platformVariants && typeof out.platformVariants === "object" ? out.platformVariants : {};
   const variant = variants[platform] && typeof variants[platform] === "object" ? variants[platform] : null;
   if (variant) {
