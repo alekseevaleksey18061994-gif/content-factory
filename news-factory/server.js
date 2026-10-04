@@ -2988,15 +2988,28 @@ function ratingBelowAutoThreshold(item) {
   return min > 0 && queueItemRating(item) < min;
 }
 
+function shoppingPublicViolation(item) {
+  if (editorialChannelId() !== "shopping" || !item) return "";
+  const text = [item.title, item.text].filter(Boolean).join(" ");
+  if (/https?:\/\/\S+/iu.test(text)) return "в публичном тексте осталась ссылка";
+  if (/(?:₽|\bруб(?:\.|ля|лей)?\b)/iu.test(text)) return "в публичном тексте осталась цена";
+  if (/\bрейтинг\b/iu.test(text)) return "в публичном тексте остался рейтинг товара";
+  if (/\b\d[\d\s]*\s+(?:отзыв|отзыва|отзывов)\b/iu.test(text)) return "в публичном тексте осталось количество отзывов";
+  if (/\bпромокод\b|\bкупон\s+на\s+скидку\b/iu.test(text)) return "в публичном тексте остался промокод";
+  return "";
+}
+
 function autoQualityEligible(item) {
   const score = Number(item && item.qualityScore);
   return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold" &&
-    queueItemRating(item) >= channelRatingDropBelow() && moneyFactConfirmationOk(item);
+    queueItemRating(item) >= channelRatingDropBelow() && moneyFactConfirmationOk(item) && !shoppingPublicViolation(item);
 }
 
 // Why a queue item can never be published automatically (removed by autoResolveQueue).
 function autoRejectReason(item) {
   if (!item || !item.newsId) return "";
+  const shoppingViolation = shoppingPublicViolation(item);
+  if (shoppingViolation) return shoppingViolation;
   const rating = queueItemRating(item);
   const dropBelow = channelRatingDropBelow();
   if (dropBelow > 0 && rating < dropBelow) return "рейтинг " + rating + " из 100 ниже " + dropBelow;
@@ -7128,7 +7141,11 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, requiredRubric) {
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const rawBucket = String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || "");
       const itemTheme = itemRubric(item, themes);
-      if ((channelId === "auto" || channelId === "shopping") && themes.size && !themes.has(rawBucket)) return false;
+      if (channelId === "auto" || channelId === "shopping") {
+        if (themes.size && !themes.has(rawBucket)) return false;
+        const rebuiltSource = findSourceForItem(item);
+        if (rebuiltSource && rebuiltSource.enabled === false) return false;
+      }
       if (requiredRubric && itemTheme !== String(requiredRubric)) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
