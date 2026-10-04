@@ -3269,7 +3269,12 @@ async function replenishSourcesInner(reason) {
   // Theme channels: the theme with the fewest sources below its minimum gets its own search (one theme per run).
   const strategyNow = channelStrategy(resolveChannelId(currentWorkspace()));
   let rubricTarget = null;
-  const themedReady = !(resolveChannelId(currentWorkspace()) === "home" && !(state.migrations || []).includes("v0.51.3-home-rubrics")); // themes are tagged by the migration first
+  const themedChannelId = resolveChannelId(currentWorkspace());
+  const themedMigrations = state.migrations || [];
+  const themedReady =
+    !(themedChannelId === "home" && !themedMigrations.includes("v0.51.3-home-rubrics")) &&
+    !(themedChannelId === "shopping" && !themedMigrations.includes("v0.53.0-shopping-finds")) &&
+    !(themedChannelId === "auto" && !themedMigrations.includes("v0.53.0-car-rubrics")); // sources must be tagged before themed discovery
   // one miss counter for all themes: 3 empty searches in a row -> the whole theme search rests 24 h (paid web search)
   if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0 && discoveryAllowed("rubric")) {
     const counts = rubricSourceCounts();
@@ -3292,8 +3297,9 @@ async function replenishSourcesInner(reason) {
       if (!rubricTarget.need) rubricTarget = null;
     }
   }
-  // theme channels grow theme by theme only: a generic search would add sources that belong to no theme
-  if (Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length) need = 0;
+  // Once a theme migration tagged the sources, grow theme by theme only. Before that, preserve
+  // the legacy generic replenisher so startup/tests cannot strand an untagged workspace.
+  if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length) need = 0;
   if (!need && !needTelegram && !needLane && !rubricTarget) return { added: [], need: 0 };
   state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
   const last = new Date(state.sourceReplenish.lastAt || 0).getTime();
