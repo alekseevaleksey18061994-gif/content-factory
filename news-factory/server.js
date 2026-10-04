@@ -15112,6 +15112,128 @@ setTimeout(function repairMoneyRubricFloorV0528() {
   })().catch(function(error){ console.warn("Money rubric floor repair failed:", error.message); });
 }, 45000);
 
+// v0.53.0: deploy the approved rubric/source/schedule structures for cars and shopping.
+// Existing sources and queued posts are never deleted: unclassified legacy sources are paused and kept for audit.
+function normalizeApprovedRubricSourcesV0530(ws, plan, migration) {
+  const valid = rubricIds(ws);
+  const now = new Date().toISOString();
+  const normUrl = function(u) {
+    try {
+      const x = new URL(String(u || ""));
+      return (x.hostname.replace(/^www\./i, "") + x.pathname.replace(/\/+$/, "") + x.search).toLowerCase();
+    } catch { return ""; }
+  };
+  const planned = new Map();
+  for (const cand of (plan && plan.add || [])) {
+    const many = (Array.isArray(cand.rubrics) ? cand.rubrics : (cand.rubric ? [cand.rubric] : []))
+      .map(String).filter(function(id){ return valid.has(id); });
+    if (many.length) planned.set(normUrl(cand.url), many);
+  }
+
+  const assigned = [];
+  const paused = [];
+  for (const src of (state.sources || [])) {
+    if (!src || !src.enabled) continue;
+    const exact = planned.get(normUrl(src.url));
+    if (exact && exact.length) {
+      const before = JSON.stringify([src.rubric || "", src.rubrics || []]);
+      src.rubric = exact[0];
+      src.rubrics = exact.slice();
+      src.rubricAssignedAt = now;
+      if (before !== JSON.stringify([src.rubric, src.rubrics])) assigned.push(src.name || src.url || src.id);
+      continue;
+    }
+    const known = new Set([String(src.rubric || "")].concat(Array.isArray(src.rubrics) ? src.rubrics.map(String) : []));
+    const keep = Array.from(known).filter(function(id){ return valid.has(id); });
+    if (keep.length) {
+      src.rubric = keep[0];
+      src.rubrics = keep;
+      continue;
+    }
+    src.enabled = false;
+    src.autoPaused = { reason: "нет утверждённой рубрики канала (" + migration + ")", at: now };
+    paused.push(src.name || src.url || src.id);
+  }
+
+  state.rubricLimits = state.rubricLimits && typeof state.rubricLimits === "object" && !Array.isArray(state.rubricLimits)
+    ? state.rubricLimits : {};
+  for (const r of channelRubrics(ws)) {
+    const floor = rubricDefaultMinFor(r.id, ws);
+    const current = state.rubricLimits[r.id] && Number(state.rubricLimits[r.id].min);
+    if (!Number.isFinite(current) || current < floor) {
+      state.rubricLimits[r.id] = { min: floor, at: now, migration: migration };
+    }
+  }
+
+  state.sourceBlockedHosts = Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : [];
+  for (const url of (plan && plan.disable || [])) {
+    const key = sourceKey(url);
+    if (key && !state.sourceBlockedHosts.includes(key)) state.sourceBlockedHosts.push(key);
+  }
+  state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
+  state.sourceReplenish.lastAt = "";
+  if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+
+  // Old pre-v0.53 assignments may point at posts from a different rubric. Keep queue/history, rebuild assignments only.
+  const schedule = ensureScheduleShape(state);
+  schedule.assignments = {};
+  state.dynamicScheduler = Object.assign({}, state.dynamicScheduler || {}, { lastTickKey: "", lastPublishedSlot: "", lastPreparedAt: "" });
+
+  return { assigned: assigned, paused: paused, rubrics: rubricSourceCounts(ws) };
+}
+
+setTimeout(function deployAutoShoppingRubricsV0530() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      const id = resolveChannelId(ws);
+      if (id !== "auto" && id !== "shopping") continue;
+      const migration = id === "auto" ? "v0.53.0-auto-rubrics" : "v0.53.0-shopping-rubrics";
+      const plan = id === "auto" ? AUTO_RUBRIC_SOURCES_V0530 : SHOPPING_RUBRIC_SOURCES_V0530;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        if (!ws.channelId) ws.channelId = id;
+        const sourceResult = await reworkChannelSources(ws, plan, "v0.53.0");
+        const normalized = normalizeApprovedRubricSourcesV0530(ws, plan, migration);
+        const topups = [];
+
+        // The curated pack normally fills the floors. Discovery only fills groups whose validated sources are short.
+        for (let i = 0; i < 10; i++) {
+          const counts = rubricSourceCounts(ws);
+          const short = channelRubrics(ws).filter(function(r){ return (counts[r.id] || 0) < rubricMinFor(r.id, ws); });
+          if (!short.length) break;
+          state.sourceReplenish.lastAt = "";
+          if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+          const result = await replenishSources(id + "_rubric_balance");
+          topups.push({ attempt: i + 1, added: result && Array.isArray(result.added) ? result.added.length : 0, before: counts, after: rubricSourceCounts(ws) });
+        }
+
+        if (id === "shopping") {
+          state.copyrightPolicy = Object.assign({}, state.copyrightPolicy || {}, { requireSourceLink: false });
+        }
+        ensureScheduleShape(state);
+        ws.updatedAt = new Date().toISOString();
+        state.migrations.push(migration);
+        saveState();
+        persistWorkspaceStore();
+        console.log("V0530_RUBRIC_DEPLOY " + JSON.stringify({
+          workspace: ws.id,
+          channel: id,
+          assigned: normalized.assigned,
+          paused: normalized.paused,
+          rubrics: rubricSourceCounts(ws),
+          sourceAdded: sourceResult && sourceResult.added || [],
+          sourceFailed: sourceResult && sourceResult.failed || [],
+          slots: (channelSlotSchedule(ws) || []).length,
+          topups: topups
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("v0.53.0 auto/shopping rubric deploy failed:", error.message); });
+}, 125000);
+
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
 async function recoverMissingWorkspaces() {
