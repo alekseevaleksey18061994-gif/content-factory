@@ -15,12 +15,13 @@ await test("AS1 cars: 8 approved rubrics and exact 15-slot rubric map", async()=
   assert.deepEqual(st.rubrics.map(r=>r.id),[
     "premieres","russia_market","china","ev_hybrid","auto_tech","bloggers_owners","viral_unusual","driver_important"
   ]);
-  assert.deepEqual(st.slotHours,[8,9,10,11,12,13,14,15,16,17,18,19,20,21,22]);
-  assert.equal(Object.keys(st.slotRubrics).length,15);
-  assert.equal(st.slotRubrics["08:00"],"driver_important");
-  assert.equal(st.slotRubrics["12:00"],"bloggers_owners");
-  assert.equal(st.slotRubrics["21:00"],"auto_tech");
-  assert.equal(st.slotRubrics["22:00"],"viral_unusual");
+  assert.equal(st.slotSchedule.length,15);
+  assert.deepEqual(st.slotSchedule.map(x=>x.time),["08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00","20:00","21:00","22:00"]);
+  const byTime=Object.fromEntries(st.slotSchedule.map(x=>[x.time,x.rubric]));
+  assert.equal(byTime["08:00"],"driver_important");
+  assert.equal(byTime["12:00"],"bloggers_owners");
+  assert.equal(byTime["21:00"],"auto_tech");
+  assert.equal(byTime["22:00"],"viral_unusual");
 });
 
 await test("AS2 cars: approved blogger set is present and old extra :30 lane is disabled", async()=>{
