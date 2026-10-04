@@ -15,6 +15,7 @@ import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
+import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
@@ -358,18 +359,7 @@ const CAR_SOURCES = [
   { id: "cars-autoreview", name: "Авторевю", type: "web", group: "media", priority: 2, url: "https://autoreview.ru/news", enabled: true }
 ];
 
-const BLOGGER_SOURCES = [
-  { id: "blogger-ildar", name: "Ильдар Авто-подбор", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/ildar_auto_podbor", enabled: true },
-  { id: "blogger-dubrovskiy", name: "Жекич Дубровский", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/dubrovskiy_444", enabled: true },
-  { id: "blogger-academeg", name: "AcademeG", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/academeg_true_original", enabled: true },
-  { id: "blogger-strekal", name: "Илья Стрекаловский", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/Strekalovsky", enabled: true },
-  { id: "blogger-miheev-pavlov", name: "Михеев и Павлов", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/miheevpavlov_pro", enabled: true },
-  { id: "blogger-pasha-pel", name: "Паша ПЭЛ", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/pel_video", enabled: true },
-  { id: "blogger-klubniy-servis", name: "Клубный Сервис", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/klubniy_servis", enabled: true },
-  { id: "blogger-lisa-rulit", name: "Лиса Рулит", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/lisacars", enabled: true },
-  { id: "blogger-anton-avtoman", name: "Anton Avtoman", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/anton_avtoman", enabled: true },
-  { id: "blogger-bulkin", name: "Bulkin Drive", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/bulkin_live", enabled: true }
-];
+const BLOGGER_SOURCES = APPROVED_AUTO_BLOGGER_SOURCES;
 const BLOGGER_SLOTS = ["10:30", "12:30", "15:30", "18:30", "21:30"];
 const BLOGGER_DAILY_TARGET = 5;
 // Extra :30 lane per channel (the "blogger" lane, generalised). stars: three extra posts a day taken from all its
