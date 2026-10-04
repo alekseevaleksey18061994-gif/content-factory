@@ -98,6 +98,8 @@ await test("AS6 shopping: old broad-channel buckets cannot leak into a product s
   assert.equal(best && best.id,"new");
   assert.equal(inWs(t,S,()=>t.channelRatingMinAuto()),75);
   assert.equal(inWs(t,S,()=>t.channelRatingDropBelow()),65);
+  const leaked=mkQueueItem({title:"Органайзер за 1 990 ₽",text:"Рейтинг 4,8",contentBucket:"ozon",editorialV2:{channelId:"shopping",status:"approved",verdict:"pass",importance:9,contentBucket:"ozon"}});
+  assert.match(inWs(t,S,()=>t.autoRejectReason(leaked)),/цена|рейтинг/);
   t.restoreConsole();
 });
 
