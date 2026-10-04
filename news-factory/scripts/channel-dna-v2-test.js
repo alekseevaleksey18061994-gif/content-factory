@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { CHANNEL_DNA, SOURCE_CLASSES, channelStrategy } from "../lib/channel-dna.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "../lib/channel-curated-sources.js";
 import { normalizeShoppingFindSources, normalizeAutoRubricSources } from "../lib/channel-rubric-migrations.js";
