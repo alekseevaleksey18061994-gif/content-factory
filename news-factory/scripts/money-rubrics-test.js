@@ -152,6 +152,15 @@ await test("M6 planned shared source feeds several rubrics; unknown legacy sourc
   t.restoreConsole();
 });
 
+await test("M6b source plan has at least five approved Telegram feeds per rubric after fallbacks", async () => {
+  const counts={};
+  for(const r of channelStrategy("money").rubrics) counts[r.id]=0;
+  for(const s of MONEY_RUBRIC_SOURCES_V0526.add) {
+    for(const id of (s.rubrics||[])) if(Object.prototype.hasOwnProperty.call(counts,id)) counts[id]++;
+  }
+  for(const [id,n] of Object.entries(counts)) assert.ok(n>=5,id+" has "+n);
+});
+
 await test("M7 95+ emergency candidate is available only as a ninth post and only once", async () => {
   const t=await loadServer({fixedNow:msk(22,15)});
   const ws=t.ws(M);
