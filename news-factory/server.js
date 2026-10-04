@@ -462,11 +462,23 @@ function setRubricLimit(rubricId, min) {
   }
   return { ok: true, rubric: rubricId, min: n, changed: before !== n, search: search };
 }
+function channelRubricConfigReady(ws) {
+  const target = ws || currentWorkspace();
+  const id = resolveChannelId(target);
+  const st = target && target.state ? target.state : state;
+  const migrations = Array.isArray(st && st.migrations) ? st.migrations : [];
+  if (id === "home" && !migrations.includes("v0.51.3-home-rubrics")) return false;
+  if (id === "shopping" && !migrations.includes("v0.53.0-shopping-finds")) return false;
+  if (id === "auto" && !migrations.includes("v0.53.0-car-rubrics")) return false;
+  return true;
+}
 function channelSlotHours(ws) {
+  if (!channelRubricConfigReady(ws)) return null;
   const hours = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotHours;
   return Array.isArray(hours) && hours.length ? hours : null;
 }
 function channelSlotRubric(time, ws) {
+  if (!channelRubricConfigReady(ws)) return "";
   const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
   return String(strat && strat.slotRubrics && strat.slotRubrics[String(time || "")] || "");
 }
@@ -480,6 +492,7 @@ function channelDailyMax(ws) {
 }
 function channelExtraLane() {
   const ws = currentWorkspace();
+  if (!channelRubricConfigReady(ws) && resolveChannelId(ws) === "shopping") return null;
   return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
 }
 function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : []; }
