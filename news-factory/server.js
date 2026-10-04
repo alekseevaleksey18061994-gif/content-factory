@@ -7078,16 +7078,11 @@ const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSI
 
 function dynamicBestQueueItem(kind, time) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
-  const best = dynamicBestQueueItemRaw(kind, true, time, false) || dynamicBestQueueItemRaw(kind, false, time, false);
-  if (best) return best;
-  // Cars: a truly urgent 9/10 item may use the nearest empty thematic slot.
-  if (editorialChannelId() === "auto" && channelSlotRubric(time)) {
-    return dynamicBestQueueItemRaw(kind, true, time, true);
-  }
-  return null;
+  // A thematic slot is never backfilled by another rubric: if its own queue is weak/empty, the slot is skipped.
+  return dynamicBestQueueItemRaw(kind, true, time) || dynamicBestQueueItemRaw(kind, false, time);
 }
 
-function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time, urgentOverride) {
+function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time) {
   const used = dynamicUsedQueueIds();
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
@@ -7118,12 +7113,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time, urgentOverride)
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const itemTheme = itemRubric(item, themes);
       const desiredRubric = channelSlotRubric(time);
-      if (desiredRubric && itemTheme !== desiredRubric) {
-        const source = findSourceForItem(item);
-        const sourceRubrics = new Set([String(source && source.rubric || "")].concat(Array.isArray(source && source.rubrics) ? source.rubrics.map(String) : []));
-        const importance = Number(item && item.editorialV2 && item.editorialV2.importance);
-        if (!sourceRubrics.has(desiredRubric) && !(urgentOverride && channelId === "auto" && Number.isFinite(importance) && importance >= 9)) return false;
-      }
+      if (desiredRubric && itemTheme !== desiredRubric) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
         if (!wantsMoneyEmergency && themesToday.has(itemTheme)) return false; // exactly one normal post per rubric/day
