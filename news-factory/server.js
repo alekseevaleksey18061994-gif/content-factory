@@ -3282,6 +3282,55 @@ let dbReady = false;
 // slot preparation of the other channels in the network.
 const collectorRunningWorkspaces = new Set();
 function isCollectorRunning(workspaceId) { return collectorRunningWorkspaces.has(workspaceId || currentWorkspaceId()); }
+// Where each running collector is right now. A step that never settles (seen 2026-10-04: every channel's 07:45
+// preparation hung and blocked all morning slots) is then visible in the log and released by the watchdog.
+const collectorRuns = new Map(); // workspaceId -> { token, trigger, startedAt, step, stepAt }
+const COLLECTOR_MAX_RUN_MS = envNumberEarly("COLLECTOR_MAX_RUN_MINUTES", 25, 1, 180) * 60000;
+const COLLECTOR_STUCK_MS = envNumberEarly("COLLECTOR_STUCK_MINUTES", 40, 1, 360) * 60000;
+const SCHEDULER_PREPARE_TIMEOUT_MS = envNumberEarly("SCHEDULER_PREPARE_TIMEOUT_MINUTES", 20, 0.02, 120) * 60000;
+function envNumberEarly(name, fallback, min, max) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? Math.max(min, Math.min(max, n)) : fallback;
+}
+function collectorRunInfo(workspaceId) {
+  const run = collectorRuns.get(workspaceId);
+  if (!run) return null;
+  const now = Date.now();
+  return { trigger: run.trigger, step: run.step, stepSec: Math.round((now - run.stepAt) / 1000), runMin: Math.round((now - run.startedAt) / 6000) / 10 };
+}
+// Rejects after ms; the original promise keeps running, but the caller (and its locks) are freed.
+function withDeadline(promise, ms, label) {
+  let timer;
+  const deadline = new Promise(function(_, reject) {
+    timer = setTimeout(function() {
+      const error = new Error((label || "operation") + " exceeded " + Math.round(ms / 60000) + " min");
+      error.code = "DEADLINE";
+      reject(error);
+    }, ms);
+    if (timer && typeof timer.unref === "function") timer.unref();
+  });
+  return Promise.race([promise, deadline]).finally(function() { clearTimeout(timer); });
+}
+function releaseStuckCollectors(nowMs) {
+  const now = Number(nowMs || Date.now());
+  const released = [];
+  // A run that still moves from step to step is slow, not stuck: it stops by itself at COLLECTOR_MAX_RUN_MS.
+  const stuckMs = Math.max(COLLECTOR_STUCK_MS, COLLECTOR_MAX_RUN_MS + 10 * 60000);
+  for (const [wsId, run] of collectorRuns) {
+    if (now - run.startedAt < stuckMs) continue;
+    if (now - Number(run.stepAt || run.startedAt) < stuckMs / 2) continue;
+    // Never release a run that is sending a post right now: if it resumed later it could publish twice.
+    if (/^publish/.test(String(run.step || ""))) {
+      if (!run.stuckLogged) { run.stuckLogged = true; console.error("COLLECTOR_STUCK " + JSON.stringify(Object.assign({ workspace: wsId, released: false }, collectorRunInfo(wsId)))); }
+      continue;
+    }
+    console.error("COLLECTOR_STUCK " + JSON.stringify(Object.assign({ workspace: wsId, released: true }, collectorRunInfo(wsId))));
+    collectorRuns.delete(wsId);
+    collectorRunningWorkspaces.delete(wsId);
+    released.push(wsId);
+  }
+  return released;
+}
 const schedulerTickRunning = new Set();
 let collectorTimer = null;
 const lastCollectorRuns = new Map();
@@ -5706,6 +5755,18 @@ async function collectOnce(trigger) {
   const collectorWorkspaceId = currentWorkspaceId();
   if (collectorRunningWorkspaces.has(collectorWorkspaceId)) return { ok: false, error: "Collector already running" };
   collectorRunningWorkspaces.add(collectorWorkspaceId);
+  const collectorToken = Symbol("collector");
+  const collectorStartedMs = Date.now();
+  collectorRuns.set(collectorWorkspaceId, { token: collectorToken, trigger: String(trigger || "scheduler"), startedAt: collectorStartedMs, step: "start", stepAt: collectorStartedMs });
+  // Released by the watchdog -> this run is a zombie: it must stop at its next step instead of running next to the
+  // new run (two runs in one workspace queued the same article twice).
+  const ownsRun = function() { const run = collectorRuns.get(collectorWorkspaceId); return Boolean(run && run.token === collectorToken); };
+  const releasedError = function() { const e = new Error("collector run released by the watchdog"); e.code = "COLLECTOR_RELEASED"; return e; };
+  const markStep = function(step) {
+    if (!ownsRun()) throw releasedError();
+    const run = collectorRuns.get(collectorWorkspaceId);
+    run.step = String(step || ""); run.stepAt = Date.now();
+  };
   const startedAt = new Date().toISOString();
   const summary = { ok: true, trigger: trigger || "scheduler", startedAt: startedAt, found: 0, queued: 0, published: 0, skipped: 0, errors: [] };
   let runId = null;
@@ -5747,6 +5808,7 @@ async function collectOnce(trigger) {
       ? enabledSources.slice(cursor).concat(enabledSources.slice(0, cursor))
       : [];
 
+    markStep("sources:" + rotatedSources.length);
     const sourceResults = await Promise.all(rotatedSources.map(async function(source) {
       noteSourceEvent(source, "check");
       try {
@@ -5818,6 +5880,7 @@ async function collectOnce(trigger) {
     for (const candidate of sourceResults) {
       if (candidate) ordered.push(candidate);
     }
+    markStep("prefilter:" + ordered.length);
     const prefiltered = await prefilterCandidates(ordered, summary);
     ordered.length = 0;
     prefiltered.forEach(function(candidate){ ordered.push(candidate); });
@@ -5849,8 +5912,16 @@ async function collectOnce(trigger) {
 
     for (const candidate of ordered) {
       if (summary.found >= MAX_ITEMS_PER_RUN) break;
+      if (!ownsRun()) throw releasedError();
+      // A huge morning backlog must not hold the channel past its slot: stop cleanly, the rest waits for the next run.
+      if (Date.now() - collectorStartedMs > COLLECTOR_MAX_RUN_MS) {
+        summary.timedOut = true;
+        console.warn("COLLECTOR_RUN_LIMIT " + JSON.stringify({ workspace: collectorWorkspaceId, trigger: String(trigger || ""), minutes: Math.round((Date.now() - collectorStartedMs) / 60000), found: summary.found }));
+        break;
+      }
       const source = candidate.source;
       const url = candidate.link.url;
+      markStep("article:" + String(url || "").slice(0, 120));
 
       let baseSaved = false;
       let claimed = [];
@@ -5965,6 +6036,7 @@ async function collectOnce(trigger) {
         let storyPrecheck = null;
         if (STORY_PRECHECK_ENABLED) {
           try {
+            markStep("story_precheck");
             storyPrecheck = await classifyPublishedStoryRelationship({ id: id, newsId: id, title: originalTitle, text: originalText, sourceId: source.id, sourceName: source.name });
           } catch (error) {
             console.warn("STORY_PRECHECK_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), url: url, error: error.message }));
@@ -5997,6 +6069,7 @@ async function collectOnce(trigger) {
             continue;
           }
         }
+        markStep("media");
         const media = await prepareMediaDirector({
           id: id,
           deferExpensive: MEDIA_DEFER_EXPENSIVE,
@@ -6074,6 +6147,7 @@ async function collectOnce(trigger) {
         if (editorialV2Active()) {
           let v2;
           try {
+            markStep("editorial");
             v2 = await runEditorialV2([{
               name: source.name,
               url: url,
@@ -6126,6 +6200,7 @@ async function collectOnce(trigger) {
           }
         } else {
           try {
+            markStep("rewrite");
             rewrite = await callOpenAIRewrite({ title: originalTitle, sourceUrl: url, text: originalText, sourceName: source.name, sourceGroup: source.group || "", newsId: id });
             state.stats.rewritten += 1;
           } catch (error) {
@@ -6151,6 +6226,7 @@ async function collectOnce(trigger) {
         baseItem.metadata.contentFormatLabel = rewrite.contentFormatLabel || "";
         noteSourceEvent(source, "score", { score: rewrite.editorialScore });
 
+        markStep("qc");
         if (!qc) qc = await callOpenAIEditorialQC({
           title: rewrite.title,
           text: rewrite.text,
@@ -6187,6 +6263,7 @@ async function collectOnce(trigger) {
         // A held draft must never trigger paid image generation. It can keep a free
         // local fallback until a later retry actually approves the post.
         const costTier = qc.qcStatus === "hold" ? 3 : editorialCostTier(rewrite, editorialV2Meta, media);
+        markStep("final_media");
         const finalMedia = await finalizeApprovedMedia(media, {
           id: id,
           newsId: id,
@@ -6237,6 +6314,7 @@ async function collectOnce(trigger) {
           summary.published < 1;
 
         if (canAutoPublish) {
+          markStep("publish");
           const tg = await sendMultiPlatformPost({
             id: id,
             postId: id,
@@ -6411,6 +6489,7 @@ async function collectOnce(trigger) {
             }
           }
 
+          markStep("story_merge");
           const mergedStory = await tryMergeStoryQueueItem(queueItem);
           if (!mergedStory && queuedDuplicate) {
             baseItem.status = "duplicate_story";
@@ -6434,8 +6513,10 @@ async function collectOnce(trigger) {
           } else {
             // DB row first: when the write fails (throws into the catch below) nothing is queued, so a post
             // can never sit in the queue without a news_items row and be re-collected on every tick.
+            markStep("queue");
             await saveNewsItem(baseItem);
             baseSaved = true;
+            if (!ownsRun()) throw releasedError();
             state.queue.unshift(queueItem);
           }
           pruneQueueItems(state);
@@ -6446,6 +6527,7 @@ async function collectOnce(trigger) {
         if (!baseSaved) await saveNewsItem(baseItem);
         saveState();
       } catch (error) {
+        if (error && error.code === "COLLECTOR_RELEASED") throw error;
         noteSourceEvent(source, "error");
         summary.errors.push(url + ": " + error.message);
         // Bounded retry: after SKIP_RETRY_MAX failures the link counts as seen (see seenOriginalUrl).
@@ -6482,7 +6564,12 @@ async function collectOnce(trigger) {
     summary.ok = false;
     summary.error = error.message;
     summary.finishedAt = new Date().toISOString();
-    lastCollectorRuns.set(currentWorkspaceId(), summary);
+    if (error && error.code === "COLLECTOR_RELEASED") {
+      summary.released = true;
+      console.warn("COLLECTOR_ZOMBIE_STOPPED " + JSON.stringify({ workspace: collectorWorkspaceId, trigger: String(trigger || ""), minutes: Math.round((Date.now() - collectorStartedMs) / 60000) }));
+    } else {
+      lastCollectorRuns.set(currentWorkspaceId(), summary); // a released run must not overwrite the newer run's summary
+    }
     if (db && dbReady && runId) {
       try {
         await db.query("UPDATE collector_runs SET finished_at=NOW(), status='failed', error_text=$2 WHERE id=$1", [runId, error.message]);
@@ -6490,7 +6577,12 @@ async function collectOnce(trigger) {
     }
     return summary;
   } finally {
-    collectorRunningWorkspaces.delete(collectorWorkspaceId);
+    // The watchdog may have released this run and a newer one may own the flag now: only clear our own.
+    const run = collectorRuns.get(collectorWorkspaceId);
+    if (run && run.token === collectorToken) {
+      collectorRuns.delete(collectorWorkspaceId);
+      collectorRunningWorkspaces.delete(collectorWorkspaceId);
+    }
   }
 }
 
@@ -7236,17 +7328,25 @@ async function dynamicSchedulerTick() {
   state.dynamicScheduler.lastAttemptedTickAt = new Date().toISOString();
 
   try {
-    const result = action === "prepare"
-      ? await prepareDynamicSlot()
+    const work = action === "prepare"
+      ? prepareDynamicSlot()
       : action === "publish"
-        ? await publishDynamicSlot()
+        ? publishDynamicSlot()
         : action === "blogger_prepare"
-          ? await prepareBloggerSlot(bloggerTime)
+          ? prepareBloggerSlot(bloggerTime)
           : action === "blogger_publish"
-            ? await publishDynamicSlot("blogger")
+            ? publishDynamicSlot("blogger")
             : action === "russian_ai_prepare"
-              ? await prepareRussianAiSlot(russianAiTime)
-              : await publishDynamicSlot("russian-ai");
+              ? prepareRussianAiSlot(russianAiTime)
+              : publishDynamicSlot("russian-ai");
+    // A preparation step that never settles must not hold this channel's scheduler lock forever (and with it every
+    // later slot). Publishing is not cut off: a cut-off publish could still go out later and double the post.
+    const result = !/prepare$/.test(action) ? await work : await withDeadline(work, SCHEDULER_PREPARE_TIMEOUT_MS, "scheduler " + action).catch(function(error) {
+      if (error && error.code === "DEADLINE") {
+        console.error("SCHEDULER_TICK_TIMEOUT " + JSON.stringify({ workspace: currentWorkspaceId(), action: action, slot: key, collector: collectorRunInfo(currentWorkspaceId()) }));
+      }
+      throw error;
+    });
     state.dynamicScheduler.lastTickKey = key;
     state.dynamicScheduler.lastTickCompletedAt = new Date().toISOString();
     saveState();
@@ -7324,6 +7424,7 @@ async function dynamicSchedulerTickAllWorkspaces() {
 function startCollectorScheduler() {
   if (!COLLECTOR_ENABLED || collectorTimer) return;
   collectorTimer = setInterval(function() {
+    releaseStuckCollectors();
     dynamicSchedulerTickAllWorkspaces()
       .then(function(){ return catchUpCurrentRegularSlotAllWorkspaces(); })
       .catch(function(error){ console.error("Dynamic scheduler tick failed:", error.message); });

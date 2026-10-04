@@ -77,7 +77,7 @@ async function fakeFetch(url, init) {
   }
   if (net.pages.has(url)) {
     const p = net.pages.get(url);
-    const v = typeof p === "function" ? p() : p;
+    const v = typeof p === "function" ? await p() : p;
     if (v instanceof Response) return v;
     return new Response(v, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
   }
@@ -105,7 +105,8 @@ const EXPORT_NAMES = [
   "recoverMissingWorkspaces", "persistWorkspaceStore", "pendingAutoTargets", "acquirePublishLock", "currentWorkspace", "dynamicUsedQueueIds", "enforceCopyrightSafeMedia", "server",
   "runOffsiteBackup", "workspaceWatchdogTick", "readBackupStatus", "buildBackupPayload",
   "providerBreaker", "llmResponsesFetch", "generateNewsCover", "maybeBillingAlert", "editorialPipeline", "recordOpenAIResponseUsage", "publishVkPost", "logPostmypostStatus", "workspaceVkPublishingAllowed", "refreshPostmypostMap", "sendMultiPlatformPost",
-  "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous", "applyChannelNotes", "flushWorkspaceStoreNow", "storeFlushStats", "bloggerSlotsFor", "bloggerTargetFor", "bloggerLaneActive", "channelExtraLane"
+  "saveStateSnapshot", "vkPostIdForDb", "pgJsonString", "catchUpCurrentRegularSlotAllWorkspaces", "replenishSources", "renderEconomyTextCard", "sendTelegramPost", "telegramErrorIsAmbiguous", "applyChannelNotes", "flushWorkspaceStoreNow", "storeFlushStats", "bloggerSlotsFor", "bloggerTargetFor", "bloggerLaneActive", "channelExtraLane",
+  "withDeadline", "releaseStuckCollectors", "collectorRunInfo", "collectorRuns", "collectorRunningWorkspaces", "isCollectorRunning"
 ];
 
 function bin(name) {
