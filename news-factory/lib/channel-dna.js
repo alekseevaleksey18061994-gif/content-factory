@@ -23,11 +23,35 @@ export const CHANNEL_DNA = {
   },
   money: {
     type: "news",
-    topic: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии",
-    focus: "В приоритете то, что влияет на деньги обычного человека: цены, банки, кредиты, комиссии, налоги, мошенничество и понятные объяснения.",
-    mix: { personal_impact: 0.55, explainer: 0.20, scams: 0.15, big_deal: 0.10 },
+    topic: "личные финансы обычного человека в России: банковские карты и переводы, вклады и накопления, кредиты и ипотека, налоги, рубль и инфляция, ставка Банка России, зарплаты, пенсии и выплаты, финансовое мошенничество, практические денежные правила",
+    focus: "Только то, что прямо влияет на личные деньги человека. Не тащи сюда корпоративные сделки, отчётность компаний, мировые сырьевые рынки, новости продавцов маркетплейсов, криптовалюты и макроэкономику без понятного эффекта для кошелька. Подача: что произошло → кого касается → сколько в ₽/% → что делать.",
+    mix: {
+      cards_banks: 0.125,
+      deposits: 0.125,
+      credits_mortgage: 0.125,
+      taxes: 0.125,
+      ruble_inflation_cb: 0.125,
+      income_benefits: 0.125,
+      financial_scams: 0.125,
+      money_howto: 0.125
+    },
+    rubrics: [
+      { id: "cards_banks", label: "Карты и банки", hint: "карты, переводы, комиссии, блокировки, новые правила банков и платёжных сервисов для физических лиц" },
+      { id: "deposits", label: "Вклады и накопления", hint: "ставки и условия вкладов и накопительных счетов, страхование сбережений, важные изменения у крупных банков" },
+      { id: "credits_mortgage", label: "Кредиты и ипотека", hint: "ставки, требования банков, льготные программы, досрочное погашение, изменения кредита и ипотеки для физлиц" },
+      { id: "taxes", label: "Налоги", hint: "НДФЛ, налог на проценты по вкладам, имущество, вычеты, сроки и правила ФНС для физических лиц" },
+      { id: "ruble_inflation_cb", label: "Рубль, инфляция и ставка ЦБ", hint: "курс рубля, инфляция и решения Банка России только когда понятно влияние на цены, кредиты или сбережения" },
+      { id: "income_benefits", label: "Зарплаты, пенсии и выплаты", hint: "зарплаты, МРОТ, индексации, пенсии, пособия, маткапитал и иные выплаты обычным людям" },
+      { id: "financial_scams", label: "Финансовые мошенники", hint: "новые массовые схемы обмана, карты и переводы, дропперы, фишинг и практическая защита денег" },
+      { id: "money_howto", label: "Полезно знать", hint: "практические правила: возвраты, страховки, банковские права, ошибки списаний и полезная финансовая грамотность" }
+    ],
+    rubricMinSources: 5,
+    rubricMaxSources: 6,
+    // Six regular hourly slots; 14:30 and 21:30 are added by the channel's extra lane in server.js.
+    slotHours: [9, 11, 13, 16, 18, 20],
     preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
-    scoreWeights: { utility: 0.36, local: 0.28, deal: 0.18, discussion: 0.10, wow: 0.08 }
+    // Channel-fit layer. The visible/auto-publish 100-point score has its own money formula in post-rating.js.
+    scoreWeights: { utility: 0.42, local: 0.28, deal: 0.16, discussion: 0.08, virality: 0.06 }
   },
   tech: {
     type: "news",
@@ -423,5 +447,51 @@ export const HOME_RUBRIC_SOURCES_V0513 = {
     // ЖКХ is out of the channel (editor, 2026-10-04)
     "https://riamo.ru/tag/zhkh/", "https://gkhnews.ru/", "https://t.me/s/gkhnewsru", "https://t.me/s/starshijpodomu", "https://www.reformagkh.ru/news",
     "https://rg.ru/tema/ekonomika/zhkh", "https://xn--b1agapfwapgcl.xn--p1ai/news/", "https://всеостройке.рф/news/"
+  ]
+};
+
+
+// v0.52.6: approved source structure for «Что там с деньгами?».
+// A physical source may feed several rubrics; the rubrics array avoids fetching the same Telegram channel several times.
+export const MONEY_RUBRIC_SOURCES_V0526 = {
+  add: [
+    { name: "Банки.ру", url: "https://t.me/s/bankiruofficial", group: "media", rubrics: ["cards_banks","deposits","credits_mortgage","money_howto"] },
+    { name: "Frank Media", url: "https://t.me/s/frank_media", group: "media", rubrics: ["cards_banks"] },
+    { name: "Банк России", url: "https://t.me/s/centralbank_russia", group: "official", rubrics: ["cards_banks","deposits","ruble_inflation_cb","financial_scams"] },
+    { name: "MarketOverview", url: "https://t.me/s/MarketOverview", group: "media", rubrics: ["cards_banks","deposits","ruble_inflation_cb"] },
+    { name: "Финуслуги", url: "https://t.me/s/MoexFinuslugi", group: "media", rubrics: ["cards_banks","deposits","money_howto"] },
+    { name: "Банкир — вклады и банки", url: "https://t.me/s/blogbankir", group: "creator", rubrics: ["deposits"] },
+
+    { name: "Домклик", url: "https://t.me/s/domclick", group: "official", rubrics: ["credits_mortgage"] },
+    { name: "Ипотека и недвижимость", url: "https://t.me/s/ipotekahouse", group: "creator", rubrics: ["credits_mortgage"] },
+    { name: "СПРОСИ.ДОМ.РФ", url: "https://t.me/s/sprosidomrf", group: "official", rubrics: ["credits_mortgage"] },
+    { name: "IT + банки: ипотека", url: "https://t.me/s/IT_ipoteka", group: "creator", rubrics: ["credits_mortgage"] },
+
+    { name: "ФНС России", url: "https://t.me/s/nalog_gov_ru", group: "official", rubrics: ["taxes"] },
+    { name: "ЛИЧНЫЕ НАЛОГИ", url: "https://t.me/s/persontaxes", group: "creator", rubrics: ["taxes"] },
+    { name: "Минфин России", url: "https://t.me/s/minfin", group: "official", rubrics: ["taxes"] },
+    { name: "Мои финансы", url: "https://t.me/s/FinZozhExpert", group: "official", rubrics: ["taxes","money_howto"] },
+    { name: "Госуслуги", url: "https://t.me/s/gosuslugi", group: "official", rubrics: ["taxes","money_howto"] },
+
+    { name: "Твердые цифры", url: "https://t.me/s/xtxixty", group: "creator", rubrics: ["ruble_inflation_cb"] },
+    { name: "MMI", url: "https://t.me/s/russianmacro", group: "creator", rubrics: ["ruble_inflation_cb"] },
+    { name: "Простая экономика", url: "https://t.me/s/prostoecon", group: "creator", rubrics: ["ruble_inflation_cb"] },
+
+    { name: "Социальный фонд России", url: "https://t.me/s/sfr_gov", group: "official", rubrics: ["income_benefits"] },
+    { name: "Соцфонд.Контекст", url: "https://t.me/s/socfond_kontekst", group: "official", rubrics: ["income_benefits"] },
+    { name: "Минтруд России", url: "https://t.me/s/mintrudrf", group: "official", rubrics: ["income_benefits"] },
+    { name: "Роструд", url: "https://t.me/s/rostrud_official", group: "official", rubrics: ["income_benefits"] },
+    { name: "Объясняем.рф", url: "https://t.me/s/obyasnayemrf", group: "official", rubrics: ["income_benefits"] },
+
+    { name: "Вестник Киберполиции России", url: "https://t.me/s/cyberpolice_rus", group: "official", rubrics: ["financial_scams"] },
+    { name: "МОШЕЛОВКА.РФ", url: "https://t.me/s/moshelovka", group: "creator", rubrics: ["financial_scams"] },
+    { name: "Финансовая культура", url: "https://t.me/s/fincult_info", group: "official", rubrics: ["financial_scams","money_howto"] },
+    { name: "МВД МЕДИА", url: "https://t.me/s/mediamvd", group: "official", rubrics: ["financial_scams"] }
+  ],
+  disable: [
+    "https://t.me/s/forbesrussia",
+    "https://t.me/s/rian_ru",
+    "https://svpressa.ru/economy/",
+    "https://nsn.fm/economy"
   ]
 };
