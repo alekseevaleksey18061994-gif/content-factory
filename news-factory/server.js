@@ -3418,7 +3418,7 @@ async function replenishSourcesInner(reason) {
 
 // One cheap call over all fresh headlines before media and editorial work:
 // drops ads, listings, old press releases and off-topic links.
-const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "маркетплейсы и покупатели: правила Ozon, Wildberries и Яндекс Маркета, доставка, возвраты, новые товары и тренды; без рекламных подборок, промокодов и скидок", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили: премьеры, авторынок России, китайские авто, электро и гибриды, автотехнологии, блогеры, вирусное и важное водителю", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "товарные находки Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; конкретный товар с хорошим фото или видео, без новостей для продавцов", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
 async function prefilterCandidates(candidates, summary) {
   if (!candidates.length) return candidates;
   const now = new Date();
@@ -4361,10 +4361,10 @@ async function createPublicPostPage(post) {
   const title = String(post && post.title || "Что там у ИИ?").trim() || "Что там у ИИ?";
   const bodyText = String(post && post.text || "").trim();
   const description = previewDescription(post);
-  const sources = normalizePublicPostSources(post);
+  const sources = editorialChannelId() === "shopping" ? [] : normalizePublicPostSources(post);
   const primarySource = sources[0] || {};
-  const sourceName = String(primarySource.name || post && post.sourceName || "").trim();
-  const sourceUrl = String(primarySource.url || post && post.sourceUrl || "").trim();
+  const sourceName = editorialChannelId() === "shopping" ? "" : String(primarySource.name || post && post.sourceName || "").trim();
+  const sourceUrl = editorialChannelId() === "shopping" ? "" : String(primarySource.url || post && post.sourceUrl || "").trim();
   const postId = String(post && (post.postId || post.id || post.newsId) || slug);
   const topicId = String(post && (post.topicId || post.topic_id) || "default");
 
@@ -8207,8 +8207,9 @@ function formatTelegramBody(value) {
 
 function formatTelegramPost(post) {
   const title = String(post.title || "").trim();
-  const text = String(post.text || "").trim();
-  const sources = editorialChannelId() === "shopping" ? [] : normalizePublicPostSources(post).slice(0, 5);
+  const shoppingPublic = editorialChannelId() === "shopping";
+  const text = String(post.text || "").trim().replace(shoppingPublic ? /https?:\/\/\S+/gi : /$^/, "").replace(/\s+\n/g, "\n");
+  const sources = shoppingPublic ? [] : normalizePublicPostSources(post).slice(0, 5);
   let html = "";
   if (title) html += "<b>" + escapeTelegramHtml(title) + "</b>";
   if (text) html += (html ? "\n\n" : "") + formatTelegramBody(text);
@@ -9049,7 +9050,9 @@ async function vkApi(method, params, options) {
 function formatVkPost(post, options) {
   const opts = options || {};
   const title = String(post.title || "").trim();
+  const shoppingPublic = editorialChannelId() === "shopping";
   let text = String(post.text || "").trim();
+  if (shoppingPublic) text = text.replace(/https?:\/\/\S+/gi, "").replace(/\s+\n/g, "\n");
   text = text
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/__(.*?)__/g, "$1")
@@ -9058,7 +9061,7 @@ function formatVkPost(post, options) {
   let out = "";
   if (title) out += title;
   if (text) out += (out ? "\n\n" : "") + text;
-  const sources = editorialChannelId() === "shopping" ? [] : normalizePublicPostSources(post).slice(0, 5);
+  const sources = shoppingPublic ? [] : normalizePublicPostSources(post).slice(0, 5);
   if (opts.includeSource !== false && sources.length === 1) {
     out += (out ? "\n\n" : "") + "Источник: " + sources[0].url;
   } else if (opts.includeSource !== false && sources.length > 1) {
@@ -12199,7 +12202,8 @@ const STORY_CLASSIFIER_CANDIDATES = 3;
 async function classifyPublishedStoryRelationship(item, options) {
   const queueItems = options && Array.isArray(options.queueItems) ? options.queueItems : (state.queue || []);
   if (!item) return { relation: "new_story", candidate: null, reason: "" };
-  const cutoff = Date.now() - STORY_UPDATE_WINDOW_HOURS * 60 * 60 * 1000;
+  const relationshipWindowHours = editorialChannelId() === "shopping" ? 14 * 24 : STORY_UPDATE_WINDOW_HOURS;
+  const cutoff = Date.now() - relationshipWindowHours * 60 * 60 * 1000;
 
   const ownIds = new Set([item && item.id, item && item.queueId, item && item.newsId].filter(Boolean).map(String));
   // The new item may carry its own source text (original language); candidates are compared both ways, so a foreign
