@@ -376,6 +376,7 @@ const CHANNEL_EXTRA_LANES = {
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
   home: { refresh: true, boost: 0, hint: "находки и подборки товаров для дома, до/после обычных квартир, хранение, уборка, ремонт своими руками, тренды интерьера, кухня; НЕ рынок недвижимости, НЕ ЖКХ, НЕ IT-новости, НЕ городские новости" },
+  auto: { refresh: true, boost: 10, hint: "автоисточники по 8 рубрикам: премьеры, авторынок России, китайские авто, электро и гибриды, автотехнологии, сильные блогерские тесты, вирусное и важное водителю; без мелких ДТП, дилерской рекламы и слухов без надёжного источника" },
   shopping: { refresh: true, boost: 15, hint: "товарные находки Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; рекламные посты допустимы как источник товара; не нужны новости для селлеров, права потребителей и корпоративные новости ритейла" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
@@ -480,8 +481,8 @@ function channelExtraLane() {
   const ws = currentWorkspace();
   return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
 }
-function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : BLOGGER_SLOTS; }
-function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? Math.max(0, Number(lane.targetPerDay == null ? lane.slots.length : lane.targetPerDay)) : BLOGGER_DAILY_TARGET; }
+function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : []; }
+function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? Math.max(0, Number(lane.targetPerDay == null ? lane.slots.length : lane.targetPerDay)) : 0; }
 // The extra lane runs when the channel has blogger sources (or, for an anySource lane, any enabled source).
 function bloggerLaneActive() {
   const lane = channelExtraLane();
@@ -3366,7 +3367,7 @@ async function replenishSourcesInner(reason) {
 
 // One cheap call over all fresh headlines before media and editorial work:
 // drops ads, listings, old press releases and off-topic links.
-const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "маркетплейсы и покупатели: правила Ozon, Wildberries и Яндекс Маркета, доставка, возвраты, новые товары и тренды; без рекламных подборок, промокодов и скидок", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "товарные находки Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; рекламный исходный пост допустим как сырьё, если из него можно сделать самостоятельный пост о товаре", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
 async function prefilterCandidates(candidates, summary) {
   if (!candidates.length) return candidates;
   const now = new Date();
