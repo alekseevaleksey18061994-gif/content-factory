@@ -2737,7 +2737,10 @@ function storySimilarity(a, b) {
   if (!a || !b) return 0;
   const aSource = String(a.sourceId || a.sourceName || "");
   const bSource = String(b.sourceId || b.sourceName || "");
-  if (aSource && bSource && aSource === bSource && !(a.storySources && a.storySources.length > 1)) return 0;
+  // News from one feed is usually sequential and should not be clustered just because the publisher is the same.
+  // Shopping is different: the same product is often advertised by the same source several times, so allow the
+  // normal similarity check to catch that repeat as well.
+  if (editorialChannelId() !== "shopping" && aSource && bSource && aSource === bSource && !(a.storySources && a.storySources.length > 1)) return 0;
 
   const titleScore = tokenJaccard(a.title || "", b.title || "");
   const bodyScore = tokenJaccard(
@@ -12205,7 +12208,8 @@ const STORY_CLASSIFIER_CANDIDATES = 3;
 async function classifyPublishedStoryRelationship(item, options) {
   const queueItems = options && Array.isArray(options.queueItems) ? options.queueItems : (state.queue || []);
   if (!item) return { relation: "new_story", candidate: null, reason: "" };
-  const cutoff = Date.now() - STORY_UPDATE_WINDOW_HOURS * 60 * 60 * 1000;
+  const relationshipWindowHours = editorialChannelId() === "shopping" ? 14 * 24 : STORY_UPDATE_WINDOW_HOURS;
+  const cutoff = Date.now() - relationshipWindowHours * 60 * 60 * 1000;
 
   const ownIds = new Set([item && item.id, item && item.queueId, item && item.newsId].filter(Boolean).map(String));
   // The new item may carry its own source text (original language); candidates are compared both ways, so a foreign
