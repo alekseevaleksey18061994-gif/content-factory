@@ -12,20 +12,20 @@ const cases = {};
 function test(name, fn) { cases[name] = fn; }
 const src = (id, url, extra) => Object.assign({ id, name: id, url, enabled: true, group: "media", type: "web", priority: 2 }, extra || {});
 
-test("L1 stars: extra lane 12:30/18:30/21:30 from ANY source, 3 a day; tachki keeps its blogger slots", async () => {
+test("L1 stars: extra lane 12:30/18:30/21:30 from ANY source, 3 a day; tachki uses regular rubric slots, not the old :30 lane", async () => {
   const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", state: { chtotamstars: { sources: [src("s1", "https://stars.ru/news/")] } } });
   assert.deepEqual(inWs(t, "chtotamstars", () => t.bloggerSlotsFor()), ["12:30", "18:30", "21:30"]);
   assert.equal(inWs(t, "chtotamstars", () => t.bloggerTargetFor()), 3);
   assert.equal(inWs(t, "chtotamstars", () => t.bloggerLaneActive()), true, "no blogger sources needed");
-  assert.deepEqual(inWs(t, "chtotamtachki", () => t.bloggerSlotsFor()), ["10:30", "12:30", "15:30", "18:30", "21:30"]);
-  // a regular queue item is a candidate for the extra lane
+  assert.deepEqual(inWs(t, "chtotamtachki", () => t.bloggerSlotsFor()), []);
+  // a regular queue item is a candidate for the stars extra lane
   const item = mkQueueItem({ id: "q1", newsId: "n1", sourceId: "s1" });
   t.ws("chtotamstars").state.queue = [item];
   const best = inWs(t, "chtotamstars", () => t.dynamicBestQueueItemRaw("blogger", false));
   assert.equal(best && best.id, "q1");
-  // ...but not for a channel without such a lane
-  t.ws("chtotamdengi").state.queue = [mkQueueItem({ id: "q2", newsId: "n2" })];
-  assert.equal(inWs(t, "chtotamdengi", () => t.dynamicBestQueueItemRaw("blogger", false)), null);
+  // ...but not for a channel without any extra lane
+  t.ws("chtotamtech").state.queue = [mkQueueItem({ id: "q2", newsId: "n2" })];
+  assert.equal(inWs(t, "chtotamtech", () => t.dynamicBestQueueItemRaw("blogger", false)), null);
 });
 
 test("L3 stars at 12:15 MSK: the scheduler prepares the extra slot (no blogger sources needed); 10:15 does nothing extra", async () => {
