@@ -14787,6 +14787,7 @@ setTimeout(function runShoppingFindsV0530() {
         ws.updatedAt = new Date().toISOString();
         persistWorkspaceStore();
         state.migrations.push(migration);
+        if (!state.migrations.includes("v0.51.2-seed-shopping")) state.migrations.push("v0.51.2-seed-shopping");
         saveState();
         console.log("SHOPPING_FINDS_V0530 " + JSON.stringify({
           workspace: ws.id,
