@@ -100,4 +100,22 @@ await test("AS6 shopping: old broad-channel buckets cannot leak into a product s
   t.restoreConsole();
 });
 
+
+await test("AS7 shopping migration pauses legacy sources without deleting them and tags approved sources", async()=>{
+  const t=await loadServer({fixedNow:msk(12)});
+  const ws=t.ws(S);
+  ws.state.sources=[
+    {id:"legacy",name:"Old marketplace news",url:"https://old.example/news",enabled:true,group:"media"},
+    {id:"ozon",name:"Ozon",url:"https://t.me/s/ozonru",enabled:true,group:"official"}
+  ];
+  const result=inWs(t,S,()=>t.normalizeApprovedRubricSourcesV0529(ws,SHOPPING_RUBRIC_SOURCES_V0529,{quarantineUnknown:true}));
+  assert.equal(ws.state.sources.length,2);
+  assert.equal(ws.state.sources.find(x=>x.id==="legacy").enabled,false);
+  assert.equal(ws.state.sources.find(x=>x.id==="ozon").enabled,true);
+  assert.deepEqual(ws.state.sources.find(x=>x.id==="ozon").rubrics,["ozon"]);
+  assert.equal(inWs(t,S,()=>t.rubricMinFor("viral_products")),7);
+  assert.ok(result.paused.includes("Old marketplace news"));
+  t.restoreConsole();
+});
+
 console.log("auto-shopping-rubrics-test: "+passed+" passed");
