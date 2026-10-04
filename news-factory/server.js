@@ -665,6 +665,9 @@ function ensureScheduleShape(targetState) {
     for (const time of ownerLane.slots || []) {
       if (!existing.has(time)) schedule.slots.push({ time: time, kind: "blogger", label: ownerLane.label || "Доп. пост" });
     }
+    if (ownerWs && resolveChannelId(ownerWs) === "money" && !existing.has("22:30")) {
+      schedule.slots.push({ time: "22:30", kind: "money-emergency", label: "Экстренно 95+" });
+    }
     schedule.slots.sort(function(a,b){ return String(a.time || "").localeCompare(String(b.time || "")); });
     if (ownHours) {
       const total = ownHours.length + Math.max(0, Number(ownerLane.targetPerDay == null ? ownerLane.slots.length : ownerLane.targetPerDay));
@@ -6888,7 +6891,7 @@ function dynamicScheduledHistorySlot(item) {
 
   const explicitOrigin = String(item.publicationOrigin || "").trim();
   const explicitSlot = String(item.scheduledSlot || "").trim();
-  if ((explicitOrigin === "schedule" || explicitOrigin === "blogger-schedule" || explicitOrigin === "russian-ai-schedule") && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(explicitSlot)) {
+  if ((explicitOrigin === "schedule" || explicitOrigin === "blogger-schedule" || explicitOrigin === "russian-ai-schedule" || explicitOrigin === "money-emergency-schedule") && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(explicitSlot)) {
     return explicitSlot; // the lane counters filter by origin themselves
   }
 
@@ -6912,7 +6915,8 @@ function dynamicDailyPublishedCount(dayKey) {
     const slot = dynamicScheduledHistorySlot(item);
     return slot && slot.startsWith(dayKey + " ") &&
       item.publicationOrigin !== "blogger-schedule" &&
-      item.publicationOrigin !== "russian-ai-schedule";
+      item.publicationOrigin !== "russian-ai-schedule" &&
+      item.publicationOrigin !== "money-emergency-schedule";
   }).length;
 }
 function bloggerDailyPublishedCount(dayKey) {
@@ -6926,6 +6930,15 @@ function russianAiDailyPublishedCount(dayKey) {
     const slot = dynamicScheduledHistorySlot(item);
     return slot && slot.startsWith(dayKey + " ") && item.publicationOrigin === "russian-ai-schedule";
   }).length;
+}
+function moneyEmergencyDailyPublishedCount(dayKey) {
+  return (state.history || []).filter(function(item) {
+    const slot = dynamicScheduledHistorySlot(item);
+    return slot && slot.startsWith(dayKey + " ") && item.publicationOrigin === "money-emergency-schedule";
+  }).length;
+}
+function moneyNormalPublishedCount(dayKey) {
+  return dynamicDailyPublishedCount(dayKey) + bloggerDailyPublishedCount(dayKey);
 }
 
 function dynamicItemTimestamp(item) {
@@ -7178,6 +7191,22 @@ async function prepareBloggerSlot(time) {
   return { ok: true, slot: slotTime, collector: collector, prepared: item ? item.id : null, title: item ? item.title : "" };
 }
 
+async function prepareMoneyEmergencySlot() {
+  const now = new Date();
+  const day = moscowDateKey(now);
+  if (editorialChannelId() !== "money") return { ok: true, skipped: "not_money" };
+  if (moneyNormalPublishedCount(day) < 8) return { ok: true, skipped: "normal_day_not_full" };
+  if (moneyEmergencyDailyPublishedCount(day) >= 1) return { ok: true, skipped: "emergency_already_used" };
+  const time = "22:30";
+  const schedule = ensureScheduleShape(state);
+  if (schedule.suppressed[day] && schedule.suppressed[day][time]) return { ok: true, skipped: "suppressed" };
+  const item = dynamicAssignBest(day, time, "money-emergency");
+  state.moneyEmergencyScheduler = state.moneyEmergencyScheduler || {};
+  state.moneyEmergencyScheduler.lastPreparedAt = new Date().toISOString();
+  saveState();
+  return { ok: true, slot: time, prepared: item ? item.id : null, title: item ? item.title : "" };
+}
+
 async function prepareRussianAiSlot(time) {
   const now = new Date();
   const day = moscowDateKey(now);
@@ -7290,7 +7319,7 @@ async function publishDynamicSlot(kind) {
 }
 
 async function publishDynamicSlotOnce(kind, opts) {
-  const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
+  const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
   const hour = Math.floor(nowMinutes / 60);
@@ -7299,17 +7328,19 @@ async function publishDynamicSlotOnce(kind, opts) {
   }
 
   const day = moscowDateKey(now);
-  const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai") ? ":30" : ":00");
+  const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00");
   if (publishKind === "blogger" && !bloggerSlotsFor().includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
+  if (publishKind === "money-emergency" && (editorialChannelId() !== "money" || time !== "22:30")) return { ok: true, skipped: "not_money_emergency_slot" };
   if (publishKind === "regular" && !isChannelSlotHour(hour)) return { ok: true, skipped: "not_channel_slot" };
   const slotKey = day + " " + time;
   state.dynamicScheduler = state.dynamicScheduler || {};
   state.bloggerScheduler = state.bloggerScheduler || {};
   state.russianAiScheduler = state.russianAiScheduler || {};
+  state.moneyEmergencyScheduler = state.moneyEmergencyScheduler || {};
   const schedulerState = publishKind === "blogger"
     ? state.bloggerScheduler
-    : (publishKind === "russian-ai" ? state.russianAiScheduler : state.dynamicScheduler);
+    : (publishKind === "russian-ai" ? state.russianAiScheduler : (publishKind === "money-emergency" ? state.moneyEmergencyScheduler : state.dynamicScheduler));
 
   if (schedulerState.lastPublishedSlot === slotKey) {
     if (slotHasSuccessfulPublication(slotKey)) return { ok: true, skipped: "already_done" };
@@ -7322,6 +7353,9 @@ async function publishDynamicSlotOnce(kind, opts) {
     if (bloggerDailyPublishedCount(day) >= bloggerTargetFor()) return { ok: true, skipped: "blogger_daily_target" };
   } else if (publishKind === "russian-ai") {
     if (russianAiDailyPublishedCount(day) >= RUSSIAN_AI_DAILY_TARGET) return { ok: true, skipped: "russian_ai_daily_target" };
+  } else if (publishKind === "money-emergency") {
+    if (moneyNormalPublishedCount(day) < 8) return { ok: true, skipped: "normal_day_not_full" };
+    if (moneyEmergencyDailyPublishedCount(day) >= 1) return { ok: true, skipped: "emergency_already_used" };
   } else if (dynamicDailyPublishedCount(day) >= channelDailyMax()) {
     return { ok: true, skipped: "daily_max" };
   }
@@ -7330,7 +7364,7 @@ async function publishDynamicSlotOnce(kind, opts) {
   let queueId = schedule.assignments[day] && schedule.assignments[day][time];
 
   if (!queueId) {
-    const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : undefined);
+    const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : (publishKind === "money-emergency" ? "money-emergency" : undefined));
     let lastChanceItem = dynamicAssignBest(day, time, laneKind);
 
     if (!lastChanceItem && !(opts && opts.noRescue) && emptySlotCollectorAllowed(schedulerState, slotKey)) {
@@ -7357,7 +7391,7 @@ async function publishDynamicSlotOnce(kind, opts) {
       if (!lastChanceItem && !isCollectorRunning()) {
         const lastChanceTrigger = publishKind === "blogger"
           ? "blogger-slot-last-chance"
-          : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : "slot-last-chance");
+          : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : (publishKind === "money-emergency" ? "money-emergency-last-chance" : "slot-last-chance"));
         const collectorResult = await collectOnce(lastChanceTrigger);
         lastChanceItem = dynamicAssignBest(day, time, laneKind);
         console.log("SLOT_FULL_RESCUE " + JSON.stringify({
@@ -7561,7 +7595,7 @@ async function publishDynamicSlotOnce(kind, opts) {
       editorialV2: item.editorialV2 || null,
       publicationOrigin: publishKind === "blogger"
         ? "blogger-schedule"
-        : (publishKind === "russian-ai" ? "russian-ai-schedule" : "schedule"),
+        : (publishKind === "russian-ai" ? "russian-ai-schedule" : (publishKind === "money-emergency" ? "money-emergency-schedule" : "schedule")),
       scheduledSlot: slotKey
     };
     state.history.unshift(historyItem);
@@ -7587,7 +7621,7 @@ async function publishDynamicSlotOnce(kind, opts) {
     historyItem.decisionExplanation = buildDecisionExplanation(item);
     historyItem.publicationOrigin = publishKind === "blogger"
       ? "blogger-schedule"
-      : (publishKind === "russian-ai" ? "russian-ai-schedule" : "schedule");
+      : (publishKind === "russian-ai" ? "russian-ai-schedule" : (publishKind === "money-emergency" ? "money-emergency-schedule" : "schedule"));
     historyItem.scheduledSlot = slotKey;
   }
 
@@ -7676,7 +7710,9 @@ async function dynamicSchedulerTick() {
     windowStart = 15;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
-    if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
+    if (editorialChannelId() === "money" && bloggerTime === "22:30") {
+      action = "money_emergency_prepare";
+    } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
       action = "blogger_prepare";
     } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
       action = "russian_ai_prepare";
@@ -7686,7 +7722,9 @@ async function dynamicSchedulerTick() {
     windowStart = 30;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
-    if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
+    if (editorialChannelId() === "money" && bloggerTime === "22:30") {
+      action = "money_emergency_publish";
+    } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
       action = "blogger_publish";
     } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
       action = "russian_ai_publish";
@@ -7708,6 +7746,7 @@ async function dynamicSchedulerTick() {
   }
   if (action.startsWith("blogger_") && !bloggerLaneActive()) return;
   if (action.startsWith("russian_ai_") && !(state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) return;
+  if (action.startsWith("money_emergency_") && editorialChannelId() !== "money") return;
 
   state.dynamicScheduler = state.dynamicScheduler || {};
   const key = day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action;
@@ -7729,7 +7768,11 @@ async function dynamicSchedulerTick() {
             ? publishDynamicSlot("blogger")
             : action === "russian_ai_prepare"
               ? prepareRussianAiSlot(russianAiTime)
-              : publishDynamicSlot("russian-ai");
+              : action === "russian_ai_publish"
+                ? publishDynamicSlot("russian-ai")
+                : action === "money_emergency_prepare"
+                  ? prepareMoneyEmergencySlot()
+                  : publishDynamicSlot("money-emergency");
     // A preparation step that never settles must not hold this channel's scheduler lock forever (and with it every
     // later slot). Publishing is not cut off: a cut-off publish could still go out later and double the post.
     const result = !/prepare$/.test(action) ? await work : await withDeadline(work, SCHEDULER_PREPARE_TIMEOUT_MS, "scheduler " + action).catch(function(error) {
