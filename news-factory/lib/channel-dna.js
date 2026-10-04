@@ -543,6 +543,15 @@ export const AUTO_RUBRIC_SOURCES_V0529 = {
   ],
   assign: {
     "https://www.autonews.ru/": ["russia_market","driver_important"],
+    "https://global.toyota/en/newsroom/": ["premieres","auto_tech"],
+    "https://www.volkswagen-newsroom.com/en/press-releases": ["premieres","auto_tech"],
+    "https://www.press.bmwgroup.com/global/": ["premieres","auto_tech"],
+    "https://media.mercedes-benz.com/": ["premieres","auto_tech"],
+    "https://www.reuters.com/business/autos-transportation/": ["premieres","russia_market","auto_tech"],
+    "https://www.topgear.com/car-news": ["premieres","viral_unusual"],
+    "https://www.caranddriver.com/news/": ["premieres","auto_tech"],
+    "https://www.jalopnik.com/": ["viral_unusual"],
+    "https://www.autoevolution.com/news/": ["premieres","viral_unusual"],
     "https://motor.ru/": ["premieres","russia_market","viral_unusual"],
     "https://news.drom.ru/": ["russia_market","china","driver_important"],
     "https://quto.ru/news/": ["russia_market","premieres"],
@@ -572,7 +581,11 @@ export const AUTO_RUBRIC_SOURCES_V0529 = {
     "https://t.me/s/academeg_true_original": ["bloggers_owners","viral_unusual"],
     "https://t.me/s/miheevpavlov_pro": ["bloggers_owners"],
     "https://t.me/s/klubniy_servis": ["bloggers_owners"],
-    "https://t.me/s/bulkin_live": ["bloggers_owners","viral_unusual"]
+    "https://t.me/s/bulkin_live": ["bloggers_owners","viral_unusual"],
+    "https://t.me/s/Garage54official": ["bloggers_owners","viral_unusual"],
+    "https://t.me/s/sashatyman": ["bloggers_owners","viral_unusual"],
+    "https://t.me/s/ivanzenkevich0": ["bloggers_owners"],
+    "https://t.me/s/denismehanik": ["bloggers_owners","auto_tech"]
   },
   disable: []
 };
