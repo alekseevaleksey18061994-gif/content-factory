@@ -7209,12 +7209,16 @@ async function prepareBloggerSlot(time) {
   const schedule = ensureScheduleShape(state);
   if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
 
-  // A lane fed from all sources (stars) picks from the queue the :45 preparation already filled; collecting every
-  // source again could run past the :30 window and lose the slot.
   const lane = channelExtraLane();
-  const collector = lane && lane.anySource ? { ok: true, skipped: "any_source_lane_uses_queue" } : await collectOnce("blogger-slot-prep");
-  await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-  const item = dynamicAssignBest(day, slotTime, "blogger");
+  let collector = { ok: true, skipped: "queue_ready" };
+  let item = dynamicAssignBest(day, slotTime, "blogger");
+  if (!item) {
+    collector = lane && lane.anySource && editorialChannelId() !== "shopping"
+      ? { ok: true, skipped: "any_source_lane_uses_queue" }
+      : await collectOnce("blogger-slot-prep");
+    await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
+    item = dynamicAssignBest(day, slotTime, "blogger");
+  }
   state.bloggerScheduler = state.bloggerScheduler || {};
   state.bloggerScheduler.lastPreparedAt = new Date().toISOString();
   saveState();
