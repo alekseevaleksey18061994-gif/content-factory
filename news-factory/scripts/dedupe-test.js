@@ -220,7 +220,7 @@ test("E2 persistent writer error ends as rewrite_error after the retry budget", 
 
 // F. freshness
 test("F1 72-hour channels accept 30h-old articles, 24-hour channels do not", {}, async () => {
-  const t = await loadServer({ fixedNow: "2026-10-02T12:00:00Z", state: { chtotamworld: { sources: [src("w", "https://world.example/")] }, chtotamtech: { sources: [src("a", "https://a.example/")] } } });
+  const t = await loadServer({ fixedNow: "2026-10-02T12:00:00Z", env: { TEXT_CARD_POSTS_ALLOWED: "true" }, state: { chtotamworld: { sources: [src("w", "https://world.example/")] }, chtotamtech: { sources: [src("a", "https://a.example/")] } } });
   const T1 = "Учёные нашли древний город под песками пустыни Гоби";
   net.pages.set("https://world.example/", listHtml([{ href: "https://world.example/news/old", text: T1 }]));
   net.pages.set("https://world.example/news/old", articleHtml({ title: T1, date: iso(30), body: T1 + ". " + LONG }));
