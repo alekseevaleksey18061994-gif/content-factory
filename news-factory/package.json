@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.52.5",
+  "version": "0.53.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -37,7 +37,8 @@
     "test:staggered-collection": "node scripts/staggered-collection-test.js",
     "test:no-text-card": "node scripts/no-text-card-test.js",
     "test:home-rubrics": "node scripts/home-rubrics-test.js",
-    "test:no-evening-digest": "node scripts/no-evening-digest-test.js"
+    "test:no-evening-digest": "node scripts/no-evening-digest-test.js",
+    "test:money-rubrics": "node scripts/money-rubrics-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
