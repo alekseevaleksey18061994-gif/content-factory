@@ -12,7 +12,7 @@ import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-securi
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
-import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513 } from "./lib/channel-dna.js";
+import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
@@ -376,7 +376,9 @@ const BLOGGER_DAILY_TARGET = 5;
 // sources; kino: three posts a day from Telegram channels with film memes (group "blogger", found by discovery).
 const CHANNEL_EXTRA_LANES = {
   stars: { slots: ["12:30", "18:30", "21:30"], anySource: true, label: "Доп. посты" },
-  kino: { slots: ["12:30", "16:30", "20:30"], anySource: false, label: "Кино-мемы" }
+  kino: { slots: ["12:30", "16:30", "20:30"], anySource: false, label: "Кино-мемы" },
+  // Approved money cadence: six :00 slots + these two flexible :30 slots = max 8 normal posts/day.
+  money: { slots: ["14:30", "21:30"], targetPerDay: 2, anySource: true, label: "Личные финансы" }
 };
 // Editor's notes per channel (2026-10-03): what discovery should look for, which channels get their sources
 // refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
@@ -403,13 +405,21 @@ function itemRubric(item, ids) {
   const bucket = String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || "");
   if (set.has(bucket)) return bucket;
   const source = findSourceForItem(item);
-  return source && set.has(String(source.rubric || "")) ? String(source.rubric) : "";
+  if (!source) return "";
+  const primary = String(source.rubric || "");
+  if (set.has(primary)) return primary;
+  const many = Array.isArray(source.rubrics) ? source.rubrics.map(String) : [];
+  return many.find(function(id){ return set.has(id); }) || "";
 }
 function rubricSourceCounts(ws) {
   const counts = {};
   for (const r of channelRubrics(ws)) counts[r.id] = 0;
   const st = ws && ws.state ? ws.state : state;
-  for (const src of (st.sources || [])) if (src && src.enabled && Object.prototype.hasOwnProperty.call(counts, String(src.rubric || ""))) counts[src.rubric] += 1;
+  for (const src of (st.sources || [])) {
+    if (!src || !src.enabled) continue;
+    const ids = new Set([String(src.rubric || "")].concat(Array.isArray(src.rubrics) ? src.rubrics.map(String) : []));
+    for (const id of ids) if (Object.prototype.hasOwnProperty.call(counts, id)) counts[id] += 1;
+  }
   return counts;
 }
 // Per-theme source limits: the editor can raise or lower the minimum of each theme group (state.rubricLimits[id].min).
@@ -472,7 +482,7 @@ function channelExtraLane() {
   return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
 }
 function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : BLOGGER_SLOTS; }
-function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? lane.slots.length : BLOGGER_DAILY_TARGET; }
+function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? Math.max(0, Number(lane.targetPerDay == null ? lane.slots.length : lane.targetPerDay)) : BLOGGER_DAILY_TARGET; }
 // The extra lane runs when the channel has blogger sources (or, for an anySource lane, any enabled source).
 function bloggerLaneActive() {
   const lane = channelExtraLane();
@@ -589,7 +599,12 @@ function dynamicSlotMaxAgeMs(ws) { return DYNAMIC_SLOT_MAX_AGE_HOURS * 3600000 *
 function queueMaxAgeHoursFor(ws) { return Math.min(96, QUEUE_MAX_AGE_HOURS * channelFreshnessFactor(ws)); }
 // A queue item whose article carried no date lives shorter: its age is only known from the fetch time.
 function dynamicItemMaxAgeMs(item) {
-  const base = dynamicSlotMaxAgeMs();
+  let base = dynamicSlotMaxAgeMs();
+  if (editorialChannelId() === "money") {
+    const rubric = itemRubric(item);
+    const durable = rubric === "taxes" || rubric === "income_benefits" || rubric === "money_howto";
+    base = (durable ? 72 : 48) * 3600000;
+  }
   const undated = item && item.newsId && !item.articlePublishedAt;
   return undated ? Math.min(base, UNDATED_ARTICLE_MAX_AGE_HOURS * 3600000) : base;
 }
@@ -638,11 +653,24 @@ function ensureScheduleShape(targetState) {
   const ownHours = ownerWs ? channelSlotHours(ownerWs) : null;
   if (ownHours && Array.isArray(schedule.slots)) {
     schedule.slots = schedule.slots.filter(function(slot){
-      if (!slot || slot.kind === "blogger" || slot.kind === "russian-ai" || !/^\d{2}:00$/.test(String(slot.time || ""))) return true;
+      if (!slot || slot.kind === "blogger" || slot.kind === "russian-ai" || slot.kind === "money-emergency" || !/^\d{2}:00$/.test(String(slot.time || ""))) return true;
       return ownHours.includes(Number(String(slot.time).slice(0, 2)));
     });
     schedule.maxPerDay = Math.min(Number(schedule.maxPerDay || ownHours.length), ownHours.length);
     schedule.targetPerDay = Math.min(Number(schedule.targetPerDay || ownHours.length), ownHours.length);
+  }
+  const ownerLane = ownerWs ? CHANNEL_EXTRA_LANES[resolveChannelId(ownerWs)] : null;
+  if (ownerLane && Array.isArray(schedule.slots)) {
+    const existing = new Set(schedule.slots.map(function(slot){ return String(slot && slot.time || ""); }));
+    for (const time of ownerLane.slots || []) {
+      if (!existing.has(time)) schedule.slots.push({ time: time, kind: "blogger", label: ownerLane.label || "Доп. пост" });
+    }
+    schedule.slots.sort(function(a,b){ return String(a.time || "").localeCompare(String(b.time || "")); });
+    if (ownHours) {
+      const total = ownHours.length + Math.max(0, Number(ownerLane.targetPerDay == null ? ownerLane.slots.length : ownerLane.targetPerDay));
+      schedule.maxPerDay = total;
+      schedule.targetPerDay = total;
+    }
   }
   return schedule;
 }
@@ -2874,25 +2902,41 @@ function editorialLearningBonus(item) {
 }
 
 function queueItemRating(item) {
-  return postRating(queueItemRatingInput(item)).total;
+  return postRating(queueItemRatingInput(item, editorialChannelId())).total;
+}
+function channelRatingMinAuto() { return editorialChannelId() === "money" ? 80 : POST_RATING_MIN_AUTO; }
+function channelRatingDropBelow() { return editorialChannelId() === "money" ? 70 : POST_RATING_DROP_BELOW; }
+
+function moneyFactConfirmationOk(item) {
+  if (editorialChannelId() !== "money") return true;
+  const rubric = itemRubric(item);
+  if (!["cards_banks","deposits","credits_mortgage","taxes","ruble_inflation_cb","income_benefits"].includes(rubric)) return true;
+  const text = [item && item.title, item && item.text, item && item.sourceOriginalTitle, item && item.sourceOriginalText].filter(Boolean).join(" ");
+  const critical = /ставк|курс|инфляц|налог|ндфл|вычет|пособ|пенси|выплат|мрот|ипотек|кредит|вклад|комисси|лимит|блокиров|нов.*правил|измен.*услов/iu.test(text);
+  if (!critical) return true;
+  const role = String(item && item.sourceRole || "");
+  const count = Number((item && item.storySources && item.storySources.length) || (item && item.storyCluster && item.storyCluster.sourceCount) || 0);
+  return role === "official_primary" || count > 1;
 }
 
-// Posts below the rating threshold are not published automatically: they wait
-// for the editor (the queue card says why).
+// Posts below the channel threshold are reserve candidates; money uses 80 normal / 70 reserve.
 function ratingBelowAutoThreshold(item) {
-  return POST_RATING_MIN_AUTO > 0 && queueItemRating(item) < POST_RATING_MIN_AUTO;
+  const min = channelRatingMinAuto();
+  return min > 0 && queueItemRating(item) < min;
 }
 
 function autoQualityEligible(item) {
   const score = Number(item && item.qualityScore);
-  return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold" && queueItemRating(item) >= POST_RATING_DROP_BELOW;
+  return Number.isFinite(score) && score >= AUTO_QUALITY_MIN && item.qcStatus !== "hold" &&
+    queueItemRating(item) >= channelRatingDropBelow() && moneyFactConfirmationOk(item);
 }
 
 // Why a queue item can never be published automatically (removed by autoResolveQueue).
 function autoRejectReason(item) {
   if (!item || !item.newsId) return "";
   const rating = queueItemRating(item);
-  if (POST_RATING_DROP_BELOW > 0 && rating < POST_RATING_DROP_BELOW) return "рейтинг " + rating + " из 100 ниже " + POST_RATING_DROP_BELOW;
+  const dropBelow = channelRatingDropBelow();
+  if (dropBelow > 0 && rating < dropBelow) return "рейтинг " + rating + " из 100 ниже " + dropBelow;
   const verdict = item.editorialV2 && item.editorialV2.verdict;
   if (item.qcStatus === "hold" && verdict === "reject") return "проверка GPT/Claude нашла ошибки и отклонила пост";
   if (item.qcStatus === "hold" && verdict === "fix_exhausted") return "ошибки не исправлены за отведённые раунды";
@@ -6982,6 +7026,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
   const used = dynamicUsedQueueIds();
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
+  const wantsMoneyEmergency = kind === "money-emergency";
+  const channelId = editorialChannelId();
   const anySourceLane = wantsBlogger && Boolean(channelExtraLane() && channelExtraLane().anySource);
   // The same article already published by another channel (e.g. a copy queued before the cross-channel check existed).
   const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
@@ -7005,6 +7051,19 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (!autoQualityEligible(item)) return false;
       if (textCardBlocked(item)) return false;
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
+      const itemTheme = itemRubric(item, themes);
+      if (channelId === "money") {
+        if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
+        if (!wantsMoneyEmergency && themesToday.has(itemTheme)) return false; // exactly one normal post per rubric/day
+        if (!onlyAboveThreshold) {
+          const utility = Number(item.channelSignals && item.channelSignals.utility != null ? item.channelSignals.utility : item.editorialV2 && item.editorialV2.channelSignals && item.editorialV2.channelSignals.utility);
+          if (!Number.isFinite(utility) || utility < 7) return false; // 70–79 only when genuinely useful
+        }
+      }
+      if (wantsMoneyEmergency) {
+        const importance = Number(item.editorialV2 && item.editorialV2.importance);
+        return channelId === "money" && queueItemRating(item) >= 95 && Number.isFinite(importance) && importance >= 9 && !isRussianAISource(item);
+      }
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
@@ -7045,7 +7104,7 @@ function dynamicAssignBest(day, time, kind) {
   schedule.assignments[day][time] = item.id;
   delete schedule.suppressed[day][time];
   item.preparedFor = day + " " + time;
-  item.preparedKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : "regular");
+  item.preparedKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
   item.preparedAt = new Date().toISOString();
   if (!item.sourceSelectedAt) {
     noteSourceEvent(item, "selected");
