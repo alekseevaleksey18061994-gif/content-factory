@@ -7037,7 +7037,9 @@ function dynamicUsedQueueIds() {
       const slotMinutes = m ? Number(m[1]) * 60 + Number(m[2]) : null;
       // :30 lanes have no catch-up: their reservation ends with the publish window, so a missed extra slot does
       // not keep an ordinary post away from the hourly lane for 90 minutes.
-      const grace = m && m[2] === "30" ? SCHEDULER_SLOT_WINDOW_MINUTES : DYNAMIC_ASSIGNMENT_GRACE_MIN;
+      const extraTimes = new Set((channelExtraLane() && channelExtraLane().slots || []).map(String));
+      const grace = (extraTimes.has(String(entry[0] || "")) || (m && m[2] === "30"))
+        ? SCHEDULER_SLOT_WINDOW_MINUTES : DYNAMIC_ASSIGNMENT_GRACE_MIN;
       const expired = day < today || (day === today && slotMinutes != null && slotMinutes + grace < nowMinutes);
       if (!expired) used.add(id);
     });
