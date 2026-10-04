@@ -685,7 +685,8 @@ await test("Claude retries with a bigger budget when the JSON is cut off", async
   const a = await c.callAnthropic("SYS", "{}", {});
   assert.equal(a.parsed.verdict, "pass");
   assert.equal(bodies.length, 2);
-  assert.ok(bodies[1].max_tokens >= 8000);
+  assert.ok(bodies[1].max_tokens > bodies[0].max_tokens, "retry should get a larger budget");
+  assert.equal(bodies[1].max_tokens, 6000, "retry budget is capped to prevent runaway Anthropic spend");
   assert.equal(bodies[1].output_config.format.type, "json_schema");
 });
 
