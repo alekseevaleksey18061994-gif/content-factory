@@ -1336,6 +1336,14 @@ function ensureConfiguredWorkspaces() {
     cars.state.migrations.push(ruCarSourcesMigration);
     changed = true;
   }
+  const carRubricMigration = "v0.53.0-car-rubrics";
+  if (!cars.state.migrations.includes(carRubricMigration)) {
+    normalizeAutoRubricSources(cars.state, BLOGGER_SOURCES, BLOGGER_SLOTS, new Date().toISOString());
+    cars.state.migrations.push(carRubricMigration);
+    cars.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+
   const copyrightMigration = "v0.30.0-copyright-safe-v1";
   for (const ws of workspaceStore.workspaces) {
     if (!ws || !ws.state) continue;
