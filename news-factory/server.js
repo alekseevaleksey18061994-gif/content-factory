@@ -371,6 +371,7 @@ const CHANNEL_EXTRA_LANES = {
 // refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
+  shopping: { refresh: true, boost: 15, hint: "новости для покупателей, а не для продавцов: скидки и распродажи, цены в магазинах, новинки и вирусные товары, возвраты и доставка на Ozon, Wildberries, Яндекс Маркете и Авито, права потребителей, мошенники; Telegram-каналы и сайты для покупателей" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
   games: { hint: "игровые новостные Telegram-каналы: релизы, скидки и раздачи, утечки, трейлеры, игровое сообщество", telegramMin: 12 },
@@ -14167,6 +14168,8 @@ const SEED_LISTS_V0423 = new Set(["food", "business", "crypto"]);
 // sourceKey no longer collapses sibling rubrics). Re-seeded once under a new prefix: it adds the new entries and
 // drops only the retired seed sources (see retiredSeedSources); business only regains the sections the old key dropped.
 const SEED_LISTS_V0424 = new Set(["money", "kino", "stars", "travel", "shopping", "home", "food", "business", "crypto"]);
+// v0.51.2: money and shopping kept leaving slots empty (sources wrote for traders/sellers): consumer desks added.
+const SEED_LISTS_V0512 = new Set(["money", "shopping"]);
 let channelSetupRunning = false;
 function setupNewChannels() {
   if (channelSetupRunning) return;
@@ -14178,7 +14181,7 @@ function setupNewChannels() {
       if (!channelId || channelId === "ai" || ws.id === "ai-main" || ws.id === "chtotamtachki") continue;
       // kino/science/sport got hand-made lists in v0.41.3 (their first run relied
       // on AI discovery, which hit the OpenAI rate limit) — seed them again.
-      const migration = (SEED_LISTS_V0424.has(channelId) ? "v0.42.4-seed-" : SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
+      const migration = (SEED_LISTS_V0512.has(channelId) ? "v0.51.2-seed-" : SEED_LISTS_V0424.has(channelId) ? "v0.42.4-seed-" : SEED_LISTS_V0423.has(channelId) ? "v0.42.3-seed-" : SEED_LISTS_V0422.has(channelId) ? "v0.42.2-seed-" : SEED_LISTS_V0415.has(channelId) ? "v0.41.5-seed-" : SEED_LISTS_V0413.has(channelId) ? "v0.41.3-seed-" : "v0.40.1-seed-") + channelId;
       ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         if (!state.migrations.includes(migration)) {
@@ -14580,11 +14583,17 @@ setTimeout(function() {
 // added source gets a 24 h trial; ones that never brought a news item that passed are replaced) and a boost of
 // new sources found with the channel's hint.
 const CHANNEL_NOTES_MIGRATION = "v0.50.0-channel-notes";
+const CHANNEL_NOTES_MIGRATION_V0512 = "v0.51.2-channel-notes";
+const CHANNEL_NOTES_V0512 = new Set(["money", "shopping"]);
 function applyChannelNotes(ws) {
   const st = ws.state;
   st.migrations = Array.isArray(st.migrations) ? st.migrations : [];
-  if (st.migrations.includes(CHANNEL_NOTES_MIGRATION)) return null;
-  const plan = CHANNEL_SOURCE_PLANS[resolveChannelId(ws)] || null;
+  const channelId = resolveChannelId(ws);
+  // v0.51.2: money and shopping get their source refresh again (shopping had no plan in v0.50.0)
+  const migration = !st.migrations.includes(CHANNEL_NOTES_MIGRATION) ? CHANNEL_NOTES_MIGRATION
+    : (CHANNEL_NOTES_V0512.has(channelId) && !st.migrations.includes(CHANNEL_NOTES_MIGRATION_V0512) ? CHANNEL_NOTES_MIGRATION_V0512 : "");
+  if (!migration) return null;
+  const plan = CHANNEL_SOURCE_PLANS[channelId] || null;
   const result = { workspace: ws.id, trial: 0, boost: 0 };
   if (plan && plan.refresh) {
     // seed (starter) sources stay; the rest get a trial ending between 24 and 48 h from now, so they are not
@@ -14603,7 +14612,10 @@ function applyChannelNotes(ws) {
     st.sourceReplenish = Object.assign({}, st.sourceReplenish || {}, { lastAt: "" });
     result.boost = st.sourceBoostRemaining;
   }
-  st.migrations.push(CHANNEL_NOTES_MIGRATION);
+  st.migrations.push(migration);
+  // a fresh workspace takes both steps at once
+  if (migration === CHANNEL_NOTES_MIGRATION && CHANNEL_NOTES_V0512.has(channelId)) st.migrations.push(CHANNEL_NOTES_MIGRATION_V0512);
+  result.migration = migration;
   return result;
 }
 
