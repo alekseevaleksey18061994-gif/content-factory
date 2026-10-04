@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { CHANNEL_DNA, SOURCE_CLASSES, channelStrategy } from "../lib/channel-dna.js";
+import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "../lib/channel-curated-sources.js";
+import { normalizeShoppingFindSources, normalizeAutoRubricSources } from "../lib/channel-rubric-migrations.js";
 import {
   sourceClassFor,
   classifyContentBucket,
@@ -62,5 +64,44 @@ const gameCommunity = channelStrategyScore("games",
 assert.ok(gameCommunity.totalBonus > 0, "games community/video story should get channel bonus");
 assert.equal(gameCommunity.sourceClass,"CREATOR");
 assert.equal(sourceClassFor({group:"creator",name:"МЕМАЧ (Telegram)",url:"https://t.me/s/memachh"}),"COMMUNITY");
+
+
+// v0.53.0: approved car and shopping channel structures.
+const autoStrategy = channelStrategy("auto");
+assert.equal(autoStrategy.rubrics.length, 8);
+assert.deepEqual(autoStrategy.slotHours, [8,9,10,11,12,13,14,15,16,17,18,19,20,21,22]);
+assert.equal(Object.keys(autoStrategy.slotRubrics).length, 15);
+assert.equal(autoStrategy.slotRubrics["08:00"], "driver_important");
+assert.equal(autoStrategy.slotRubrics["12:00"], "bloggers_tests");
+assert.equal(autoStrategy.slotRubrics["22:00"], "viral_unusual");
+assert.equal(APPROVED_AUTO_BLOGGER_SOURCES.length, 10);
+assert.equal(APPROVED_AUTO_BLOGGER_SOURCES.some((x)=>/davyd|давыд/i.test(x.name+" "+x.url)), false);
+
+const shoppingStrategy = channelStrategy("shopping");
+assert.equal(shoppingStrategy.rubrics.length, 5);
+assert.deepEqual(shoppingStrategy.slotHours, [8,11,14,17,20]);
+assert.equal(Object.keys(shoppingStrategy.slotRubrics).length, 20);
+const shoppingSlotCounts = {};
+Object.values(shoppingStrategy.slotRubrics).forEach((id)=>{ shoppingSlotCounts[id]=(shoppingSlotCounts[id]||0)+1; });
+assert.deepEqual(shoppingSlotCounts, {viral_products:4,wildberries:5,ozon:5,yandex_market:3,aliexpress:3});
+assert.deepEqual(shoppingStrategy.rubrics.map((r)=>r.minSources), [5,5,5,5,7]);
+
+const shoppingSourceCounts = {};
+SHOPPING_FIND_SOURCES.forEach((s)=>{ shoppingSourceCounts[s.rubric]=(shoppingSourceCounts[s.rubric]||0)+1; });
+assert.equal(SHOPPING_FIND_SOURCES.length, 27);
+assert.deepEqual(shoppingSourceCounts, {wildberries:5,ozon:5,yandex_market:5,aliexpress:5,viral_products:7});
+
+const shoppingState = {sources:[{id:"old",name:"Retail news",url:"https://example.com/retail",group:"media",enabled:true}],sourceReplenish:{}};
+const shoppingMigration = normalizeShoppingFindSources(shoppingState, SHOPPING_FIND_SOURCES, new Set(shoppingStrategy.rubrics.map((r)=>r.id)), "2026-10-05T00:00:00.000Z");
+assert.equal(shoppingMigration.added.length, 27);
+assert.equal(shoppingState.sources.find((s)=>s.id==="old").enabled, false);
+assert.equal(shoppingState.sources.filter((s)=>s.enabled).length, 27);
+
+const autoState = {sources:[{id:"blogger-lisa-rulit",name:"Лиса Рулит",url:"https://t.me/s/lisacars",group:"blogger",enabled:true},{id:"cars-zr",name:"За рулём",url:"https://www.zr.ru/",group:"media",enabled:true}],publicationSchedule:{slots:[{time:"10:30",kind:"blogger"}]},sourceReplenish:{}};
+normalizeAutoRubricSources(autoState, APPROVED_AUTO_BLOGGER_SOURCES, ["10:30","12:30","15:30","18:30","21:30"], "2026-10-05T00:00:00.000Z");
+assert.equal(autoState.sources.find((s)=>s.id==="blogger-lisa-rulit").enabled, false);
+assert.equal(autoState.sources.find((s)=>s.id==="cars-zr").rubric, "russia_market");
+assert.equal(autoState.sources.filter((s)=>s.group==="blogger"&&s.enabled).length, 10);
+assert.equal(autoState.publicationSchedule.slots.length, 0);
 
 console.log("Channel DNA v2 smoke: OK");
