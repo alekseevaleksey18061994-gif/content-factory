@@ -35,6 +35,7 @@ import {
 import { matchRegistry as matchEditorialRegistry } from "./lib/editorial-registry.js";
 import { CAPTION_VISIBLE_LIMIT, TELEGRAM_CAPTION_HARD_LIMIT, visibleLength, trimPostPreservingTail, missingProtected } from "./lib/telegram-caption.js";
 import { cardSafeText, wrapCardLines } from "./lib/card-text.js";
+import { readJsonBody } from "./lib/http-body.js";
 import {
   COST_STATE_MIGRATION_ID,
   collectLegacyCostRows,
@@ -1141,15 +1142,6 @@ function persistWorkspaceStore() {
   }, wait);
   if (storeFlushTimer.unref) storeFlushTimer.unref();
 }
-// Railway stops the old container with SIGTERM on every deploy: write what is still pending first.
-for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.once(signal, function() {
-    try { if (storeFlushTimer || storeDirtySince) flushWorkspaceStoreNow(); console.log("STATE_FLUSHED_ON_" + signal); }
-    catch (error) { console.error("STATE_FLUSH_ON_EXIT_FAILED " + JSON.stringify({ error: String(error && error.message || error) })); }
-    process.exit(0);
-  });
-}
-
 function ensureConfiguredWorkspaces() {
   let changed = false;
 
@@ -7800,16 +7792,7 @@ function redirect(res, location) {
   res.end();
 }
 
-async function readJson(req, maxBytes) {
-  let body = "";
-  const limit = Math.max(1024, Number(maxBytes || 1024 * 1024));
-  for await (const chunk of req) {
-    body += chunk;
-    if (Buffer.byteLength(body, "utf8") > limit) throw new Error("request too large");
-  }
-  if (!body) return {};
-  return JSON.parse(body);
-}
+const readJson = readJsonBody;
 
 class BadRequestError extends Error {
   constructor(message) { super(message); this.name = "BadRequestError"; this.statusCode = 400; }
@@ -14235,18 +14218,23 @@ const server = http.createServer(async function(req, res) {
 
 await initDb();
 startPromotionSnapshotMonitor();
-for (const ws of workspaceStore.workspaces) {
-  await workspaceContext.run({ workspaceId: ws.id }, async function(){
-    const startupCleanup = pruneQueueItems(state);
-    if (startupCleanup.removed) saveState();
-    try {
-      const repaired = await repairBalancedQueueMedia();
-      if (repaired.repaired || repaired.failed) console.log("Balanced media repair " + ws.id + ":", JSON.stringify(repaired));
-    } catch (error) {
-      console.warn("Balanced media repair " + ws.id + " failed:", error.message);
-    }
-  });
+
+async function repairBalancedQueueMediaAllWorkspaces() {
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    await workspaceContext.run({ workspaceId: ws.id }, async function(){
+      const startupCleanup = pruneQueueItems(state);
+      if (startupCleanup.removed) saveState();
+      try {
+        const repaired = await repairBalancedQueueMedia();
+        if (repaired.repaired || repaired.failed) console.log("Balanced media repair " + ws.id + ":", JSON.stringify(repaired));
+      } catch (error) {
+        console.warn("Balanced media repair " + ws.id + " failed:", error.message);
+      }
+    });
+  }
 }
+
 setTimeout(function() {
   (async function(){
     for (const ws of workspaceStore.workspaces) {
@@ -15239,8 +15227,59 @@ setInterval(function() {
   autoResolveAllWorkspaces().catch(function(error){ console.warn("Queue auto resolve failed:", error.message); });
 }, 15 * 60 * 1000);
 
+let shutdownStarted = false;
+
+function criticalWorkInFlight() {
+  return collectorRunningWorkspaces.size + schedulerTickRunning.size + replenishRunning.size + digestRunning.size + publishLocks.size;
+}
+
+async function gracefulShutdown(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.log("GRACEFUL_SHUTDOWN_START " + signal);
+
+  if (collectorTimer) { clearInterval(collectorTimer); collectorTimer = null; }
+
+  await new Promise(function(resolve) {
+    let settled = false;
+    const done = function() { if (!settled) { settled = true; resolve(); } };
+    try { server.close(done); }
+    catch { done(); }
+    setTimeout(done, 15000);
+  });
+
+  const waitUntil = Date.now() + 15000;
+  while (criticalWorkInFlight() > 0 && Date.now() < waitUntil) {
+    await new Promise(function(resolve){ setTimeout(resolve, 100); });
+  }
+
+  try {
+    if (storeFlushTimer || storeDirtySince) flushWorkspaceStoreNow();
+    console.log("STATE_FLUSHED_ON_" + signal);
+  } catch (error) {
+    console.error("STATE_FLUSH_ON_EXIT_FAILED " + JSON.stringify({ error: String(error && error.message || error) }));
+  }
+
+  try { if (db) await db.end(); } catch (error) { console.warn("DB_CLOSE_FAILED:", error && error.message || error); }
+  console.log("GRACEFUL_SHUTDOWN_DONE " + signal + " active=" + criticalWorkInFlight());
+  process.exit(0);
+}
+
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, function(){ gracefulShutdown(signal).catch(function(error){
+    console.error("GRACEFUL_SHUTDOWN_FAILED " + signal + ":", error && error.message || error);
+    process.exit(1);
+  }); });
+}
+
 server.listen(PORT, "0.0.0.0", function() {
   console.log("News Factory listening on :" + PORT);
+  // Broken/expired source images must never delay Railway health readiness.
+  setTimeout(function() {
+    repairBalancedQueueMediaAllWorkspaces().catch(function(error){
+      console.warn("Balanced media repair background failed:", error.message);
+    });
+  }, 1000);
 
   if (EDITORIAL_V2_ENABLED && ANTHROPIC_API_KEY) {
     setTimeout(async function() {
