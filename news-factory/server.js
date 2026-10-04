@@ -2991,9 +2991,9 @@ function ratingBelowAutoThreshold(item) {
 function shoppingPublicViolation(item) {
   if (editorialChannelId() !== "shopping" || !item) return "";
   const text = [item.title, item.text].filter(Boolean).join(" ");
-  if (/https?:\/\/\S+/iu.test(text)) return "в публичном тексте осталась ссылка";
-  if (/(?:₽|\bруб(?:\.|ля|лей)?\b)/iu.test(text)) return "в публичном тексте осталась цена";
-  if (/\bрейтинг\b/iu.test(text)) return "в публичном тексте остался рейтинг товара";
+  if (/(?:https?:\/\/|www\.|t\.me\/)\S+/iu.test(text)) return "в публичном тексте осталась ссылка";
+  if (/(?:₽|[$€¥]|\bруб(?:\.|ля|лей)?\b|\bдоллар(?:а|ов)?\b|\bюан(?:ь|я|ей)?\b|\bевро\b|\b\d[\d\s]*(?:[.,]\d+)?\s*р(?:\.|\b))/iu.test(text)) return "в публичном тексте осталась цена";
+  if (/\bрейтинг\b|\b[1-5](?:[.,]\d)?\s*\/\s*5\b|[⭐★]\s*[1-5](?:[.,]\d)?/iu.test(text)) return "в публичном тексте остался рейтинг товара";
   if (/\b\d[\d\s]*\s+(?:отзыв|отзыва|отзывов)\b/iu.test(text)) return "в публичном тексте осталось количество отзывов";
   if (/\bпромокод\b|\bкупон\s+на\s+скидку\b/iu.test(text)) return "в публичном тексте остался промокод";
   return "";
@@ -8227,7 +8227,7 @@ function formatTelegramBody(value) {
 function formatTelegramPost(post) {
   const title = String(post.title || "").trim();
   const shoppingPublic = editorialChannelId() === "shopping";
-  const text = String(post.text || "").trim().replace(shoppingPublic ? /https?:\/\/\S+/gi : /$^/, "").replace(/\s+\n/g, "\n");
+  const text = String(post.text || "").trim().replace(shoppingPublic ? /(?:https?:\/\/|www\.|t\.me\/)\S+/gi : /$^/, "").replace(/\s+\n/g, "\n");
   const sources = shoppingPublic ? [] : normalizePublicPostSources(post).slice(0, 5);
   let html = "";
   if (title) html += "<b>" + escapeTelegramHtml(title) + "</b>";
@@ -9071,7 +9071,7 @@ function formatVkPost(post, options) {
   const title = String(post.title || "").trim();
   const shoppingPublic = editorialChannelId() === "shopping";
   let text = String(post.text || "").trim();
-  if (shoppingPublic) text = text.replace(/https?:\/\/\S+/gi, "").replace(/\s+\n/g, "\n");
+  if (shoppingPublic) text = text.replace(/(?:https?:\/\/|www\.|t\.me\/)\S+/gi, "").replace(/\s+\n/g, "\n");
   text = text
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/__(.*?)__/g, "$1")
