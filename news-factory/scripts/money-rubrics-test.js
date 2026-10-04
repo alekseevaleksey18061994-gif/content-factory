@@ -179,7 +179,7 @@ await test("M7 95+ emergency candidate is available only as a ninth post and onl
 
 await test("M8 money cannot bypass rubric scheduler through legacy direct auto-publish", async () => {
   const server=fs.readFileSync(fileURLToPath(new URL("../server.js",import.meta.url)),"utf8");
-  assert.match(server,/const canAutoPublish =\s*\/\/[^\n]*\n\s*editorialChannelId\(\) !== "money" &&/);
+  assert.match(server,/const canAutoPublish =\s*\/\/[^\n]*\n\s*!\["money","auto","shopping"\]\.includes\(editorialChannelId\(\)\) &&/);
 });
 
 await test("M9 curated source plan covers every rubric with at least five candidates", async () => {
