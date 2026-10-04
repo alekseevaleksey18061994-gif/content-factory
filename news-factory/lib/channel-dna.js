@@ -15,29 +15,40 @@ export const CHANNEL_DNA = {
   },
   auto: {
     type: "news_fun",
-    topic: "автомобили для российской аудитории: премьеры и новинки, авторынок России, китайские авто, электро и гибриды, автотехнологии, блогеры и тесты, вирусное и необычное, важное водителю",
-    focus: "Это канал «Что там у тачек?». Бери сильные автомобильные инфоповоды, а не поток ради квоты. Лучше пропустить слот, чем публиковать слабую тему. Несколько источников одной новости объединяй в один сюжет. Не бери слух без нормального источника, старую новость без нового повода, кликбейт без фактов, мелкие ДТП и жесть ради просмотров, рекламу дилеров, однотипные прайсы без заметного изменения, слишком локальные новости, слабые блогерские ролики без самостоятельного инфоповода и повторы. Блогеры: Ильдар Авто-подбор, Александр Булкин, Михеев и Павлов, Туман, AcademeG, Клубный Сервис, Гараж 54, Жекич Дубровский, Иван Зенкевич, Денис Механик. Давидыча не использовать.",
-    mix: { premieres: 0.20, russia_market: 0.20, china_cars: 0.133, electric_hybrid: 0.067, auto_tech: 0.067, bloggers_tests: 0.133, viral_unusual: 0.133, driver_important: 0.067 },
+    topic: "автомобили: премьеры и новинки, авторынок России, китайские авто, электро и гибриды, автотехнологии, блогеры и владельцы, вирусные автомобильные истории, важные изменения для водителей",
+    focus: "Канал «Что там у тачек?». Лучше сильный материал чуть старше, чем свежая слабая новость. Не брать слухи без нормального источника, старые новости без нового повода, кликбейт без фактов, мелкие ДТП и жесть ради просмотров, рекламу дилеров, однотипные прайсы без заметного изменения, слишком локальные новости без широкого интереса, слабые блогерские ролики без отдельного инфоповода, повторы и плохие медиа без сильной новости.",
+    mix: {
+      premieres: 0.20,
+      russia_market: 0.20,
+      china_cars: 0.133333,
+      ev_hybrid: 0.066667,
+      auto_tech: 0.066667,
+      bloggers_owners: 0.133333,
+      viral_unusual: 0.133333,
+      driver_important: 0.066667
+    },
     rubrics: [
-      { id: "premieres", label: "Премьеры и новинки", hint: "новые модели, рестайлинги, мировые премьеры, старт продаж и важные обновления автомобилей" },
-      { id: "russia_market", label: "Авторынок России", hint: "цены, продажи, новые марки и модели в России, производство, импорт и заметные изменения российского авторынка" },
-      { id: "china_cars", label: "Китайские авто", hint: "Geely, Chery, BYD, GWM, Haval, Zeekr, NIO, XPeng и другие китайские марки: премьеры, продажи, технологии" },
-      { id: "electric_hybrid", label: "Электро и гибриды", hint: "электромобили, гибриды, батареи, зарядка, запас хода и новые силовые установки" },
-      { id: "auto_tech", label: "Автотехнологии", hint: "ADAS, автопилот, мультимедиа, безопасность, новые автомобильные технологии и инженерные решения" },
-      { id: "bloggers_tests", label: "Блогеры / тесты / владельцы", hint: "самостоятельные сильные инфоповоды из тестов, разборов и историй владельцев; не публиковать ролик только потому, что он вышел" },
-      { id: "viral_unusual", label: "Вирусное и необычное", hint: "необычные машины, эксперименты, редкие проекты и сильные вирусные автомобильные истории без жести ради просмотров" },
-      { id: "driver_important", label: "Важно водителю", hint: "изменения правил, штрафов, топлива, страховки, эксплуатации и другие практические вещи для российских водителей" }
+      { id: "premieres", label: "🚘 Премьеры и новинки", hint: "новые модели, рестайлинги, официальные премьеры и старт продаж; автопроизводители и профильные авто-СМИ" },
+      { id: "russia_market", label: "🇷🇺 Авторынок России", hint: "цены и продажи в России, старт продаж, заметные изменения прайсов, АВТОСТАТ, Drom, Autonews, российские бренды" },
+      { id: "china_cars", label: "🇨🇳 Китайские авто", hint: "Geely, Chery, Haval, BYD, Zeekr, Li Auto, Exeed, Changan, GAC и другие китайские марки, особенно новости для РФ" },
+      { id: "ev_hybrid", label: "⚡ Электро и гибриды", hint: "электромобили, гибриды, батареи, зарядка и реальные новые модели" },
+      { id: "auto_tech", label: "🧠 Автотехнологии", hint: "ADAS, автопилот, безопасность, мультимедиа, новые автомобильные технологии с понятной пользой" },
+      { id: "bloggers_owners", label: "🎥 Блогеры / тесты / владельцы", hint: "российские автоблогеры, тесты, реальные владельцы и отдельные инфоповоды из их роликов" },
+      { id: "viral_unusual", label: "🔥 Вирусное и необычное", hint: "необычные машины, автомобильные эксперименты, яркие видео и вирусные истории без жести ради просмотров" },
+      { id: "driver_important", label: "🚦 Важно водителю", hint: "массовые изменения правил, штрафов, ОСАГО, техосмотра, дорог и требований, которые реально затрагивают водителей" }
     ],
-    rubricMinSources: 3,
+    rubricMinSources: 5,
     rubricMaxSources: 6,
     slotHours: [8,9,10,11,12,13,14,15,16,17,18,19,20,21,22],
-    slotRubrics: {
-      "08:00":"driver_important","09:00":"russia_market","10:00":"premieres","11:00":"china_cars","12:00":"bloggers_tests",
-      "13:00":"russia_market","14:00":"premieres","15:00":"electric_hybrid","16:00":"viral_unusual","17:00":"china_cars",
-      "18:00":"russia_market","19:00":"premieres","20:00":"bloggers_tests","21:00":"auto_tech","22:00":"viral_unusual"
+    rubricDailyTargets: { premieres:3, russia_market:3, china_cars:2, ev_hybrid:1, auto_tech:1, bloggers_owners:2, viral_unusual:2, driver_important:1 },
+    rubricSlots: {
+      "08:00":"driver_important","09:00":"russia_market","10:00":"premieres","11:00":"china_cars","12:00":"bloggers_owners",
+      "13:00":"russia_market","14:00":"premieres","15:00":"ev_hybrid","16:00":"viral_unusual","17:00":"china_cars",
+      "18:00":"russia_market","19:00":"premieres","20:00":"bloggers_owners","21:00":"auto_tech","22:00":"viral_unusual"
     },
-    preferredSources: ["MEDIA", "CREATOR", "OFFICIAL", "COMMUNITY", "SOCIAL"],
-    scoreWeights: { utility: 0.24, local: 0.22, discussion: 0.14, visual: 0.14, wow: 0.13, deal: 0.13 }
+    strictRubricSlots: false,
+    preferredSources: ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"],
+    scoreWeights: { utility:0.25, local:0.20, discussion:0.15, virality:0.15, visual:0.10, wow:0.10, deal:0.05 }
   },
   money: {
     type: "news",
@@ -137,27 +148,29 @@ export const CHANNEL_DNA = {
   },
   shopping: {
     type: "trends",
-    topic: "товарные находки для обычного покупателя: Wildberries, Ozon, Яндекс Маркет, AliExpress и вирусные товары",
-    focus: "Это канал «Что там с покупками?». Источник нужен только чтобы найти интересный товар. Рекламный исходный пост разрешён: убирай рекламу, ссылки, промокоды, продавца и рекламные обещания и делай обычный редакционный пост о самом товаре. В публичном посте не указывай цену, рейтинг, количество отзывов, ссылку на товар, ссылку или название источника, промокод и неподтверждённые скидки. Не выдумывай характеристики. Обязательное медиа: нормальное фото или видео товара. Лучше пропустить слот, чем публиковать слабую находку.",
-    mix: { wildberries: 0.25, ozon: 0.25, yandex_market: 0.15, aliexpress: 0.15, viral_products: 0.20 },
+    topic: "товарные находки на Wildberries, Ozon, Яндекс Маркете и AliExpress плюс вирусные товары из интернета",
+    focus: "Канал «Что там с покупками?». Источник может быть рекламным: это не причина для отказа. Используй его как способ найти товар, но готовый пост должен быть редакционным — без ссылок, рефералок, промокодов, продавца, рекламных призывов, цены, рейтинга и количества отзывов. Ничего не выдумывай. Если сильного товара нет — слот лучше пропустить.",
+    mix: { wildberries:0.25, ozon:0.25, yandex_market:0.15, aliexpress:0.15, viral_products:0.20 },
     rubrics: [
-      { id: "wildberries", label: "Находки Wildberries", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Wildberries; рекламные посты допустимы как сырьё" },
-      { id: "ozon", label: "Находки Ozon", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Ozon; рекламные посты допустимы как сырьё" },
-      { id: "yandex_market", label: "Находки Яндекс Маркета", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Яндекс Маркета" },
-      { id: "aliexpress", label: "Находки AliExpress", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками AliExpress, доступными российской аудитории" },
-      { id: "viral_products", label: "Вирусные товары", minSources: 7, hint: "вирусные и необычные товары из соцсетей, тренд-сервисов, Reddit, Pinterest и маркетплейсов; желательно два независимых сигнала" }
+      { id:"wildberries", label:"Wildberries", hint:"Telegram-каналы и сайты с конкретными интересными товарами и находками Wildberries; рекламные посты допустимы как сырьё" },
+      { id:"ozon", label:"Ozon", hint:"Telegram-каналы и сайты с конкретными интересными товарами и находками Ozon; рекламные посты допустимы как сырьё" },
+      { id:"yandex_market", label:"Яндекс Маркет", hint:"Telegram-каналы и сайты с конкретными товарами и находками Яндекс Маркета" },
+      { id:"aliexpress", label:"AliExpress", hint:"Telegram-каналы и сайты с конкретными товарами и находками AliExpress" },
+      { id:"viral_products", label:"🔥 Вирусные товары", hint:"вирусные и необычные товары из TikTok, Pinterest, Reddit, тренд-сервисов и международных подборок" }
     ],
     rubricMinSources: 5,
-    rubricMaxSources: 8,
-    slotHours: [8,11,14,17,20],
-    slotRubrics: {
+    rubricMaxSources: 6,
+    slotTimes: ["08:00","08:45","09:30","10:15","11:00","11:45","12:30","13:15","14:00","14:45","15:30","16:15","17:00","17:45","18:30","19:15","20:00","20:45","21:30","22:15"],
+    rubricDailyTargets: { wildberries:5, ozon:5, yandex_market:3, aliexpress:3, viral_products:4 },
+    rubricSlots: {
       "08:00":"viral_products","08:45":"wildberries","09:30":"ozon","10:15":"yandex_market","11:00":"wildberries",
       "11:45":"aliexpress","12:30":"ozon","13:15":"viral_products","14:00":"wildberries","14:45":"yandex_market",
       "15:30":"ozon","16:15":"aliexpress","17:00":"wildberries","17:45":"viral_products","18:30":"ozon",
       "19:15":"yandex_market","20:00":"wildberries","20:45":"aliexpress","21:30":"ozon","22:15":"viral_products"
     },
-    preferredSources: ["COMMUNITY", "SOCIAL", "CREATOR", "MEDIA", "OFFICIAL"],
-    scoreWeights: { visual: 0.25, utility: 0.20, virality: 0.20, wow: 0.15, discussion: 0.10, deal: 0.10 }
+    strictRubricSlots: true,
+    preferredSources: ["CREATOR", "SOCIAL", "COMMUNITY", "MEDIA", "OFFICIAL"],
+    scoreWeights: { utility:0.20, virality:0.20, visual:0.20, wow:0.15, discussion:0.10, local:0.10, deal:0.05 }
   },
   home: {
     type: "trends",
@@ -528,5 +541,67 @@ export const MONEY_RUBRIC_SOURCES_V0526 = {
     "https://t.me/s/rian_ru",
     "https://svpressa.ru/economy/",
     "https://nsn.fm/economy"
+  ]
+};
+
+
+// v0.52.9 — approved source structure for «Что там у тачек?» and «Что там с покупками?».
+export const AUTO_RUBRIC_SOURCES_V0529 = {
+  add: [
+    { name:"Ильдар Авто-подбор", url:"https://t.me/s/ildar_auto_podbor", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"Александр Булкин", url:"https://t.me/s/bulkin_live", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"Михеев и Павлов", url:"https://t.me/s/miheevpavlov_pro", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"AcademeG", url:"https://t.me/s/academeg_true_original", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"Клубный Сервис", url:"https://t.me/s/klubniy_servis", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"Гараж 54", url:"https://t.me/s/garage54official", group:"creator", rubrics:["bloggers_owners","viral_unusual"] },
+    { name:"Жекич Дубровский", url:"https://t.me/s/dubrovskiy_444", group:"creator", rubrics:["bloggers_owners"] },
+    { name:"Drom Новости", url:"https://news.drom.ru/", group:"media", rubrics:["russia_market","premieres","driver_important"] },
+    { name:"Autonews.ru", url:"https://www.autonews.ru/", group:"media", rubrics:["russia_market","premieres","driver_important"] },
+    { name:"АВТОСТАТ", url:"https://www.autostat.ru/news/", group:"media", rubrics:["russia_market"] },
+    { name:"CarNewsChina", url:"https://carnewschina.com/", group:"media", rubrics:["china_cars","ev_hybrid","premieres"] },
+    { name:"CnEVPost", url:"https://cnevpost.com/", group:"media", rubrics:["china_cars","ev_hybrid","auto_tech"] },
+    { name:"Electrek", url:"https://electrek.co/", group:"media", rubrics:["ev_hybrid","auto_tech"] },
+    { name:"InsideEVs", url:"https://insideevs.com/news/", group:"media", rubrics:["ev_hybrid","premieres"] }
+  ],
+  disable: []
+};
+
+export const SHOPPING_RUBRIC_SOURCES_V0529 = {
+  add: [
+    { name:"Wildberries Official", url:"https://t.me/s/wildberriesru_official", group:"creator", rubrics:["wildberries"] },
+    { name:"Wildberries Халява", url:"https://t.me/s/wildberries_khalyava", group:"creator", rubrics:["wildberries"] },
+    { name:"Нашла на WB", url:"https://t.me/s/nashlawb", group:"creator", rubrics:["wildberries"] },
+    { name:"Valberisz", url:"https://t.me/s/valberisz", group:"creator", rubrics:["wildberries"] },
+    { name:"Pepper — Wildberries", url:"https://www.pepper.ru/search?q=Wildberries", group:"community", rubrics:["wildberries"] },
+
+    { name:"Ozon", url:"https://t.me/s/ozonru", group:"official", rubrics:["ozon"] },
+    { name:"Ozon скидки", url:"https://t.me/s/ozon_skidki0", group:"creator", rubrics:["ozon"] },
+    { name:"Промокоды Ozon", url:"https://t.me/s/promokody_ozon", group:"creator", rubrics:["ozon"] },
+    { name:"Скидки Ozon WB MM", url:"https://t.me/s/skidki_ozon_wb_mm", group:"creator", rubrics:["ozon"] },
+    { name:"Pepper — Ozon", url:"https://www.pepper.ru/search?q=Ozon", group:"community", rubrics:["ozon"] },
+
+    { name:"Яндекс Маркет", url:"https://t.me/s/yndx_market", group:"official", rubrics:["yandex_market"] },
+    { name:"Яндекс Маркет промо", url:"https://t.me/s/yandex_market_proms", group:"creator", rubrics:["yandex_market"] },
+    { name:"Путеводитель Яндекс Маркет", url:"https://t.me/s/putevoditel_yandeksmarket", group:"creator", rubrics:["yandex_market"] },
+    { name:"Беру на всё", url:"https://t.me/s/berunavse", group:"creator", rubrics:["yandex_market"] },
+    { name:"Pepper — Яндекс Маркет", url:"https://www.pepper.ru/search?q=%D0%AF%D0%BD%D0%B4%D0%B5%D0%BA%D1%81%20%D0%9C%D0%B0%D1%80%D0%BA%D0%B5%D1%82", group:"community", rubrics:["yandex_market"] },
+
+    { name:"AliExpress Official", url:"https://t.me/s/AliExpressofficial_channel", group:"official", rubrics:["aliexpress"] },
+    { name:"AliExpress находки", url:"https://t.me/s/aliexprs", group:"creator", rubrics:["aliexpress"] },
+    { name:"Халявщики Ali", url:"https://t.me/s/HalyavshikiAli", group:"creator", rubrics:["aliexpress"] },
+    { name:"Ali обзор", url:"https://t.me/s/alliobzor", group:"creator", rubrics:["aliexpress"] },
+    { name:"Pepper — AliExpress", url:"https://www.pepper.ru/search?q=AliExpress", group:"community", rubrics:["aliexpress"] },
+
+    { name:"TikTok Creative Center", url:"https://ads.tiktok.com/business/creativecenter/inspiration/popular/hashtag/pc/en", group:"social", rubrics:["viral_products"] },
+    { name:"Pinterest Trends", url:"https://trends.pinterest.com/", group:"social", rubrics:["viral_products"] },
+    { name:"Exploding Topics", url:"https://explodingtopics.com/", group:"media", rubrics:["viral_products"] },
+    { name:"Trend Hunter", url:"https://www.trendhunter.com/", group:"media", rubrics:["viral_products"] },
+    { name:"Amazon Movers & Shakers", url:"https://www.amazon.com/gp/movers-and-shakers", group:"community", rubrics:["viral_products"] },
+    { name:"Google Trends", url:"https://trends.google.com/trending", group:"social", rubrics:["viral_products"] },
+    { name:"Reddit BuyItForLife", url:"https://www.reddit.com/r/BuyItForLife/", group:"community", rubrics:["viral_products"] }
+  ],
+  disable: [
+    "https://vc.ru/marketplace","https://vc.ru/retail","https://www.retail.ru/news/","https://www.vedomosti.ru/business/consumer",
+    "https://www.kommersant.ru/rubric/4","https://ria.ru/economy/","https://lenta.ru/rubrics/economics/"
   ]
 };
