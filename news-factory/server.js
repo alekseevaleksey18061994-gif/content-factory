@@ -7737,12 +7737,37 @@ async function dynamicSchedulerTick() {
   let action = "";
   let bloggerTime = "";
   let russianAiTime = "";
-  // Each action has a window of SCHEDULER_SLOT_WINDOW_MINUTES instead of one exact minute:
-  // a tick delayed by another channel's work no longer silently loses the slot.
-  // lastTickKey (built from the window start, not the actual minute) keeps it idempotent.
+  // Each action has a window of SCHEDULER_SLOT_WINDOW_MINUTES instead of one exact minute.
   const inWindow = function(start) { return minute >= start && minute < start + SCHEDULER_SLOT_WINDOW_MINUTES; };
   let windowStart = minute;
-  if (inWindow(15)) {
+
+  // Extra lanes may use :15/:30/:45 as well as the legacy :30 slots.
+  const ownerLane = channelExtraLane();
+  if (ownerLane && Array.isArray(ownerLane.slots)) {
+    for (const candidateTime of ownerLane.slots) {
+      const sm = slotMinutes(candidateTime);
+      const prep = sm - 15;
+      if (prep >= 0 && nowMinutes >= prep && nowMinutes < prep + SCHEDULER_SLOT_WINDOW_MINUTES) {
+        bloggerTime = candidateTime;
+        action = "blogger_prepare";
+        windowStart = prep % 60;
+        break;
+      }
+    }
+    if (!action) {
+      for (const candidateTime of ownerLane.slots) {
+        const sm = slotMinutes(candidateTime);
+        if (nowMinutes >= sm && nowMinutes < sm + SCHEDULER_SLOT_WINDOW_MINUTES) {
+          bloggerTime = candidateTime;
+          action = "blogger_publish";
+          windowStart = sm % 60;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!action && inWindow(15)) {
     windowStart = 15;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
@@ -7801,7 +7826,7 @@ async function dynamicSchedulerTick() {
         : action === "blogger_prepare"
           ? prepareBloggerSlot(bloggerTime)
           : action === "blogger_publish"
-            ? publishDynamicSlot("blogger")
+            ? publishDynamicSlot("blogger", bloggerTime)
             : action === "russian_ai_prepare"
               ? prepareRussianAiSlot(russianAiTime)
               : action === "russian_ai_publish"
