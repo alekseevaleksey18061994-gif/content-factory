@@ -7044,13 +7044,18 @@ function dynamicUsedQueueIds() {
 }
 const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 
-function dynamicBestQueueItem(kind) {
+function dynamicBestQueueItem(kind, time) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
-  const best = dynamicBestQueueItemRaw(kind, true);
-  return best || dynamicBestQueueItemRaw(kind, false);
+  const best = dynamicBestQueueItemRaw(kind, true, time, false) || dynamicBestQueueItemRaw(kind, false, time, false);
+  if (best) return best;
+  // Cars: a truly urgent 9/10 item may use the nearest empty thematic slot.
+  if (editorialChannelId() === "auto" && channelSlotRubric(time)) {
+    return dynamicBestQueueItemRaw(kind, true, time, true);
+  }
+  return null;
 }
 
-function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
+function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time, urgentOverride) {
   const used = dynamicUsedQueueIds();
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
@@ -7080,6 +7085,11 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (textCardBlocked(item)) return false;
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const itemTheme = itemRubric(item, themes);
+      const desiredRubric = channelSlotRubric(time);
+      if (desiredRubric && itemTheme !== desiredRubric) {
+        const importance = Number(item && item.editorialV2 && item.editorialV2.importance);
+        if (!(urgentOverride && channelId === "auto" && Number.isFinite(importance) && importance >= 9)) return false;
+      }
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
         if (!wantsMoneyEmergency && themesToday.has(itemTheme)) return false; // exactly one normal post per rubric/day
@@ -7095,6 +7105,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
+      if (channelId === "auto") return !isRussianAISource(item);
       return !isBloggerSource(item) && !isRussianAISource(item);
     })
     .sort(function(a, b) {
@@ -7120,7 +7131,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
 }
 
 function dynamicAssignBest(day, time, kind) {
-  const item = dynamicBestQueueItem(kind);
+  const item = dynamicBestQueueItem(kind, time);
   const schedule = ensureScheduleShape(state);
   if (!schedule.assignments[day]) schedule.assignments[day] = {};
   if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
