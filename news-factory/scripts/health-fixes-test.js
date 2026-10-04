@@ -213,8 +213,9 @@ test("U10 startup media repair runs after HTTP listen, not before health readine
   const listen = src.indexOf('server.listen(PORT, "0.0.0.0"');
   const repairCall = src.indexOf("repairBalancedQueueMediaAllWorkspaces().catch", listen);
   assert.ok(listen > 0 && repairCall > listen, "media repair must start only after server.listen");
-  const betweenDbAndListen = src.slice(src.indexOf("await initDb();"), listen);
-  assert.ok(!betweenDbAndListen.includes("await repairBalancedQueueMedia()"), "network image repair must not block readiness");
+  const startup = src.slice(src.indexOf("await initDb();"), listen);
+  assert.ok(!/startPromotionSnapshotMonitor\(\);\s*for \(const ws of workspaceStore\.workspaces\)/.test(startup), "startup must not synchronously loop over workspaces for media repair");
+  assert.ok(startup.includes("async function repairBalancedQueueMediaAllWorkspaces()"), "repair is defined for background execution only");
 });
 
 test("U11 graceful shutdown closes HTTP, waits boundedly, flushes state, then closes DB", async () => {
