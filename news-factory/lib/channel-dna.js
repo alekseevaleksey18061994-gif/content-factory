@@ -15,9 +15,27 @@ export const CHANNEL_DNA = {
   },
   auto: {
     type: "news_fun",
-    topic: "автомобили, авторынок России и мира",
-    focus: "Кроме обычных новостей оставляй реальные истории владельцев, видео, необычные машины, российские цены и практичные изменения для водителей.",
-    mix: { news: 0.45, owner_story: 0.20, unusual: 0.15, video: 0.10, practical: 0.10 },
+    topic: "автомобили для российской аудитории: премьеры и новинки, авторынок России, китайские авто, электро и гибриды, автотехнологии, блогеры и тесты, вирусное и необычное, важное водителю",
+    focus: "Это канал «Что там у тачек?». Бери сильные автомобильные инфоповоды, а не поток ради квоты. Лучше пропустить слот, чем публиковать слабую тему. Несколько источников одной новости объединяй в один сюжет. Не бери слух без нормального источника, старую новость без нового повода, кликбейт без фактов, мелкие ДТП и жесть ради просмотров, рекламу дилеров, однотипные прайсы без заметного изменения, слишком локальные новости, слабые блогерские ролики без самостоятельного инфоповода и повторы. Блогеры: Ильдар Авто-подбор, Александр Булкин, Михеев и Павлов, Туман, AcademeG, Клубный Сервис, Гараж 54, Жекич Дубровский, Иван Зенкевич, Денис Механик. Давидыча не использовать.",
+    mix: { premieres: 0.20, russia_market: 0.20, china_cars: 0.133, electric_hybrid: 0.067, auto_tech: 0.067, bloggers_tests: 0.133, viral_unusual: 0.133, driver_important: 0.067 },
+    rubrics: [
+      { id: "premieres", label: "Премьеры и новинки", hint: "новые модели, рестайлинги, мировые премьеры, старт продаж и важные обновления автомобилей" },
+      { id: "russia_market", label: "Авторынок России", hint: "цены, продажи, новые марки и модели в России, производство, импорт и заметные изменения российского авторынка" },
+      { id: "china_cars", label: "Китайские авто", hint: "Geely, Chery, BYD, GWM, Haval, Zeekr, NIO, XPeng и другие китайские марки: премьеры, продажи, технологии" },
+      { id: "electric_hybrid", label: "Электро и гибриды", hint: "электромобили, гибриды, батареи, зарядка, запас хода и новые силовые установки" },
+      { id: "auto_tech", label: "Автотехнологии", hint: "ADAS, автопилот, мультимедиа, безопасность, новые автомобильные технологии и инженерные решения" },
+      { id: "bloggers_tests", label: "Блогеры / тесты / владельцы", hint: "самостоятельные сильные инфоповоды из тестов, разборов и историй владельцев; не публиковать ролик только потому, что он вышел" },
+      { id: "viral_unusual", label: "Вирусное и необычное", hint: "необычные машины, эксперименты, редкие проекты и сильные вирусные автомобильные истории без жести ради просмотров" },
+      { id: "driver_important", label: "Важно водителю", hint: "изменения правил, штрафов, топлива, страховки, эксплуатации и другие практические вещи для российских водителей" }
+    ],
+    rubricMinSources: 3,
+    rubricMaxSources: 6,
+    slotHours: [8,9,10,11,12,13,14,15,16,17,18,19,20,21,22],
+    slotRubrics: {
+      "08:00":"driver_important","09:00":"russia_market","10:00":"premieres","11:00":"china_cars","12:00":"bloggers_tests",
+      "13:00":"russia_market","14:00":"premieres","15:00":"electric_hybrid","16:00":"viral_unusual","17:00":"china_cars",
+      "18:00":"russia_market","19:00":"premieres","20:00":"bloggers_tests","21:00":"auto_tech","22:00":"viral_unusual"
+    },
     preferredSources: ["MEDIA", "CREATOR", "OFFICIAL", "COMMUNITY", "SOCIAL"],
     scoreWeights: { utility: 0.24, local: 0.22, discussion: 0.14, visual: 0.14, wow: 0.13, deal: 0.13 }
   },
@@ -119,11 +137,27 @@ export const CHANNEL_DNA = {
   },
   shopping: {
     type: "trends",
-    topic: "покупки глазами обычного покупателя: распродажи и реальные скидки, интересные и вирусные товары, Ozon, Wildberries, Яндекс Маркет, Авито для покупателей (возвраты, доставка, ПВЗ), магазины, права потребителя, мошенники",
-    focus: "Только то, что важно покупателю. Новости для продавцов маркетплейсов, корпоративную выручку площадок и макроэкономику отсеивай.",
-    mix: { deal: 0.35, viral_product: 0.25, price_compare: 0.15, buyer_rights: 0.15, scam: 0.10 },
-    preferredSources: ["COMMUNITY", "SOCIAL", "CREATOR", "OFFICIAL", "MEDIA"],
-    scoreWeights: { deal: 0.28, utility: 0.26, virality: 0.16, discussion: 0.12, visual: 0.10, wow: 0.08 }
+    topic: "товарные находки для обычного покупателя: Wildberries, Ozon, Яндекс Маркет, AliExpress и вирусные товары",
+    focus: "Это канал «Что там с покупками?». Источник нужен только чтобы найти интересный товар. Рекламный исходный пост разрешён: убирай рекламу, ссылки, промокоды, продавца и рекламные обещания и делай обычный редакционный пост о самом товаре. В публичном посте не указывай цену, рейтинг, количество отзывов, ссылку на товар, ссылку или название источника, промокод и неподтверждённые скидки. Не выдумывай характеристики. Обязательное медиа: нормальное фото или видео товара. Лучше пропустить слот, чем публиковать слабую находку.",
+    mix: { wildberries: 0.25, ozon: 0.25, yandex_market: 0.15, aliexpress: 0.15, viral_products: 0.20 },
+    rubrics: [
+      { id: "wildberries", label: "Находки Wildberries", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Wildberries; рекламные посты допустимы как сырьё" },
+      { id: "ozon", label: "Находки Ozon", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Ozon; рекламные посты допустимы как сырьё" },
+      { id: "yandex_market", label: "Находки Яндекс Маркета", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками Яндекс Маркета" },
+      { id: "aliexpress", label: "Находки AliExpress", minSources: 5, hint: "Telegram-каналы и сайты с конкретными интересными товарами и находками AliExpress, доступными российской аудитории" },
+      { id: "viral_products", label: "Вирусные товары", minSources: 7, hint: "вирусные и необычные товары из соцсетей, тренд-сервисов, Reddit, Pinterest и маркетплейсов; желательно два независимых сигнала" }
+    ],
+    rubricMinSources: 5,
+    rubricMaxSources: 8,
+    slotHours: [8,11,14,17,20],
+    slotRubrics: {
+      "08:00":"viral_products","08:45":"wildberries","09:30":"ozon","10:15":"yandex_market","11:00":"wildberries",
+      "11:45":"aliexpress","12:30":"ozon","13:15":"viral_products","14:00":"wildberries","14:45":"yandex_market",
+      "15:30":"ozon","16:15":"aliexpress","17:00":"wildberries","17:45":"viral_products","18:30":"ozon",
+      "19:15":"yandex_market","20:00":"wildberries","20:45":"aliexpress","21:30":"ozon","22:15":"viral_products"
+    },
+    preferredSources: ["COMMUNITY", "SOCIAL", "CREATOR", "MEDIA", "OFFICIAL"],
+    scoreWeights: { visual: 0.25, utility: 0.20, virality: 0.20, wow: 0.15, discussion: 0.10, deal: 0.10 }
   },
   home: {
     type: "trends",
@@ -198,6 +232,7 @@ export function channelStrategy(channelId) {
     rubricMinSources: Number(dna.rubricMinSources || 0) || 0,
     rubricMaxSources: Number(dna.rubricMaxSources || 0) || 0,
     slotHours: Array.isArray(dna.slotHours) ? dna.slotHours.slice() : null,
+    slotRubrics: Object.assign({}, dna.slotRubrics || {}),
     preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
     scoreWeights: Object.assign({}, dna.scoreWeights || {})
   };

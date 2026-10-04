@@ -15,6 +15,8 @@ import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
+import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
+import { normalizeShoppingFindSources, normalizeAutoRubricSources } from "./lib/channel-rubric-migrations.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
@@ -358,18 +360,7 @@ const CAR_SOURCES = [
   { id: "cars-autoreview", name: "Авторевю", type: "web", group: "media", priority: 2, url: "https://autoreview.ru/news", enabled: true }
 ];
 
-const BLOGGER_SOURCES = [
-  { id: "blogger-ildar", name: "Ильдар Авто-подбор", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/ildar_auto_podbor", enabled: true },
-  { id: "blogger-dubrovskiy", name: "Жекич Дубровский", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/dubrovskiy_444", enabled: true },
-  { id: "blogger-academeg", name: "AcademeG", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/academeg_true_original", enabled: true },
-  { id: "blogger-strekal", name: "Илья Стрекаловский", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/Strekalovsky", enabled: true },
-  { id: "blogger-miheev-pavlov", name: "Михеев и Павлов", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/miheevpavlov_pro", enabled: true },
-  { id: "blogger-pasha-pel", name: "Паша ПЭЛ", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/pel_video", enabled: true },
-  { id: "blogger-klubniy-servis", name: "Клубный Сервис", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/klubniy_servis", enabled: true },
-  { id: "blogger-lisa-rulit", name: "Лиса Рулит", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/lisacars", enabled: true },
-  { id: "blogger-anton-avtoman", name: "Anton Avtoman", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/anton_avtoman", enabled: true },
-  { id: "blogger-bulkin", name: "Bulkin Drive", type: "web", group: "blogger", priority: 2, url: "https://t.me/s/bulkin_live", enabled: true }
-];
+const BLOGGER_SOURCES = APPROVED_AUTO_BLOGGER_SOURCES;
 const BLOGGER_SLOTS = ["10:30", "12:30", "15:30", "18:30", "21:30"];
 const BLOGGER_DAILY_TARGET = 5;
 // Extra :30 lane per channel (the "blogger" lane, generalised). stars: three extra posts a day taken from all its
@@ -378,14 +369,16 @@ const CHANNEL_EXTRA_LANES = {
   stars: { slots: ["12:30", "18:30", "21:30"], anySource: true, label: "Доп. посты" },
   kino: { slots: ["12:30", "16:30", "20:30"], anySource: false, label: "Кино-мемы" },
   // Approved money cadence: six :00 slots + these two flexible :30 slots = max 8 normal posts/day.
-  money: { slots: ["14:30", "21:30"], targetPerDay: 2, anySource: true, label: "Личные финансы" }
+  money: { slots: ["14:30", "21:30"], targetPerDay: 2, anySource: true, label: "Личные финансы" },
+  shopping: { slots: ["08:45","09:30","10:15","11:45","12:30","13:15","14:45","15:30","16:15","17:45","18:30","19:15","20:45","21:30","22:15"], targetPerDay: 15, anySource: true, label: "Покупки" }
 };
 // Editor's notes per channel (2026-10-03): what discovery should look for, which channels get their sources
 // refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
 const CHANNEL_SOURCE_PLANS = {
   home: { refresh: true, boost: 0, hint: "находки и подборки товаров для дома, до/после обычных квартир, хранение, уборка, ремонт своими руками, тренды интерьера, кухня; НЕ рынок недвижимости, НЕ ЖКХ, НЕ IT-новости, НЕ городские новости" },
-  shopping: { refresh: true, boost: 15, hint: "новости для покупателей, а не для продавцов: скидки и распродажи, цены в магазинах, новинки и вирусные товары, возвраты и доставка на Ozon, Wildberries, Яндекс Маркете и Авито, права потребителей, мошенники; Telegram-каналы и сайты для покупателей" },
+  auto: { refresh: false, boost: 0, hint: "автоисточники по 8 рубрикам: премьеры, авторынок России, китайские авто, электро и гибриды, автотехнологии, сильные блогерские тесты, вирусное и важное водителю; без мелких ДТП, дилерской рекламы и слухов без надёжного источника" },
+  shopping: { refresh: true, boost: 15, hint: "товарные находки Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; рекламные посты допустимы как источник товара; не нужны новости для селлеров, права потребителей и корпоративные новости ритейла" },
   money: { refresh: true, hint: "сильнее личные финансы обычных людей: вклады, кредиты, ипотека, налоги и вычеты, цены, зарплаты, пенсии, мошенники и банки; меньше биржи и макроэкономики" },
   tech: { refresh: true, hint: "гаджеты и сервисы, которые обычный человек купит или поставит завтра: смартфоны, ноутбуки, наушники, приложения, обновления, утечки; меньше корпоративных новостей" },
   games: { hint: "игровые новостные Telegram-каналы: релизы, скидки и раздачи, утечки, трейлеры, игровое сообщество", telegramMin: 12 },
@@ -427,7 +420,9 @@ function rubricSourceCounts(ws) {
 const RUBRIC_MIN_LIMIT = 1;
 function rubricMinFor(rubricId, ws) {
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  const rubric = (strat.rubrics || []).find(function(r){ return r && String(r.id) === String(rubricId); });
+  const base = Math.max(1, Number(rubric && rubric.minSources || strat.rubricMinSources || 1));
   const own = st.rubricLimits && st.rubricLimits[rubricId] && Number(st.rubricLimits[rubricId].min);
   return Number.isFinite(own) && own >= RUBRIC_MIN_LIMIT ? Math.round(own) : base;
 }
@@ -439,8 +434,9 @@ function rubricMaxFor(rubricId, ws) {
 function rubricGroupsInfo(ws) {
   const counts = rubricSourceCounts(ws);
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
   return channelRubrics(ws).map(function(r){
+    const base = Math.max(1, Number(r && r.minSources || strat.rubricMinSources || 1));
     return { id: r.id, label: r.label, hint: r.hint || "", active: counts[r.id] || 0, min: rubricMinFor(r.id, ws), defaultMin: base, max: rubricMaxFor(r.id, ws),
       custom: !!(st.rubricLimits && st.rubricLimits[r.id]) };
   });
@@ -466,9 +462,24 @@ function setRubricLimit(rubricId, min) {
   }
   return { ok: true, rubric: rubricId, min: n, changed: before !== n, search: search };
 }
+function channelRubricConfigReady(ws) {
+  const target = ws || currentWorkspace();
+  const id = resolveChannelId(target);
+  const st = target && target.state ? target.state : state;
+  const migrations = Array.isArray(st && st.migrations) ? st.migrations : [];
+  if (id === "shopping" && !migrations.includes("v0.53.0-shopping-finds")) return false;
+  if (id === "auto" && !migrations.includes("v0.53.0-car-rubrics")) return false;
+  return true;
+}
 function channelSlotHours(ws) {
+  if (!channelRubricConfigReady(ws)) return null;
   const hours = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotHours;
   return Array.isArray(hours) && hours.length ? hours : null;
+}
+function channelSlotRubric(time, ws) {
+  if (!channelRubricConfigReady(ws)) return "";
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  return String(strat && strat.slotRubrics && strat.slotRubrics[String(time || "")] || "");
 }
 function isChannelSlotHour(hour, ws) {
   const hours = channelSlotHours(ws);
@@ -480,10 +491,11 @@ function channelDailyMax(ws) {
 }
 function channelExtraLane() {
   const ws = currentWorkspace();
+  if (!channelRubricConfigReady(ws) && resolveChannelId(ws) === "shopping") return null;
   return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
 }
-function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : BLOGGER_SLOTS; }
-function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? Math.max(0, Number(lane.targetPerDay == null ? lane.slots.length : lane.targetPerDay)) : BLOGGER_DAILY_TARGET; }
+function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : []; }
+function bloggerTargetFor() { const lane = channelExtraLane(); return lane ? Math.max(0, Number(lane.targetPerDay == null ? lane.slots.length : lane.targetPerDay)) : 0; }
 // The extra lane runs when the channel has blogger sources (or, for an anySource lane, any enabled source).
 function bloggerLaneActive() {
   const lane = channelExtraLane();
@@ -1336,6 +1348,14 @@ function ensureConfiguredWorkspaces() {
     cars.state.migrations.push(ruCarSourcesMigration);
     changed = true;
   }
+  const carRubricMigration = "v0.53.0-car-rubrics";
+  if (!cars.state.migrations.includes(carRubricMigration)) {
+    normalizeAutoRubricSources(cars.state, APPROVED_AUTO_BLOGGER_SOURCES, BLOGGER_SLOTS, new Date().toISOString());
+    cars.state.migrations.push(carRubricMigration);
+    cars.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+
   const copyrightMigration = "v0.30.0-copyright-safe-v1";
   for (const ws of workspaceStore.workspaces) {
     if (!ws || !ws.state) continue;
@@ -2915,8 +2935,14 @@ function editorialLearningBonus(item) {
 function queueItemRating(item) {
   return postRating(queueItemRatingInput(item, editorialChannelId())).total;
 }
-function channelRatingMinAuto() { return editorialChannelId() === "money" ? 80 : POST_RATING_MIN_AUTO; }
-function channelRatingDropBelow() { return editorialChannelId() === "money" ? 70 : POST_RATING_DROP_BELOW; }
+function channelRatingMinAuto() {
+  const id = editorialChannelId();
+  return id === "money" ? 80 : (id === "shopping" ? 75 : POST_RATING_MIN_AUTO);
+}
+function channelRatingDropBelow() {
+  const id = editorialChannelId();
+  return id === "money" ? 70 : (id === "shopping" ? 65 : POST_RATING_DROP_BELOW);
+}
 
 function moneyFactConfirmationOk(item) {
   if (editorialChannelId() !== "money") return true;
@@ -3255,7 +3281,12 @@ async function replenishSourcesInner(reason) {
   // Theme channels: the theme with the fewest sources below its minimum gets its own search (one theme per run).
   const strategyNow = channelStrategy(resolveChannelId(currentWorkspace()));
   let rubricTarget = null;
-  const themedReady = !(resolveChannelId(currentWorkspace()) === "home" && !(state.migrations || []).includes("v0.51.3-home-rubrics")); // themes are tagged by the migration first
+  const themedChannelId = resolveChannelId(currentWorkspace());
+  const themedMigrations = state.migrations || [];
+  const themedReady =
+    !(themedChannelId === "home" && !themedMigrations.includes("v0.51.3-home-rubrics")) &&
+    !(themedChannelId === "shopping" && !themedMigrations.includes("v0.53.0-shopping-finds")) &&
+    !(themedChannelId === "auto" && !themedMigrations.includes("v0.53.0-car-rubrics")); // sources must be tagged before themed discovery
   // one miss counter for all themes: 3 empty searches in a row -> the whole theme search rests 24 h (paid web search)
   if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0 && discoveryAllowed("rubric")) {
     const counts = rubricSourceCounts();
@@ -3278,8 +3309,9 @@ async function replenishSourcesInner(reason) {
       if (!rubricTarget.need) rubricTarget = null;
     }
   }
-  // theme channels grow theme by theme only: a generic search would add sources that belong to no theme
-  if (Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length) need = 0;
+  // Once a theme migration tagged the sources, grow theme by theme only. Before that, preserve
+  // the legacy generic replenisher so startup/tests cannot strand an untagged workspace.
+  if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length) need = 0;
   if (!need && !needTelegram && !needLane && !rubricTarget) return { added: [], need: 0 };
   state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
   const last = new Date(state.sourceReplenish.lastAt || 0).getTime();
@@ -3368,7 +3400,7 @@ async function replenishSourcesInner(reason) {
 
 // One cheap call over all fresh headlines before media and editorial work:
 // drops ads, listings, old press releases and off-topic links.
-const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "маркетплейсы и покупатели: правила Ozon, Wildberries и Яндекс Маркета, доставка, возвраты, новые товары и тренды; без рекламных подборок, промокодов и скидок", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
+const CHANNEL_TOPICS_RU = { ai: "искусственный интеллект", auto: "автомобили, авторынок России и мира", money: "личные финансы в России: курс рубля, ставка ЦБ, вклады, кредиты и ипотека, налоги, цены и инфляция, пенсии", tech: "технологии и гаджеты", games: "игры", kino: "кино и сериалы", science: "наука", sport: "спорт", world: "необычные и удивительные мировые новости: рекорды, культура, курьёзы без жертв и политики", stars: "знаменитости", travel: "путешествия", shopping: "товарные находки Wildberries, Ozon, Яндекс Маркета, AliExpress и вирусные товары; рекламный исходный пост допустим как сырьё, если из него можно сделать самостоятельный пост о товаре", home: "дом и быт", food: "еда", business: "бизнес", crypto: "криптовалюты" };
 async function prefilterCandidates(candidates, summary) {
   if (!candidates.length) return candidates;
   const now = new Date();
@@ -4273,6 +4305,7 @@ async function prepareVkPreviewImage(post, slug) {
 
 function normalizePublicPostSources(post) {
   const p = post || {};
+  if (p.hidePublicSources === true) return [];
   const out = [];
   const seen = new Set();
 
@@ -4313,8 +4346,9 @@ async function createPublicPostPage(post) {
   const description = previewDescription(post);
   const sources = normalizePublicPostSources(post);
   const primarySource = sources[0] || {};
-  const sourceName = String(primarySource.name || post && post.sourceName || "").trim();
-  const sourceUrl = String(primarySource.url || post && post.sourceUrl || "").trim();
+  const hidePublicSources = Boolean(post && post.hidePublicSources === true);
+  const sourceName = hidePublicSources ? "" : String(primarySource.name || post && post.sourceName || "").trim();
+  const sourceUrl = hidePublicSources ? "" : String(primarySource.url || post && post.sourceUrl || "").trim();
   const postId = String(post && (post.postId || post.id || post.newsId) || slug);
   const topicId = String(post && (post.topicId || post.topic_id) || "default");
 
@@ -7030,7 +7064,9 @@ function dynamicUsedQueueIds() {
       const slotMinutes = m ? Number(m[1]) * 60 + Number(m[2]) : null;
       // :30 lanes have no catch-up: their reservation ends with the publish window, so a missed extra slot does
       // not keep an ordinary post away from the hourly lane for 90 minutes.
-      const grace = m && m[2] === "30" ? SCHEDULER_SLOT_WINDOW_MINUTES : DYNAMIC_ASSIGNMENT_GRACE_MIN;
+      const extraTimes = new Set((channelExtraLane() && channelExtraLane().slots || []).map(String));
+      const grace = (extraTimes.has(String(entry[0] || "")) || (m && m[2] === "30"))
+        ? SCHEDULER_SLOT_WINDOW_MINUTES : DYNAMIC_ASSIGNMENT_GRACE_MIN;
       const expired = day < today || (day === today && slotMinutes != null && slotMinutes + grace < nowMinutes);
       if (!expired) used.add(id);
     });
@@ -7039,13 +7075,13 @@ function dynamicUsedQueueIds() {
 }
 const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 
-function dynamicBestQueueItem(kind) {
+function dynamicBestQueueItem(kind, time) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
-  const best = dynamicBestQueueItemRaw(kind, true);
-  return best || dynamicBestQueueItemRaw(kind, false);
+  // A thematic slot is never backfilled by another rubric: if its own queue is weak/empty, the slot is skipped.
+  return dynamicBestQueueItemRaw(kind, true, time) || dynamicBestQueueItemRaw(kind, false, time);
 }
 
-function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
+function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time) {
   const used = dynamicUsedQueueIds();
   const wantsBlogger = kind === "blogger";
   const wantsRussianAi = kind === "russian-ai";
@@ -7075,6 +7111,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (textCardBlocked(item)) return false;
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const itemTheme = itemRubric(item, themes);
+      const desiredRubric = channelSlotRubric(time);
+      if (desiredRubric && itemTheme !== desiredRubric) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
         if (!wantsMoneyEmergency && themesToday.has(itemTheme)) return false; // exactly one normal post per rubric/day
@@ -7090,6 +7128,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
+      if (channelId === "auto") return !isRussianAISource(item);
       return !isBloggerSource(item) && !isRussianAISource(item);
     })
     .sort(function(a, b) {
@@ -7115,7 +7154,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold) {
 }
 
 function dynamicAssignBest(day, time, kind) {
-  const item = dynamicBestQueueItem(kind);
+  const item = dynamicBestQueueItem(kind, time);
   const schedule = ensureScheduleShape(state);
   if (!schedule.assignments[day]) schedule.assignments[day] = {};
   if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
@@ -7189,12 +7228,16 @@ async function prepareBloggerSlot(time) {
   const schedule = ensureScheduleShape(state);
   if (schedule.suppressed[day] && schedule.suppressed[day][slotTime]) return { ok: true, skipped: "suppressed" };
 
-  // A lane fed from all sources (stars) picks from the queue the :45 preparation already filled; collecting every
-  // source again could run past the :30 window and lose the slot.
   const lane = channelExtraLane();
-  const collector = lane && lane.anySource ? { ok: true, skipped: "any_source_lane_uses_queue" } : await collectOnce("blogger-slot-prep");
-  await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-  const item = dynamicAssignBest(day, slotTime, "blogger");
+  let collector = { ok: true, skipped: "queue_ready" };
+  let item = dynamicAssignBest(day, slotTime, "blogger");
+  if (!item) {
+    collector = lane && lane.anySource && editorialChannelId() !== "shopping"
+      ? { ok: true, skipped: "any_source_lane_uses_queue" }
+      : await collectOnce("blogger-slot-prep");
+    await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
+    item = dynamicAssignBest(day, slotTime, "blogger");
+  }
   state.bloggerScheduler = state.bloggerScheduler || {};
   state.bloggerScheduler.lastPreparedAt = new Date().toISOString();
   saveState();
@@ -7301,13 +7344,13 @@ async function staggeredCollectTick(day, hour, minute) {
 // One slot = one published post. If the chosen post fails, the next best post from the queue is tried right away,
 // up to SLOT_PUBLISH_TRIES posts, until one goes out. The failed post rests PUBLISH_RETRY_COOLDOWN_MIN minutes
 // (PUBLISH_FAILURE_MAX failures in total -> publish_failed for good).
-async function publishDynamicSlot(kind) {
+async function publishDynamicSlot(kind, explicitTime) {
   let lastError = null;
   const failedIds = [];
   for (let attempt = 1; attempt <= SLOT_PUBLISH_TRIES; attempt++) {
     try {
       // Later attempts use only posts already in the queue: no costly last-chance collector run per failed post.
-      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 });
+      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 }, explicitTime);
       if (failedIds.length) {
         console.log("SLOT_NEXT_ITEM_RESULT " + JSON.stringify({ workspace: currentWorkspaceId(), attempts: attempt, failed: failedIds, result: { published: Boolean(result && result.published), skipped: result && result.skipped || "" } }));
         return Object.assign({}, result, { slotAttempts: attempt, failedBefore: failedIds });
@@ -7328,7 +7371,7 @@ async function publishDynamicSlot(kind) {
   throw lastError || new Error("slot publish failed");
 }
 
-async function publishDynamicSlotOnce(kind, opts) {
+async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
@@ -7338,7 +7381,9 @@ async function publishDynamicSlotOnce(kind, opts) {
   }
 
   const day = moscowDateKey(now);
-  const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00");
+  const time = explicitTime
+    ? String(explicitTime)
+    : String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00");
   if (publishKind === "blogger" && !bloggerSlotsFor().includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
   if (publishKind === "money-emergency" && (editorialChannelId() !== "money" || time !== "22:30")) return { ok: true, skipped: "not_money_emergency_slot" };
@@ -7711,12 +7756,37 @@ async function dynamicSchedulerTick() {
   let action = "";
   let bloggerTime = "";
   let russianAiTime = "";
-  // Each action has a window of SCHEDULER_SLOT_WINDOW_MINUTES instead of one exact minute:
-  // a tick delayed by another channel's work no longer silently loses the slot.
-  // lastTickKey (built from the window start, not the actual minute) keeps it idempotent.
+  // Each action has a window of SCHEDULER_SLOT_WINDOW_MINUTES instead of one exact minute.
   const inWindow = function(start) { return minute >= start && minute < start + SCHEDULER_SLOT_WINDOW_MINUTES; };
   let windowStart = minute;
-  if (inWindow(15)) {
+
+  // Extra lanes may use :15/:30/:45 as well as the legacy :30 slots.
+  const ownerLane = channelExtraLane();
+  if (editorialChannelId() === "shopping" && ownerLane && Array.isArray(ownerLane.slots)) {
+    for (const candidateTime of ownerLane.slots) {
+      const sm = slotMinutes(candidateTime);
+      const prep = sm - 15;
+      if (prep >= 0 && nowMinutes >= prep && nowMinutes < prep + SCHEDULER_SLOT_WINDOW_MINUTES) {
+        bloggerTime = candidateTime;
+        action = "blogger_prepare";
+        windowStart = prep % 60;
+        break;
+      }
+    }
+    if (!action) {
+      for (const candidateTime of ownerLane.slots) {
+        const sm = slotMinutes(candidateTime);
+        if (nowMinutes >= sm && nowMinutes < sm + SCHEDULER_SLOT_WINDOW_MINUTES) {
+          bloggerTime = candidateTime;
+          action = "blogger_publish";
+          windowStart = sm % 60;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!action && inWindow(15)) {
     windowStart = 15;
     bloggerTime = String(hour).padStart(2, "0") + ":30";
     russianAiTime = bloggerTime;
@@ -7775,7 +7845,7 @@ async function dynamicSchedulerTick() {
         : action === "blogger_prepare"
           ? prepareBloggerSlot(bloggerTime)
           : action === "blogger_publish"
-            ? publishDynamicSlot("blogger")
+            ? publishDynamicSlot("blogger", bloggerTime)
             : action === "russian_ai_prepare"
               ? prepareRussianAiSlot(russianAiTime)
               : action === "russian_ai_publish"
@@ -9354,6 +9424,7 @@ async function publishVkPost(post) {
 
 function postForPlatform(post, platform) {
   const out = Object.assign({}, post || {});
+  if (editorialChannelId() === "shopping") out.hidePublicSources = true;
   const variants = out.platformVariants && typeof out.platformVariants === "object" ? out.platformVariants : {};
   const variant = variants[platform] && typeof variants[platform] === "object" ? variants[platform] : null;
   if (variant) {
@@ -14710,6 +14781,33 @@ setTimeout(function runInternetSourceFixV0451() {
     }
   })().catch(function(error){ console.warn("Internet source fix failed:", error.message); });
 }, 100000);
+
+// v0.53.0: «Что там с покупками?» — five product-find rubrics and the approved source set.
+setTimeout(function runShoppingFindsV0530() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "shopping") continue;
+      const migration = "v0.53.0-shopping-finds";
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(migration)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = normalizeShoppingFindSources(state, SHOPPING_FIND_SOURCES, rubricIds(ws), new Date().toISOString());
+        if (!ws.channelId) ws.channelId = "shopping";
+        ws.updatedAt = new Date().toISOString();
+        persistWorkspaceStore();
+        state.migrations.push(migration);
+        if (!state.migrations.includes("v0.51.2-seed-shopping")) state.migrations.push("v0.51.2-seed-shopping");
+        saveState();
+        console.log("SHOPPING_FINDS_V0530 " + JSON.stringify({
+          workspace: ws.id,
+          added: result.added.length,
+          paused: result.paused.length,
+          rubrics: rubricSourceCounts(ws)
+        }));
+      });
+    }
+  })().catch(function(error){ console.warn("Shopping finds migration failed:", error.message); });
+}, 108000);
 
 // v0.51.3: «Что там для дома?» — 10 themes, one post a day each. Off-topic sources are paused (kept) and their
 // sections blocked for discovery; the niche's biggest Telegram channels are added and every source gets its theme.
