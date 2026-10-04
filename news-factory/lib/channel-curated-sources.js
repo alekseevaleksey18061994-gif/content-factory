@@ -13,9 +13,9 @@ export const APPROVED_AUTO_BLOGGER_SOURCES = [
 
 export const SHOPPING_FIND_SOURCES = [
   { id: "shop-wb-official", name: "Wildberries", url: "https://t.me/s/wildberriesru_official", group: "creator", rubric: "wildberries" },
-  { id: "shop-wb-nahodki", name: "Находки с Wildberries WB", url: "https://t.me/s/HaxoDkiWBs", group: "creator", rubric: "wildberries" },
-  { id: "shop-wb-imperia", name: "Империя Wildberries", url: "https://t.me/s/imperia_wb", group: "creator", rubric: "wildberries" },
-  { id: "shop-wb-halyava", name: "Wildberries Халява", url: "https://t.me/s/wildberries_xalyava", group: "creator", rubric: "wildberries" },
+  { id: "shop-wb-khalyava", name: "Wildberries Халява", url: "https://t.me/s/wildberries_khalyava", group: "creator", rubric: "wildberries" },
+  { id: "shop-wb-nashlawb", name: "Нашла на WB", url: "https://t.me/s/nashlawb", group: "creator", rubric: "wildberries" },
+  { id: "shop-wb-valberisz", name: "Wildberries находки", url: "https://t.me/s/valberisz", group: "creator", rubric: "wildberries" },
   { id: "shop-wb-pepper", name: "Pepper — Wildberries", url: "https://www.pepper.ru/search?q=wildberries", group: "community", rubric: "wildberries" },
 
   { id: "shop-ozon-official", name: "Ozon", url: "https://t.me/s/ozonru", group: "creator", rubric: "ozon" },
