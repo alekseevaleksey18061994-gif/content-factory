@@ -1338,7 +1338,7 @@ function ensureConfiguredWorkspaces() {
   }
   const carRubricMigration = "v0.53.0-car-rubrics";
   if (!cars.state.migrations.includes(carRubricMigration)) {
-    normalizeAutoRubricSources(cars.state, BLOGGER_SOURCES, BLOGGER_SLOTS, new Date().toISOString());
+    normalizeAutoRubricSources(cars.state, APPROVED_AUTO_BLOGGER_SOURCES, BLOGGER_SLOTS, new Date().toISOString());
     cars.state.migrations.push(carRubricMigration);
     cars.updatedAt = new Date().toISOString();
     changed = true;
