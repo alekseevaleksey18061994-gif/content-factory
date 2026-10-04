@@ -7321,13 +7321,13 @@ async function staggeredCollectTick(day, hour, minute) {
 // One slot = one published post. If the chosen post fails, the next best post from the queue is tried right away,
 // up to SLOT_PUBLISH_TRIES posts, until one goes out. The failed post rests PUBLISH_RETRY_COOLDOWN_MIN minutes
 // (PUBLISH_FAILURE_MAX failures in total -> publish_failed for good).
-async function publishDynamicSlot(kind) {
+async function publishDynamicSlot(kind, explicitTime) {
   let lastError = null;
   const failedIds = [];
   for (let attempt = 1; attempt <= SLOT_PUBLISH_TRIES; attempt++) {
     try {
       // Later attempts use only posts already in the queue: no costly last-chance collector run per failed post.
-      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 });
+      const result = await publishDynamicSlotOnce(kind, { noRescue: attempt > 1 }, explicitTime);
       if (failedIds.length) {
         console.log("SLOT_NEXT_ITEM_RESULT " + JSON.stringify({ workspace: currentWorkspaceId(), attempts: attempt, failed: failedIds, result: { published: Boolean(result && result.published), skipped: result && result.skipped || "" } }));
         return Object.assign({}, result, { slotAttempts: attempt, failedBefore: failedIds });
@@ -7348,7 +7348,7 @@ async function publishDynamicSlot(kind) {
   throw lastError || new Error("slot publish failed");
 }
 
-async function publishDynamicSlotOnce(kind, opts) {
+async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
@@ -7358,7 +7358,9 @@ async function publishDynamicSlotOnce(kind, opts) {
   }
 
   const day = moscowDateKey(now);
-  const time = String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00");
+  const time = explicitTime
+    ? String(explicitTime)
+    : String(hour).padStart(2, "0") + ((publishKind === "blogger" || publishKind === "russian-ai" || publishKind === "money-emergency") ? ":30" : ":00");
   if (publishKind === "blogger" && !bloggerSlotsFor().includes(time)) return { ok: true, skipped: "not_blogger_slot" };
   if (publishKind === "russian-ai" && !RUSSIAN_AI_SLOTS.includes(time)) return { ok: true, skipped: "not_russian_ai_slot" };
   if (publishKind === "money-emergency" && (editorialChannelId() !== "money" || time !== "22:30")) return { ok: true, skipped: "not_money_emergency_slot" };
