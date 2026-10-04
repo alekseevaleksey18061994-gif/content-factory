@@ -455,7 +455,7 @@ export const HOME_RUBRIC_SOURCES_V0513 = {
 // A physical source may feed several rubrics; the rubrics array avoids fetching the same Telegram channel several times.
 export const MONEY_RUBRIC_SOURCES_V0526 = {
   add: [
-    { name: "Банки.ру", url: "https://t.me/s/bankiruofficial", group: "media", rubrics: ["cards_banks","deposits","credits_mortgage","money_howto"] },
+    { name: "Банки.ру", url: "https://t.me/s/bankiruofficial", group: "media", rubrics: ["cards_banks","deposits","credits_mortgage","ruble_inflation_cb","money_howto"] },
     { name: "Frank Media", url: "https://t.me/s/frank_media", group: "media", rubrics: ["cards_banks"] },
     { name: "Банк России", url: "https://t.me/s/centralbank_russia", group: "official", rubrics: ["cards_banks","deposits","ruble_inflation_cb","financial_scams"] },
     { name: "MarketOverview", url: "https://t.me/s/MarketOverview", group: "media", rubrics: ["cards_banks","deposits","ruble_inflation_cb"] },
@@ -470,8 +470,8 @@ export const MONEY_RUBRIC_SOURCES_V0526 = {
     { name: "ФНС России", url: "https://t.me/s/nalog_gov_ru", group: "official", rubrics: ["taxes"] },
     { name: "ЛИЧНЫЕ НАЛОГИ", url: "https://t.me/s/persontaxes", group: "creator", rubrics: ["taxes"] },
     { name: "Минфин России", url: "https://t.me/s/minfin", group: "official", rubrics: ["taxes"] },
-    { name: "Мои финансы", url: "https://t.me/s/FinZozhExpert", group: "official", rubrics: ["taxes","money_howto"] },
-    { name: "Госуслуги", url: "https://t.me/s/gosuslugi", group: "official", rubrics: ["taxes","money_howto"] },
+    { name: "Мои финансы", url: "https://t.me/s/FinZozhExpert", group: "official", rubrics: ["taxes","income_benefits","money_howto"] },
+    { name: "Госуслуги", url: "https://t.me/s/gosuslugi", group: "official", rubrics: ["taxes","income_benefits","money_howto"] },
 
     { name: "Твердые цифры", url: "https://t.me/s/xtxixty", group: "creator", rubrics: ["ruble_inflation_cb"] },
     { name: "MMI", url: "https://t.me/s/russianmacro", group: "creator", rubrics: ["ruble_inflation_cb"] },
