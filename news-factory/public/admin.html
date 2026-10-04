@@ -3834,9 +3834,9 @@ function render(){
         '<div class="rg-head"><div class="rg-title"><b>'+esc(g.label)+'</b><span>'+(g.hint?esc(g.hint):'')+'</span></div>'+
           '<div class="rg-status '+(low?'bad':'ok')+'">'+active+' из '+g.min+'<small>'+(low?'добираем':'активных')+'</small></div></div>'+
         '<div class="rg-limit"><label for="rgMin_'+esc(g.id)+'">Минимум источников</label>'+
-          '<input id="rgMin_'+esc(g.id)+'" type="number" min="1" max="20" inputmode="numeric" value="'+g.min+'">'+
+          '<input id="rgMin_'+esc(g.id)+'" type="number" min="1" inputmode="numeric" value="'+g.min+'">'+
           '<button onclick="saveRubricLimit('+ja(g.id)+')">Сохранить</button>'+
-          '<span class="rg-note">'+(g.custom?'ваш лимит':'по умолчанию '+g.defaultMin)+' · максимум '+g.max+'</span></div>'+
+          '<span class="rg-note">'+(g.custom?'ваш минимум':'по умолчанию '+g.defaultMin)+' · верхнего лимита нет</span></div>'+
         '<details class="rg-body" open><summary>Источники группы ('+list.length+')</summary>'+(list.length?list.map(cardHtml).join(''):'<div class="notice">В группе пока нет источников — система подберёт их поиском по теме.</div>')+'</details>'+
       '</div>';
     }).join('');
