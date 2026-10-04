@@ -73,6 +73,21 @@ test("L2 kino: meme lane only once it has meme (blogger) sources; slots 12:30/16
   assert.equal(inWs(t, "chtotamkino", () => t.dynamicBestQueueItemRaw("blogger", false)), null, "news items stay in the hourly lane");
 });
 
+test("L5 source re-enabled by editor gets 14-day grace from generic auto-pause", async () => {
+  const now = "2026-10-05T00:00:00.000Z";
+  const sources = Array.from({length:6},(_,i)=>src("g"+i, "https://g"+i+".ru/news/", i===0 ? {editorEnabledAt:now} : {}));
+  const recent = Array(10).fill("junk");
+  const t = await loadServer({ fixedNow: now, state: { chtotamtech: {
+    sources,
+    sourceStats: {g0:{recent:[...recent]}, g1:{recent:[...recent]}}
+  } } });
+  const paused = inWs(t, "chtotamtech", () => t.autoPauseWeakSources());
+  assert.equal(t.ws("chtotamtech").state.sources.find((s)=>s.id==="g0").enabled, true, "fresh editor enable must be protected");
+  assert.equal(t.ws("chtotamtech").state.sources.find((s)=>s.id==="g1").enabled, false, "stale junk source without editor grace should still pause");
+  assert.ok(paused.some((x)=>x.id==="g1"));
+  t.restoreConsole();
+});
+
 test("P1 channel notes: weak channels' auto sources go on a 24h trial + boost; once only; others untouched", async () => {
   const auto = (id) => src(id, "https://" + id + ".ru/", { autoAdded: { from: "ai" } });
   const t = await loadServer({ fixedNow: "2026-10-03T09:00:00Z", state: {
