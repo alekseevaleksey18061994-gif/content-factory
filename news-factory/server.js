@@ -7143,6 +7143,8 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, requiredRubric) {
       if (onlyAboveThreshold && ratingBelowAutoThreshold(item)) return false;
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
+      // Cars no longer has a separate :30 blogger lane: creator/blogger items publish inside the exact rubric slots.
+      if (channelId === "auto" && requiredRubric) return !isRussianAISource(item);
       return !isBloggerSource(item) && !isRussianAISource(item);
     })
     .sort(function(a, b) {
