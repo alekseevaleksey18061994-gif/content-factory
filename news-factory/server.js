@@ -423,12 +423,13 @@ function rubricSourceCounts(ws) {
   return counts;
 }
 // Per-theme source limits: the editor can raise or lower the minimum of each theme group (state.rubricLimits[id].min).
-const RUBRIC_MIN_LIMIT = 1, RUBRIC_MAX_LIMIT = 20;
+// Editor-defined rubric minimum has no upper cap. Automatic replenishment is still rate-limited per run/cooldown.
+const RUBRIC_MIN_LIMIT = 1;
 function rubricMinFor(rubricId, ws) {
   const st = ws && ws.state ? ws.state : state;
   const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
   const own = st.rubricLimits && st.rubricLimits[rubricId] && Number(st.rubricLimits[rubricId].min);
-  return Number.isFinite(own) && own >= RUBRIC_MIN_LIMIT ? Math.min(RUBRIC_MAX_LIMIT, Math.round(own)) : base;
+  return Number.isFinite(own) && own >= RUBRIC_MIN_LIMIT ? Math.round(own) : base;
 }
 // the ceiling never sits below the editor's minimum
 function rubricMaxFor(rubricId, ws) {
@@ -448,7 +449,7 @@ const RUBRIC_LIMIT_SEARCH_COOLDOWN_MS = 10 * 60000;
 function setRubricLimit(rubricId, min) {
   if (!rubricIds().has(String(rubricId))) return { ok: false, error: "Такой группы нет" };
   const n = Math.round(Number(min));
-  if (!Number.isFinite(n) || n < RUBRIC_MIN_LIMIT || n > RUBRIC_MAX_LIMIT) return { ok: false, error: "Минимум — от " + RUBRIC_MIN_LIMIT + " до " + RUBRIC_MAX_LIMIT };
+  if (!Number.isFinite(n) || n < RUBRIC_MIN_LIMIT) return { ok: false, error: "Минимум — от " + RUBRIC_MIN_LIMIT };
   if (!state.rubricLimits || typeof state.rubricLimits !== "object" || Array.isArray(state.rubricLimits)) state.rubricLimits = {};
   const before = rubricMinFor(rubricId);
   if (before === n && state.rubricLimits[rubricId]) return { ok: true, rubric: rubricId, min: n, changed: false, search: false };
