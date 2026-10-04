@@ -599,7 +599,16 @@ export const SEED_SOURCES = {
     { name: "Retail Gazette", url: "https://www.retailgazette.co.uk/", group: "media" },
     { name: "Chain Store Age", url: "https://chainstoreage.com/", group: "media" },
     { name: "Which? — News", url: "https://www.which.co.uk/news", group: "media" },
-    { name: "Роскачество (Telegram)", url: "https://t.me/s/roskachestvo", group: "creator" }
+    { name: "Роскачество (Telegram)", url: "https://t.me/s/roskachestvo", group: "creator" },
+    // v0.51.2: written for buyers (prices in shops, sales, returns, scams), not for sellers
+    { name: "АиФ — Мои деньги", url: "https://aif.ru/money/mymoney", group: "media" },
+    { name: "Финансы Mail", url: "https://finance.mail.ru/", group: "media" },
+    { name: "Рамблер Финансы", url: "https://finance.rambler.ru/", group: "media" },
+    { name: "Парламентская газета — Экономика", url: "https://www.pnp.ru/economics/", group: "media" },
+    { name: "New Retail — новости", url: "https://new-retail.ru/novosti/", group: "media" },
+    { name: "Российская газета — Твои деньги", url: "https://rg.ru/tema/ekonomika/tvoi-dengi", group: "media" },
+    { name: "Халва Медиа", url: "https://media.halvacard.ru/", group: "media" },
+    { name: "Роспотребнадзор — потребителям", url: "https://www.rospotrebnadzor.ru/consumer_rights/news/", group: "official" }
   ],
   home: [
     { name: "Lifehacker — Дом", url: "https://lifehacker.ru/topics/home/", group: "media" },
@@ -787,7 +796,17 @@ export const SEED_SOURCES = {
     { name: "Газета.Ru — Бизнес", url: "https://www.gazeta.ru/business/news/", group: "media" },
     { name: "Финмаркет — новости", url: "https://www.finmarket.ru/news/", group: "media" },
     { name: "Российская газета — Экономика", url: "https://rg.ru/tema/ekonomika", group: "media" },
-    { name: "Минтруд России (Telegram)", url: "https://t.me/s/mintrudrf", group: "creator" }
+    { name: "Минтруд России (Telegram)", url: "https://t.me/s/mintrudrf", group: "creator" },
+    // v0.51.2: personal-finance desks that write for ordinary people (taxes, deposits, mortgages, pensions)
+    { name: "Рамблер Финансы", url: "https://finance.rambler.ru/", group: "media" },
+    { name: "Финансы Mail", url: "https://finance.mail.ru/", group: "media" },
+    { name: "Халва Медиа", url: "https://media.halvacard.ru/", group: "media" },
+    { name: "Совкомбанк Журнал", url: "https://journal.sovcombank.ru/", group: "media" },
+    { name: "АиФ — Деньги", url: "https://aif.ru/money", group: "media" },
+    { name: "Российская газета — Твои деньги", url: "https://rg.ru/tema/ekonomika/tvoi-dengi", group: "media" },
+    { name: "Парламентская газета — Экономика", url: "https://www.pnp.ru/economics/", group: "media" },
+    { name: "Банкиру — новости", url: "https://bankiros.ru/news", group: "media" },
+    { name: "Банки, деньги, два офшора (Telegram)", url: "https://t.me/s/banki_oil", group: "creator" }
   ]
 };
 
