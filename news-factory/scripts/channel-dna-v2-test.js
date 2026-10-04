@@ -29,8 +29,11 @@ assert.equal(classifyContentBucket("ai",{title:"В сети завирусило
 assert.equal(classifyContentBucket("games",{title:"Игроки нашли баг и превратили его в мем"}), "community");
 assert.equal(classifyContentBucket("science",{title:"Учёные обнаружили новый вид динозавра"}), "animals");
 assert.equal(classifyContentBucket("sport",{title:"Hardcore: бой блогеров закончился конфликтом"}), "media_sport");
-assert.equal(classifyContentBucket("shopping",{title:"На маркетплейсе началась скидка 40%"}), "deal");
-assert.equal(classifyContentBucket("shopping",{title:"Новый товар без скидки появился на Ozon"}), "viral_product");
+assert.equal(classifyContentBucket("shopping",{title:"Нашли компактный органайзер на Wildberries"}), "wildberries");
+assert.equal(classifyContentBucket("shopping",{title:"Новый товар появился на Ozon"}), "ozon");
+assert.equal(classifyContentBucket("shopping",{title:"Вирусная лампа разлетелась по соцсетям"}), "viral_products");
+assert.equal(classifyContentBucket("auto",{title:"В России изменили штраф для водителей"}), "driver_important");
+assert.equal(classifyContentBucket("auto",{title:"BYD показала новый кроссовер"}), "china");
 assert.equal(classifyContentBucket("home",{title:"Как организовать хранение в маленькой квартире"}), "organization");
 
 const aiHistory = Array.from({length:12},(_,i)=>({contentBucket:"important_news",title:"Релиз модели "+i,publishedAt:new Date(Date.now()-i*3600000).toISOString()}));
