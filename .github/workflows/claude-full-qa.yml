@@ -4,6 +4,10 @@ on:
   issue_comment:
     types: [created]
 
+concurrency:
+  group: news-factory-full-qa
+  cancel-in-progress: false
+
 jobs:
   audit:
     if: contains(github.event.comment.body, '/qa-full')
@@ -52,6 +56,6 @@ jobs:
             - Finish with PASS / FAIL / INCONCLUSIVE, severity, root cause, and recommended fix.
             - Post the final report as a comment on this same issue.
           claude_args: |
-            --max-turns 80
+            --max-turns 40
             --allowedTools "Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(curl:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(grep:*),Bash(find:*),Bash(ls:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(timeout:*),Bash(sleep:*),WebFetch,WebSearch"
             --disallowedTools "Edit,Write,NotebookEditCell"
