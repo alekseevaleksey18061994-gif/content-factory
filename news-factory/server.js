@@ -418,7 +418,9 @@ function rubricSourceCounts(ws) {
 const RUBRIC_MIN_LIMIT = 1;
 function rubricMinFor(rubricId, ws) {
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  const rubric = (strat.rubrics || []).find(function(r){ return r && String(r.id) === String(rubricId); });
+  const base = Math.max(1, Number(rubric && rubric.minSources || strat.rubricMinSources || 1));
   const own = st.rubricLimits && st.rubricLimits[rubricId] && Number(st.rubricLimits[rubricId].min);
   return Number.isFinite(own) && own >= RUBRIC_MIN_LIMIT ? Math.round(own) : base;
 }
@@ -430,8 +432,9 @@ function rubricMaxFor(rubricId, ws) {
 function rubricGroupsInfo(ws) {
   const counts = rubricSourceCounts(ws);
   const st = ws && ws.state ? ws.state : state;
-  const base = Math.max(1, channelStrategy(resolveChannelId(ws || currentWorkspace())).rubricMinSources || 1);
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
   return channelRubrics(ws).map(function(r){
+    const base = Math.max(1, Number(r && r.minSources || strat.rubricMinSources || 1));
     return { id: r.id, label: r.label, hint: r.hint || "", active: counts[r.id] || 0, min: rubricMinFor(r.id, ws), defaultMin: base, max: rubricMaxFor(r.id, ws),
       custom: !!(st.rubricLimits && st.rubricLimits[r.id]) };
   });
@@ -460,6 +463,10 @@ function setRubricLimit(rubricId, min) {
 function channelSlotHours(ws) {
   const hours = channelStrategy(resolveChannelId(ws || currentWorkspace())).slotHours;
   return Array.isArray(hours) && hours.length ? hours : null;
+}
+function channelSlotRubric(time, ws) {
+  const strat = channelStrategy(resolveChannelId(ws || currentWorkspace()));
+  return String(strat && strat.slotRubrics && strat.slotRubrics[String(time || "")] || "");
 }
 function isChannelSlotHour(hour, ws) {
   const hours = channelSlotHours(ws);
