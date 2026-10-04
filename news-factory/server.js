@@ -186,7 +186,21 @@ const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_P
 const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 15));
 const DYNAMIC_SLOT_START_HOUR = 8;
 const DYNAMIC_SLOT_END_HOUR = 23;
-const DYNAMIC_SLOT_PREP_MINUTE = 45;
+const DYNAMIC_SLOT_PREP_MINUTE = 45; // default only; each channel picks at prepMinuteFor()
+// Staggered collection (2026-10-04): every channel used to collect at :45 at once (~1500 page requests in a few
+// minutes queued behind the global fetch limit, slowed each other down and once hung the whole morning). Each channel
+// now collects at its own minute between :10 and :40; :45 only picks the post from the queue it filled.
+const COLLECTION_STAGGER_ENABLED = String(process.env.COLLECTION_STAGGER_ENABLED || "true").toLowerCase() !== "false";
+const COLLECTION_STAGGER_FROM = Math.max(10, Math.min(40, Number(process.env.COLLECTION_STAGGER_FROM || 10) || 10));
+const COLLECTION_STAGGER_TO = Math.max(COLLECTION_STAGGER_FROM, Math.min(40, Number(process.env.COLLECTION_STAGGER_TO || 40) || 40));
+const COLLECTION_STAGGER_WINDOW_MINUTES = 8;
+// The rest of the hour is spread the same way, in the same channel order: picking the post :41–:57 (was :45 for
+// everyone) and the post itself :00–:10 (was :00 for everyone).
+const SLOT_PREP_FROM = Math.max(41, Math.min(57, Number(process.env.SLOT_PREP_FROM || 41) || 41));
+const SLOT_PREP_TO = Math.max(SLOT_PREP_FROM, Math.min(57, Number(process.env.SLOT_PREP_TO || 57) || 57));
+const SLOT_PUBLISH_SPREAD_MINUTES = Math.max(0, Math.min(10, Number(process.env.SLOT_PUBLISH_SPREAD_MINUTES == null ? 10 : process.env.SLOT_PUBLISH_SPREAD_MINUTES) || 0));
+// An empty slot re-collects at most this often (was every 2 minutes for 44 minutes: ~20 full runs an hour per channel).
+const EMPTY_SLOT_RESCUE_MINUTES = Math.max(2, Math.min(30, Number(process.env.EMPTY_SLOT_RESCUE_MINUTES || 8) || 8));
 const SCHEDULER_SLOT_WINDOW_MINUTES = Math.max(1, Math.min(14, Number(process.env.SCHEDULER_SLOT_WINDOW_MINUTES || 10)));
 const DYNAMIC_SLOT_MAX_AGE_HOURS = Math.max(4, Math.min(48, Number(process.env.DYNAMIC_SLOT_MAX_AGE_HOURS || 24)));
 // Regular channel promise: one regular publication slot every hour from 08:00
@@ -6809,6 +6823,13 @@ async function prepareDynamicSlot() {
     return { ok: true, skipped: "suppressed" };
   }
 
+  // This hour's staggered collection already ran: pick from the queue it filled, collect again only when nothing fits.
+  state.dynamicScheduler = state.dynamicScheduler || {};
+  if (COLLECTION_STAGGER_ENABLED && state.dynamicScheduler.lastCollectKey === staggeredCollectKey(day, hour)) {
+    await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
+    const ready = dynamicAssignBest(day, time);
+    if (ready) return { ok: true, slot: time, collector: { ok: true, skipped: "staggered_collect_done" }, prepared: ready.id, title: ready.title };
+  }
   const collector = await collectOnce("slot-prep");
   await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
   const item = dynamicAssignBest(day, time);
@@ -6872,7 +6893,55 @@ function slotHasSuccessfulPublication(slotKey) {
 function emptySlotCollectorAllowed(schedulerState, slotKey) {
   const same = String(schedulerState.lastEmptySlotKey || "") === String(slotKey || "");
   const at = new Date(schedulerState.lastEmptySlotAttemptAt || 0).getTime();
-  return !same || !Number.isFinite(at) || Date.now() - at >= 2 * 60 * 1000;
+  return !same || !Number.isFinite(at) || Date.now() - at >= EMPTY_SLOT_RESCUE_MINUTES * 60 * 1000;
+}
+
+// A channel's own minute in [from, to]: channels spread evenly in a stable (id-sorted) order, the same order for
+// collecting, picking and publishing, so a channel always collects before it picks and picks before it posts.
+function staggerMinuteFor(workspaceId, from, to) {
+  const ids = (workspaceStore.workspaces || []).filter(Boolean).map(function(ws){ return String(ws.id); }).sort();
+  const idx = Math.max(0, ids.indexOf(String(workspaceId || "")));
+  const span = to - from;
+  if (ids.length <= 1 || span <= 0) return from;
+  return from + Math.round(idx * span / (ids.length - 1));
+}
+function collectionMinuteFor(workspaceId) { return staggerMinuteFor(workspaceId, COLLECTION_STAGGER_FROM, COLLECTION_STAGGER_TO); }
+function prepMinuteFor(workspaceId) { return staggerMinuteFor(workspaceId, SLOT_PREP_FROM, SLOT_PREP_TO); }
+function publishMinuteFor(workspaceId) { return staggerMinuteFor(workspaceId, 0, SLOT_PUBLISH_SPREAD_MINUTES); }
+
+function staggeredCollectKey(day, hour) {
+  return day + "-" + String(hour).padStart(2, "0") + "-collect";
+}
+
+// Runs this channel's collection for the next hourly slot at its own minute. Its completion is kept apart from
+// lastTickKey, so it can never make a slot's publish/prepare action look undone (or done).
+async function staggeredCollectTick(day, hour, minute) {
+  if (!COLLECTION_STAGGER_ENABLED || !COLLECTOR_ENABLED) return null;
+  if (hour < DYNAMIC_SLOT_START_HOUR - 1 || hour >= DYNAMIC_SLOT_END_HOUR) return null;
+  const at = collectionMinuteFor(currentWorkspaceId());
+  if (minute < at || minute >= Math.min(at + COLLECTION_STAGGER_WINDOW_MINUTES, prepMinuteFor(currentWorkspaceId()))) return null;
+  state.dynamicScheduler = state.dynamicScheduler || {};
+  const key = staggeredCollectKey(day, hour);
+  if (state.dynamicScheduler.lastCollectKey === key) return null;
+  if (state.mode !== "AUTO") return null;
+  if (dynamicDailyPublishedCount(day) >= DYNAMIC_DAILY_MAX) return null;
+  const started = Date.now();
+  try {
+    const result = await withDeadline(collectOnce("slot-collect"), SCHEDULER_PREPARE_TIMEOUT_MS, "staggered collect");
+    if (result && result.error === "Collector already running") return result; // retried on the next tick
+    state.dynamicScheduler.lastCollectKey = key;
+    state.dynamicScheduler.lastCollectAt = new Date().toISOString();
+    saveState();
+    console.log("STAGGERED_COLLECT " + JSON.stringify({ workspace: currentWorkspaceId(), minute: at, found: result && result.found || 0, queued: result && result.queued || 0, timedOut: Boolean(result && result.timedOut), sec: Math.round((Date.now() - started) / 1000) }));
+    return result;
+  } catch (error) {
+    if (error && error.code === "DEADLINE") {
+      console.error("SCHEDULER_TICK_TIMEOUT " + JSON.stringify({ workspace: currentWorkspaceId(), action: "collect", slot: key, collector: collectorRunInfo(currentWorkspaceId()) }));
+    } else {
+      console.error("STAGGERED_COLLECT_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), error: String(error && error.message || error).slice(0, 200) }));
+    }
+    return null;
+  }
 }
 
 // One slot = one published post. If the chosen post fails, the next best post from the queue is tried right away,
@@ -7307,14 +7376,20 @@ async function dynamicSchedulerTick() {
       action = "russian_ai_publish";
     }
   }
-  if (!action && inWindow(DYNAMIC_SLOT_PREP_MINUTE) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
+  const prepAt = prepMinuteFor(currentWorkspaceId());
+  const publishAt = publishMinuteFor(currentWorkspaceId());
+  if (!action && inWindow(prepAt) && hour >= DYNAMIC_SLOT_START_HOUR - 1 && hour < DYNAMIC_SLOT_END_HOUR) {
     action = "prepare";
-    windowStart = DYNAMIC_SLOT_PREP_MINUTE;
-  } else if (!action && inWindow(0) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
+    windowStart = prepAt;
+  } else if (!action && inWindow(publishAt) && hour >= DYNAMIC_SLOT_START_HOUR && hour <= DYNAMIC_SLOT_END_HOUR) {
     action = "publish";
-    windowStart = 0;
+    windowStart = publishAt;
   }
-  if (!action) return;
+  // No slot action due (or it already completed in this window): use the free tick for this channel's own collection.
+  if (!action || (state.dynamicScheduler && state.dynamicScheduler.lastTickKey === day + "-" + String(hour).padStart(2, "0") + ":" + String(windowStart).padStart(2, "0") + "-" + action)) {
+    await staggeredCollectTick(day, hour, minute);
+    return;
+  }
   if (action.startsWith("blogger_") && !bloggerLaneActive()) return;
   if (action.startsWith("russian_ai_") && !(state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) return;
 
@@ -7366,6 +7441,7 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
   // Give a slow collector/checker up to 44 minutes to recover the hourly post.
   // 20:45 is already the preparation window for 21:00, so stop before it.
   if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR || minute > 44) return;
+  // (per channel below: not before its own publish minute, and stop once its picking for the next hour begins)
 
   const day = moscowDateKey(now);
   const time = String(hour).padStart(2, "0") + ":00";
@@ -7373,6 +7449,8 @@ async function catchUpCurrentRegularSlotAllWorkspaces() {
 
   await Promise.all(workspaceStore.workspaces.map(async function(ws) {
     if (!ws || schedulerTickRunning.has(ws.id)) return;
+    // the catch-up must not post a channel before its own spread-out minute, nor run into its next preparation
+    if (minute < publishMinuteFor(ws.id) || minute >= prepMinuteFor(ws.id)) return;
     schedulerTickRunning.add(ws.id);
     try {
       await workspaceContext.run({ workspaceId: ws.id }, async function() {

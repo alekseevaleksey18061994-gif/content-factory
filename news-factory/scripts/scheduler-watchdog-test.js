@@ -5,7 +5,7 @@ process.env.TZ = "UTC";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { loadServer, inWs, net, listHtml, articleHtml, advance, LONG } from "./dedupe-harness.js";
+import { loadServer, inWs, net, listHtml, articleHtml, advance, setNow, LONG } from "./dedupe-harness.js";
 
 const cases = {};
 function test(name, fn) { cases[name] = fn; }
@@ -82,6 +82,7 @@ test("W4 a collection that runs past COLLECTOR_MAX_RUN_MINUTES stops cleanly bef
 test("W5 a hung 07:45 preparation is cut off: the tick returns, logs where it hung, and does not mark the slot done", async () => {
   const t = await loadServer({ fixedNow: "2026-10-04T04:45:00Z", env: { SCHEDULER_PREPARE_TIMEOUT_MINUTES: "0.02", AUTO_PUBLISH_ENABLED: "true" }, state: { chtotampokupki: { sources: [src("a", "https://a.example/")] } } });
   net.pages.set("https://a.example/", () => new Promise(() => {})); // never answers
+  setNow("2026-10-04T04:" + String(t.prepMinuteFor("chtotampokupki")).padStart(2, "0") + ":00Z"); // its own picking minute
   const c = captureLogs();
   const started = performance.now();
   try { await inWs(t, "chtotampokupki", () => t.dynamicSchedulerTick()); } finally { c.restore(); }
