@@ -97,6 +97,10 @@ for (const handle of ["wildberriesru_official","wildberries_khalyava","nashlawb"
 }
 const serverSource = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.url)), "utf8");
 assert.ok(serverSource.includes("normalizeAutoRubricSources(cars.state, APPROVED_AUTO_BLOGGER_SOURCES, BLOGGER_SLOTS"), "production car migration must use approved blogger pack");
+assert.ok(serverSource.includes("slot.rubricLabel = String(rubricMeta.label || rubricId)"), "calendar slots must expose their approved rubric label");
+const adminSource = fs.readFileSync(fileURLToPath(new URL("../public/admin.html", import.meta.url)), "utf8");
+assert.ok(adminSource.includes("var rubricLabel=String(slot.rubricLabel||'').trim();"), "admin calendar must render rubric-aware slots");
+assert.ok(adminSource.includes("Канал «Покупки»: 20 товарных слотов в день"), "shopping calendar must show its 20-slot plan instead of blogger copy");
 
 const shoppingState = {sources:[{id:"old",name:"Retail news",url:"https://example.com/retail",group:"media",enabled:true}],sourceReplenish:{}};
 const shoppingMigration = normalizeShoppingFindSources(shoppingState, SHOPPING_FIND_SOURCES, new Set(shoppingStrategy.rubrics.map((r)=>r.id)), "2026-10-05T00:00:00.000Z");

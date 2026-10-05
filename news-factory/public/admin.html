@@ -3998,7 +3998,8 @@ function renderCalendar(){
   var isToday=calendarDateKey===today;
   el('calendarDayTitle').textContent=(isToday?'Сегодня, ':'')+prettyCalendarDate(calendarDateKey).replace(/\s*г\.?$/,'');
   el('calendarTarget').textContent=schedule.targetPerDay||10;
-  var bloggerSlots=slots.filter(function(slot){return slot&&slot.kind==='blogger'}).length;
+  var shoppingCalendar=String(currentWorkspaceMeta&&currentWorkspaceMeta.editorialChannelId||'')==='shopping';
+  var bloggerSlots=shoppingCalendar?0:slots.filter(function(slot){return slot&&slot.kind==='blogger'}).length;
   var russianAiSlots=slots.filter(function(slot){return slot&&slot.kind==='russian-ai'}).length;
   var regular=slots.length-bloggerSlots-russianAiSlots;
   var reserve=0;
@@ -4032,16 +4033,20 @@ function renderCalendar(){
     var queueId=dayAssignments[slot.time]||'';
     var item=(state.queue||[]).find(function(q){return q.id===queueId});
     var title='',meta='',status='',cls='',actions='';
+    var rubricLabel=String(slot.rubricLabel||'').trim();
+    var lanePrefix=rubricLabel?(rubricLabel+' · '):(slot.kind==='blogger'&&!shoppingCalendar?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'');
+    var waitTitle=rubricLabel?('Ждём: '+rubricLabel):(slot.kind==='blogger'&&!shoppingCalendar?'Ждём новость от автоблогеров':slot.kind==='russian-ai'?'Ждём российскую AI-новость':'Ждём свежую новость');
+    var waitMeta=rubricLabel?('Автопоиск по рубрике за 15 минут'):(slot.kind==='blogger'&&!shoppingCalendar?'Отдельный поиск по автоблогерам начнётся за 15 минут':slot.kind==='russian-ai'?'Отдельный поиск по российским AI-источникам начнётся за 15 минут':'Автопоиск начнётся за 15 минут до этого времени');
 
     if(match>=0){
       used.add(match);
       title=scheduledHistory[match].title||'Опубликованная новость';
-      meta=(slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'')+'Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
+      meta=lanePrefix+'Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
       status='Опубликовано';cls='done';
     }else if(item){
       var pp=postParts(item);
       title=pp.title||'Без заголовка';
-      meta=(slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'')+(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
+      meta=lanePrefix+(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'');
       status='Подготовлено';cls='wait';
       actions='<div class="calendar-slot-actions"><button onclick="openQueuePreview('+ja(item.id)+')">Посмотреть</button><button onclick="openCalendarPicker('+ja(calendarDateKey)+','+ja(slot.time)+')">Заменить</button><button class="danger" onclick="calendarRemove('+ja(calendarDateKey)+','+ja(slot.time)+')">Убрать</button></div>';
     }else if(todayCmp<0 || (isToday&&slotMin<nowMin-55)){
@@ -4049,12 +4054,8 @@ function renderCalendar(){
       meta='К этому окну система не нашла подходящий материал';
       status='Без публикации';cls='wait';
     }else{
-      title=slot.kind==='blogger'
-        ?'Ждём новость от автоблогеров'
-        :(slot.kind==='russian-ai'?'Ждём российскую AI-новость':'Ждём свежую новость');
-      meta=slot.kind==='blogger'
-        ?'Отдельный поиск по автоблогерам начнётся за 15 минут'
-        :(slot.kind==='russian-ai'?'Отдельный поиск по российским AI-источникам начнётся за 15 минут':'Автопоиск начнётся за 15 минут до этого времени');
+      title=waitTitle;
+      meta=waitMeta;
       status='Ожидание';cls='wait';
       actions='<div class="calendar-slot-actions"><button onclick="openCalendarPicker('+ja(calendarDateKey)+','+ja(slot.time)+')">Выбрать</button><button onclick="calendarAuto('+ja(calendarDateKey)+','+ja(slot.time)+')">Автоподбор</button></div>';
     }
@@ -4066,7 +4067,9 @@ function renderCalendar(){
   var autoOn=systemStatus&&systemStatus.details&&systemStatus.details.scheduler&&String(systemStatus.details.scheduler.detail||'').includes('включена');
   var bloggerText=bloggerSlots?' Плюс 5 отдельных окон для автоблогеров: 10:30, 12:30, 15:30, 18:30 и 21:30. В эти окна обычные СМИ не подмешиваются.':'';
   var russianText=russianAiSlots?' Плюс 6 отдельных окон для российских AI-источников: 09:30, 11:30, 13:30, 16:30, 19:30 и 22:30.':'';
-  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+'Основные новости идут по часовым окнам с 08:00 до 23:00. За 15 минут система собирает свежие материалы и выбирает лучший.'+bloggerText+russianText+' Ручная публикация не отменяет следующий слот.';
+  var themedNote=rubricGroups&&rubricGroups.length?' Слоты распределены по утверждённым рубрикам; в каждый слот система подбирает материал только нужной рубрики.':'';
+  var shoppingNote=shoppingCalendar?' Канал «Покупки»: 20 товарных слотов в день по утверждённому расписанию.':' Основные новости идут по часовым окнам с 08:00 до 23:00.';
+  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+shoppingNote+' За 15 минут система собирает свежие материалы и выбирает лучший.'+themedNote+bloggerText+russianText+' Ручная публикация не отменяет следующий слот.';
   renderDashboardCalendar();
 }
 function moveCalendarDay(delta){if(!calendarDateKey)calendarDateKey=moscowDateKey(new Date());calendarDateKey=addCalendarDays(calendarDateKey,delta);renderCalendar()}
@@ -4082,9 +4085,11 @@ function renderDashboardCalendar(){
   el('dashCalendar').innerHTML=upcoming.map(function(slot){
     var q=(state.queue||[]).find(function(x){return x.id===assignments[slot.time]});
     var pp=q?postParts(q):null;
-    var title=pp?pp.title:(slot.kind==='blogger'?'Ждём автоблогера':slot.kind==='russian-ai'?'Ждём российскую AI-новость':'Ждём свежую новость');
-    var prefix=slot.kind==='blogger'?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'';
-    var meta=q?(prefix+(q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):(slot.kind==='russian-ai'?'Поиск российских AI-источников за 15 минут':'Автопоиск за 15 минут до слота');
+    var shopping=String(currentWorkspaceMeta&&currentWorkspaceMeta.editorialChannelId||'')==='shopping';
+    var rubricLabel=String(slot.rubricLabel||'').trim();
+    var title=pp?pp.title:(rubricLabel?('Ждём: '+rubricLabel):(slot.kind==='blogger'&&!shopping?'Ждём автоблогера':slot.kind==='russian-ai'?'Ждём российскую AI-новость':'Ждём свежую новость'));
+    var prefix=rubricLabel?(rubricLabel+' · '):(slot.kind==='blogger'&&!shopping?'Автоблогер · ':slot.kind==='russian-ai'?'Российский ИИ · ':'');
+    var meta=q?(prefix+(q.sourceName||'Источник')+(q.articlePublishedAt?' · '+ageRu(q.articlePublishedAt):'')):(rubricLabel?'Автопоиск по рубрике за 15 минут':slot.kind==='russian-ai'?'Поиск российских AI-источников за 15 минут':'Автопоиск за 15 минут до слота');
     return '<div class="dash-slot" onclick="'+(q?('openQueuePreview('+ja(q.id)+')'):"goPage('calendarPage')")+'"><div class="dash-slot-time">'+esc(slot.time)+'</div><div class="dash-slot-title">'+esc(title)+'</div><div class="dash-slot-meta">'+esc(meta)+'</div></div>';
   }).join('');
 }
