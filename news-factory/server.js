@@ -22,7 +22,7 @@ import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
 import { createPostmypostClient, resolvePostmypostTarget, listPostmypostAccounts, matchWorkspacesToAccounts, PUBLICATION_STATUS as PMP_STATUS } from "./lib/postmypost.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
-import { staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
+import { isPolicySkipReason, staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
 import {
   createEditorialPipeline,
   createModelClients,
@@ -3123,7 +3123,11 @@ function noteSourceEvent(sourceOrItem, event, extra) {
   else if (event === "error") { stat.errors = Number(stat.errors || 0) + 1; stat.lastErrorAt = now; }
   else if (event === "fetch_error") { stat.errorStreak = Number(stat.errorStreak || 0) + 1; }
   else if (event === "fetch_ok") { stat.errorStreak = 0; }
-  else if (event === "junk") { recordOutcome(stat, "junk"); stat.lastJunkReason = String(extra && extra.reason || "").slice(0, 160); }
+  else if (event === "junk") {
+    // "needs a confirmation" is the editors' rule, not the source's fault: it does not count toward the junk streak
+    if (isPolicySkipReason(extra && extra.reason)) { stat.policySkips = Number(stat.policySkips || 0) + 1; stat.policyStreak = Number(stat.policyStreak || 0) + 1; stat.lastPolicySkipAt = now; }
+    else { recordOutcome(stat, "junk"); stat.lastJunkReason = String(extra && extra.reason || "").slice(0, 160); }
+  }
   else if (event === "useful") { recordOutcome(stat, "ok"); }
   else if (event === "media_good") { stat.mediaGood = Number(stat.mediaGood || 0) + 1; stat.lastMediaScore = Number(extra && extra.score || 0); }
   else if (event === "media_bad") { stat.mediaBad = Number(stat.mediaBad || 0) + 1; stat.lastMediaScore = Number(extra && extra.score || 0); }
@@ -3164,6 +3168,7 @@ function autoPauseWeakSources() {
       if (!source || !source.enabled || source.autoPauseExempt || !ids.has(String(source.rubric || ""))) continue;
       // the editor switched it on by hand: never paused by this rule for 14 days
       if (source.editorEnabledAt && Date.now() - Date.parse(source.editorEnabledAt) < 14 * 86400000) continue;
+      if (source.recoveredAt && Date.now() - Date.parse(source.recoveredAt) < 14 * 86400000) continue; // put back by a recovery migration
       if (source.probationUntil && Date.parse(source.probationUntil) > Date.now()) continue; // still on trial
       if (counts[source.rubric] <= rubricMinFor(source.rubric)) continue; // never below the theme's minimum (the editor's own limit counts)
       const card = sourceScorecard(source, ensureSourceStat(source) || {}, ids, labels);
@@ -15119,6 +15124,69 @@ setTimeout(function repairMoneyRubricFloorV0528() {
     }
   })().catch(function(error){ console.warn("Money rubric floor repair failed:", error.message); });
 }, 45000);
+
+// v0.53.3: (1) money: core finance sources were auto-paused by "10 junk in a row" although most of those skips were
+// "needs an official source / two sources" (now not counted against the source) — put the curated ones back;
+// (2) shopping: sources that cannot work are switched off so the theme search replaces them: dateless catalogs
+// (every card fails the freshness rule) and sites that answer with redirect loops / 403 / 406.
+const POLICY_RECOVERY_MIGRATION = "v0.53.3-source-policy-recovery";
+const SHOPPING_BROKEN_URLS = ["https://kladskidok.ru/"];
+const SHOPPING_FAILING_HOSTS = ["pepper.ru", "buzzfeed.com", "trendhunter.com"];
+function recoverPolicyPausedSourcesV0533(ws) {
+  const channel = resolveChannelId(ws);
+  const out = { restored: [], paused: [] };
+  const now = new Date().toISOString();
+  if (channel === "money") {
+    for (const src of (ws.state.sources || [])) {
+      if (!src || src.enabled || !src.autoPaused || !/10 новостей подряд/.test(String(src.autoPaused.reason || ""))) continue;
+      const age = Date.now() - Date.parse(src.autoPaused.at || "");
+      if (!Number.isFinite(age) || age > 48 * 3600000) continue;
+      const from = src.autoAdded && src.autoAdded.from;
+      if (src.autoAdded && from !== "seed" && from !== "dna") continue; // only the curated list
+      src.enabled = true;
+      delete src.autoPaused;
+      const stat = ensureSourceStat(src);
+      if (stat) { stat.recent = []; stat.policyStreak = 0; }
+      src.recoveredAt = now; // grace: the theme scorecard rule does not re-pause it for 14 days
+      out.restored.push(src.name);
+    }
+  }
+  if (channel === "shopping") {
+    const hostOf = function(u){ try { return new URL(String(u || "")).hostname.replace(/^www\./i, "").toLowerCase(); } catch { return ""; } };
+    const pausedHosts = new Set(["kladskidok.ru"]);
+    for (const src of (ws.state.sources || [])) {
+      if (!src || !src.enabled) continue;
+      const stat = ensureSourceStat(src) || {};
+      const dateless = SHOPPING_BROKEN_URLS.includes(String(src.url || ""));
+      const failing = SHOPPING_FAILING_HOSTS.includes(hostOf(src.url)) && Number(stat.errorStreak || 0) >= 5;
+      if (!dateless && !failing) continue;
+      src.enabled = false;
+      src.autoPaused = { reason: dateless ? "каталог без дат публикации: редактор пропускает каждую карточку" : "сайт не открывается из нашей сети (" + stat.errorStreak + " проверок подряд)", at: now };
+      out.paused.push(src.name);
+      pausedHosts.add(dateless ? "kladskidok.ru" : hostOf(src.url));
+    }
+    ws.state.sourceBlockedHosts = Array.isArray(ws.state.sourceBlockedHosts) ? ws.state.sourceBlockedHosts : [];
+    // discovery must not bring the same sites back
+    for (const host of pausedHosts) if (host && !ws.state.sourceBlockedHosts.includes(host)) ws.state.sourceBlockedHosts.push(host);
+  }
+  return out;
+}
+setTimeout(function runPolicyRecoveryV0533() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      const channel = ws && ws.state ? resolveChannelId(ws) : "";
+      if (channel !== "money" && channel !== "shopping") continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(POLICY_RECOVERY_MIGRATION)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = recoverPolicyPausedSourcesV0533(ws);
+        state.migrations.push(POLICY_RECOVERY_MIGRATION);
+        saveState();
+        console.log("SOURCE_POLICY_RECOVERY " + JSON.stringify({ workspace: ws.id, channel: channel, restored: result.restored, paused: result.paused }));
+      });
+    }
+  })().catch(function(error){ console.warn("Source policy recovery failed:", error.message); });
+}, 130000);
 
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
