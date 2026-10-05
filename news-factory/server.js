@@ -16,7 +16,7 @@ import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTER
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
-import { normalizeShoppingFindSources, normalizeAutoRubricSources } from "./lib/channel-rubric-migrations.js";
+import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers } from "./lib/channel-rubric-migrations.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
@@ -1353,6 +1353,19 @@ function ensureConfiguredWorkspaces() {
     normalizeAutoRubricSources(cars.state, APPROVED_AUTO_BLOGGER_SOURCES, BLOGGER_SLOTS, new Date().toISOString());
     cars.state.migrations.push(carRubricMigration);
     cars.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+
+  // v0.53.1: v0.53.0 changed the approved blogger list, but old source-quality streaks survived.
+  // Give the newly approved pack a clean 14-day evaluation window instead of immediately pausing it for old rejects.
+  const carBloggerResetMigration = "v0.53.1-car-approved-blogger-reset";
+  if (!cars.state.migrations.includes(carBloggerResetMigration)) {
+    const now = new Date().toISOString();
+    normalizeAutoRubricSources(cars.state, APPROVED_AUTO_BLOGGER_SOURCES, BLOGGER_SLOTS, now);
+    const reset = resetApprovedAutoBloggers(cars.state, APPROVED_AUTO_BLOGGER_SOURCES, now);
+    cars.state.migrations.push(carBloggerResetMigration);
+    cars.updatedAt = now;
+    console.log("CAR_BLOGGER_RESET_V0531 " + JSON.stringify({ workspace: cars.id, reset: reset.reset.length }));
     changed = true;
   }
 
@@ -3106,6 +3119,9 @@ function autoPauseWeakSources() {
   const paused = [];
   for (const source of (state.sources || [])) {
     if (!source || !source.enabled) continue;
+    // A source explicitly re-enabled by the editor gets a 14-day clean evaluation window.
+    // This guard must run before the generic junk/error auto-pause, not only in the themed-source pass below.
+    if (source.editorEnabledAt && Date.now() - Date.parse(source.editorEnabledAt) < 14 * 86400000) continue;
     const group = source.group || "media";
     const enabledInGroup = (state.sources || []).filter(function(x){ return x && x.enabled && (x.group || "media") === group; }).length;
     const reason = autoPauseReason(source, ensureSourceStat(source), enabledInGroup);

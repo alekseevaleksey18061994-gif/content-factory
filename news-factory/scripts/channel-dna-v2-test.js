@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CHANNEL_DNA, SOURCE_CLASSES, channelStrategy } from "../lib/channel-dna.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "../lib/channel-curated-sources.js";
-import { normalizeShoppingFindSources, normalizeAutoRubricSources } from "../lib/channel-rubric-migrations.js";
+import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers } from "../lib/channel-rubric-migrations.js";
 import {
   sourceClassFor,
   classifyContentBucket,
@@ -110,5 +110,17 @@ assert.equal(autoState.sources.find((s)=>s.id==="blogger-lisa-rulit").enabled, f
 assert.equal(autoState.sources.find((s)=>s.id==="cars-zr").rubric, "russia_market");
 assert.equal(autoState.sources.filter((s)=>s.group==="blogger"&&s.enabled).length, 10);
 assert.equal(autoState.publicationSchedule.slots.length, 0);
+
+const staleApproved = autoState.sources.find((s)=>s.id===APPROVED_AUTO_BLOGGER_SOURCES[0].id);
+staleApproved.enabled = false;
+staleApproved.autoPaused = {reason:"10 новостей подряд отсеяны"};
+autoState.sourceStats = {[staleApproved.id]: {recent:Array(10).fill("junk"), junk:10}};
+const resetAt = "2026-10-05T01:00:00.000Z";
+const resetResult = resetApprovedAutoBloggers(autoState, APPROVED_AUTO_BLOGGER_SOURCES, resetAt);
+assert.equal(resetResult.reset.length, 10);
+assert.equal(staleApproved.enabled, true);
+assert.equal(staleApproved.autoPaused, undefined);
+assert.equal(staleApproved.editorEnabledAt, resetAt);
+assert.equal(autoState.sourceStats[staleApproved.id], undefined, "old junk streak must not survive the approved-list migration");
 
 console.log("Channel DNA v2 smoke: OK");
