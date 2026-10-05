@@ -75,13 +75,25 @@ export function parsePrefilterResult(text, count) {
   return out;
 }
 
+// An editorial skip that says nothing about the source itself: the fact may be true and on topic, the editors just
+// need an official source or two independent ones. Counting it as "junk" paused the best finance sources.
+// Narrow on purpose: rumours, clickbait, fakes, partner posts, stale items and missing dates stay the source's fault.
+// (JS \b does not work on Cyrillic, so no word boundaries here.)
+export function isPolicySkipReason(reason) {
+  const r = String(reason || "");
+  if (!r) return false;
+  if (/слух|кликбейт|фейк|опроверг|партн[её]рск|seo|спам|ненадёжн|ненадежн|реклам|не по теме|мелк|свеж|устар|стар(ая|ое|ые|ье|ый|ых|ую)(?![а-яё])|дат[аы] (публикации|материала|источника|обновления|новости|не)|без дат|нет дат|не указан/i.test(r)) return false;
+  return /недостаточно (надёжных |надежных )?(источников|подтвержд)|подтвержд[а-яё]* только одним|нужен (официальный )?(первоисточник|официальный источник)|нужны? (два|2) (независимых|источника)|нужен официальный|нет официальн[а-яё]* (источника|подтвержд)/i.test(r);
+}
+export const AUTO_PAUSE_POLICY_STREAK = 30;
+
 export function recordOutcome(stat, outcome) {
   if (!stat) return;
   stat.recent = Array.isArray(stat.recent) ? stat.recent : [];
   stat.recent.push(outcome);
   if (stat.recent.length > RECENT_OUTCOMES) stat.recent = stat.recent.slice(-RECENT_OUTCOMES);
   if (outcome === "junk") stat.junk = Number(stat.junk || 0) + 1;
-  if (outcome === "ok") stat.useful = Number(stat.useful || 0) + 1;
+  if (outcome === "ok") { stat.useful = Number(stat.useful || 0) + 1; stat.policyStreak = 0; }
 }
 
 // Returns a Russian reason when the source should be paused, otherwise "".
@@ -98,6 +110,10 @@ export function autoPauseReason(source, stat, enabledInGroup) {
   if (Number.isFinite(until) && Date.now() > until) {
     const good = Number(stat.useful || 0) + Number(stat.published || 0) + Number(stat.selected || 0);
     if (!good) return "за пробный срок не дал ни одной новости, прошедшей отбор";
+  }
+  // Confirmation-only skips do not count as junk, but a source that produces nothing else for 30 items in a row is still replaced.
+  if (Number(stat.policyStreak || 0) >= AUTO_PAUSE_POLICY_STREAK) {
+    return AUTO_PAUSE_POLICY_STREAK + " новостей подряд пропущены: их нечем подтвердить";
   }
   const recent = Array.isArray(stat.recent) ? stat.recent : [];
   if (recent.length >= AUTO_PAUSE_JUNK_STREAK && recent.slice(-AUTO_PAUSE_JUNK_STREAK).every(function(x){ return x === "junk"; })) {
