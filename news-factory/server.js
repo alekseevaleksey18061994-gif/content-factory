@@ -695,6 +695,24 @@ function ensureScheduleShape(targetState) {
       schedule.targetPerDay = total;
     }
   }
+  // Expose the approved rubric attached to every themed slot. The scheduler already enforces this
+  // through channelSlotRubric(); keeping it on the slot lets the admin calendar show the real plan.
+  if (ownerWs && Array.isArray(schedule.slots)) {
+    const strategy = channelStrategy(resolveChannelId(ownerWs));
+    const rubricById = new Map((strategy.rubrics || []).map(function(r){ return [String(r.id || ""), r]; }));
+    for (const slot of schedule.slots) {
+      if (!slot) continue;
+      const rubricId = channelSlotRubric(String(slot.time || ""), ownerWs);
+      const rubricMeta = rubricById.get(rubricId);
+      if (rubricId && rubricMeta) {
+        slot.rubric = rubricId;
+        slot.rubricLabel = String(rubricMeta.label || rubricId);
+      } else {
+        delete slot.rubric;
+        delete slot.rubricLabel;
+      }
+    }
+  }
   return schedule;
 }
 
