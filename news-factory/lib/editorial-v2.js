@@ -798,7 +798,11 @@ export function createEditorialPipeline(options) {
         // Claude only sees a draft GPT passed. If GPT asked for fixes or rejected, the verdict is already decided,
         // so the call would be wasted. If GPT could not answer at all (no money, outage), Claude takes over as the
         // only checker (provider failover); with failover off that stays "unavailable" and the post waits.
-        if (!first.failed && first.verdict === "pass") results.push(await claudeJob(false));
+        // v0.53.5 cost cap: below anthropicCheckMinImportance a GPT-passed draft is published on GPT alone (no Claude call).
+        const claudeMinImportance = Math.max(0, Math.min(10, Number(opt.config && opt.config.anthropicCheckMinImportance || 0) || 0));
+        const claudeWorthIt = needsStrongClaude || Number(post.importance || 0) >= claudeMinImportance;
+        if (!first.failed && first.verdict === "pass" && claudeWorthIt) results.push(await claudeJob(false));
+        else if (!first.failed && first.verdict === "pass") claudeSkipped = true;
         // When Claude becomes the ONLY checker because OpenAI is down, use the
         // strong model regardless of importance — this is failover, not routine QC.
         else if (first.failed && failoverOn && failoverKind(first.failureKind)) results.push(await claudeJob(true));

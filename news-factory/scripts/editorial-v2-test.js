@@ -128,6 +128,17 @@ await test("pipeline: both checkers pass → approved, Claude really called", as
   assert.ok(mock.calls.anthropic[0].system.includes("## 13."));
 });
 
+await test("v0.53.5 cost gate: importance below anthropicCheckMinImportance -> no Claude call; at/above -> Claude called", async function() {
+  const cfg = Object.assign({}, withClaude, { anthropicCheckMinImportance: 7 });
+  const low = mockClients({ "openai:writer": Object.assign({}, WRITER_OK, { importance: 5 }), "openai:checker": PASS, "anthropic:checker": PASS });
+  const outLow = await createEditorialPipeline({ promptFile: PROMPT, clients: low.clients, config: cfg }).run("auto", REQUEST);
+  assert.equal(outLow.status, "approved");
+  assert.equal(low.calls.anthropic.length, 0, "no Claude call for importance 5");
+  const hi = mockClients({ "openai:writer": Object.assign({}, WRITER_OK, { importance: 7 }), "openai:checker": PASS, "anthropic:checker": PASS });
+  await createEditorialPipeline({ promptFile: PROMPT, clients: hi.clients, config: cfg }).run("auto", REQUEST);
+  assert.equal(hi.calls.anthropic.length, 1, "Claude called for importance 7");
+});
+
 await test("pipeline: Claude finds an error → writer fixes with notes → approved", async function() {
   const mock = mockClients({ "openai:writer": WRITER_OK, "openai:checker": PASS, "anthropic:checker": [FIX, PASS] });
   const p = createEditorialPipeline({ promptFile: PROMPT, clients: mock.clients, config: withClaude });

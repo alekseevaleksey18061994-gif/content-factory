@@ -120,9 +120,11 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
 // Sonnet is reserved for high-risk/high-importance checks and writer failover.
 const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
 const ANTHROPIC_CHECKER_MODEL = String(process.env.ANTHROPIC_CHECKER_MODEL || "claude-haiku-4-5").trim();
-const ANTHROPIC_STRONG_CHECKER_MODEL = String(process.env.ANTHROPIC_STRONG_CHECKER_MODEL || ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
+// v0.53.5: the strong checker inherits ANTHROPIC_MODEL only when it is not an Opus/Fable/Mythos-class model; those are capped to Sonnet unless ANTHROPIC_STRONG_CHECKER_MODEL is set.
+const ANTHROPIC_STRONG_CHECKER_MODEL = String(process.env.ANTHROPIC_STRONG_CHECKER_MODEL || (/opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? "claude-sonnet-5-5" : ANTHROPIC_MODEL) || "claude-sonnet-5-5").trim();
+const ANTHROPIC_CHECK_MIN_IMPORTANCE = Math.max(0, Math.min(10, Number(process.env.ANTHROPIC_CHECK_MIN_IMPORTANCE == null || process.env.ANTHROPIC_CHECK_MIN_IMPORTANCE === "" ? 7 : process.env.ANTHROPIC_CHECK_MIN_IMPORTANCE) || 0));
 const ANTHROPIC_ASSIST_MODEL = String(process.env.ANTHROPIC_ASSIST_MODEL || ANTHROPIC_CHECKER_MODEL).trim();
-const ANTHROPIC_STRONG_IMPORTANCE = Math.max(7, Math.min(10, Number(process.env.ANTHROPIC_STRONG_IMPORTANCE || 9) || 9));
+const ANTHROPIC_STRONG_IMPORTANCE = Math.max(7, Math.min(10, Number(process.env.ANTHROPIC_STRONG_IMPORTANCE || 10) || 10));
 const ANTHROPIC_HEALTH_CACHE_MIN = Math.max(10, Math.min(360, Number(process.env.ANTHROPIC_HEALTH_CACHE_MIN || 120) || 120));
 // Provider failover: OpenAI or Claude out of money (or down) -> the other one writes and checks, publishing goes on.
 const PROVIDER_FAILOVER_ENABLED = String(process.env.EDITORIAL_V2_PROVIDER_FAILOVER || "true").toLowerCase() !== "false";
@@ -10854,6 +10856,7 @@ function editorialPipeline() {
         anthropicModel: ANTHROPIC_CHECKER_MODEL,
         anthropicStrongModel: ANTHROPIC_STRONG_CHECKER_MODEL,
         anthropicStrongImportance: ANTHROPIC_STRONG_IMPORTANCE,
+        anthropicCheckMinImportance: ANTHROPIC_CHECK_MIN_IMPORTANCE,
         anthropicWriterModel: ANTHROPIC_FALLBACK_WRITER_MODEL,
         providerFailover: PROVIDER_FAILOVER_ENABLED,
         breaker: providerBreaker,
