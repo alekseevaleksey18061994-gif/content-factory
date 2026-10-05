@@ -15201,6 +15201,40 @@ setTimeout(function runPolicyRecoveryV0533() {
   })().catch(function(error){ console.warn("Source policy recovery failed:", error.message); });
 }, 130000);
 
+// v0.54.2: safeFetch now returns cookies handed out by redirects, so the Pepper pages open again. Re-enable the three
+// Pepper sources v0.53.3 paused (and unblock the host) for «Что там с покупками?». One-time; "Клад скидок" stays off.
+const PEPPER_RESTORE_MIGRATION = "v0.54.2-pepper-restore";
+function restorePepperSourcesV0542() {
+  const now = new Date().toISOString();
+  const restored = [];
+  for (const src of (state.sources || [])) {
+    if (!src || src.enabled || !/(^|\.)pepper\.ru$/i.test(String(src.url || "").replace(/^https?:\/\//i, "").split("/")[0])) continue;
+    src.enabled = true;
+    delete src.autoPaused;
+    const stat = ensureSourceStat(src);
+    if (stat) { stat.errorStreak = 0; stat.recent = []; stat.policyStreak = 0; }
+    src.recoveredAt = now;
+    restored.push(src.name);
+  }
+  state.sourceBlockedHosts = (Array.isArray(state.sourceBlockedHosts) ? state.sourceBlockedHosts : []).filter(function(h){ return h !== "pepper.ru"; });
+  return restored;
+}
+setTimeout(function runPepperRestoreV0542() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || resolveChannelId(ws) !== "shopping") continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(PEPPER_RESTORE_MIGRATION)) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const restored = restorePepperSourcesV0542();
+        state.migrations.push(PEPPER_RESTORE_MIGRATION);
+        saveState();
+        console.log("PEPPER_RESTORE_V0542 " + JSON.stringify({ workspace: ws.id, restored: restored }));
+      });
+    }
+  })().catch(function(error){ console.warn("Pepper restore failed:", error.message); });
+}, 140000);
+
 // One-time, additive recovery of channels lost from workspaces.json (see lib/workspace-recovery.js).
 let workspaceRecoveryRunning = false;
 async function recoverMissingWorkspaces() {
