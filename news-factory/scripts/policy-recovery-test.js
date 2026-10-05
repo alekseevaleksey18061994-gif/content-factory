@@ -100,5 +100,23 @@ await test("P4 shopping: the dateless catalog and failing hosts are switched off
   assert.equal(m.state.sources[0].enabled, true);
 });
 
+await test("P5 v0.54.2: paused Pepper sources are re-enabled and unblocked; other paused sources stay off", async () => {
+  const t = await loadServer({ fixedNow: NOW, state: { [S]: { sourceBlockedHosts: ["pepper.ru", "kladskidok.ru"], sources: [
+    src("pep1", "https://www.pepper.ru/search?q=ozon", { enabled: false, autoPaused: { reason: "сайт не открывается", at: NOW } }),
+    src("pep2", "https://www.pepper.ru/search?q=aliexpress", { enabled: false, autoPaused: { reason: "x", at: NOW } }),
+    src("klad", "https://kladskidok.ru/", { enabled: false, autoPaused: { reason: "каталог без дат", at: NOW } }),
+    src("tg", "https://t.me/s/ozonru")
+  ] } } });
+  t.restoreConsole();
+  const ws = t.ws(S);
+  const restored = inWs(t, S, () => t.restorePepperSourcesV0542());
+  assert.deepEqual(restored.sort(), ["pep1", "pep2"]);
+  const on = (id) => ws.state.sources.find((x) => x.id === id).enabled;
+  assert.deepEqual(["pep1", "pep2", "klad", "tg"].map(on), [true, true, false, true]);
+  assert.deepEqual(ws.state.sourceBlockedHosts, ["kladskidok.ru"]);
+  assert.ok(ws.state.sources[0].recoveredAt);
+  assert.deepEqual(inWs(t, S, () => t.restorePepperSourcesV0542()), [], "second run restores nothing");
+});
+
 console.log("policy-recovery tests passed (" + passed + ")");
 process.exit(0);
