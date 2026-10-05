@@ -16,7 +16,7 @@ import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTER
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
-import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers } from "./lib/channel-rubric-migrations.js";
+import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers, reassignCarRubricGroups } from "./lib/channel-rubric-migrations.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
@@ -1386,6 +1386,16 @@ function ensureConfiguredWorkspaces() {
     cars.state.migrations.push(carBloggerResetMigration);
     cars.updatedAt = now;
     console.log("CAR_BLOGGER_RESET_V0531 " + JSON.stringify({ workspace: cars.id, reset: reset.reset.length }));
+    changed = true;
+  }
+
+  // v0.54.0: split the seeded car sources into separate theme groups (previously almost all sat in "premieres").
+  const carGroupsMigration = "v0.54.0-car-rubric-groups";
+  if (!cars.state.migrations.includes(carGroupsMigration)) {
+    const reassigned = reassignCarRubricGroups(cars.state, new Date().toISOString());
+    cars.state.migrations.push(carGroupsMigration);
+    cars.updatedAt = new Date().toISOString();
+    console.log("CAR_RUBRIC_GROUPS_V0540 " + JSON.stringify({ workspace: cars.id, reassigned: reassigned.length }));
     changed = true;
   }
 

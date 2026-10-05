@@ -53,6 +53,37 @@ export function normalizeShoppingFindSources(state, curatedSources, validRubrics
   return { added, assigned, paused };
 }
 
+
+// v0.54.0: every seeded car source belongs to its OWN group (one panel = one theme); only Drom is shared by two
+// practical groups. Before this, almost every source sat in "premieres" and every foreign one in "viral_unusual".
+export const CAR_RUBRIC_MAP = {
+  premieres: ["cars-toyota","cars-vw","cars-bmw","cars-mercedes","cars-motor1","cars-autocar","cars-caranddriver"],
+  russia_market: ["cars-autonews-ru","cars-quto","cars-autostat","cars-drom","cars-zr"],
+  driver_important: ["cars-zr","cars-kolesa","cars-autoreview","cars-drom"],
+  china_cars: ["cars-byd","cars-geely","cars-chery","cars-gwm","cars-zeekr","cars-carnewschina","cars-gasgoo"],
+  electric_hybrid: ["cars-tesla","cars-nio","cars-xpeng","cars-cnevpost","cars-electrek","cars-insideevs"],
+  auto_tech: ["cars-thedrive","cars-reuters","cars-motor-ru","cars-autoevolution"],
+  viral_unusual: ["cars-jalopnik","cars-topgear","cars-carscoops","cars-autoevolution"]
+};
+function rubricsOf(id) { return Object.keys(CAR_RUBRIC_MAP).filter(function(r){ return CAR_RUBRIC_MAP[r].includes(id); }); }
+
+// Re-split the seeded car sources into their own groups WITHOUT touching enabled/paused flags (safe to run once on prod).
+export function reassignCarRubricGroups(state, nowIso) {
+  const now = nowIso || new Date().toISOString();
+  const changed = [];
+  for (const source of (state.sources || [])) {
+    const id = String(source && source.id || "");
+    if (!id.startsWith("cars-")) continue;
+    const many = rubricsOf(id);
+    if (!many.length) many.push("premieres");
+    source.rubric = many[0];
+    source.rubrics = many;
+    source.rubricAssignedAt = now;
+    changed.push(id);
+  }
+  return changed;
+}
+
 export function normalizeAutoRubricSources(state, approvedBloggers, oldBloggerSlots, nowIso) {
   const now = nowIso || new Date().toISOString();
   const bloggers = Array.isArray(approvedBloggers) ? approvedBloggers : [];
@@ -66,11 +97,6 @@ export function normalizeAutoRubricSources(state, approvedBloggers, oldBloggerSl
       added.push(blogger.name);
     }
   }
-
-  const chinese = new Set(["cars-byd","cars-geely","cars-chery","cars-nio","cars-xpeng","cars-zeekr","cars-gwm","cars-carnewschina","cars-cnevpost","cars-gasgoo"]);
-  const electric = new Set(["cars-tesla","cars-byd","cars-nio","cars-xpeng","cars-zeekr","cars-electrek","cars-insideevs","cars-cnevpost"]);
-  const russian = new Set(["cars-autonews-ru","cars-motor-ru","cars-drom","cars-quto","cars-zr","cars-autostat","cars-kolesa","cars-autoreview"]);
-  const tech = new Set(["cars-tesla","cars-byd","cars-nio","cars-xpeng","cars-zeekr","cars-vw","cars-bmw","cars-mercedes","cars-electrek","cars-insideevs"]);
 
   for (const source of (state.sources || [])) {
     if (!source) continue;
@@ -100,13 +126,8 @@ export function normalizeAutoRubricSources(state, approvedBloggers, oldBloggerSl
     }
 
     if (!id.startsWith("cars-")) continue;
-    const many = [];
-    if (russian.has(id)) many.push("russia_market", "driver_important");
-    if (chinese.has(id)) many.push("china_cars");
-    if (electric.has(id)) many.push("electric_hybrid");
-    if (tech.has(id)) many.push("auto_tech");
-    if (!many.includes("premieres")) many.push("premieres");
-    if (!russian.has(id)) many.push("viral_unusual");
+    const many = rubricsOf(id);
+    if (!many.length) many.push("premieres");
     source.rubric = many[0];
     source.rubrics = Array.from(new Set(many));
     source.rubricAssignedAt = now;
