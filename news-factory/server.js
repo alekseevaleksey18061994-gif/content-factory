@@ -3255,7 +3255,7 @@ async function discoverSourcesWithAI(count, discoverOpts) {
         method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(90000)
+        signal: AbortSignal.timeout(180000)
       });
       const data = await response.json().catch(function(){ return {}; });
       if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));

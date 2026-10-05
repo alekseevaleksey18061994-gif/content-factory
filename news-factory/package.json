@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.54.0",
+  "version": "0.54.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -41,7 +41,8 @@
     "test:money-rubrics": "node scripts/money-rubrics-test.js",
     "test:policy-recovery": "node scripts/policy-recovery-test.js",
     "test:rating-gates": "node scripts/rating-gates-test.js",
-    "test:cars-rubrics": "node scripts/cars-rubrics-test.js"
+    "test:cars-rubrics": "node scripts/cars-rubrics-test.js",
+    "test:safe-fetch-cookie": "node scripts/safe-fetch-cookie-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
