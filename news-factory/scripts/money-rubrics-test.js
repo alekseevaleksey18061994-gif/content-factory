@@ -104,7 +104,10 @@ await test("M4 70–79 is reserve only when genuinely useful; below 70 never pub
   ws.state.queue=[reserve];
   const rating=inWs(t,M,()=>t.queueItemRating(reserve));
   assert.ok(rating>=70&&rating<80,"reserve rating="+rating);
-  assert.equal(inWs(t,M,()=>t.ratingBelowAutoThreshold(reserve)),true);
+  // v0.53.4: money thresholds relaxed to 70 normal / 60 reserve, so a 70+ post is now a normal candidate
+  assert.equal(inWs(t,M,()=>t.channelRatingMinAuto()),70);
+  assert.equal(inWs(t,M,()=>t.channelRatingDropBelow()),60);
+  assert.equal(inWs(t,M,()=>t.ratingBelowAutoThreshold(reserve)),false);
   assert.equal(inWs(t,M,()=>t.dynamicBestQueueItem()).id,"reserve");
 
   const weak=strong({
@@ -115,6 +118,7 @@ await test("M4 70–79 is reserve only when genuinely useful; below 70 never pub
   });
   ws.state.queue=[weak];
   assert.ok(inWs(t,M,()=>t.queueItemRating(weak))<70);
+  assert.equal(inWs(t,M,()=>t.autoQualityEligible(weak))===false||inWs(t,M,()=>t.queueItemRating(weak))>=60,true);
   assert.equal(inWs(t,M,()=>t.dynamicBestQueueItem()),null);
   t.restoreConsole();
 });

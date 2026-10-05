@@ -2968,11 +2968,11 @@ function queueItemRating(item) {
 }
 function channelRatingMinAuto() {
   const id = editorialChannelId();
-  return id === "money" ? 80 : (id === "shopping" ? 75 : POST_RATING_MIN_AUTO);
+  return id === "money" ? 70 : (id === "shopping" ? 55 : POST_RATING_MIN_AUTO);
 }
 function channelRatingDropBelow() {
   const id = editorialChannelId();
-  return id === "money" ? 70 : (id === "shopping" ? 65 : POST_RATING_DROP_BELOW);
+  return id === "money" ? 60 : (id === "shopping" ? 45 : POST_RATING_DROP_BELOW);
 }
 
 function moneyFactConfirmationOk(item) {
@@ -2987,7 +2987,7 @@ function moneyFactConfirmationOk(item) {
   return role === "official_primary" || count > 1;
 }
 
-// Posts below the channel threshold are reserve candidates; money uses 80 normal / 70 reserve.
+// Posts below the channel threshold are reserve candidates; money uses 70 normal / 60 reserve, shopping 55 / 45 (v0.53.4).
 function ratingBelowAutoThreshold(item) {
   const min = channelRatingMinAuto();
   return min > 0 && queueItemRating(item) < min;
