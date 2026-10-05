@@ -359,11 +359,33 @@ export function createSafeFetch(config) {
     const proxy = opts.proxy ? (typeof opts.proxy === "string" ? parseProxyUrl(opts.proxy) : opts.proxy) : null;
     let current = String(rawUrl || "").trim();
     let redirected = false;
+    // v0.54.1: cookies set by a redirect are sent back to the SAME host on the next hop (per call, never stored).
+    // Some shops (Pepper) redirect in a loop until the visitor returns the cookie they were just given.
+    const jar = new Map();
     for (let hop = 0; hop <= maxRedirects; hop++) {
       const u = validateUrl(current, { ipFilter: ipFilter, allowedPorts: allowedPorts, skipHostnameBlocklist: cfg.skipHostnameBlocklist });
-      const r = await requestOnce(u, { method: method, headers: opts.headers, maxBytes: maxBytes, timeoutMs: timeoutMs, deadline: deadline, signal: opts.signal, lookup: lookup, validateResponse: opts.validateResponse, proxy: proxy, family: opts.family });
+      let hopHeaders = opts.headers;
+      const hostJar = jar.get(u.hostname);
+      if (hostJar && hostJar.size) {
+        const own = Array.from(hostJar.entries()).map(function(e){ return e[0] + "=" + e[1]; }).join("; ");
+        hopHeaders = Object.assign({}, opts.headers || {});
+        const key = Object.keys(hopHeaders).find(function(k){ return k.toLowerCase() === "cookie"; });
+        if (key) hopHeaders[key] = String(hopHeaders[key]) + "; " + own; else hopHeaders.cookie = own;
+      }
+      const r = await requestOnce(u, { method: method, headers: hopHeaders, maxBytes: maxBytes, timeoutMs: timeoutMs, deadline: deadline, signal: opts.signal, lookup: lookup, validateResponse: opts.validateResponse, proxy: proxy, family: opts.family });
       if (REDIRECT_CODES.has(r.status) && r.location) {
         if (hop >= maxRedirects) throw new SafeFetchError("too_many_redirects", "Слишком много редиректов");
+        try {
+          const setCookies = r.headers && typeof r.headers.getSetCookie === "function" ? r.headers.getSetCookie() : [];
+          for (const sc of setCookies) {
+            const first = String(sc || "").split(";")[0];
+            const eq = first.indexOf("=");
+            if (eq <= 0) continue;
+            if (!jar.has(u.hostname)) jar.set(u.hostname, new Map());
+            const name = first.slice(0, eq).trim(), value = first.slice(eq + 1).trim();
+            if (/;\s*max-age=0/i.test(sc) || !value) jar.get(u.hostname).delete(name); else jar.get(u.hostname).set(name, value);
+          }
+        } catch {}
         try { current = new URL(r.location, u).href; } catch { throw new SafeFetchError("bad_url", "Некорректный redirect Location"); }
         redirected = true;
         continue;
