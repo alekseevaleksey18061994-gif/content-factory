@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
 import { SOURCES_V055 } from "./lib/channel-sources-v055.js";
-import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, classifySourceV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
+import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
@@ -409,6 +409,21 @@ function itemRubric(item, ids) {
   if (set.has(primary)) return primary;
   const many = Array.isArray(source.rubrics) ? source.rubrics.map(String) : [];
   return many.find(function(id){ return set.has(id); }) || "";
+}
+// Sub-topic of every queued/published post for the calendar tag: bucket → source rubric → keywords of the text.
+function itemRubricsMap() {
+  const out = {};
+  const ids = rubricIds();
+  if (!ids.size) return out;
+  const channelId = resolveChannelId(currentWorkspace());
+  const list = [].concat(Array.isArray(state.queue) ? state.queue : [], Array.isArray(state.history) ? state.history.slice(-400) : []);
+  for (const item of list) {
+    if (!item || !item.id) continue;
+    let r = itemRubric(item, ids);
+    if (!r) { const c = classifyTextV055(channelId, String(item.title || "") + " " + String(item.text || "").slice(0, 1500)); if (c && ids.has(c)) r = c; }
+    if (r) out[item.id] = r;
+  }
+  return out;
 }
 function rubricSourceCounts(ws) {
   const counts = {};
@@ -13791,7 +13806,7 @@ const server = http.createServer(async function(req, res) {
         item.decisionExplanation = buildDecisionExplanation(item);
         item.decisionExplanation.priorityScore = item.priorityScore;
       }
-      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), rubricGroups: rubricGroupsInfo(), ratingMinAuto: POST_RATING_MIN_AUTO, ratingDropBelow: POST_RATING_DROP_BELOW });
+      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), rubricGroups: rubricGroupsInfo(), itemRubrics: itemRubricsMap(), ratingMinAuto: POST_RATING_MIN_AUTO, ratingDropBelow: POST_RATING_DROP_BELOW });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
