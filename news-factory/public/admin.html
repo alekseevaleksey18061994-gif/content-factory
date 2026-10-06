@@ -2865,6 +2865,7 @@ input,select,textarea{border-radius:12px!important}
           <div class="panel-title"><div><h3>Сводка</h3><p id="costPeriod">Считаю расходы…</p></div><span class="chip" id="costFx">Курс —</span></div>
           <div class="cost-kpis">
             <div class="cost-kpi"><small>API за период</small><b id="costTotal">—</b><span id="costTotalUsd">—</span></div>
+            <div class="cost-kpi"><small>Один пост (в среднем)</small><b id="costPerPost">—</b><span id="costPerPostNote">—</span></div>
             <div class="cost-kpi"><small>OpenAI</small><b id="costOpenAI">—</b><span id="costOpenAICalls">—</span></div>
             <div class="cost-kpi"><small>Claude</small><b id="costAnthropic">—</b><span id="costAnthropicCalls">—</span></div>
             <div class="cost-kpi"><small>Railway run-rate</small><b id="costRailway">—</b><span>Оценка в месяц</span></div>
@@ -3066,7 +3067,7 @@ input,select,textarea{border-radius:12px!important}
 <script>
 var rgOpen=(function(){try{return JSON.parse(localStorage.getItem('nfRgOpen')||'{}')||{}}catch(e){return {}}})();
 function toggleRubricPanel(id){rgOpen[id]=!rgOpen[id];try{localStorage.setItem('nfRgOpen',JSON.stringify(rgOpen))}catch(e){}var n=document.querySelector('.rg-acc[data-rg="'+id+'"]');if(n){n.classList.toggle('open',!!rgOpen[id]);var b=n.querySelector('.rg-toggle');if(b)b.setAttribute('aria-expanded',rgOpen[id]?'true':'false')}}
-var ratingMinAuto=50,ratingDropBelow=35,state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],rubricGroups=[],itemRubrics={},previewCurrentItem=null;
+var ratingMinAuto=50,ratingDropBelow=35,state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],rubricGroups=[],itemRubrics={},postCosts={},previewCurrentItem=null;
 var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
 function toast(t){var x=el('toast');x.textContent=t;x.classList.add('show');setTimeout(function(){x.classList.remove('show')},2200)}
@@ -3787,7 +3788,7 @@ document.addEventListener('click',function(e){var sw=el('accountSwitcher');if(sw
 document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListener('click',function(){goPage(btn.dataset.page)})});
 
 async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});if(activeWorkspaceId)opt.headers['x-workspace-id']=activeWorkspaceId;var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
-async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];rubricGroups=Array.isArray(j.rubricGroups)?j.rubricGroups:[];itemRubrics=j.itemRubrics&&typeof j.itemRubrics==='object'?j.itemRubrics:{};if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderNetworkDashboard();renderConnections(false).catch(function(e){toast(e.message)})}
+async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];rubricGroups=Array.isArray(j.rubricGroups)?j.rubricGroups:[];itemRubrics=j.itemRubrics&&typeof j.itemRubrics==='object'?j.itemRubrics:{};postCosts=j.postCosts&&typeof j.postCosts==='object'?j.postCosts:{};if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderNetworkDashboard();renderConnections(false).catch(function(e){toast(e.message)})}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode('+ja(m)+')">'+labels[m]+'</button>'}).join('');
@@ -3940,7 +3941,7 @@ function render(){
       ? (effectiveImage?'<div class="queue-media-visual"><img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""'+thumbErr+'><span class="queue-video-overlay">▶ Видео</span></div>':'<div class="queue-placeholder">▶ Видео</div>')
       : effectiveImage?'<img class="queue-thumb" src="'+esc(effectiveImage)+'" alt=""'+thumbErr+'>':'<div class="queue-placeholder">Нет медиа</div>';
     var freshnessDate=q.articlePublishedAt||q.createdAt||'';
-    var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'');
+    var meta=(q.sourceName?esc(q.sourceName):'Источник')+(freshnessDate?' · '+safeDate(freshnessDate)+' · '+ageRu(freshnessDate):'')+postCostLabel(q);
     var ms=(q.mediaStatus==='enhanced'||q.mediaStatus==='video_poster_enhanced')
       ? q.mediaStatus
       : (q.videoUrl?'video_found':sourceImage?'photo_found':(q.generatedImageUrl?'generated':(q.mediaStatus||'missing')));
@@ -4005,7 +4006,7 @@ function render(){
       '</div>'+
     '</article>';
   }).join(''):'<div class="empty">Очередь пока пустая</div>';
-  el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,20).map(function(h){return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+'</div></div></div>'}).join(''):'<div class="empty">Публикаций пока нет</div>';
+  el('history').innerHTML=(state.history||[]).length?(state.history||[]).slice(0,20).map(function(h){return '<div class="hist"><div><div class="name">'+esc(h.title||'Публикация')+'</div><div class="meta">'+new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId+postCostLabel(h)+'</div></div></div>'}).join(''):'<div class="empty">Публикаций пока нет</div>';
   renderDashboard();
   renderCalendar();
   renderSocialControls();
@@ -4752,6 +4753,9 @@ async function loadCosts(force){
     var oa=byProvider.openai||{},an=byProvider.anthropic||{};
     if(el('costTotal'))el('costTotal').textContent=moneyRub(totals.costRub);
     if(el('costTotalUsd'))el('costTotalUsd').textContent=moneyUsd(totals.costUsd)+' · '+Number(totals.calls||0).toLocaleString('ru-RU')+' API-вызовов';
+    var cpp=j.costPerPublishedPost||{};
+    if(el('costPerPost'))el('costPerPost').textContent=cpp.publishedPosts?(Number(cpp.costRub||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₽'):'—';
+    if(el('costPerPostNote'))el('costPerPostNote').textContent=cpp.publishedPosts?('за '+Number(cpp.publishedPosts).toLocaleString('ru-RU')+' опубликованных постов'):'нет публикаций за период';
     if(el('costOpenAI'))el('costOpenAI').textContent=moneyRub(oa.costRub||0);
     if(el('costOpenAICalls'))el('costOpenAICalls').textContent=Number(oa.calls||0).toLocaleString('ru-RU')+' вызовов · '+tokenShort((oa.inputTokens||0)+(oa.outputTokens||0))+' токенов';
     if(el('costAnthropic'))el('costAnthropic').textContent=moneyRub(an.costRub||0);
@@ -4826,6 +4830,7 @@ function decodeLooseJsonString(value){
   try{return JSON.parse('"'+String(value||'').replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'"')}catch(e){}
   return String(value||'').replace(/\\n/g,'\n').replace(/\\r/g,'').replace(/\\t/g,' ').replace(/\\"/g,'"').replace(/\\\\/g,'\\');
 }
+function postCostLabel(x){var id=x&&String(x.newsId||x.id||'');var v=id?postCosts[id]:null;return v==null?'':' · '+Number(v).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₽'}
 function postParts(item){
   var title=String(item&&item.title||'').trim();
   var text=String(item&&item.text||'').trim();
