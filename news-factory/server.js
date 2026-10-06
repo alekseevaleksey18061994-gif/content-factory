@@ -7378,7 +7378,15 @@ function dynamicRefreshBest(day, time, kind) {
   const currentId = schedule.assignments[day][time] || "";
   const current = currentId && (state.queue || []).find(function(q){ return q && q.id === currentId; });
 
-  if (current && String(current.manualFor || "") === slotKey) {
+  const currentManual = current && String(current.manualFor || "") === slotKey;
+  const currentKnownAuto = current && (String(current.reservedFor || "") === slotKey || String(current.preparedFor || "") === slotKey);
+  // Before v0.54.4 manual calendar choices had no marker at all. Treat an existing unmarked assignment as manual
+  // so a deploy cannot silently overwrite a user's choice.
+  if (current && (currentManual || !currentKnownAuto)) {
+    if (!currentManual) {
+      current.manualFor = slotKey;
+      current.manualAt = new Date().toISOString();
+    }
     setDynamicAssignment(day, time, current, kind, "prepared");
     saveState();
     return { item: current, replaced: false, previousId: currentId, manual: true };
