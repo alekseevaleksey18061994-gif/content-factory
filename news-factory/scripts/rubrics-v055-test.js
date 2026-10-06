@@ -8,7 +8,6 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadServer, inWs, mkQueueItem } from "./dedupe-harness.js";
 import { channelStrategy } from "../lib/channel-dna.js";
-import { limitConcurrency } from "../lib/concurrency-gate.js";
 import { RUBRIC_PLAN_V055, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRICS_V055_MIGRATION, classifySourceV055, shouldRestoreAutoPausedV055, isRubricsV055Channel } from "../lib/channel-rubrics-v055.js";
 
 const cases = {};
@@ -144,18 +143,24 @@ test("R7 recovery never brings the removed channels back", async () => {
   for (const id of REMOVED_CHANNELS_V055) assert.ok(!t.getWorkspaceById(id), id + " must stay removed");
 });
 
-test("R8 concurrency gate: never more than N calls in flight, order kept, errors release the slot", async () => {
-  let active = 0, peak = 0;
-  const order = [];
-  const gate = limitConcurrency(async (i) => { active += 1; peak = Math.max(peak, active); await new Promise((r) => setTimeout(r, 5)); active -= 1; if (i === 3) throw new Error("boom"); order.push(i); return i; }, 2);
-  const results = await Promise.allSettled([0, 1, 2, 3, 4, 5, 6].map((i) => gate(i)));
-  assert.equal(peak, 2);
-  assert.equal(results[3].status, "rejected");
-  assert.equal(results.filter((r) => r.status === "fulfilled").length, 6);
-  assert.deepEqual(gate.stats(), { active: 0, waiting: 0, limit: 2 });
-  const sync = limitConcurrency(() => { throw new Error("sync"); }, 1);
-  await assert.rejects(() => sync(), /sync/);
-  assert.equal(await limitConcurrency(async () => "ok", 1)(), "ok", "a thrown call does not block the next");
+test("R8 classifier does not match inside other words (Washington / method / second)", async () => {
+  assert.deepEqual(classifySourceV055("crypto", { name: "Washington Post", url: "https://washingtonpost.example/", group: "media" }), []);
+  assert.deepEqual(classifySourceV055("crypto", { name: "X", url: "https://x.example/method-second-section", group: "media" }), []);
+  assert.ok(classifySourceV055("crypto", { name: "Ethereum news", url: "https://x.example/", group: "media" }).includes("eth_ton"));
+  assert.ok(classifySourceV055("crypto", { name: "Toncoin", url: "https://x.example/", group: "media" }).includes("eth_ton"));
+});
+
+test("R9 stale :30 lane reservations are dropped when a channel becomes unified", async () => {
+  const t = await loadServer({ fixedNow: msk(10, 0), channels: CHANNELS, state: { chtotamkino: { sources: [src("a", "a", "https://a.example/")] } } });
+  const ws = t.ws("chtotamkino");
+  ws.state.queue = [mkQueueItem({ id: "x", newsId: "nx", aiScore: 90, reservedFor: "2026-10-06 12:30" })];
+  inWs(t, "chtotamkino", () => { const sc = t.ensureScheduleShape(t.state); sc.assignments["2026-10-06"] = { "12:30": "x" }; });
+  await t.runRubricsV055();
+  inWs(t, "chtotamkino", () => t.ensureScheduleShape(t.state));
+  const sc = ws.state.publicationSchedule;
+  assert.equal(sc.assignments["2026-10-06"] && sc.assignments["2026-10-06"]["12:30"], undefined);
+  assert.equal(ws.state.queue[0].reservedFor, undefined);
+  assert.equal(inWs(t, "chtotamkino", () => t.dynamicBestQueueItemRaw("", false)).id, "x", "the post is free again");
 });
 
 async function main() {

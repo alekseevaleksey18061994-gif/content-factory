@@ -13,7 +13,6 @@ import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPassw
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
-import { limitConcurrency } from "./lib/concurrency-gate.js";
 import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, classifySourceV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
@@ -686,7 +685,21 @@ function ensureScheduleShape(targetState) {
   const ownHours = ownerWs ? channelSlotHours(ownerWs) : null;
   const unified = ownerWs ? channelUnifiedSlots(ownerWs) : false;
   if (unified && Array.isArray(schedule.slots)) {
+    const laneTimes = new Set(schedule.slots.filter(function(slot){ return slot && (slot.kind === "blogger" || slot.kind === "russian-ai"); }).map(function(slot){ return String(slot.time || ""); }));
     schedule.slots = schedule.slots.filter(function(slot){ return slot && slot.kind !== "blogger" && slot.kind !== "russian-ai"; });
+    // reservations of the removed :30 lane slots would keep their posts "used" with no slot left to publish them
+    if (laneTimes.size) {
+      for (const day of Object.keys(schedule.assignments)) {
+        const dayMap = schedule.assignments[day];
+        if (!dayMap || typeof dayMap !== "object") continue;
+        for (const time of Object.keys(dayMap)) {
+          if (!laneTimes.has(time)) continue;
+          const lost = (targetState.queue || []).find(function(q){ return q && q.id === dayMap[time]; });
+          clearDynamicAssignmentMarkers(lost, day + " " + time);
+          delete dayMap[time];
+        }
+      }
+    }
   }
   if (ownHours && Array.isArray(schedule.slots)) {
     schedule.slots = schedule.slots.filter(function(slot){
@@ -2252,7 +2265,7 @@ const providerBreaker = createProviderBreaker({
 
 // Drop-in for the OpenAI Responses endpoint fetch used by the helper models (headline filter, scoring,
 // translation, story composer ...): OpenAI first, Claude when OpenAI has no money / is down.
-const llmResponsesFetch = limitConcurrency(createResponsesFailover({
+const llmResponsesFetch = createResponsesFailover({
   breaker: providerBreaker,
   get anthropicApiKey() { return PROVIDER_FAILOVER_ENABLED ? ANTHROPIC_API_KEY : ""; },
   get anthropicModel() { return ANTHROPIC_ASSIST_MODEL; },
@@ -2263,7 +2276,7 @@ const llmResponsesFetch = limitConcurrency(createResponsesFailover({
     llmResponsesFetch.lastLogAt = now;
     console.warn("LLM_FAILOVER " + JSON.stringify({ from: info.from, to: info.to, why: info.why }));
   }
-}), envNumber("LLM_MAX_CONCURRENCY", 8, 1, 64));
+});
 
 async function sendCostBudgetAlert(snapshot, threshold) {
   if (!BOT_TOKEN) return false;

@@ -154,9 +154,9 @@ export const RUBRIC_PLAN_V055 = {
     slotHours: hours([13, 16, 20, 23]), // 12
     rubrics: [
       r("bitcoin_market", "Биткоин и рынок", 3, "движение биткоина и рынка, крупные покупки и продажи, прогнозы без воды", ["bitcoin", "биткоин", "btc", "рынок", "market", "coindesk", "cointelegraph", "forklog"]),
-      r("eth_ton", "ETH и TON", 2, "Ethereum, TON и экосистемы, обновления, крупные события", ["ethereum", "eth", "ton", "тон", "telegram"]),
+      r("eth_ton", "ETH и TON", 2, "Ethereum, TON и экосистемы, обновления, крупные события", ["ethereum", "ethereum", "toncoin", "telegram"]),
       r("hacks_scams", "Взломы и мошенничество", 2, "взломы бирж и протоколов, схемы обмана, как не потерять деньги", ["hack", "взлом", "scam", "мошен", "rekt", "security"]),
-      r("regulation", "Регулирование", 1, "законы и ограничения по крипте в России и мире", ["regul", "регул", "закон", "цб", "минфин", "sec"]),
+      r("regulation", "Регулирование", 1, "законы и ограничения по крипте в России и мире", ["regul", "регул", "закон", "минфин", "sec.gov"]),
       r("crypto_services", "Сервисы", 2, "кошельки, биржи, платёжные сервисы, полезные инструменты", ["wallet", "кошел", "биржа", "exchange", "сервис", "bybit", "binance"]),
       r("crypto_unusual", "Необычное", 1, "странные и неожиданные истории из мира крипты", ["unusual", "необыч", "странн"]),
       r("crypto_bloggers", "Блогеры", 1, "крипто-блогеры и их мнения", BLOGGERS)
@@ -188,6 +188,15 @@ export function applyRubricPlanV055(channelDna) {
   return channelDna;
 }
 
+
+// Совпадение с началом слова/токена (после не-буквы), чтобы «ton» не находился в «Washington», а «eth» — в «method».
+function escapeRe(text) { return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+export function hasKeywordV055(haystack, word, minLength) {
+  const w = String(word || "").toLowerCase();
+  if (!w || w.length < (minLength || 3)) return false;
+  return new RegExp("(^|[^a-zа-яё0-9])" + escapeRe(w), "i").test(String(haystack || "").toLowerCase());
+}
+
 function haystack(source) {
   return (String(source && source.name || "") + " " + String(source && source.url || "")).toLowerCase();
 }
@@ -203,7 +212,7 @@ export function classifySourceV055(channelId, source) {
   if (source.group === "blogger" && bloggerRubric) return [bloggerRubric.rubric.id];
   for (const item of plan.rubrics) {
     if (item.keywords === BLOGGERS) continue;
-    if (item.keywords.some(function(word){ return word && text.includes(word); })) matched.push(item.rubric.id);
+    if (item.keywords.some(function(word){ return hasKeywordV055(text, word, 3); })) matched.push(item.rubric.id);
   }
   return matched.slice(0, 3);
 }
@@ -226,7 +235,7 @@ export function classifyTextV055(channelId, text) {
   const hay = String(text || "").toLowerCase();
   for (const item of plan.rubrics) {
     if (item.keywords === BLOGGERS) continue;
-    if (item.keywords.some(function(word){ return word && word.length >= (/[а-яё]/.test(word) ? 3 : 4) && hay.includes(word); })) return item.rubric.id;
+    if (item.keywords.some(function(word){ return hasKeywordV055(hay, word, /[а-яё]/.test(word) ? 3 : 4); })) return item.rubric.id;
   }
   return null;
 }
