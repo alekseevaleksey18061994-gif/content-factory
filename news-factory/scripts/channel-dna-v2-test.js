@@ -35,7 +35,7 @@ assert.equal(classifyContentBucket("science",{title:"Учёные обнаруж
 assert.equal(classifyContentBucket("sport",{title:"Hardcore: бой блогеров закончился конфликтом"}), "pop_mma");
 assert.equal(classifyContentBucket("shopping",{title:"На маркетплейсе началась скидка 40%"}), "deal");
 assert.equal(classifyContentBucket("shopping",{title:"Новый товар без скидки появился на Ozon"}), "viral_product");
-assert.equal(classifyContentBucket("home",{title:"Как организовать хранение в маленькой квартире"}), "storage");
+assert.equal(classifyContentBucket("home",{title:"Как организовать хранение в маленькой квартире"}), "organization");
 
 const aiHistory = Array.from({length:12},(_,i)=>({contentBucket:"companies_models",title:"Релиз модели "+i,publishedAt:new Date(Date.now()-i*3600000).toISOString()}));
 const viralMix = contentMixBalance("ai",{contentBucket:"viral_fun",title:"AI ролик"},aiHistory,24);
