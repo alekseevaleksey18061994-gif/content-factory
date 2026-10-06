@@ -207,6 +207,26 @@ test("S10 legacy manual assignments survive automatic refresh", async () => {
   assert.equal(t.ws(AI).state.queue.find((q) => q.id === "manual").manualFor, "2026-10-04 13:00");
 });
 
+
+test("S11 missed slot reservation expires after catch-up grace and is not duplicated later", async () => {
+  const AI = "ai-main";
+  const q1 = mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 });
+  const t = await loadServer({
+    fixedNow: mskToUtc(9, 50),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "REVIEW", queue: [q1] } }
+  });
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
+  let assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(assigned["10:00"], "q1");
+
+  setNow(mskToUtc(11, 35)); // 95 minutes after 10:00: regular-slot grace is over
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
+  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(assigned["10:00"], undefined);
+  assert.equal(Object.values(assigned).filter((id) => id === "q1").length, 1);
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {
