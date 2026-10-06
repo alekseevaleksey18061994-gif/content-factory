@@ -43,15 +43,17 @@ await test("M1 DNA: 8 equal rubrics, five-source floor and approved 8 normal slo
   assert.ok(Object.values(st.mix).every(v=>v===0.125));
   assert.equal(st.rubricMinSources,5);
   assert.equal(st.rubricMaxSources,6);
-  assert.deepEqual(st.slotHours,[9,11,13,16,18,20]);
+  assert.deepEqual(st.slotHours,[9,10,11,13,16,18,20,22]);
+  assert.equal(st.unifiedSlots,true);
 
   const t=await loadServer({fixedNow:msk(12,0)});
-  assert.deepEqual(inWs(t,M,()=>t.channelSlotHours()),[9,11,13,16,18,20]);
-  assert.deepEqual(inWs(t,M,()=>t.bloggerSlotsFor()),["14:30","21:30"]);
-  assert.equal(inWs(t,M,()=>t.bloggerTargetFor()),2);
+  assert.deepEqual(inWs(t,M,()=>t.channelSlotHours()),[9,10,11,13,16,18,20,22]);
+  assert.deepEqual(inWs(t,M,()=>t.bloggerSlotsFor()),[]);
+  assert.equal(inWs(t,M,()=>t.bloggerTargetFor()),0);
   const sch=inWs(t,M,()=>t.ensureScheduleShape(t.ws(M).state));
   const times=(sch.slots||[]).map(x=>x.time);
-  for(const time of ["09:00","11:00","13:00","14:30","16:00","18:00","20:00","21:30","22:30"]) assert.ok(times.includes(time),time);
+  for(const time of ["09:00","10:00","11:00","13:00","16:00","18:00","20:00","22:00"]) assert.ok(times.includes(time),time);
+  assert.ok(!times.some(x=>x.endsWith(":30")),"no :30 lanes for a unified channel");
   assert.equal(sch.targetPerDay,8);
   assert.equal(sch.maxPerDay,8);
   t.restoreConsole();

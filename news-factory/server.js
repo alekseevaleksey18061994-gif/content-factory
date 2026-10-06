@@ -507,7 +507,8 @@ function channelRubricConfigReady(ws) {
   const migrations = Array.isArray(st && st.migrations) ? st.migrations : [];
   if (id === "shopping" && !migrations.includes("v0.53.0-shopping-finds")) return false;
   if (id === "auto" && !migrations.includes("v0.53.0-car-rubrics")) return false;
-  if (isRubricsV055Channel(id) && !migrations.includes(RUBRICS_V055_MIGRATION)) return false;
+  // money/home already had their own rubric config before v0.55: no gate for them (no fallback window at startup)
+  if (isRubricsV055Channel(id) && id !== "money" && id !== "home" && !migrations.includes(RUBRICS_V055_MIGRATION)) return false;
   return true;
 }
 // v0.55.0 channels run as one hourly stream: bloggers and Russian-AI sources compete in the regular slots
@@ -3556,7 +3557,7 @@ async function replenishSourcesInner(reason) {
     !(themedChannelId === "home" && !themedMigrations.includes("v0.51.3-home-rubrics")) &&
     !(themedChannelId === "shopping" && !themedMigrations.includes("v0.53.0-shopping-finds")) &&
     !(themedChannelId === "auto" && !themedMigrations.includes("v0.53.0-car-rubrics")) &&
-    !(isRubricsV055Channel(themedChannelId) && !themedMigrations.includes(RUBRICS_V055_MIGRATION)); // sources must be tagged before themed discovery
+    !(isRubricsV055Channel(themedChannelId) && themedChannelId !== "money" && themedChannelId !== "home" && !themedMigrations.includes(RUBRICS_V055_MIGRATION)); // sources must be tagged before themed discovery
   // one miss counter for all themes: 3 empty searches in a row -> the whole theme search rests 24 h (paid web search)
   if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0 && discoveryAllowed("rubric")) {
     const counts = rubricSourceCounts();
