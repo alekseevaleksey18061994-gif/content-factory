@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
 import { SOURCES_V055 } from "./lib/channel-sources-v055.js";
-import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
+import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, isLegacyThemeChannelV055, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
@@ -744,6 +744,18 @@ function ensureScheduleShape(targetState) {
     });
     schedule.maxPerDay = Math.min(Number(schedule.maxPerDay || ownHours.length), ownHours.length);
     schedule.targetPerDay = Math.min(Number(schedule.targetPerDay || ownHours.length), ownHours.length);
+  }
+  if (unified && ownHours && Array.isArray(schedule.slots)) {
+    // a persisted calendar from before the channel went unified gets the new hourly slots too (money: 10:00 and 22:00)
+    const have = new Set(schedule.slots.map(function(slot){ return String(slot && slot.time || ""); }));
+    for (const h of ownHours) {
+      const time = String(h).padStart(2, "0") + ":00";
+      if (!have.has(time)) schedule.slots.push({ time: time, kind: "dynamic", label: "Динамическое окно" });
+    }
+    if (ownerWs && resolveChannelId(ownerWs) === "money" && !have.has("22:30")) schedule.slots.push({ time: "22:30", kind: "money-emergency", label: "Экстренно 95+" });
+    schedule.slots.sort(function(a,b){ return String(a.time || "").localeCompare(String(b.time || "")); });
+    schedule.maxPerDay = ownHours.length;
+    schedule.targetPerDay = ownHours.length;
   }
   const ownerLane = ownerWs && !unified ? CHANNEL_EXTRA_LANES[resolveChannelId(ownerWs)] : null;
   if (ownerLane && Array.isArray(schedule.slots)) {
@@ -15694,6 +15706,7 @@ function applyRubricsV055ToWorkspace(ws, nowMs) {
   const plan = RUBRIC_PLAN_V055[channelId];
   if (!plan) return null;
   const ids = new Set(plan.rubrics.map(function(item){ return item.rubric.id; }));
+  const legacyThemes = isLegacyThemeChannelV055(channelId);
   let renamed = false;
   if (ws.name && !String(ws.name).includes(" | ") && CHANNEL_NAME_TAILS_V055[channelId]) {
     ws.name = String(ws.name).trim() + " | " + CHANNEL_NAME_TAILS_V055[channelId];
@@ -15705,6 +15718,7 @@ function applyRubricsV055ToWorkspace(ws, nowMs) {
   let tagged = 0, restored = 0;
   for (const src of (state.sources || [])) {
     if (!src) continue;
+    if (legacyThemes) continue; // money/home already had curated rubric tags and their own pause history: nothing to re-tag or restore
     if (shouldRestoreAutoPausedV055(src, nowMs, 4 * 86400000)) {
       src.enabled = true;
       delete src.autoPaused;

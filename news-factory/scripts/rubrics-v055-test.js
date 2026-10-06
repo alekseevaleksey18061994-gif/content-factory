@@ -194,6 +194,45 @@ test("R11 starting sources: every rubric of the 10 channels has at least 6 candi
   }
 });
 
+test("R12 money/home keep their own source tags and pause history: the migration restores and re-tags nothing", async () => {
+  const NOW = "2026-10-06T12:00:00Z", day = (n) => new Date(Date.parse(NOW) - n * 86400000).toISOString();
+  const money = [
+    src("t1", "Налоги от ФНС", "https://t.me/s/nalog_gov_ru", { rubric: "taxes", rubrics: ["taxes"] }),
+    src("weak1", "Слабый налоговый", "https://x.example/n", { enabled: false, rubric: "taxes", rubrics: ["taxes"], autoPaused: { reason: "слабый источник темы «Налоги»: 0 публикаций", at: day(1) } }),
+    src("trial1", "Пробный", "https://x.example/p", { enabled: false, autoPaused: { reason: "пробный срок 24 ч: ни одной новости", at: day(1) } }),
+    src("bk", "Банкротство и долги", "https://bankrotstvo.example/", {})
+  ];
+  const t = await loadServer({ fixedNow: NOW, state: { chtotamdengi: { sources: money } } });
+  const before = JSON.stringify(t.ws("chtotamdengi").state.sources);
+  const name = t.ws("chtotamdengi").name;
+  await t.runRubricsV055();
+  const ws = t.ws("chtotamdengi");
+  assert.equal(JSON.stringify(ws.state.sources), before, "sources untouched");
+  assert.equal(ws.name, name);
+  assert.ok(ws.state.migrations.includes(RUBRICS_V055_MIGRATION), "marker set");
+  assert.equal(inWs(t, "chtotamtachki", () => t.channelUnifiedSlots()), false, "cars unchanged");
+});
+
+test("R13 money/home fallback bucket keeps the old classifier (a phishing post is not cards_banks)", async () => {
+  const { classifyContentBucket } = await import("../lib/channel-strategy.js");
+  assert.equal(classifyContentBucket("money", { title: "Мошенники украли деньги с карты: новая схема фишинга" }), "financial_scams");
+  assert.equal(classifyContentBucket("money", { title: "Налог на проценты по вкладам: что изменится" }), "taxes");
+  assert.equal(classifyContentBucket("ai", { title: "ИИ-ролик завирусился" }), "viral_fun");
+});
+
+test("R14 persisted money calendar gains the new hourly slots and keeps the 95+ emergency slot", async () => {
+  const M = "chtotamdengi";
+  const slots = [9, 11, 13, 16, 18, 20].map((h) => ({ time: String(h).padStart(2, "0") + ":00", kind: "dynamic", label: "Слот" }));
+  slots.push({ time: "14:30", kind: "blogger", label: "Автоблогер" });
+  const t = await loadServer({ fixedNow: msk(7, 0), state: { [M]: { publicationSchedule: { slots, assignments: {}, suppressed: {} } } } });
+  const ws = t.ws(M);
+  inWs(t, M, () => t.ensureScheduleShape(ws.state));
+  const times = ws.state.publicationSchedule.slots.map((x) => x.time);
+  for (const time of ["09:00", "10:00", "11:00", "13:00", "16:00", "18:00", "20:00", "22:00", "22:30"]) assert.ok(times.includes(time), time);
+  assert.ok(!times.includes("14:30"), "lane slot removed");
+  assert.equal(ws.state.publicationSchedule.targetPerDay, 8);
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {

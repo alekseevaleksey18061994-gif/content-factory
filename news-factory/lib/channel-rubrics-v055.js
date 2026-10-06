@@ -200,6 +200,11 @@ export function isRubricsV055Channel(channelId) {
 
 // Один раз при загрузке: рубрики, мягкие квоты, часы слотов и «единый поток» (без отдельных :30-линий)
 // записываются в профиль канала. Сами слоты и рубрики в работу включает миграция v0.55.0 (см. server.js).
+// money/home: рубрики и теги источников существовали до v0.55 — их текстовый классификатор и разметку источников не трогаем
+export function isLegacyThemeChannelV055(channelId) {
+  const plan = RUBRIC_PLAN_V055[String(channelId || "")];
+  return !!(plan && plan.keepSourceLimits);
+}
 export function applyRubricPlanV055(channelDna) {
   for (const channelId of Object.keys(RUBRIC_PLAN_V055)) {
     const dna = channelDna[channelId];

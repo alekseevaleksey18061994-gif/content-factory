@@ -53,7 +53,7 @@ await test("M1 DNA: 8 equal rubrics, five-source floor and approved 8 normal slo
   const sch=inWs(t,M,()=>t.ensureScheduleShape(t.ws(M).state));
   const times=(sch.slots||[]).map(x=>x.time);
   for(const time of ["09:00","10:00","11:00","13:00","16:00","18:00","20:00","22:00"]) assert.ok(times.includes(time),time);
-  assert.ok(!times.some(x=>x.endsWith(":30")),"no :30 lanes for a unified channel");
+  assert.ok(!times.some(x=>x.endsWith(":30")&&x!=="22:30"),"no :30 lanes for a unified channel (only the 95+ emergency slot)");
   assert.equal(sch.targetPerDay,8);
   assert.equal(sch.maxPerDay,8);
   t.restoreConsole();

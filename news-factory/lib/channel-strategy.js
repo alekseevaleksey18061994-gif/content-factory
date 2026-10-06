@@ -1,5 +1,5 @@
 import { CHANNEL_DNA, SOURCE_CLASSES } from "./channel-dna.js";
-import { isRubricsV055Channel, classifyTextV055 } from "./channel-rubrics-v055.js";
+import { isRubricsV055Channel, isLegacyThemeChannelV055, classifyTextV055 } from "./channel-rubrics-v055.js";
 
 const SIGNALS = ["virality", "utility", "discussion", "visual", "wow", "local", "deal"];
 
@@ -169,7 +169,7 @@ export function classifyContentBucket(channelId, item) {
   if (explicit && Object.prototype.hasOwnProperty.call(mix, explicit)) return explicit;
 
   const text = textOf(item);
-  if (isRubricsV055Channel(channelId)) {
+  if (isRubricsV055Channel(channelId) && !isLegacyThemeChannelV055(channelId)) {
     // v0.55.0: the mix keys are the channel's rubrics; the old keyword rules refer to the previous buckets
     return classifyTextV055(channelId, text) || Object.keys(mix)[0] || "general";
   }
