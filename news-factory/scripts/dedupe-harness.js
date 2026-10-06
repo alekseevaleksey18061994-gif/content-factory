@@ -98,7 +98,7 @@ export const LONG = " Подробности события: представи�
 const EXPORT_NAMES = [
   "db", "state", "workspaceStore", "workspaceContext", "getWorkspaceById", "currentWorkspaceId", "collectOnce", "classifyPublishedStoryRelationship",
   "tryMergeStoryQueueItem", "storySimilarity", "findStoryClusterCandidate", "runEditorialV2", "editorialNetworkRecent", "pruneQueueItems",
-  "dynamicBestQueueItem", "dynamicBestQueueItemRaw", "dynamicAssignBest", "dynamicReserveBest", "dynamicRefreshBest", "ensureScheduleAssignments", "publishDynamicSlot", "autoResolveQueue", "autoRejectReason", "dedupeQueueOnce",
+  "dynamicBestQueueItem", "dynamicBestQueueItemRaw", "dynamicAssignBest", "dynamicReserveBest", "dynamicRefreshBest", "ensureScheduleAssignments", "rebalanceScheduleAssignments", "publishDynamicSlot", "autoResolveQueue", "autoRejectReason", "dedupeQueueOnce",
   "saveState", "normalizeDate", "extractPublishedAt", "saveNewsItem", "seenOriginalUrl", "dynamicItemAgeMs", "dynamicSchedulerTick",
   "ensureScheduleShape", "moscowDateKey", "dynamicItemMaxAgeMs", "articleMaxAgeMs", "bumpSkipAttempt",
   "normalizeArticleUrl", "itemArticleKeys", "crossChannelIndex", "editorialRecentPosts", "crossChannelConflict", "channelFreshnessHours", "isApprovedQueueItem", "queueMaxAgeHoursFor", "dbReadyFlag",
