@@ -425,6 +425,23 @@ function itemRubricsMap() {
   }
   return out;
 }
+// Rub cost of every queued/published post (sum of its API calls by news_id), for the queue and history lists.
+async function postCostsMap() {
+  const out = {};
+  if (!db || !dbReady) return out;
+  const ids = [];
+  for (const item of [].concat(Array.isArray(state.queue) ? state.queue : [], Array.isArray(state.history) ? state.history.slice(0, 60) : [])) {
+    const id = item && String(item.newsId || item.id || "");
+    if (id) ids.push(id);
+  }
+  if (!ids.length) return out;
+  try {
+    const rate = await getUsdRubRate();
+    const r = await db.query("SELECT news_id, COALESCE(SUM(cost_usd),0)::float8 AS usd FROM cost_events WHERE workspace_id=$1 AND news_id = ANY($2::text[]) GROUP BY news_id", [currentWorkspaceId(), ids]);
+    for (const row of r.rows) out[row.news_id] = Math.round(Number(row.usd || 0) * rate * 100) / 100;
+  } catch (e) { console.warn("POST_COSTS_FAILED " + String(e && e.message || e).slice(0, 160)); }
+  return out;
+}
 function rubricSourceCounts(ws) {
   const counts = {};
   for (const r of channelRubrics(ws)) counts[r.id] = 0;
@@ -13806,7 +13823,7 @@ const server = http.createServer(async function(req, res) {
         item.decisionExplanation = buildDecisionExplanation(item);
         item.decisionExplanation.priorityScore = item.priorityScore;
       }
-      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), rubricGroups: rubricGroupsInfo(), itemRubrics: itemRubricsMap(), ratingMinAuto: POST_RATING_MIN_AUTO, ratingDropBelow: POST_RATING_DROP_BELOW });
+      return sendJson(res, 200, { ok: true, state: state, workspace: publicWorkspaceMeta(currentWorkspace()), sourceRankings: buildSourceRankings(), rubricGroups: rubricGroupsInfo(), itemRubrics: itemRubricsMap(), postCosts: await postCostsMap(), ratingMinAuto: POST_RATING_MIN_AUTO, ratingDropBelow: POST_RATING_DROP_BELOW });
     }
 
     if (req.method === "GET" && p === "/api/vk/oauth/status") {
