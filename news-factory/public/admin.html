@@ -4071,7 +4071,7 @@ function renderCalendar(){
   var russianText=russianAiSlots?' Плюс 6 отдельных окон для российских AI-источников: 09:30, 11:30, 13:30, 16:30, 19:30 и 22:30.':'';
   var themedNote=rubricGroups&&rubricGroups.length?' Слоты распределены по утверждённым рубрикам; в каждый слот система подбирает материал только нужной рубрики.':'';
   var shoppingNote=shoppingCalendar?' Канал «Покупки»: 20 товарных слотов в день по утверждённому расписанию.':' Основные новости идут по часовым окнам с 08:00 до 23:00.';
-  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+shoppingNote+' Подходящие новости ставятся в ближайшие свободные слоты сразу. За 15 минут до публикации система перепроверяет свежие материалы и меняет выбранную новость только если появилась более сильная.'+themedNote+bloggerText+russianText+' Ручная публикация не отменяет следующий слот.';
+  el('calendarNote').textContent=(autoOn?'Автопубликация включена. ':'Автопубликация сейчас выключена. ')+shoppingNote+' Подходящие новости ставятся в ближайшие свободные слоты сразу. Если появляется более сильная новость, очередь автоматически перестраивается. За 15 минут до слота и прямо перед публикацией система делает финальную перепроверку.'+themedNote+bloggerText+russianText+' Ручная публикация не отменяет следующий слот.';
   renderDashboardCalendar();
 }
 function moveCalendarDay(delta){if(!calendarDateKey)calendarDateKey=moscowDateKey(new Date());calendarDateKey=addCalendarDays(calendarDateKey,delta);renderCalendar()}
