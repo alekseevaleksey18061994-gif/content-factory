@@ -16148,6 +16148,15 @@ setTimeout(function(){
       await workspaceContext.run({ workspaceId: ws.id }, async function(){
         try {
           const target = await ensureTelegramPublishTarget(ws, true);
+          // v0.55.1: the cabinet shows the channel's real Telegram title when it carries the «<название> | <тема>» form
+          const tgTitle = String(target && target.chat && target.chat.title || "").trim();
+          if (tgTitle && tgTitle.includes(" | ") && tgTitle.length <= 120 && tgTitle !== ws.name) {
+            console.log("CHANNEL_NAME_SYNC " + JSON.stringify({ workspace: ws.id, from: ws.name, to: tgTitle }));
+            if (!ws.channelId) ws.channelId = resolveChannelId(ws);
+            ws.name = tgTitle;
+            ws.updatedAt = new Date().toISOString();
+            persistWorkspaceStore();
+          }
           let previewPosts = null;
           if (target.username) {
             try {
