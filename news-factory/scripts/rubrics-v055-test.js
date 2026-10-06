@@ -163,6 +163,14 @@ test("R9 stale :30 lane reservations are dropped when a channel becomes unified"
   assert.equal(inWs(t, "chtotamkino", () => t.dynamicBestQueueItemRaw("", false)).id, "x", "the post is free again");
 });
 
+test("R10 startup survives persisted calendar assignments (TDZ regression: DYNAMIC_ASSIGNMENT_GRACE_MIN)", async () => {
+  const t = await loadServer({ fixedNow: msk(12, 0), channels: CHANNELS, state: { chtotamtech: {
+    queue: [mkQueueItem({ id: "x", newsId: "nx" })],
+    publicationSchedule: { timezone: "Europe/Moscow", assignments: { "2026-10-06": { "13:00": "x", "09:30": "x" }, "2026-10-05": { "10:00": "x" } }, suppressed: {}, slots: [{ time: "13:00", kind: "dynamic" }, { time: "09:30", kind: "blogger" }] }
+  } } });
+  assert.ok(t.ws("chtotamtech"), "server loaded with persisted assignments");
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {
