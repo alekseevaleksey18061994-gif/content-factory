@@ -203,6 +203,8 @@ const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowe
 const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
 const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
 const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 15));
+// declared early: cleanupScheduleAssignments() runs while workspaces load at startup
+const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 const DYNAMIC_SLOT_START_HOUR = 8;
 const DYNAMIC_SLOT_END_HOUR = 23;
 const DYNAMIC_SLOT_PREP_MINUTE = 45; // default only; each channel picks at prepMinuteFor()
@@ -7310,7 +7312,6 @@ function dynamicUsedQueueIds() {
   });
   return used;
 }
-const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
 
 function dynamicBestQueueItem(kind, time) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
