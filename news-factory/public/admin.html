@@ -2362,6 +2362,9 @@ body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.
   .page-refresh-fab{width:48px;height:48px;min-height:48px}
   .qa-kpis>.kpi:first-child{grid-column:1/-1}
 }
+/* v0.55.0: full channel names («Что там у ИИ? | нейросети и ИИ») are shown in full, wrapped instead of cut off */
+.workspace-card-copy b,.network-account-copy b,.account-workspace-option b,.account-copy b,.workspace-option-copy b,.qa-channel-head b{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;overflow-wrap:anywhere;line-height:1.25}
+.hero-channel-copy h2{overflow-wrap:anywhere}
 </style>
 </head>
 <body>

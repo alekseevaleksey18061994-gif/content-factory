@@ -13,6 +13,8 @@ import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPassw
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
+import { limitConcurrency } from "./lib/concurrency-gate.js";
+import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, classifySourceV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
@@ -471,7 +473,15 @@ function channelRubricConfigReady(ws) {
   const migrations = Array.isArray(st && st.migrations) ? st.migrations : [];
   if (id === "shopping" && !migrations.includes("v0.53.0-shopping-finds")) return false;
   if (id === "auto" && !migrations.includes("v0.53.0-car-rubrics")) return false;
+  if (isRubricsV055Channel(id) && !migrations.includes(RUBRICS_V055_MIGRATION)) return false;
   return true;
+}
+// v0.55.0 channels run as one hourly stream: bloggers and Russian-AI sources compete in the regular slots
+// (no separate :30 lanes) and rubrics are soft daily quotas.
+function channelUnifiedSlots(ws) {
+  const target = ws || currentWorkspace();
+  if (!channelRubricConfigReady(target)) return false;
+  return Boolean(channelStrategy(resolveChannelId(target)).unifiedSlots);
 }
 function channelSlotHours(ws) {
   if (!channelRubricConfigReady(ws)) return null;
@@ -494,6 +504,7 @@ function channelDailyMax(ws) {
 function channelExtraLane() {
   const ws = currentWorkspace();
   if (!channelRubricConfigReady(ws) && resolveChannelId(ws) === "shopping") return null;
+  if (channelUnifiedSlots(ws)) return null;
   return CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null;
 }
 function bloggerSlotsFor() { const lane = channelExtraLane(); return lane ? lane.slots : []; }
@@ -673,6 +684,10 @@ function ensureScheduleShape(targetState) {
   try { ownerWs = targetState === state ? currentWorkspace() : null; } catch { ownerWs = null; }
   if (!ownerWs) ownerWs = wsList.find(function(w){ return w && w.state === targetState; }) || null;
   const ownHours = ownerWs ? channelSlotHours(ownerWs) : null;
+  const unified = ownerWs ? channelUnifiedSlots(ownerWs) : false;
+  if (unified && Array.isArray(schedule.slots)) {
+    schedule.slots = schedule.slots.filter(function(slot){ return slot && slot.kind !== "blogger" && slot.kind !== "russian-ai"; });
+  }
   if (ownHours && Array.isArray(schedule.slots)) {
     schedule.slots = schedule.slots.filter(function(slot){
       if (!slot || slot.kind === "blogger" || slot.kind === "russian-ai" || slot.kind === "money-emergency" || !/^\d{2}:00$/.test(String(slot.time || ""))) return true;
@@ -681,7 +696,7 @@ function ensureScheduleShape(targetState) {
     schedule.maxPerDay = Math.min(Number(schedule.maxPerDay || ownHours.length), ownHours.length);
     schedule.targetPerDay = Math.min(Number(schedule.targetPerDay || ownHours.length), ownHours.length);
   }
-  const ownerLane = ownerWs ? CHANNEL_EXTRA_LANES[resolveChannelId(ownerWs)] : null;
+  const ownerLane = ownerWs && !unified ? CHANNEL_EXTRA_LANES[resolveChannelId(ownerWs)] : null;
   if (ownerLane && Array.isArray(schedule.slots)) {
     const existing = new Set(schedule.slots.map(function(slot){ return String(slot && slot.time || ""); }));
     for (const time of ownerLane.slots || []) {
@@ -2237,7 +2252,7 @@ const providerBreaker = createProviderBreaker({
 
 // Drop-in for the OpenAI Responses endpoint fetch used by the helper models (headline filter, scoring,
 // translation, story composer ...): OpenAI first, Claude when OpenAI has no money / is down.
-const llmResponsesFetch = createResponsesFailover({
+const llmResponsesFetch = limitConcurrency(createResponsesFailover({
   breaker: providerBreaker,
   get anthropicApiKey() { return PROVIDER_FAILOVER_ENABLED ? ANTHROPIC_API_KEY : ""; },
   get anthropicModel() { return ANTHROPIC_ASSIST_MODEL; },
@@ -2248,7 +2263,7 @@ const llmResponsesFetch = createResponsesFailover({
     llmResponsesFetch.lastLogAt = now;
     console.warn("LLM_FAILOVER " + JSON.stringify({ from: info.from, to: info.to, why: info.why }));
   }
-});
+}), envNumber("LLM_MAX_CONCURRENCY", 8, 1, 64));
 
 async function sendCostBudgetAlert(snapshot, threshold) {
   if (!BOT_TOKEN) return false;
@@ -3492,7 +3507,8 @@ async function replenishSourcesInner(reason) {
   const themedReady =
     !(themedChannelId === "home" && !themedMigrations.includes("v0.51.3-home-rubrics")) &&
     !(themedChannelId === "shopping" && !themedMigrations.includes("v0.53.0-shopping-finds")) &&
-    !(themedChannelId === "auto" && !themedMigrations.includes("v0.53.0-car-rubrics")); // sources must be tagged before themed discovery
+    !(themedChannelId === "auto" && !themedMigrations.includes("v0.53.0-car-rubrics")) &&
+    !(isRubricsV055Channel(themedChannelId) && !themedMigrations.includes(RUBRICS_V055_MIGRATION)); // sources must be tagged before themed discovery
   // one miss counter for all themes: 3 empty searches in a row -> the whole theme search rests 24 h (paid web search)
   if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length && strategyNow.rubricMinSources > 0 && discoveryAllowed("rubric")) {
     const counts = rubricSourceCounts();
@@ -7303,12 +7319,19 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time) {
   const themes = rubricIds();
   const today = moscowDateKey(new Date());
   const themesToday = new Set();
+  const themeCountToday = {};
+  const strategyNow = channelStrategy(channelId);
+  const rubricQuota = {};
+  for (const rb of (strategyNow.rubrics || [])) rubricQuota[rb.id] = Math.max(1, Number(rb.perDay || 1));
+  const unifiedFlow = channelUnifiedSlots();
   if (themes.size) {
     for (const h of (state.history || [])) {
-      if (h && h.publishedAt && moscowDateKey(new Date(h.publishedAt)) === today) { const t = itemRubric(h, themes); if (t) themesToday.add(t); }
+      if (h && h.publishedAt && moscowDateKey(new Date(h.publishedAt)) === today) { const t = itemRubric(h, themes); if (t) { themesToday.add(t); themeCountToday[t] = (themeCountToday[t] || 0) + 1; } }
     }
   }
-  const themeRank = function(item) { if (!themes.size) return 0; const t = itemRubric(item, themes); return !t ? 1 : (themesToday.has(t) ? 0 : 2); };
+  // v0.55.0: a rubric with a daily quota (perDay) stays "open" until the quota is filled; the rule is soft (ranking only).
+  const themeOpen = function(t) { return unifiedFlow ? (themeCountToday[t] || 0) < (rubricQuota[t] || 1) : !themesToday.has(t); };
+  const themeRank = function(item) { if (!themes.size) return 0; const t = itemRubric(item, themes); return !t ? 1 : (themeOpen(t) ? 2 : 0); };
   return (state.queue || [])
     .filter(function(item) {
       if (!(item && item.id && item.newsId && item.status !== "media_failed" && item.status !== "publish_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
@@ -7337,6 +7360,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time) {
       if (wantsBlogger) return isBloggerSource(item) || Boolean(anySourceLane && !isRussianAISource(item));
       if (wantsRussianAi) return isRussianAISource(item);
       if (channelId === "auto") return !isRussianAISource(item);
+      if (unifiedFlow) return true;
       return !isBloggerSource(item) && !isRussianAISource(item);
     })
     .sort(function(a, b) {
@@ -8061,7 +8085,7 @@ async function dynamicSchedulerTick() {
       action = "money_emergency_prepare";
     } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
       action = "blogger_prepare";
-    } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
+    } else if (!channelUnifiedSlots() && RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
       action = "russian_ai_prepare";
     }
   }
@@ -8073,7 +8097,7 @@ async function dynamicSchedulerTick() {
       action = "money_emergency_publish";
     } else if (bloggerSlotsFor().includes(bloggerTime) && bloggerLaneActive()) {
       action = "blogger_publish";
-    } else if (RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
+    } else if (!channelUnifiedSlots() && RUSSIAN_AI_SLOTS.includes(russianAiTime) && (state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) {
       action = "russian_ai_publish";
     }
   }
@@ -8092,6 +8116,7 @@ async function dynamicSchedulerTick() {
     return;
   }
   if (action.startsWith("blogger_") && !bloggerLaneActive()) return;
+  if (action.startsWith("russian_ai_") && channelUnifiedSlots()) return;
   if (action.startsWith("russian_ai_") && !(state.sources || []).some(function(source){ return source && source.enabled && isRussianAISource(source); })) return;
   if (action.startsWith("money_emergency_") && editorialChannelId() !== "money") return;
 
@@ -15530,7 +15555,7 @@ async function recoverMissingWorkspaces() {
     defaultWorkspace.state.migrations = Array.isArray(defaultWorkspace.state.migrations) ? defaultWorkspace.state.migrations : [];
     if (defaultWorkspace.state.migrations.includes(WORKSPACE_RECOVERY_MIGRATION)) return { skipped: "done" };
     if (!db || !dbReady) return { skipped: "db_not_ready" };
-    const missing = RECOVERY_CHANNELS.filter(function(entry){ return !getWorkspaceById(entry.id); });
+    const missing = RECOVERY_CHANNELS.filter(function(entry){ return !getWorkspaceById(entry.id) && !REMOVED_CHANNELS_V055.includes(entry.id); });
     const restored = [];
     const fresh = [];
     for (const entry of missing) {
@@ -15574,6 +15599,108 @@ async function recoverMissingWorkspaces() {
     });
   })();
 })();
+
+// v0.55.0: owner-approved cleanup and «по группам» rollout.
+//  1) «Покупки», «Наука», «Мир» are removed from the cabinet (state archived to DATA_DIR first; the Telegram channels
+//     themselves are untouched; workspace_registry.removed_at keeps the watchdog quiet).
+//  2) The ten kept channels get the full name «<head> | <тема>» (head unchanged: VK matching uses it), their existing
+//     sources are sorted into the new rubrics by keywords, sources paused by mistake in the no-credit hours are
+//     restored, and the rubrics/hours/soft quotas are switched on by the migration marker.
+const RUBRICS_V055_REMOVAL_MARKER = "v0.55.0-removed-channels";
+async function removeChannelsV055() {
+  const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
+  if (!defaultWorkspace || !defaultWorkspace.state) return { skipped: "no_default_workspace" };
+  defaultWorkspace.state.migrations = Array.isArray(defaultWorkspace.state.migrations) ? defaultWorkspace.state.migrations : [];
+  if (defaultWorkspace.state.migrations.includes(RUBRICS_V055_REMOVAL_MARKER)) return { skipped: "done" };
+  const removed = [];
+  for (const id of REMOVED_CHANNELS_V055) {
+    const ws = getWorkspaceById(id);
+    if (!ws || id === workspaceStore.defaultWorkspaceId) continue;
+    try {
+      const dir = path.join(DATA_DIR, "archive");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, "removed-" + id + "-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json");
+      fs.writeFileSync(file, JSON.stringify({ id: ws.id, name: ws.name, channelId: ws.channelId || "", telegramChannel: ws.telegramChannel || "", state: ws.state }));
+    } catch (error) {
+      // no archive = no deletion: retry on the next start
+      console.warn("CHANNEL_REMOVE_V055 archive failed " + JSON.stringify({ workspace: id, error: String(error && error.message || error).slice(0, 160) }));
+      return { skipped: "archive_failed", removed: removed };
+    }
+    try { removeWorkspaceAvatar(ws); } catch {}
+    workspaceStore.workspaces = workspaceStore.workspaces.filter(function(x){ return x.id !== id; });
+    if (db && dbReady) await db.query("UPDATE workspace_registry SET removed_at=NOW() WHERE id=$1", [id]).catch(function(error){ console.warn("workspace_registry update failed:", error.message); });
+    statusCache.delete(id); analyticsCache.delete(id);
+    removed.push(id);
+    console.warn("CHANNEL_REMOVED_V055 " + JSON.stringify({ workspace: id, name: ws.name }));
+  }
+  persistWorkspaceStore();
+  await workspaceContext.run({ workspaceId: defaultWorkspace.id }, async function(){
+    state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+    if (!state.migrations.includes(RUBRICS_V055_REMOVAL_MARKER)) state.migrations.push(RUBRICS_V055_REMOVAL_MARKER);
+    saveState();
+  });
+  return { removed: removed };
+}
+function applyRubricsV055ToWorkspace(ws, nowMs) {
+  const channelId = resolveChannelId(ws);
+  const plan = RUBRIC_PLAN_V055[channelId];
+  if (!plan) return null;
+  const ids = new Set(plan.rubrics.map(function(item){ return item.rubric.id; }));
+  let renamed = false;
+  if (ws.name && !String(ws.name).includes(" | ") && CHANNEL_NAME_TAILS_V055[channelId]) {
+    ws.name = String(ws.name).trim() + " | " + CHANNEL_NAME_TAILS_V055[channelId];
+    ws.updatedAt = new Date(nowMs).toISOString();
+    renamed = true;
+  }
+  if (!ws.channelId) ws.channelId = channelId; // keep the profile explicit: the name no longer decides it
+  const nowIso = new Date(nowMs).toISOString();
+  let tagged = 0, restored = 0;
+  for (const src of (state.sources || [])) {
+    if (!src) continue;
+    if (shouldRestoreAutoPausedV055(src, nowMs, 4 * 86400000)) {
+      src.enabled = true;
+      delete src.autoPaused;
+      src.recoveredAt = nowIso; // 14-day shield against the generic auto-pause rules
+      restored += 1;
+    }
+    const has = ids.has(String(src.rubric || "")) || (Array.isArray(src.rubrics) && src.rubrics.some(function(id){ return ids.has(String(id)); }));
+    if (has || !src.enabled) continue;
+    const themes = classifySourceV055(channelId, src);
+    if (!themes.length) continue;
+    src.rubric = themes[0];
+    src.rubrics = themes.slice();
+    src.rubricAssignedAt = nowIso;
+    tagged += 1;
+  }
+  // a fresh theme search right away (the hourly throttle and the 24 h rest are lifted once)
+  state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
+  state.sourceReplenish.lastAt = "";
+  if (state.sourceReplenish.misses) delete state.sourceReplenish.misses.rubric;
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (!state.migrations.includes(RUBRICS_V055_MIGRATION)) state.migrations.push(RUBRICS_V055_MIGRATION);
+  return { channel: channelId, renamed: renamed, tagged: tagged, restored: restored };
+}
+async function runRubricsV055() {
+  const removal = await removeChannelsV055();
+  console.log("CHANNELS_REMOVAL_V055 " + JSON.stringify(removal));
+  const nowMs = Date.now();
+  let renamedAny = false;
+  for (const ws of workspaceStore.workspaces.slice()) {
+    if (!ws || !ws.state || !isRubricsV055Channel(resolveChannelId(ws))) continue;
+    ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+    if (ws.state.migrations.includes(RUBRICS_V055_MIGRATION)) continue;
+    await workspaceContext.run({ workspaceId: ws.id }, async function(){
+      const result = applyRubricsV055ToWorkspace(ws, nowMs);
+      saveState();
+      if (result && result.renamed) renamedAny = true;
+      console.log("RUBRICS_V055 " + JSON.stringify(Object.assign({ workspace: ws.id }, result || {}, { rubrics: rubricSourceCounts(ws) })));
+    });
+  }
+  if (renamedAny) persistWorkspaceStore();
+}
+setTimeout(function(){
+  runRubricsV055().catch(function(error){ console.warn("Rubrics v0.55.0 migration failed:", error && error.message || error); });
+}, 112000);
 
 // ---------------------------------------------------------------------------
 // Data protection: channel-list watchdog + off-site backup (see lib/workspace-watchdog.js, lib/offsite-backup.js)

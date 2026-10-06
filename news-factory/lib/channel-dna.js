@@ -2,6 +2,8 @@
 // preferred source classes and scoring signals. The scheduler uses these values;
 // they are not just prompt instructions.
 
+import { applyRubricPlanV055 } from "./channel-rubrics-v055.js";
+
 export const SOURCE_CLASSES = ["OFFICIAL", "MEDIA", "CREATOR", "COMMUNITY", "SOCIAL"];
 
 export const CHANNEL_DNA = {
@@ -214,6 +216,9 @@ export const CHANNEL_DNA = {
   }
 };
 
+// v0.55.0: рубрики, часы и «единый поток» для десяти каналов (см. lib/channel-rubrics-v055.js)
+applyRubricPlanV055(CHANNEL_DNA);
+
 export function channelTopic(channelId) {
   return (CHANNEL_DNA[channelId] && CHANNEL_DNA[channelId].topic) || "";
 }
@@ -233,6 +238,7 @@ export function channelStrategy(channelId) {
     rubricMaxSources: Number(dna.rubricMaxSources || 0) || 0,
     slotHours: Array.isArray(dna.slotHours) ? dna.slotHours.slice() : null,
     slotRubrics: Object.assign({}, dna.slotRubrics || {}),
+    unifiedSlots: Boolean(dna.unifiedSlots),
     preferredSources: Array.isArray(dna.preferredSources) ? dna.preferredSources.slice() : SOURCE_CLASSES.slice(),
     scoreWeights: Object.assign({}, dna.scoreWeights || {})
   };
