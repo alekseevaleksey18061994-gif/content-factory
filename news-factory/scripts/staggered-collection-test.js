@@ -135,6 +135,56 @@ test("S7 catch-up still recovers a missed post up to :44, also for a channel tha
   assert.ok(lines.some((l) => l.startsWith("SCHEDULER_CATCHUP_START") && l.includes(first)), lines.join("\n").slice(0, 500));
 });
 
+
+test("S8 an existing queue fills upcoming calendar slots immediately", async () => {
+  const AI = "ai-main";
+  const t = await loadServer({
+    fixedNow: mskToUtc(12, 5),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "AUTO", queue: [
+      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 }),
+      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
+    ] } }
+  });
+  const added = inWs(t, AI, () => t.ensureScheduleAssignments(t.ws(AI).state, "2026-10-04"));
+  const assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.ok(added >= 2, "expected at least two immediate reservations");
+  assert.equal(assigned["13:00"], "q1");
+  assert.equal(assigned["14:00"], "q2");
+  assert.equal(t.ws(AI).state.queue.find((q) => q.id === "q1").reservedFor, "2026-10-04 13:00");
+});
+
+test("S9 final refresh keeps the current item unless a stronger one appears, then moves the stronger story forward", async () => {
+  const AI = "ai-main";
+  const t = await loadServer({
+    fixedNow: mskToUtc(12, 45),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "AUTO", queue: [
+      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 }),
+      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
+    ] } }
+  });
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.ws(AI).state, "2026-10-04"));
+  let assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(assigned["13:00"], "q1");
+
+  let refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
+  assert.equal(refreshed.item.id, "q1");
+  assert.equal(refreshed.replaced, false);
+
+  t.ws(AI).state.queue.unshift(mkQueueItem({ id: "q3", newsId: "n3", aiScore: 99, qualityScore: 95 }));
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.ws(AI).state, "2026-10-04"));
+  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.ok(Object.values(assigned).includes("q3"), "stronger fresh story should already be reserved somewhere");
+
+  refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
+  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(refreshed.item.id, "q3");
+  assert.equal(refreshed.replaced, true);
+  assert.equal(assigned["13:00"], "q3");
+  assert.ok(Object.entries(assigned).some(([time, id]) => time !== "13:00" && id === "q1"), "displaced story should move to a later slot");
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {
