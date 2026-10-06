@@ -13,6 +13,7 @@ import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPassw
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
+import { SOURCES_V055 } from "./lib/channel-sources-v055.js";
 import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, classifySourceV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
@@ -15715,6 +15716,40 @@ async function runRubricsV055() {
 setTimeout(function(){
   runRubricsV055().catch(function(error){ console.warn("Rubrics v0.55.0 migration failed:", error && error.message || error); });
 }, 112000);
+
+// v0.55.3: starting source set per rubric (hand-picked, lib/channel-sources-v055.js). Every candidate is validated by
+// reworkChannelSources before it is added; the automatic pause/replenish logic takes over from there.
+const SOURCES_LOAD_V055 = "v0.55.3-rubric-sources";
+let sourcesLoadV055Running = false;
+async function loadRubricSourcesV055() {
+  if (sourcesLoadV055Running) return;
+  sourcesLoadV055Running = true;
+  try {
+    let retry = false;
+    for (const ws of workspaceStore.workspaces.slice()) {
+      if (!ws || !ws.state) continue;
+      const channelId = resolveChannelId(ws);
+      const list = SOURCES_V055[channelId];
+      if (!list || !list.length) continue;
+      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+      if (ws.state.migrations.includes(SOURCES_LOAD_V055)) continue;
+      if (!ws.state.migrations.includes(RUBRICS_V055_MIGRATION)) { retry = true; continue; }
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        const result = await reworkChannelSources(ws, { add: list.map(function(x){ return { name: x.name, url: x.url, group: x.group, rubrics: x.rubrics }; }), disable: [] }, "v0.55.3");
+        state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+        state.seedAttempts[SOURCES_LOAD_V055] = Number(state.seedAttempts[SOURCES_LOAD_V055] || 0) + 1;
+        const done = (result && result.added.length > 0) || state.seedAttempts[SOURCES_LOAD_V055] >= 3;
+        if (done) state.migrations.push(SOURCES_LOAD_V055); else retry = true;
+        saveState();
+        console.log("RUBRIC_SOURCES_V055 " + JSON.stringify({ workspace: ws.id, planned: list.length, added: result ? result.added.length : 0, failed: result ? result.failed.length : 0, assigned: result && result.assigned ? result.assigned.length : 0, rubrics: rubricSourceCounts(ws) }));
+      });
+    }
+    if (retry) setTimeout(function(){ loadRubricSourcesV055().catch(function(){}); }, 20 * 60 * 1000);
+  } finally {
+    sourcesLoadV055Running = false;
+  }
+}
+setTimeout(function(){ loadRubricSourcesV055().catch(function(error){ console.warn("Rubric sources load failed:", error && error.message || error); }); }, 150000);
 
 // ---------------------------------------------------------------------------
 // Data protection: channel-list watchdog + off-site backup (see lib/workspace-watchdog.js, lib/offsite-backup.js)

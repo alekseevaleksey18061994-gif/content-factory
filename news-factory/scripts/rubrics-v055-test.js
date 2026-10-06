@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { SOURCES_V055 } from "../lib/channel-sources-v055.js";
 import { loadServer, inWs, mkQueueItem } from "./dedupe-harness.js";
 import { channelStrategy } from "../lib/channel-dna.js";
 import { RUBRIC_PLAN_V055, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRICS_V055_MIGRATION, classifySourceV055, shouldRestoreAutoPausedV055, isRubricsV055Channel } from "../lib/channel-rubrics-v055.js";
@@ -169,6 +170,25 @@ test("R10 startup survives persisted calendar assignments (TDZ regression: DYNAM
     publicationSchedule: { timezone: "Europe/Moscow", assignments: { "2026-10-06": { "13:00": "x", "09:30": "x" }, "2026-10-05": { "10:00": "x" } }, suppressed: {}, slots: [{ time: "13:00", kind: "dynamic" }, { time: "09:30", kind: "blogger" }] }
   } } });
   assert.ok(t.ws("chtotamtech"), "server loaded with persisted assignments");
+});
+
+test("R11 starting sources: every rubric of the 10 channels has at least 6 candidates, valid shape, no duplicates", async () => {
+  for (const [ch, plan] of Object.entries(RUBRIC_PLAN_V055)) {
+    const list = SOURCES_V055[ch];
+    assert.ok(list && list.length >= 30, ch + " has candidates");
+    const urls = new Set();
+    const count = {};
+    for (const x of list) {
+      assert.ok(/^https:\/\//.test(x.url), x.url);
+      assert.ok(x.name && ["media", "creator", "blogger", "official"].includes(x.group));
+      assert.ok(x.rubrics.length >= 1 && x.rubrics.length <= 3);
+      const key = x.url.replace(/\/+$/, "").toLowerCase();
+      assert.ok(!urls.has(key), "duplicate " + x.url); urls.add(key);
+      for (const r of x.rubrics) count[r] = (count[r] || 0) + 1;
+    }
+    for (const item of plan.rubrics) assert.ok((count[item.rubric.id] || 0) >= 6, ch + "/" + item.rubric.id + " has " + (count[item.rubric.id] || 0));
+    for (const r of Object.keys(count)) assert.ok(plan.rubrics.some((x) => x.rubric.id === r), "unknown rubric " + r);
+  }
 });
 
 async function main() {
