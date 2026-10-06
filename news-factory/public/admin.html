@@ -2865,6 +2865,7 @@ input,select,textarea{border-radius:12px!important}
           <div class="panel-title"><div><h3>Сводка</h3><p id="costPeriod">Считаю расходы…</p></div><span class="chip" id="costFx">Курс —</span></div>
           <div class="cost-kpis">
             <div class="cost-kpi"><small>API за период</small><b id="costTotal">—</b><span id="costTotalUsd">—</span></div>
+            <div class="cost-kpi"><small>Один пост (в среднем)</small><b id="costPerPost">—</b><span id="costPerPostNote">—</span></div>
             <div class="cost-kpi"><small>OpenAI</small><b id="costOpenAI">—</b><span id="costOpenAICalls">—</span></div>
             <div class="cost-kpi"><small>Claude</small><b id="costAnthropic">—</b><span id="costAnthropicCalls">—</span></div>
             <div class="cost-kpi"><small>Railway run-rate</small><b id="costRailway">—</b><span>Оценка в месяц</span></div>
@@ -4752,6 +4753,9 @@ async function loadCosts(force){
     var oa=byProvider.openai||{},an=byProvider.anthropic||{};
     if(el('costTotal'))el('costTotal').textContent=moneyRub(totals.costRub);
     if(el('costTotalUsd'))el('costTotalUsd').textContent=moneyUsd(totals.costUsd)+' · '+Number(totals.calls||0).toLocaleString('ru-RU')+' API-вызовов';
+    var cpp=j.costPerPublishedPost||{};
+    if(el('costPerPost'))el('costPerPost').textContent=cpp.publishedPosts?(Number(cpp.costRub||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₽'):'—';
+    if(el('costPerPostNote'))el('costPerPostNote').textContent=cpp.publishedPosts?('за '+Number(cpp.publishedPosts).toLocaleString('ru-RU')+' опубликованных постов'):'нет публикаций за период';
     if(el('costOpenAI'))el('costOpenAI').textContent=moneyRub(oa.costRub||0);
     if(el('costOpenAICalls'))el('costOpenAICalls').textContent=Number(oa.calls||0).toLocaleString('ru-RU')+' вызовов · '+tokenShort((oa.inputTokens||0)+(oa.outputTokens||0))+' токенов';
     if(el('costAnthropic'))el('costAnthropic').textContent=moneyRub(an.costRub||0);
