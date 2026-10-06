@@ -135,6 +135,98 @@ test("S7 catch-up still recovers a missed post up to :44, also for a channel tha
   assert.ok(lines.some((l) => l.startsWith("SCHEDULER_CATCHUP_START") && l.includes(first)), lines.join("\n").slice(0, 500));
 });
 
+
+test("S8 an existing queue fills upcoming calendar slots immediately", async () => {
+  const AI = "ai-main";
+  const t = await loadServer({
+    fixedNow: mskToUtc(12, 5),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "AUTO", queue: [
+      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 }),
+      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
+    ] } }
+  });
+  const added = inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
+  const assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.ok(added >= 2, "expected at least two immediate reservations");
+  assert.equal(assigned["13:00"], "q1");
+  assert.equal(assigned["14:00"], "q2");
+  assert.equal(t.ws(AI).state.queue.find((q) => q.id === "q1").reservedFor, "2026-10-04 13:00");
+});
+
+test("S9 final refresh keeps the current item unless a stronger one appears, then moves the stronger story forward", async () => {
+  const AI = "ai-main";
+  const t = await loadServer({
+    fixedNow: mskToUtc(12, 45),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "AUTO", queue: [
+      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 }),
+      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
+    ] } }
+  });
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
+  let assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(assigned["13:00"], "q1");
+
+  let refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
+  assert.equal(refreshed.item.id, "q1");
+  assert.equal(refreshed.replaced, false);
+
+  t.ws(AI).state.queue.unshift(mkQueueItem({ id: "q3", newsId: "n3", aiScore: 99, qualityScore: 95 }));
+  const moved = inWs(t, AI, () => t.rebalanceScheduleAssignments(t.state, "2026-10-04"));
+  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.ok(moved > 0, "a stronger fresh story should rebalance the calendar immediately");
+  assert.equal(assigned["13:00"], "q3");
+  assert.ok(Object.entries(assigned).some(([time, id]) => time !== "13:00" && id === "q1"), "displaced story should move to a later slot");
+
+  // A story that appears after the immediate rebalance is still caught by the final pre-slot refresh.
+  t.ws(AI).state.queue.unshift(mkQueueItem({ id: "q4", newsId: "n4", aiScore: 100, qualityScore: 96 }));
+  refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
+  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(refreshed.item.id, "q4");
+  assert.equal(refreshed.replaced, true);
+  assert.equal(assigned["13:00"], "q4");
+  assert.ok(Object.values(assigned).includes("q3"), "the previously selected strong story should move to a later slot");
+});
+
+
+test("S10 legacy manual assignments survive automatic refresh", async () => {
+  const AI = "ai-main";
+  const manual = mkQueueItem({ id: "manual", newsId: "n_manual", aiScore: 70, qualityScore: 90 });
+  const stronger = mkQueueItem({ id: "strong", newsId: "n_strong", aiScore: 99, qualityScore: 95 });
+  const t = await loadServer({
+    fixedNow: mskToUtc(12, 45),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "AUTO", queue: [stronger, manual] } }
+  });
+  const schedule = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state));
+  schedule.assignments["2026-10-04"] = { "13:00": "manual" }; // old builds stored manual choices without markers
+  const refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
+  assert.equal(refreshed.item.id, "manual");
+  assert.equal(refreshed.manual, true);
+  assert.equal(t.ws(AI).state.queue.find((q) => q.id === "manual").manualFor, "2026-10-04 13:00");
+});
+
+
+test("S11 missed slot reservation expires after catch-up grace and is not duplicated later", async () => {
+  const AI = "ai-main";
+  const q1 = mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 });
+  const t = await loadServer({
+    fixedNow: mskToUtc(9, 50),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "REVIEW", queue: [q1] } }
+  });
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
+  let assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(assigned["10:00"], "q1");
+
+  setNow(mskToUtc(11, 35)); // 95 minutes after 10:00: regular-slot grace is over
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
+  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(assigned["10:00"], undefined);
+  assert.equal(Object.values(assigned).filter((id) => id === "q1").length, 1);
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {

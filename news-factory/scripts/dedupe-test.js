@@ -231,7 +231,10 @@ test("F1 72-hour channels accept 30h-old articles, 24-hour channels do not", {},
   assert.equal(t.ws("chtotamworld").state.queue.length, 1, "world: 30h < 72h");
   assert.equal(t.ws("chtotamtech").state.queue.length, 0, "tech: 30h > 24h");
   const item = t.ws("chtotamworld").state.queue[0];
-  assert.ok(await inWs(t, "chtotamworld", async () => t.dynamicBestQueueItem()), "30h-old item is still selectable for a slot in a 72h channel");
+  const worldSchedule = await inWs(t, "chtotamworld", async () => t.ensureScheduleShape(t.state));
+  const worldDay = await inWs(t, "chtotamworld", async () => t.moscowDateKey(new Date()));
+  const worldReserved = Object.values(worldSchedule.assignments[worldDay] || {}).includes(item.id);
+  assert.ok(worldReserved || await inWs(t, "chtotamworld", async () => t.dynamicBestQueueItem()), "30h-old item is still usable/reserved for a slot in a 72h channel");
   t.ws("chtotamtech").state.queue = [Object.assign({}, item, { id: "q_t", newsId: "news_t" })];
   assert.equal(await inWs(t, "chtotamtech", async () => t.dynamicBestQueueItem()), null, "same item is stale for a 24h channel");
   // queue life scales too: a 20h-old queue entry survives in world, not in tech

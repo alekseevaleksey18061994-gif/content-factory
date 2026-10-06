@@ -721,6 +721,10 @@ function ensureScheduleShape(targetState) {
 function cleanupScheduleAssignments(targetState) {
   const schedule = ensureScheduleShape(targetState);
   const validIds = new Set((targetState.queue || []).map(function(item){ return item && item.id; }).filter(Boolean));
+  const now = new Date();
+  const today = moscowDateKey(now);
+  const nowMinutes = moscowMinutes(now);
+  const slotMeta = new Map((schedule.slots || []).map(function(slot){ return [String(slot && slot.time || ""), slot || {}]; }));
   Object.keys(schedule.assignments).forEach(function(day) {
     const byTime = schedule.assignments[day];
     if (!byTime || typeof byTime !== "object") {
@@ -728,30 +732,181 @@ function cleanupScheduleAssignments(targetState) {
       return;
     }
     Object.keys(byTime).forEach(function(time) {
-      if (!validIds.has(byTime[time])) delete byTime[time];
+      const id = byTime[time];
+      const item = (targetState.queue || []).find(function(q){ return q && q.id === id; });
+      let expired = day < today;
+      if (!expired && day === today) {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(time || ""));
+        if (m) {
+          const minutes = Number(m[1]) * 60 + Number(m[2]);
+          const meta = slotMeta.get(String(time)) || {};
+          const shortGrace = String(time).slice(-3) !== ":00" || (meta.kind && meta.kind !== "dynamic");
+          const grace = shortGrace ? SCHEDULER_SLOT_WINDOW_MINUTES : DYNAMIC_ASSIGNMENT_GRACE_MIN;
+          expired = minutes + grace < nowMinutes;
+        }
+      }
+      if (!validIds.has(id) || expired) {
+        delete byTime[time];
+        clearDynamicAssignmentMarkers(item, day + " " + time);
+      }
     });
     if (!Object.keys(byTime).length) delete schedule.assignments[day];
   });
 
-  const today = moscowDateKey(new Date());
   Object.keys(schedule.suppressed).forEach(function(day) {
     if (day < today) delete schedule.suppressed[day];
   });
 }
 
+function dynamicSlotKind(slot) {
+  if (!slot) return undefined;
+  if (slot.kind === "blogger") return "blogger";
+  if (slot.kind === "russian-ai") return "russian-ai";
+  if (slot.kind === "money-emergency") return "money-emergency";
+  return undefined;
+}
+
+function clearDynamicAssignmentMarkers(item, slotKey) {
+  if (!item) return;
+  if (String(item.reservedFor || "") === slotKey) {
+    delete item.reservedFor;
+    delete item.reservedAt;
+  }
+  if (String(item.preparedFor || "") === slotKey) {
+    delete item.preparedFor;
+    delete item.preparedAt;
+    delete item.preparedKind;
+  }
+  if (String(item.manualFor || "") === slotKey) {
+    delete item.manualFor;
+    delete item.manualAt;
+  }
+}
+
+function setDynamicAssignment(day, time, item, kind, stage) {
+  if (!item || !item.id) return null;
+  const schedule = ensureScheduleShape(state);
+  if (!schedule.assignments[day]) schedule.assignments[day] = {};
+  if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
+  const slotKey = day + " " + time;
+  const previousId = schedule.assignments[day][time];
+  if (previousId && previousId !== item.id) {
+    const previous = (state.queue || []).find(function(q){ return q && q.id === previousId; });
+    clearDynamicAssignmentMarkers(previous, slotKey);
+  }
+  schedule.assignments[day][time] = item.id;
+  delete schedule.suppressed[day][time];
+
+  const nowIso = new Date().toISOString();
+  if (stage === "manual") {
+    clearDynamicAssignmentMarkers(item, slotKey);
+    item.manualFor = slotKey;
+    item.manualAt = nowIso;
+  } else if (stage === "reserved") {
+    if (String(item.manualFor || "") === slotKey) delete item.manualFor;
+    item.reservedFor = slotKey;
+    item.reservedAt = nowIso;
+  } else {
+    item.reservedFor = slotKey;
+    item.reservedAt = item.reservedAt || nowIso;
+    item.preparedFor = slotKey;
+    item.preparedKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
+    item.preparedAt = nowIso;
+  }
+
+  if (stage !== "reserved" && !item.sourceSelectedAt) {
+    noteSourceEvent(item, "selected");
+    item.sourceSelectedAt = nowIso;
+  }
+  if (stage === "prepared") {
+    state.dynamicScheduler = state.dynamicScheduler || {};
+    state.dynamicScheduler.lastPreparedAt = nowIso;
+  }
+  return item;
+}
+
 function ensureScheduleAssignments(targetState, dayKey) {
-  // Dynamic scheduler never fills the whole day in advance.
-  // A slot is assigned only shortly before publication.
-  ensureScheduleShape(targetState);
+  const schedule = ensureScheduleShape(targetState);
   cleanupScheduleAssignments(targetState);
-  return 0;
+  // Selection helpers below are workspace-context aware and operate through the state proxy.
+  // During startup normalization we only clean persisted assignments; live prefill runs for the active workspace.
+  if (targetState !== state) return 0;
+
+  const now = new Date();
+  const today = moscowDateKey(now);
+  const day = String(dayKey || today);
+  if (day !== today) return 0;
+  const nowMinutes = moscowMinutes(now);
+  let added = 0;
+
+  const slots = (schedule.slots || []).slice().sort(function(a, b){ return String(a && a.time || "").localeCompare(String(b && b.time || "")); });
+  for (const slot of slots) {
+    if (!slot || !/^\d{2}:\d{2}$/.test(String(slot.time || ""))) continue;
+    const time = String(slot.time);
+    if (slotMinutes(time) < nowMinutes) continue;
+    if (schedule.suppressed[day] && schedule.suppressed[day][time]) continue;
+    if (slotHasSuccessfulPublication(day + " " + time)) continue;
+
+    const existingId = schedule.assignments[day] && schedule.assignments[day][time];
+    const existing = existingId && (state.queue || []).find(function(q){ return q && q.id === existingId; });
+    if (existing) continue;
+
+    const item = dynamicBestQueueItem(dynamicSlotKind(slot), time);
+    if (!item) continue;
+    setDynamicAssignment(day, time, item, dynamicSlotKind(slot), "reserved");
+    added += 1;
+  }
+  return added;
+}
+
+function rebalanceScheduleAssignments(targetState, dayKey) {
+  const schedule = ensureScheduleShape(targetState);
+  cleanupScheduleAssignments(targetState);
+  if (targetState !== state) return 0;
+
+  const now = new Date();
+  const today = moscowDateKey(now);
+  const day = String(dayKey || today);
+  if (day !== today) return 0;
+  const nowMinutes = moscowMinutes(now);
+  const before = Object.assign({}, schedule.assignments[day] || {});
+
+  for (const [time, id] of Object.entries(schedule.assignments[day] || {})) {
+    if (slotMinutes(time) < nowMinutes) continue;
+    const slotKey = day + " " + time;
+    if (slotHasSuccessfulPublication(slotKey)) continue;
+    const item = (state.queue || []).find(function(q){ return q && q.id === id; });
+    if (!item) {
+      delete schedule.assignments[day][time];
+      continue;
+    }
+    // Manual choices are hard locks. Assignments from an older build without our reservation markers are
+    // also preserved because they may have been selected manually before v0.54.4.
+    const manual = String(item.manualFor || "") === slotKey;
+    const knownAuto = String(item.reservedFor || "") === slotKey || String(item.preparedFor || "") === slotKey;
+    if (manual || !knownAuto) continue;
+    delete schedule.assignments[day][time];
+    clearDynamicAssignmentMarkers(item, slotKey);
+  }
+
+  ensureScheduleAssignments(state, day);
+  const after = schedule.assignments[day] || {};
+  const times = new Set(Object.keys(before).concat(Object.keys(after)));
+  let changed = 0;
+  for (const time of times) if (String(before[time] || "") !== String(after[time] || "")) changed += 1;
+  if (changed) saveState();
+  return changed;
 }
 
 function removeQueueIdFromSchedule(targetState, queueId) {
   const schedule = ensureScheduleShape(targetState);
+  const item = (targetState.queue || []).find(function(q){ return q && q.id === queueId; });
   Object.keys(schedule.assignments).forEach(function(day) {
     Object.keys(schedule.assignments[day] || {}).forEach(function(time) {
-      if (schedule.assignments[day][time] === queueId) delete schedule.assignments[day][time];
+      if (schedule.assignments[day][time] === queueId) {
+        delete schedule.assignments[day][time];
+        clearDynamicAssignmentMarkers(item, day + " " + time);
+      }
     });
     if (!Object.keys(schedule.assignments[day] || {}).length) delete schedule.assignments[day];
   });
@@ -6944,6 +7099,8 @@ async function collectOnce(trigger) {
     replenishSources(pausedSources.length ? "replace_paused" : "below_target").catch(function(error){
       console.warn("SOURCE_REPLENISH_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: error.message }));
     });
+    const calendarRebalanced = rebalanceScheduleAssignments(state, moscowDateKey(new Date()));
+    if (calendarRebalanced) summary.calendarRebalanced = calendarRebalanced;
     summary.finishedAt = new Date().toISOString();
     if (summary.errors.length || summary.viaFeed || summary.fromLinkText) summary.sourceFetch = sourceFetcher.stats();
     lastCollectorRuns.set(currentWorkspaceId(), summary);
@@ -7210,23 +7367,74 @@ function dynamicAssignBest(day, time, kind) {
   if (!schedule.assignments[day]) schedule.assignments[day] = {};
   if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
   if (!item) {
+    const oldId = schedule.assignments[day][time];
+    const oldItem = oldId && (state.queue || []).find(function(q){ return q && q.id === oldId; });
+    clearDynamicAssignmentMarkers(oldItem, day + " " + time);
     delete schedule.assignments[day][time];
     saveState();
     return null;
   }
-  schedule.assignments[day][time] = item.id;
-  delete schedule.suppressed[day][time];
-  item.preparedFor = day + " " + time;
-  item.preparedKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
-  item.preparedAt = new Date().toISOString();
-  if (!item.sourceSelectedAt) {
-    noteSourceEvent(item, "selected");
-    item.sourceSelectedAt = item.preparedAt;
-  }
-  state.dynamicScheduler = state.dynamicScheduler || {};
-  state.dynamicScheduler.lastPreparedAt = item.preparedAt;
+  setDynamicAssignment(day, time, item, kind, "prepared");
   saveState();
   return item;
+}
+
+function dynamicReserveBest(day, time, kind) {
+  const item = dynamicBestQueueItem(kind, time);
+  if (!item) return null;
+  setDynamicAssignment(day, time, item, kind, "reserved");
+  saveState();
+  return item;
+}
+
+// Final pre-publication check. Auto-reserved future posts are temporarily released so a newly found
+// stronger story can move into the imminent slot. Manual choices and already-finalized later slots stay locked.
+function dynamicRefreshBest(day, time, kind) {
+  const schedule = ensureScheduleShape(state);
+  if (!schedule.assignments[day]) schedule.assignments[day] = {};
+  if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
+  const slotKey = day + " " + time;
+  const currentId = schedule.assignments[day][time] || "";
+  const current = currentId && (state.queue || []).find(function(q){ return q && q.id === currentId; });
+
+  const currentManual = current && String(current.manualFor || "") === slotKey;
+  const currentKnownAuto = current && (String(current.reservedFor || "") === slotKey || String(current.preparedFor || "") === slotKey);
+  // Before v0.54.4 manual calendar choices had no marker at all. Treat an existing unmarked assignment as manual
+  // so a deploy cannot silently overwrite a user's choice.
+  if (current && (currentManual || !currentKnownAuto)) {
+    if (!currentManual) {
+      current.manualFor = slotKey;
+      current.manualAt = new Date().toISOString();
+    }
+    setDynamicAssignment(day, time, current, kind, "prepared");
+    saveState();
+    return { item: current, replaced: false, previousId: currentId, manual: true };
+  }
+
+  const targetMinute = slotMinutes(time);
+  const released = [];
+  Object.keys(schedule.assignments[day] || {}).forEach(function(t) {
+    if (slotMinutes(t) < targetMinute) return;
+    const id = schedule.assignments[day][t];
+    const item = id && (state.queue || []).find(function(q){ return q && q.id === id; });
+    const key = day + " " + t;
+    const isTarget = t === time;
+    const autoReservedLater = !isTarget && item && String(item.reservedFor || "") === key &&
+      String(item.preparedFor || "") !== key && String(item.manualFor || "") !== key;
+    if (!isTarget && !autoReservedLater) return;
+    released.push({ time: t, id: id, item: item });
+    delete schedule.assignments[day][t];
+    clearDynamicAssignmentMarkers(item, key);
+  });
+
+  const best = dynamicBestQueueItem(kind, time);
+  if (best) setDynamicAssignment(day, time, best, kind, "prepared");
+
+  // Refill every now-empty future slot from the remaining queue. This also puts the displaced old post
+  // into the next suitable slot instead of dropping it from the calendar.
+  ensureScheduleAssignments(state, day);
+  saveState();
+  return { item: best, replaced: Boolean(currentId && best && currentId !== best.id), previousId: currentId, released: released.length };
 }
 
 async function prepareDynamicSlot() {
@@ -7254,18 +7462,21 @@ async function prepareDynamicSlot() {
   state.dynamicScheduler = state.dynamicScheduler || {};
   if (COLLECTION_STAGGER_ENABLED && state.dynamicScheduler.lastCollectKey === staggeredCollectKey(day, hour)) {
     await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-    const ready = dynamicAssignBest(day, time);
-    if (ready) return { ok: true, slot: time, collector: { ok: true, skipped: "staggered_collect_done" }, prepared: ready.id, title: ready.title };
+    const refreshed = dynamicRefreshBest(day, time);
+    const ready = refreshed.item;
+    if (ready) return { ok: true, slot: time, collector: { ok: true, skipped: "staggered_collect_done" }, prepared: ready.id, title: ready.title, replaced: refreshed.replaced };
   }
   const collector = await collectOnce("slot-prep");
   await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-  const item = dynamicAssignBest(day, time);
+  const refreshed = dynamicRefreshBest(day, time);
+  const item = refreshed.item;
   return {
     ok: true,
     slot: time,
     collector: collector,
     prepared: item ? item.id : null,
-    title: item ? item.title : ""
+    title: item ? item.title : "",
+    replaced: refreshed.replaced
   };
 }
 
@@ -7281,13 +7492,15 @@ async function prepareBloggerSlot(time) {
 
   const lane = channelExtraLane();
   let collector = { ok: true, skipped: "queue_ready" };
-  let item = dynamicAssignBest(day, slotTime, "blogger");
+  let refreshed = dynamicRefreshBest(day, slotTime, "blogger");
+  let item = refreshed.item;
   if (!item) {
     collector = lane && lane.anySource && editorialChannelId() !== "shopping"
       ? { ok: true, skipped: "any_source_lane_uses_queue" }
       : await collectOnce("blogger-slot-prep");
     await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-    item = dynamicAssignBest(day, slotTime, "blogger");
+    refreshed = dynamicRefreshBest(day, slotTime, "blogger");
+    item = refreshed.item;
   }
   state.bloggerScheduler = state.bloggerScheduler || {};
   state.bloggerScheduler.lastPreparedAt = new Date().toISOString();
@@ -7304,7 +7517,7 @@ async function prepareMoneyEmergencySlot() {
   const time = "22:30";
   const schedule = ensureScheduleShape(state);
   if (schedule.suppressed[day] && schedule.suppressed[day][time]) return { ok: true, skipped: "suppressed" };
-  const item = dynamicAssignBest(day, time, "money-emergency");
+  const item = dynamicRefreshBest(day, time, "money-emergency").item;
   state.moneyEmergencyScheduler = state.moneyEmergencyScheduler || {};
   state.moneyEmergencyScheduler.lastPreparedAt = new Date().toISOString();
   saveState();
@@ -7323,7 +7536,7 @@ async function prepareRussianAiSlot(time) {
 
   const collector = await collectOnce("russian-ai-slot-prep");
   await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-  const item = dynamicAssignBest(day, slotTime, "russian-ai");
+  const item = dynamicRefreshBest(day, slotTime, "russian-ai").item;
   state.russianAiScheduler = state.russianAiScheduler || {};
   state.russianAiScheduler.lastPreparedAt = new Date().toISOString();
   saveState();
@@ -7467,11 +7680,14 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   }
 
   const schedule = ensureScheduleShape(state);
-  let queueId = schedule.assignments[day] && schedule.assignments[day][time];
+  const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : (publishKind === "money-emergency" ? "money-emergency" : undefined));
+  // Re-rank once more at the actual publication moment. If a stronger story entered the queue after
+  // the 15-minute preparation, it replaces the automatic reservation now; manual choices stay locked.
+  const publishRefresh = dynamicRefreshBest(day, time, laneKind);
+  let queueId = publishRefresh.item && publishRefresh.item.id || "";
 
   if (!queueId) {
-    const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : (publishKind === "money-emergency" ? "money-emergency" : undefined));
-    let lastChanceItem = dynamicAssignBest(day, time, laneKind);
+    let lastChanceItem = dynamicRefreshBest(day, time, laneKind).item;
 
     if (!lastChanceItem && !(opts && opts.noRescue) && emptySlotCollectorAllowed(schedulerState, slotKey)) {
       schedulerState.lastEmptySlotKey = slotKey;
@@ -7484,7 +7700,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
       const rescue = await retryUnavailableEditorialQueueItems(2).catch(function(error){
         return { checked: 0, repaired: 0, held: 0, skipped: 0, error: String(error && error.message || error) };
       });
-      lastChanceItem = dynamicAssignBest(day, time, laneKind);
+      lastChanceItem = dynamicRefreshBest(day, time, laneKind).item;
       if (lastChanceItem) {
         console.log("SLOT_FAST_RESCUE " + JSON.stringify({
           workspace: currentWorkspaceId(),
@@ -7499,7 +7715,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
           ? "blogger-slot-last-chance"
           : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : (publishKind === "money-emergency" ? "money-emergency-last-chance" : "slot-last-chance"));
         const collectorResult = await collectOnce(lastChanceTrigger);
-        lastChanceItem = dynamicAssignBest(day, time, laneKind);
+        lastChanceItem = dynamicRefreshBest(day, time, laneKind).item;
         console.log("SLOT_FULL_RESCUE " + JSON.stringify({
           workspace: currentWorkspaceId(),
           slot: slotKey,
@@ -13527,7 +13743,8 @@ const server = http.createServer(async function(req, res) {
 
     if (req.method === "GET" && p === "/api/dashboard") {
       const cleanup = pruneQueueItems(state);
-      if (cleanup.removed) saveState();
+      const calendarReserved = ensureScheduleAssignments(state, moscowDateKey(new Date()));
+      if (cleanup.removed || calendarReserved) saveState();
       for (const item of (state.queue || [])) {
         if (!item) continue;
         item.priorityScore = Math.round(dynamicItemScore(item));
@@ -13564,20 +13781,9 @@ const server = http.createServer(async function(req, res) {
       const item = (state.queue || []).find(function(x){ return x.id === queueId; });
       if (!item) return sendJson(res, 404, { ok: false, error: "Новость не найдена в очереди" });
 
-      Object.keys(schedule.assignments).forEach(function(d) {
-        Object.keys(schedule.assignments[d] || {}).forEach(function(t) {
-          if (schedule.assignments[d][t] === queueId) delete schedule.assignments[d][t];
-        });
-      });
-
-      if (!schedule.assignments[day]) schedule.assignments[day] = {};
-      if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
-      schedule.assignments[day][time] = queueId;
-      delete schedule.suppressed[day][time];
-      if (!item.sourceSelectedAt) {
-        noteSourceEvent(item, "selected");
-        item.sourceSelectedAt = new Date().toISOString();
-      }
+      removeQueueIdFromSchedule(state, queueId);
+      const slot = (schedule.slots || []).find(function(entry){ return entry && entry.time === time; });
+      setDynamicAssignment(day, time, item, dynamicSlotKind(slot), "manual");
       saveState();
       return sendJson(res, 200, { ok: true, assignment: { date: day, time: time, queueId: queueId } });
     }
@@ -13590,7 +13796,10 @@ const server = http.createServer(async function(req, res) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { ok: false, error: "Некорректная дата" });
       if (!/^\d{2}:\d{2}$/.test(time)) return sendJson(res, 400, { ok: false, error: "Некорректное время" });
       const schedule = ensureScheduleShape(state);
+      const oldId = schedule.assignments[day] && schedule.assignments[day][time];
+      const oldItem = oldId && (state.queue || []).find(function(q){ return q && q.id === oldId; });
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
+      clearDynamicAssignmentMarkers(oldItem, day + " " + time);
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       schedule.suppressed[day][time] = true;
       saveState();
@@ -13606,10 +13815,13 @@ const server = http.createServer(async function(req, res) {
       const schedule = ensureScheduleShape(state);
       if (!schedule.suppressed[day]) schedule.suppressed[day] = {};
       delete schedule.suppressed[day][time];
+      const oldId = schedule.assignments[day] && schedule.assignments[day][time];
+      const oldItem = oldId && (state.queue || []).find(function(q){ return q && q.id === oldId; });
       if (schedule.assignments[day]) delete schedule.assignments[day][time];
+      clearDynamicAssignmentMarkers(oldItem, day + " " + time);
       const slot = (schedule.slots || []).find(function(entry){ return entry && entry.time === time; });
-      const pickKind = slot && slot.kind === "blogger" ? "blogger" : (slot && slot.kind === "russian-ai" ? "russian-ai" : undefined);
-      const item = dynamicAssignBest(day, time, pickKind);
+      const pickKind = dynamicSlotKind(slot);
+      const item = dynamicReserveBest(day, time, pickKind);
       return sendJson(res, 200, { ok: true, assignment: item ? { date: day, time: time, queueId: item.id } : null });
     }
 
