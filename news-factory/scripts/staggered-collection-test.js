@@ -142,8 +142,8 @@ test("S8 an existing queue fills upcoming calendar slots immediately", async () 
     fixedNow: mskToUtc(12, 5),
     channels: [[AI, "ai", "Что там у ИИ?"]],
     state: { [AI]: { mode: "AUTO", queue: [
-      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 }),
-      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
+      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90, createdAt: mskToUtc(12, 4) }),
+      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90, createdAt: mskToUtc(12, 3) })
     ] } }
   });
   const added = inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
@@ -160,8 +160,8 @@ test("S9 final refresh keeps the current item unless a stronger one appears, the
     fixedNow: mskToUtc(12, 45),
     channels: [[AI, "ai", "Что там у ИИ?"]],
     state: { [AI]: { mode: "AUTO", queue: [
-      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90 }),
-      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
+      mkQueueItem({ id: "q1", newsId: "n1", aiScore: 90, qualityScore: 90, createdAt: mskToUtc(12, 4) }),
+      mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90, createdAt: mskToUtc(12, 3) })
     ] } }
   });
   inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
