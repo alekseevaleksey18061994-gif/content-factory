@@ -840,6 +840,45 @@ function ensureScheduleAssignments(targetState, dayKey) {
   return added;
 }
 
+function rebalanceScheduleAssignments(targetState, dayKey) {
+  const schedule = ensureScheduleShape(targetState);
+  cleanupScheduleAssignments(targetState);
+  if (targetState !== state) return 0;
+
+  const now = new Date();
+  const today = moscowDateKey(now);
+  const day = String(dayKey || today);
+  if (day !== today) return 0;
+  const nowMinutes = moscowMinutes(now);
+  const before = Object.assign({}, schedule.assignments[day] || {});
+
+  for (const [time, id] of Object.entries(schedule.assignments[day] || {})) {
+    if (slotMinutes(time) < nowMinutes) continue;
+    const slotKey = day + " " + time;
+    if (slotHasSuccessfulPublication(slotKey)) continue;
+    const item = (state.queue || []).find(function(q){ return q && q.id === id; });
+    if (!item) {
+      delete schedule.assignments[day][time];
+      continue;
+    }
+    // Manual choices are hard locks. Assignments from an older build without our reservation markers are
+    // also preserved because they may have been selected manually before v0.54.4.
+    const manual = String(item.manualFor || "") === slotKey;
+    const knownAuto = String(item.reservedFor || "") === slotKey || String(item.preparedFor || "") === slotKey;
+    if (manual || !knownAuto) continue;
+    delete schedule.assignments[day][time];
+    clearDynamicAssignmentMarkers(item, slotKey);
+  }
+
+  ensureScheduleAssignments(state, day);
+  const after = schedule.assignments[day] || {};
+  const times = new Set(Object.keys(before).concat(Object.keys(after)));
+  let changed = 0;
+  for (const time of times) if (String(before[time] || "") !== String(after[time] || "")) changed += 1;
+  if (changed) saveState();
+  return changed;
+}
+
 function removeQueueIdFromSchedule(targetState, queueId) {
   const schedule = ensureScheduleShape(targetState);
   const item = (targetState.queue || []).find(function(q){ return q && q.id === queueId; });
@@ -7041,8 +7080,8 @@ async function collectOnce(trigger) {
     replenishSources(pausedSources.length ? "replace_paused" : "below_target").catch(function(error){
       console.warn("SOURCE_REPLENISH_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: error.message }));
     });
-    const calendarReserved = ensureScheduleAssignments(state, moscowDateKey(new Date()));
-    if (calendarReserved) summary.calendarReserved = calendarReserved;
+    const calendarRebalanced = rebalanceScheduleAssignments(state, moscowDateKey(new Date()));
+    if (calendarRebalanced) summary.calendarRebalanced = calendarRebalanced;
     summary.finishedAt = new Date().toISOString();
     if (summary.errors.length || summary.viaFeed || summary.fromLinkText) summary.sourceFetch = sourceFetcher.stats();
     lastCollectorRuns.set(currentWorkspaceId(), summary);
@@ -7614,11 +7653,14 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   }
 
   const schedule = ensureScheduleShape(state);
-  let queueId = schedule.assignments[day] && schedule.assignments[day][time];
+  const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : (publishKind === "money-emergency" ? "money-emergency" : undefined));
+  // Re-rank once more at the actual publication moment. If a stronger story entered the queue after
+  // the 15-minute preparation, it replaces the automatic reservation now; manual choices stay locked.
+  const publishRefresh = dynamicRefreshBest(day, time, laneKind);
+  let queueId = publishRefresh.item && publishRefresh.item.id || "";
 
   if (!queueId) {
-    const laneKind = publishKind === "blogger" ? "blogger" : (publishKind === "russian-ai" ? "russian-ai" : (publishKind === "money-emergency" ? "money-emergency" : undefined));
-    let lastChanceItem = dynamicAssignBest(day, time, laneKind);
+    let lastChanceItem = dynamicRefreshBest(day, time, laneKind).item;
 
     if (!lastChanceItem && !(opts && opts.noRescue) && emptySlotCollectorAllowed(schedulerState, slotKey)) {
       schedulerState.lastEmptySlotKey = slotKey;
@@ -7631,7 +7673,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
       const rescue = await retryUnavailableEditorialQueueItems(2).catch(function(error){
         return { checked: 0, repaired: 0, held: 0, skipped: 0, error: String(error && error.message || error) };
       });
-      lastChanceItem = dynamicAssignBest(day, time, laneKind);
+      lastChanceItem = dynamicRefreshBest(day, time, laneKind).item;
       if (lastChanceItem) {
         console.log("SLOT_FAST_RESCUE " + JSON.stringify({
           workspace: currentWorkspaceId(),
@@ -7646,7 +7688,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
           ? "blogger-slot-last-chance"
           : (publishKind === "russian-ai" ? "russian-ai-slot-last-chance" : (publishKind === "money-emergency" ? "money-emergency-last-chance" : "slot-last-chance"));
         const collectorResult = await collectOnce(lastChanceTrigger);
-        lastChanceItem = dynamicAssignBest(day, time, laneKind);
+        lastChanceItem = dynamicRefreshBest(day, time, laneKind).item;
         console.log("SLOT_FULL_RESCUE " + JSON.stringify({
           workspace: currentWorkspaceId(),
           slot: slotKey,
