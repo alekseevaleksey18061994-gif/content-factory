@@ -721,6 +721,10 @@ function ensureScheduleShape(targetState) {
 function cleanupScheduleAssignments(targetState) {
   const schedule = ensureScheduleShape(targetState);
   const validIds = new Set((targetState.queue || []).map(function(item){ return item && item.id; }).filter(Boolean));
+  const now = new Date();
+  const today = moscowDateKey(now);
+  const nowMinutes = moscowMinutes(now);
+  const slotMeta = new Map((schedule.slots || []).map(function(slot){ return [String(slot && slot.time || ""), slot || {}]; }));
   Object.keys(schedule.assignments).forEach(function(day) {
     const byTime = schedule.assignments[day];
     if (!byTime || typeof byTime !== "object") {
@@ -728,12 +732,27 @@ function cleanupScheduleAssignments(targetState) {
       return;
     }
     Object.keys(byTime).forEach(function(time) {
-      if (!validIds.has(byTime[time])) delete byTime[time];
+      const id = byTime[time];
+      const item = (targetState.queue || []).find(function(q){ return q && q.id === id; });
+      let expired = day < today;
+      if (!expired && day === today) {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(String(time || ""));
+        if (m) {
+          const minutes = Number(m[1]) * 60 + Number(m[2]);
+          const meta = slotMeta.get(String(time)) || {};
+          const shortGrace = String(time).slice(-3) !== ":00" || (meta.kind && meta.kind !== "dynamic");
+          const grace = shortGrace ? SCHEDULER_SLOT_WINDOW_MINUTES : DYNAMIC_ASSIGNMENT_GRACE_MIN;
+          expired = minutes + grace < nowMinutes;
+        }
+      }
+      if (!validIds.has(id) || expired) {
+        delete byTime[time];
+        clearDynamicAssignmentMarkers(item, day + " " + time);
+      }
     });
     if (!Object.keys(byTime).length) delete schedule.assignments[day];
   });
 
-  const today = moscowDateKey(new Date());
   Object.keys(schedule.suppressed).forEach(function(day) {
     if (day < today) delete schedule.suppressed[day];
   });
