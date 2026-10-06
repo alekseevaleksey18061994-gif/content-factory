@@ -173,16 +173,20 @@ test("S9 final refresh keeps the current item unless a stronger one appears, the
   assert.equal(refreshed.replaced, false);
 
   t.ws(AI).state.queue.unshift(mkQueueItem({ id: "q3", newsId: "n3", aiScore: 99, qualityScore: 95 }));
-  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
+  const moved = inWs(t, AI, () => t.rebalanceScheduleAssignments(t.state, "2026-10-04"));
   assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
-  assert.ok(Object.values(assigned).includes("q3"), "stronger fresh story should already be reserved somewhere");
-
-  refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
-  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
-  assert.equal(refreshed.item.id, "q3");
-  assert.equal(refreshed.replaced, true);
+  assert.ok(moved > 0, "a stronger fresh story should rebalance the calendar immediately");
   assert.equal(assigned["13:00"], "q3");
   assert.ok(Object.entries(assigned).some(([time, id]) => time !== "13:00" && id === "q1"), "displaced story should move to a later slot");
+
+  // A story that appears after the immediate rebalance is still caught by the final pre-slot refresh.
+  t.ws(AI).state.queue.unshift(mkQueueItem({ id: "q4", newsId: "n4", aiScore: 100, qualityScore: 96 }));
+  refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
+  assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
+  assert.equal(refreshed.item.id, "q4");
+  assert.equal(refreshed.replaced, true);
+  assert.equal(assigned["13:00"], "q4");
+  assert.ok(Object.values(assigned).includes("q3"), "the previously selected strong story should move to a later slot");
 });
 
 async function main() {
