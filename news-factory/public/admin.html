@@ -2365,6 +2365,17 @@ body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.
 /* v0.55.0: full channel names («Что там у ИИ? | нейросети и ИИ») are shown in full, wrapped instead of cut off */
 .workspace-card-copy b,.network-account-copy b,.account-workspace-option b,.account-copy b,.workspace-option-copy b,.qa-channel-head b{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;overflow-wrap:anywhere;line-height:1.25}
 .hero-channel-copy h2{overflow-wrap:anywhere}
+/* v0.55.3: calendar slot card = header (time · rubric · status) / title / meta / actions */
+.calendar-slot.cs-card{display:flex!important;flex-direction:column;gap:8px;align-items:stretch!important;padding:14px!important;border-radius:18px;border-left:4px solid #9db4ff}
+.calendar-slot.cs-card.cs-done{border-left-color:#1a9a5b}.calendar-slot.cs-card.cs-reserve,.calendar-slot.cs-card.cs-wait{border-left-color:#6f93ff}
+.cs-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cs-head .calendar-time{font-size:20px;font-weight:900;line-height:1;margin-right:2px}
+.cs-tag{font-size:10.5px;font-weight:800;padding:3px 9px;border-radius:999px;background:rgba(111,147,255,.12);color:#3f5fb8;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-head .slot-chip{margin-left:auto;white-space:nowrap}
+.cs-body{min-width:0}.cs-body .calendar-news-title{font-size:15px;line-height:1.35;font-weight:800;overflow-wrap:anywhere}
+.cs-body .calendar-slot-meta{margin-top:5px;opacity:.75}
+.calendar-slot.cs-card .calendar-slot-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-top:4px}
+.calendar-slot.cs-card .calendar-slot-actions button{min-height:36px;border-radius:12px;font-size:12px;font-weight:700}
 </style>
 </head>
 <body>
@@ -4044,14 +4055,14 @@ function renderCalendar(){
     if(match>=0){
       used.add(match);
       title=scheduledHistory[match].title||'Опубликованная новость';
-      meta=lanePrefix+'Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
+      meta='Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
       status='Опубликовано';cls='done';
     }else if(item){
       var pp=postParts(item);
       var prepared=String(item.preparedFor||'')===expectedSlot;
       var manual=String(item.manualFor||'')===expectedSlot;
       title=pp.title||'Без заголовка';
-      meta=lanePrefix+(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'')+(prepared?' · финально проверено':manual?' · выбрано вручную':' · за 15 минут перепроверим');
+      meta=(item.sourceName||'Источник')+(item.articlePublishedAt?' · '+ageRu(item.articlePublishedAt):'')+(prepared?' · финально проверено':manual?' · выбрано вручную':' · за 15 минут перепроверим');
       status=prepared?'Готово':manual?'Выбрано':'В очереди';cls='wait';
       actions='<div class="calendar-slot-actions"><button onclick="openQueuePreview('+ja(item.id)+')">Посмотреть</button><button onclick="openCalendarPicker('+ja(calendarDateKey)+','+ja(slot.time)+')">Заменить</button><button class="danger" onclick="calendarRemove('+ja(calendarDateKey)+','+ja(slot.time)+')">Убрать</button></div>';
     }else if(todayCmp<0 || (isToday&&slotMin<nowMin-55)){
@@ -4066,7 +4077,8 @@ function renderCalendar(){
     }
 
     var slotClass=slot.kind==='blogger'?'blogger-slot':(slot.kind==='russian-ai'?'russian-ai-slot':'');
-    return '<div class="calendar-slot '+slotClass+'"><div class="calendar-time">'+esc(slot.time)+'</div><div class="calendar-slot-main"><div class="calendar-slot-top"><div><div class="calendar-news-title">'+esc(title)+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div><span class="slot-chip '+cls+'">'+status+'</span></div>'+actions+'</div></div>';
+    var headTag=rubricLabel?rubricLabel:(slot.kind==='blogger'&&!shoppingCalendar?'Автоблогер':slot.kind==='russian-ai'?'Российский ИИ':'');
+    return '<div class="calendar-slot cs-card '+slotClass+' cs-'+cls+'"><div class="cs-head"><div class="calendar-time">'+esc(slot.time)+'</div>'+(headTag?'<span class="cs-tag">'+esc(headTag)+'</span>':'')+'<span class="slot-chip '+cls+'">'+status+'</span></div><div class="cs-body"><div class="calendar-news-title">'+esc(title)+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div>'+actions+'</div>';
   }).join('');
 
   var autoOn=systemStatus&&systemStatus.details&&systemStatus.details.scheduler&&String(systemStatus.details.scheduler.detail||'').includes('включена');
