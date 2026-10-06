@@ -2376,6 +2376,49 @@ body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.
 .cs-body .calendar-slot-meta{margin-top:5px;opacity:.75}
 .calendar-slot.cs-card .calendar-slot-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-top:4px}
 .calendar-slot.cs-card .calendar-slot-actions button{min-height:36px;border-radius:12px;font-size:12px;font-weight:700}
+/* v0.56.0: modern look + accordions */
+:root{--nf-radius:20px;--nf-shadow:0 10px 30px rgba(31,64,120,.08);--nf-shadow-hover:0 14px 36px rgba(31,64,120,.14);--nf-accent:#4f7cff}
+.page .card{border-radius:var(--nf-radius)!important;box-shadow:var(--nf-shadow);border:1px solid rgba(71,133,188,.14)!important;transition:box-shadow .2s ease,transform .2s ease}
+.page-head h2{letter-spacing:-.02em}
+.page-head p{opacity:.7}
+.page button:not(.rg-toggle):not(.acc-toggle){border-radius:12px;transition:transform .12s ease,box-shadow .2s ease,background .2s ease}
+.page button:not(.rg-toggle):not(.acc-toggle):active{transform:scale(.97)}
+.stat,.metric-box,.source-summary-box,.kpi{border-radius:16px!important;box-shadow:0 4px 14px rgba(31,64,120,.06)}
+.news-card,.queue-card{border-radius:18px!important;box-shadow:var(--nf-shadow);transition:box-shadow .2s ease,transform .2s ease}
+.news-card:hover,.queue-card:hover{box-shadow:var(--nf-shadow-hover);transform:translateY(-1px)}
+.chip{border-radius:999px}
+input,select,textarea{border-radius:12px!important}
+/* source groups = accordion of plates */
+.rg-acc{padding:0!important;overflow:hidden;box-shadow:var(--nf-shadow);transition:box-shadow .2s ease,border-color .2s ease}
+.rg-acc.open{border-color:rgba(79,124,255,.45);box-shadow:var(--nf-shadow-hover)}
+.rg-acc.rg-low{border-left:4px solid #e0a43a}
+.rg-toggle{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:12px;width:100%;padding:14px 16px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.rg-toggle .rg-title{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 auto}
+.rg-toggle .rg-title b{font-size:15px;font-weight:800;line-height:1.25}
+.rg-toggle .rg-title span{font-size:11.5px;opacity:.65;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.rg-toggle .rg-status{flex:0 0 auto;text-align:center;font-weight:900;padding:6px 10px;border-radius:12px;background:rgba(26,154,91,.1);color:#1a9a5b;line-height:1.1}
+.rg-toggle .rg-status.bad{background:rgba(224,164,58,.15);color:#b7791f}
+.rg-toggle .rg-status small{display:block;font-size:9.5px;font-weight:700;opacity:.8;margin-top:2px}
+.rg-caret{flex:0 0 auto;width:9px;height:9px;border-right:2.5px solid currentColor;border-bottom:2.5px solid currentColor;transform:rotate(45deg);transition:transform .25s ease;opacity:.55;margin:0 4px 3px 2px}
+.rg-acc.open>.rg-toggle .rg-caret{transform:rotate(-135deg);margin-bottom:-3px}
+.rg-collapse,.acc-collapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}
+.rg-acc.open>.rg-collapse,.acc-card.open>.acc-collapse{grid-template-rows:1fr}
+.rg-inner,.acc-inner{overflow:hidden;min-height:0;padding:0 14px}
+.rg-acc.open>.rg-collapse>.rg-inner{padding:0 14px 14px}
+.rg-list{display:grid;gap:10px;margin-top:10px}.rg-list .sc-card{margin-top:0}
+/* source card: compact row, metrics on demand */
+.sc-more{margin-top:8px}.sc-more>summary{cursor:pointer;font-size:12px;font-weight:700;color:#4f7cff;list-style:none;padding:4px 0}
+.sc-more>summary::-webkit-details-marker{display:none}.sc-more>summary::after{content:' ▾'}.sc-more[open]>summary::after{content:' ▴'}
+/* generic page cards: header toggles the body */
+.acc-card>.acc-toggle-head{cursor:pointer;display:flex;align-items:center;gap:10px;-webkit-tap-highlight-color:transparent}
+.acc-card>.acc-toggle-head>*:first-child{flex:1 1 auto;min-width:0}
+.acc-card>.acc-toggle-head .rg-caret{margin-left:auto}
+.acc-card.open>.acc-toggle-head .rg-caret{transform:rotate(-135deg);margin-bottom:-3px}
+.acc-card>.acc-collapse>.acc-inner{padding:0}
+.acc-card.open>.acc-collapse>.acc-inner{padding-top:12px}
+.acc-card>.acc-toggle-head{position:relative;padding-right:30px}
+.acc-card>.acc-toggle-head .rg-caret{position:absolute;right:8px;top:50%;margin:0;transform:translateY(-70%) rotate(45deg)}
+.acc-card.open>.acc-toggle-head .rg-caret{transform:translateY(-30%) rotate(-135deg);margin:0}
 </style>
 </head>
 <body>
@@ -3020,6 +3063,8 @@ body.on-network .network-dashboard-button{box-shadow:0 0 0 3px rgba(22,140,255,.
 <div id="toast" class="toast"></div>
 
 <script>
+var rgOpen=(function(){try{return JSON.parse(localStorage.getItem('nfRgOpen')||'{}')||{}}catch(e){return {}}})();
+function toggleRubricPanel(id){rgOpen[id]=!rgOpen[id];try{localStorage.setItem('nfRgOpen',JSON.stringify(rgOpen))}catch(e){}var n=document.querySelector('.rg-acc[data-rg="'+id+'"]');if(n){n.classList.toggle('open',!!rgOpen[id]);var b=n.querySelector('.rg-toggle');if(b)b.setAttribute('aria-expanded',rgOpen[id]?'true':'false')}}
 var ratingMinAuto=50,ratingDropBelow=35,state={},systemStatus={},newsItems=[],calendarPickerTarget=null,sourceRankings=[],rubricGroups=[],previewCurrentItem=null;
 var workspaces=[],activeWorkspaceId=localStorage.getItem('nf_workspace')||'',currentWorkspaceMeta={},avatarUploadWorkspaceId='';
 function el(id){return document.getElementById(id)}
@@ -3812,6 +3857,7 @@ function render(){
       (s.autoAdded?'<div class="source-added-note">Добавлен автоматически '+esc(safeDate(s.autoAdded.at))+(s.autoAdded.from==='ai'||s.autoAdded.from==='ai-rubric'||s.autoAdded.from==='ai-telegram'||s.autoAdded.from==='ai-lane'?' · найден AI-поиском':(s.autoAdded.from==='dna'||s.autoAdded.from==='seed'?' · из подобранного списка':' · из резерва'))+(s.autoAdded.why?' · '+esc(s.autoAdded.why):'')+'</div>':'')+
       (s.autoPaused&&!s.enabled?'<div class="source-paused-note">Выключен автоматически: '+esc(s.autoPaused.reason||'')+'. Можно включить вручную.</div>':'')+
       (r.scorecard&&r.scorecard.rubricLabel?'<div class="source-added-note"><b>Тема: '+esc(r.scorecard.rubricLabel)+'</b> · оценка источника: '+esc(r.scorecard.verdict)+'</div>':'')+
+      '<details class="sc-more"><summary>Показатели</summary>'+
       (r.scorecard&&r.scorecard.rubricLabel?'<div class="sc-metrics">'+
         metric(r.scorecard.publishedWeek,'в неделю',r.scorecard.publishedWeek>=2?'good':(r.scorecard.verdict==='Слабый'?'bad':''),'Сколько постов источника выходит в канале за неделю (норма от 2)')+
         metric(r.scorecard.passRate==null?'—':Math.round(r.scorecard.passRate*100)+'%','проходимость','','Доля новостей, прошедших фильтр и редактора (норма от 30%)')+
@@ -3828,7 +3874,7 @@ function render(){
         metric(r.scored||0,'оценено','dim')+
         metric(r.strong||0,'сильных','dim')+
         (r.errors?metric(r.errors,'ошибок','bad'):metric(r.selected||0,'в плане','dim'))+
-      '</div>'+
+      '</div></details>'+
       '<div class="sc-actions">'+
         '<button class="sc-toggle '+(s.enabled?'on':'off')+'" onclick="toggleSource('+ja(s.id)+')"><span class="switch-knob"></span>'+(s.enabled?'Вкл':'Выкл')+'</button>'+
         '<select class="sc-license" onchange="setSourceMediaLicense('+ja(s.id)+',this.value)" aria-label="Медиа источника"><option value="unknown" '+((s.mediaLicense||'unknown')==='unknown'?'selected':'')+'>Медиа: авто</option><option value="allowed" '+(s.mediaLicense==='allowed'?'selected':'')+'>Медиа: можно</option><option value="forbidden" '+(s.mediaLicense==='forbidden'?'selected':'')+'>Медиа: нельзя</option></select>'+
@@ -3844,17 +3890,23 @@ function render(){
       var list=byGroup[g.id]||[];
       var active=list.filter(function(x){return x.enabled}).length;
       var low=active<g.min;
-      return '<div class="rg-panel'+(low?' rg-low':'')+'">'+
-        '<div class="rg-head"><div class="rg-title"><b>'+esc(g.label)+'</b><span>'+(g.hint?esc(g.hint):'')+'</span></div>'+
-          '<div class="rg-status '+(low?'bad':'ok')+'">'+active+' из '+g.min+'<small>'+(low?'добираем':'активных')+'</small></div></div>'+
-        '<div class="rg-limit"><label for="rgMin_'+esc(g.id)+'">Минимум источников</label>'+
-          '<input id="rgMin_'+esc(g.id)+'" type="number" min="1" inputmode="numeric" value="'+g.min+'">'+
-          '<button onclick="saveRubricLimit('+ja(g.id)+')">Сохранить</button>'+
-          '<span class="rg-note">'+(g.custom?'ваш минимум':'по умолчанию '+g.defaultMin)+' · верхнего лимита нет</span></div>'+
-        '<details class="rg-body" open><summary>Источники группы ('+list.length+')</summary>'+(list.length?list.map(cardHtml).join(''):'<div class="notice">В группе пока нет источников — система подберёт их поиском по теме.</div>')+'</details>'+
+      var open=!!rgOpen[g.id];
+      return '<div class="rg-panel rg-acc'+(low?' rg-low':'')+(open?' open':'')+'" data-rg="'+esc(g.id)+'">'+
+        '<button type="button" class="rg-head rg-toggle" aria-expanded="'+(open?'true':'false')+'" onclick="toggleRubricPanel('+ja(g.id)+')">'+
+          '<span class="rg-title"><b>'+esc(g.label)+'</b><span>'+(g.hint?esc(g.hint):'')+'</span></span>'+
+          '<span class="rg-status '+(low?'bad':'ok')+'">'+active+' из '+g.min+'<small>'+(low?'добираем':'активных')+'</small></span>'+
+          '<i class="rg-caret" aria-hidden="true"></i></button>'+
+        '<div class="rg-collapse"><div class="rg-inner">'+
+          '<div class="rg-limit"><label for="rgMin_'+esc(g.id)+'">Минимум источников</label>'+
+            '<input id="rgMin_'+esc(g.id)+'" type="number" min="1" inputmode="numeric" value="'+g.min+'">'+
+            '<button onclick="saveRubricLimit('+ja(g.id)+')">Сохранить</button>'+
+            '<span class="rg-note">'+(g.custom?'ваш минимум':'по умолчанию '+g.defaultMin)+' · верхнего лимита нет</span></div>'+
+          '<div class="rg-list">'+(list.length?list.map(cardHtml).join(''):'<div class="notice">В группе пока нет источников — система подберёт их поиском по теме.</div>')+'</div>'+
+        '</div></div>'+
       '</div>';
     }).join('');
-    var extra=loose.length?'<details class="rg-panel rg-loose"><summary><b>Вне групп · '+loose.length+'</b> <span>выключенные и старые источники, в рейтинг тем не входят</span></summary>'+loose.map(cardHtml).join('')+'</details>':'';
+    var looseOpen=!!rgOpen.__loose;
+    var extra=loose.length?'<div class="rg-panel rg-acc rg-loose'+(looseOpen?' open':'')+'" data-rg="__loose"><button type="button" class="rg-head rg-toggle" aria-expanded="'+(looseOpen?'true':'false')+'" onclick="toggleRubricPanel(\'__loose\')"><span class="rg-title"><b>Вне групп</b><span>выключенные и старые источники, в рейтинг тем не входят</span></span><span class="rg-status ok">'+loose.length+'<small>источников</small></span><i class="rg-caret" aria-hidden="true"></i></button><div class="rg-collapse"><div class="rg-inner"><div class="rg-list">'+loose.map(cardHtml).join('')+'</div></div></div></div>':'';
     el('sources').innerHTML=panels+extra;
   }else{
     el('sources').innerHTML=sortedSources.map(cardHtml).join('');
@@ -5070,6 +5122,43 @@ async function removeQueue(id){await api('/api/queue/remove',{method:'POST',body
 async function logout(){await api('/api/logout',{method:'POST',body:'{}'});location.href='/login'}
 openRouteFromHash();
 load().catch(function(e){toast(e.message)});
+
+// v0.56.0: page cards with a title row become accordions (state is remembered per page and title)
+(function(){
+  var KEY='nfAccOpen',saved={};
+  try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){}
+  function persist(){try{localStorage.setItem(KEY,JSON.stringify(saved))}catch(e){}}
+  function enhance(){
+    document.querySelectorAll('section.page').forEach(function(page){
+      if(['sourcesPage','queuePage','calendarPage','newsPage','historyPage'].indexOf(page.id)>=0)return;
+      var cards=Array.prototype.filter.call(page.children,function(n){return n.classList&&n.classList.contains('card')&&!n.classList.contains('acc-card')});
+      var idx=0;
+      cards.forEach(function(card){
+        var head=card.firstElementChild;
+        if(!head||!(head.classList.contains('panel-title')||head.classList.contains('platform-head')))return;
+        var title=(head.querySelector('h3,h2,b')||head).textContent.trim().slice(0,60);
+        var key=page.id+'|'+title;
+        var rest=[];var n=head.nextElementSibling;
+        while(n){rest.push(n);n=n.nextElementSibling}
+        if(!rest.length)return;
+        var collapse=document.createElement('div');collapse.className='acc-collapse';
+        var inner=document.createElement('div');inner.className='acc-inner';
+        rest.forEach(function(x){inner.appendChild(x)});
+        collapse.appendChild(inner);card.appendChild(collapse);
+        card.classList.add('acc-card');head.classList.add('acc-toggle-head');
+        head.setAttribute('role','button');head.setAttribute('tabindex','0');
+        var caret=document.createElement('i');caret.className='rg-caret';caret.setAttribute('aria-hidden','true');head.appendChild(caret);
+        var open=Object.prototype.hasOwnProperty.call(saved,key)?!!saved[key]:idx===0;
+        card.classList.toggle('open',open);head.setAttribute('aria-expanded',open?'true':'false');
+        function toggle(){var o=!card.classList.contains('open');card.classList.toggle('open',o);head.setAttribute('aria-expanded',o?'true':'false');saved[key]=o;persist()}
+        head.addEventListener('click',function(ev){if(ev.target.closest('button,a,input,select'))return;toggle()});
+        head.addEventListener('keydown',function(ev){if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();toggle()}});
+        idx++;
+      });
+    });
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',enhance);else enhance();
+})();
 </script>
 </body>
 </html>
