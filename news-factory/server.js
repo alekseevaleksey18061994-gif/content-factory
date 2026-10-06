@@ -14472,6 +14472,78 @@ async function repairBalancedQueueMediaAllWorkspaces() {
   }
 }
 
+// v0.54.3: posts that got only the local text card while OpenAI had no credits are blocked from auto-publishing
+// (textCardBlocked), so after OpenAI recovers they would sit in the queue forever. Re-draw their cover with AI.
+const TEXT_CARD_UPGRADE_MAX_PER_RUN = Math.max(0, Math.min(20, Number(process.env.TEXT_CARD_UPGRADE_MAX_PER_RUN == null || process.env.TEXT_CARD_UPGRADE_MAX_PER_RUN === "" ? 4 : process.env.TEXT_CARD_UPGRADE_MAX_PER_RUN) || 0));
+const TEXT_CARD_UPGRADE_MAX_ATTEMPTS = 3;
+let textCardUpgradeRunning = false;
+async function upgradeTextCardCoversAllWorkspaces() {
+  const result = { upgraded: 0, failed: 0, skipped: 0 };
+  if (textCardUpgradeRunning || !TEXT_CARD_UPGRADE_MAX_PER_RUN || TEXT_CARD_POSTS_ALLOWED) return result;
+  if (!OPENAI_API_KEY || !GENERATE_COVER_IF_MISSING || providerBreaker.isOpen("openai")) return result;
+  textCardUpgradeRunning = true;
+  try {
+    let budget = TEXT_CARD_UPGRADE_MAX_PER_RUN;
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || budget <= 0) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function() {
+        const candidates = (state.queue || []).filter(function(item) {
+          if (!item || !item.id || !item.newsId || item.status === "media_failed" || item.status === "publish_failed") return false;
+          if (!isTextCardOnly(item)) return false;
+          if (Number(item.textCardUpgradeAttempts || 0) >= TEXT_CARD_UPGRADE_MAX_ATTEMPTS) return false;
+          try { if (dynamicItemAgeMs(item) > dynamicItemMaxAgeMs(item)) return false; } catch {}
+          try { return autoQualityEligible(item); } catch { return false; }
+        }).sort(function(a, b) { return Number(b.rating || b.editorialScore || 0) - Number(a.rating || a.editorialScore || 0); });
+        for (const item of candidates) {
+          if (budget <= 0 || providerBreaker.isOpen("openai")) break;
+          budget -= 1;
+          item.textCardUpgradeAttempts = Number(item.textCardUpgradeAttempts || 0) + 1;
+          try {
+            const generation = Number(item.coverGenerationCount || 0) + 1;
+            const generated = await generateNewsCover({
+              id: item.newsId || item.id, newsId: item.newsId || item.id, title: item.title, text: item.text,
+              sourceName: item.sourceName || "", topicId: item.topicId || currentWorkspace().channelId || "",
+              visualIndex: generation, forceAi: true, costPurpose: "image_generation"
+            });
+            if (!generated || !generated.url || generated.economy) { result.skipped += 1; continue; } // breaker opened mid-run: still a text card
+            const generatedAt = new Date().toISOString();
+            Object.assign(item, {
+              imageUrl: "", enhancedImageUrl: "", mediaPackUrls: [], generatedImageUrl: generated.url,
+              mediaType: "generated", mediaStatus: "generated", mediaOrigin: "ai_generated", copyrightSafe: true,
+              copyrightMediaDecision: "text_card_upgraded_to_ai_cover", generatedBy: generated.model, generatedAt: generatedAt,
+              coverGenerationCount: generation, coverMode: "generated"
+            });
+            if (db && dbReady && item.newsId) {
+              try {
+                const row = await db.query("SELECT metadata FROM news_items WHERE id=$1 AND workspace_id=$2 LIMIT 1", [item.newsId, currentWorkspaceId()]);
+                if (row.rowCount) {
+                  const metadata = Object.assign({}, row.rows[0].metadata || {}, {
+                    imageUrl: "", enhancedImageUrl: "", mediaPackUrls: [], generatedImageUrl: generated.url, mediaType: "generated",
+                    mediaStatus: "generated", mediaOrigin: "ai_generated", copyrightSafe: true, generatedBy: generated.model,
+                    generatedAt: generatedAt, coverGenerationCount: generation, coverMode: "generated"
+                  });
+                  await db.query("UPDATE news_items SET metadata=$2::jsonb WHERE id=$1 AND workspace_id=$3", [item.newsId, pgJsonString(metadata), currentWorkspaceId()]);
+                }
+              } catch (error) {
+                console.warn("TEXT_CARD_UPGRADE_METADATA_FAILED " + JSON.stringify({ workspace: ws.id, id: item.newsId, error: String(error && error.message || error).slice(0, 200) }));
+              }
+            }
+            result.upgraded += 1;
+            console.log("TEXT_CARD_UPGRADED " + JSON.stringify({ workspace: ws.id, id: item.newsId || item.id, model: generated.model }));
+          } catch (error) {
+            result.failed += 1;
+            console.warn("TEXT_CARD_UPGRADE_FAILED " + JSON.stringify({ workspace: ws.id, id: item.newsId || item.id, error: String(error && error.message || error).slice(0, 200) }));
+          }
+          saveState();
+        }
+      });
+    }
+  } finally { textCardUpgradeRunning = false; }
+  return result;
+}
+setTimeout(function() { upgradeTextCardCoversAllWorkspaces().catch(function(e) { console.warn("TEXT_CARD_UPGRADE_RUN_FAILED", e.message); }); }, 120000);
+setInterval(function() { upgradeTextCardCoversAllWorkspaces().catch(function(e) { console.warn("TEXT_CARD_UPGRADE_RUN_FAILED", e.message); }); }, 10 * 60 * 1000);
+
 setTimeout(function() {
   (async function(){
     for (const ws of workspaceStore.workspaces) {
