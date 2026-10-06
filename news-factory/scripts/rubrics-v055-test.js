@@ -21,7 +21,7 @@ const CHANNELS = [
 ];
 
 test("R1 plan: quotas add up to the slots, ids are unique, min 5 sources, no maximum, no hard slot rubrics", async () => {
-  const expected = { ai: 12, tech: 15, games: 14, kino: 14, sport: 16, stars: 14, travel: 14, food: 15, business: 12, crypto: 12 };
+  const expected = { ai: 12, tech: 15, games: 14, kino: 14, sport: 16, stars: 14, travel: 14, food: 15, business: 12, crypto: 12, money: 8, home: 10 };
   for (const [ch, n] of Object.entries(expected)) {
     const plan = RUBRIC_PLAN_V055[ch];
     const st = channelStrategy(ch);
@@ -31,14 +31,17 @@ test("R1 plan: quotas add up to the slots, ids are unique, min 5 sources, no max
     assert.equal(st.slotHours.length, n, ch + " slot hours");
     assert.ok(st.slotHours.every((h) => h >= 8 && h <= 23));
     assert.equal(st.rubricMinSources, 5);
-    assert.ok(st.rubricMaxSources >= 500, "no practical maximum");
+    if (!['money', 'home'].includes(ch)) assert.ok(st.rubricMaxSources >= 500, "no practical maximum");
     assert.equal(st.unifiedSlots, true);
     assert.deepEqual(st.slotRubrics, {}, "soft quotas only");
     assert.deepEqual(Object.keys(st.mix).sort(), ids.slice().sort(), "writer buckets = rubrics");
-    assert.ok(CHANNEL_NAME_TAILS_V055[ch], ch + " name tail");
+    if (!["money", "home"].includes(ch)) assert.ok(CHANNEL_NAME_TAILS_V055[ch], ch + " name tail");
     assert.ok(plan.rubrics.length >= 6);
   }
-  for (const ch of ["home", "money", "auto"]) assert.equal(channelStrategy(ch).unifiedSlots, false, ch + " untouched");
+  // money/home/auto keep their original rubric ids (existing source tags stay valid)
+  assert.deepEqual(channelStrategy("money").rubrics.map((r) => r.id), ["cards_banks","deposits","credits_mortgage","taxes","ruble_inflation_cb","income_benefits","financial_scams","money_howto"]);
+  assert.equal(channelStrategy("home").rubrics.length, 10);
+  assert.equal(channelStrategy("auto").unifiedSlots, false, "cars keep their approved hard hourly schedule");
   for (const ch of ["shopping", "science", "world"]) assert.equal(isRubricsV055Channel(ch), false);
 });
 
@@ -173,7 +176,7 @@ test("R10 startup survives persisted calendar assignments (TDZ regression: DYNAM
 });
 
 test("R11 starting sources: every rubric of the 10 channels has at least 6 candidates, valid shape, no duplicates", async () => {
-  for (const [ch, plan] of Object.entries(RUBRIC_PLAN_V055)) {
+  for (const [ch, plan] of Object.entries(RUBRIC_PLAN_V055).filter(([ch]) => !["money", "home"].includes(ch))) { // money/home keep their existing sources: min 5 per rubric is topped up by auto-replenish
     const list = SOURCES_V055[ch];
     assert.ok(list && list.length >= 30, ch + " has candidates");
     const urls = new Set();
@@ -189,6 +192,45 @@ test("R11 starting sources: every rubric of the 10 channels has at least 6 candi
     for (const item of plan.rubrics) assert.ok((count[item.rubric.id] || 0) >= 6, ch + "/" + item.rubric.id + " has " + (count[item.rubric.id] || 0));
     for (const r of Object.keys(count)) assert.ok(plan.rubrics.some((x) => x.rubric.id === r), "unknown rubric " + r);
   }
+});
+
+test("R12 money/home keep their own source tags and pause history: the migration restores and re-tags nothing", async () => {
+  const NOW = "2026-10-06T12:00:00Z", day = (n) => new Date(Date.parse(NOW) - n * 86400000).toISOString();
+  const money = [
+    src("t1", "Налоги от ФНС", "https://t.me/s/nalog_gov_ru", { rubric: "taxes", rubrics: ["taxes"] }),
+    src("weak1", "Слабый налоговый", "https://x.example/n", { enabled: false, rubric: "taxes", rubrics: ["taxes"], autoPaused: { reason: "слабый источник темы «Налоги»: 0 публикаций", at: day(1) } }),
+    src("trial1", "Пробный", "https://x.example/p", { enabled: false, autoPaused: { reason: "пробный срок 24 ч: ни одной новости", at: day(1) } }),
+    src("bk", "Банкротство и долги", "https://bankrotstvo.example/", {})
+  ];
+  const t = await loadServer({ fixedNow: NOW, state: { chtotamdengi: { sources: money } } });
+  const before = JSON.stringify(t.ws("chtotamdengi").state.sources);
+  const name = t.ws("chtotamdengi").name;
+  await t.runRubricsV055();
+  const ws = t.ws("chtotamdengi");
+  assert.equal(JSON.stringify(ws.state.sources), before, "sources untouched");
+  assert.equal(ws.name, name);
+  assert.ok(ws.state.migrations.includes(RUBRICS_V055_MIGRATION), "marker set");
+  assert.equal(inWs(t, "chtotamtachki", () => t.channelUnifiedSlots()), false, "cars unchanged");
+});
+
+test("R13 money/home fallback bucket keeps the old classifier (a phishing post is not cards_banks)", async () => {
+  const { classifyContentBucket } = await import("../lib/channel-strategy.js");
+  assert.equal(classifyContentBucket("money", { title: "Мошенники украли деньги с карты: новая схема фишинга" }), "financial_scams");
+  assert.equal(classifyContentBucket("money", { title: "Налог на проценты по вкладам: что изменится" }), "taxes");
+  assert.equal(classifyContentBucket("ai", { title: "ИИ-ролик завирусился" }), "viral_fun");
+});
+
+test("R14 persisted money calendar gains the new hourly slots and keeps the 95+ emergency slot", async () => {
+  const M = "chtotamdengi";
+  const slots = [9, 11, 13, 16, 18, 20].map((h) => ({ time: String(h).padStart(2, "0") + ":00", kind: "dynamic", label: "Слот" }));
+  slots.push({ time: "14:30", kind: "blogger", label: "Автоблогер" });
+  const t = await loadServer({ fixedNow: msk(7, 0), state: { [M]: { publicationSchedule: { slots, assignments: {}, suppressed: {} } } } });
+  const ws = t.ws(M);
+  inWs(t, M, () => t.ensureScheduleShape(ws.state));
+  const times = ws.state.publicationSchedule.slots.map((x) => x.time);
+  for (const time of ["09:00", "10:00", "11:00", "13:00", "16:00", "18:00", "20:00", "22:00", "22:30"]) assert.ok(times.includes(time), time);
+  assert.ok(!times.includes("14:30"), "lane slot removed");
+  assert.equal(ws.state.publicationSchedule.targetPerDay, 8);
 });
 
 async function main() {
