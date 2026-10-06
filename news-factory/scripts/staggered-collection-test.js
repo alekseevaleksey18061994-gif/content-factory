@@ -146,7 +146,7 @@ test("S8 an existing queue fills upcoming calendar slots immediately", async () 
       mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
     ] } }
   });
-  const added = inWs(t, AI, () => t.ensureScheduleAssignments(t.ws(AI).state, "2026-10-04"));
+  const added = inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
   const assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
   assert.ok(added >= 2, "expected at least two immediate reservations");
   assert.equal(assigned["13:00"], "q1");
@@ -164,7 +164,7 @@ test("S9 final refresh keeps the current item unless a stronger one appears, the
       mkQueueItem({ id: "q2", newsId: "n2", aiScore: 80, qualityScore: 90 })
     ] } }
   });
-  inWs(t, AI, () => t.ensureScheduleAssignments(t.ws(AI).state, "2026-10-04"));
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
   let assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
   assert.equal(assigned["13:00"], "q1");
 
@@ -173,7 +173,7 @@ test("S9 final refresh keeps the current item unless a stronger one appears, the
   assert.equal(refreshed.replaced, false);
 
   t.ws(AI).state.queue.unshift(mkQueueItem({ id: "q3", newsId: "n3", aiScore: 99, qualityScore: 95 }));
-  inWs(t, AI, () => t.ensureScheduleAssignments(t.ws(AI).state, "2026-10-04"));
+  inWs(t, AI, () => t.ensureScheduleAssignments(t.state, "2026-10-04"));
   assigned = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state).assignments["2026-10-04"]);
   assert.ok(Object.values(assigned).includes("q3"), "stronger fresh story should already be reserved somewhere");
 
