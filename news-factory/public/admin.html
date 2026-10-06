@@ -4129,7 +4129,18 @@ function renderCalendar(){
     }
 
     var slotClass=slot.kind==='blogger'?'blogger-slot':(slot.kind==='russian-ai'?'russian-ai-slot':'');
-    var headTag=rubricLabel?rubricLabel:(slot.kind==='blogger'&&!shoppingCalendar?'Автоблогер':slot.kind==='russian-ai'?'Российский ИИ':'');
+    // soft quotas: a slot has no fixed rubric, so the tag shows the sub-topic of the post that sits (or went out) in it
+    var postRubric='';
+    (function(){
+      var subject=match>=0?scheduledHistory[match]:item;
+      if(!subject||!rubricGroups||!rubricGroups.length)return;
+      var ids={};rubricGroups.forEach(function(g){ids[g.id]=g.label});
+      var b=String(subject.contentBucket||(subject.editorialV2&&subject.editorialV2.contentBucket)||'');
+      if(ids[b]){postRubric=ids[b];return}
+      var src=(state.sources||[]).find(function(x){return x&&((subject.sourceId&&x.id===subject.sourceId)||(subject.sourceName&&x.name===subject.sourceName))});
+      if(src){var cand=[String(src.rubric||'')].concat(Array.isArray(src.rubrics)?src.rubrics.map(String):[]);for(var k=0;k<cand.length;k++){if(ids[cand[k]]){postRubric=ids[cand[k]];return}}}
+    })();
+    var headTag=rubricLabel?rubricLabel:(postRubric||(slot.kind==='blogger'&&!shoppingCalendar?'Автоблогер':slot.kind==='russian-ai'?'Российский ИИ':''));
     return '<div class="calendar-slot cs-card '+slotClass+' cs-'+cls+'"><div class="cs-head"><div class="calendar-time">'+esc(slot.time)+'</div>'+(headTag?'<span class="cs-tag">'+esc(headTag)+'</span>':'')+'<span class="slot-chip '+cls+'">'+status+'</span></div><div class="cs-body"><div class="calendar-news-title">'+esc(title)+'</div><div class="calendar-slot-meta">'+esc(meta)+'</div></div>'+actions+'</div>';
   }).join('');
 
