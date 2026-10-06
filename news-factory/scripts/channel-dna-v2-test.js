@@ -29,17 +29,17 @@ assert.equal(sourceClassFor({group:"media",url:"https://www.reddit.com/r/aivideo
 assert.equal(sourceClassFor({group:"media",url:"https://www.tiktok.com/@foo"}), "SOCIAL");
 assert.equal(sourceClassFor({sourceClass:"COMMUNITY",group:"media"}), "COMMUNITY");
 
-assert.equal(classifyContentBucket("ai",{title:"В сети завирусилось AI-видео, которое сделал пользователь"}), "viral_find");
-assert.equal(classifyContentBucket("games",{title:"Игроки нашли баг и превратили его в мем"}), "community");
+assert.equal(classifyContentBucket("ai",{title:"В сети завирусилось AI-видео, которое сделал пользователь"}), "viral_fun");
+assert.equal(classifyContentBucket("games",{title:"Игроки нашли баг и превратили его в мем"}), "community_memes");
 assert.equal(classifyContentBucket("science",{title:"Учёные обнаружили новый вид динозавра"}), "animals");
-assert.equal(classifyContentBucket("sport",{title:"Hardcore: бой блогеров закончился конфликтом"}), "media_sport");
+assert.equal(classifyContentBucket("sport",{title:"Hardcore: бой блогеров закончился конфликтом"}), "pop_mma");
 assert.equal(classifyContentBucket("shopping",{title:"На маркетплейсе началась скидка 40%"}), "deal");
 assert.equal(classifyContentBucket("shopping",{title:"Новый товар без скидки появился на Ozon"}), "viral_product");
 assert.equal(classifyContentBucket("home",{title:"Как организовать хранение в маленькой квартире"}), "organization");
 
-const aiHistory = Array.from({length:12},(_,i)=>({contentBucket:"important_news",title:"Релиз модели "+i,publishedAt:new Date(Date.now()-i*3600000).toISOString()}));
-const viralMix = contentMixBalance("ai",{contentBucket:"viral_find",title:"AI ролик"},aiHistory,24);
-const newsMix = contentMixBalance("ai",{contentBucket:"important_news",title:"Новая модель"},aiHistory,24);
+const aiHistory = Array.from({length:12},(_,i)=>({contentBucket:"companies_models",title:"Релиз модели "+i,publishedAt:new Date(Date.now()-i*3600000).toISOString()}));
+const viralMix = contentMixBalance("ai",{contentBucket:"viral_fun",title:"AI ролик"},aiHistory,24);
+const newsMix = contentMixBalance("ai",{contentBucket:"companies_models",title:"Новая модель"},aiHistory,24);
 assert.ok(viralMix.bonus > 0, "underrepresented AI viral content must get a positive mix bonus");
 assert.ok(newsMix.bonus < 0, "overrepresented AI news must get a penalty");
 
@@ -48,10 +48,10 @@ const homeHistory = Array.from({length:10},(_,i)=>({contentBucket:"marketplace_f
 assert.ok(contentMixBalance("home",{contentBucket:"marketplace_finds"},homeHistory,24).bonus < 0, "an overrepresented home theme must be capped by mix");
 
 const digestHeavy = [
-  ...Array.from({length:4},()=>({contentBucket:"important_news"})),
-  ...Array.from({length:20},()=>({isDigest:true,contentBucket:"viral_find"}))
+  ...Array.from({length:4},()=>({contentBucket:"companies_models"})),
+  ...Array.from({length:20},()=>({isDigest:true,contentBucket:"viral_fun"}))
 ];
-assert.equal(contentMixBalance("ai",{contentBucket:"important_news"},digestHeavy,24).sampleSize,4);
+assert.equal(contentMixBalance("ai",{contentBucket:"companies_models"},digestHeavy,24).sampleSize,4);
 
 const explicit = normalizeChannelSignals({virality:15,utility:-3,discussion:7}, {});
 assert.equal(explicit.virality,10);

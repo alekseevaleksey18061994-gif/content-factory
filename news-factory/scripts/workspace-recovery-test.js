@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadServer, dbRows, startTempPostgres, mkQueueItem } from "./dedupe-harness.js";
 import { RECOVERY_CHANNELS, WORKSPACE_RECOVERY_MIGRATION, isUsableSnapshotState } from "../lib/workspace-recovery.js";
+import { REMOVED_CHANNELS_V055 } from "../lib/channel-rubrics-v055.js";
 
 const only = [["ai-main", "ai", "Что там у ИИ?"], ["chtotamtachki", "auto", "Что там у тачек?"]];
 const sql = (v) => "'" + String(v).replace(/'/g, "''") + "'";
@@ -40,9 +41,9 @@ test("R2 missing channels come back from the latest snapshot; existing ones are 
   await snapshot("chtotamcrypto", newest, 5);
   await snapshot("chtotamtech", Object.assign({}, newest, { mode: "REVIEW" }), 3);
   const r = await t.recoverMissingWorkspaces();
-  assert.equal(r.restored.length + r.fresh.length, 14);
+  assert.equal(r.restored.length + r.fresh.length, 14 - REMOVED_CHANNELS_V055.length); // v0.55.0: the three removed channels are never recreated
   assert.deepEqual(r.restored.sort(), ["chtotamcrypto", "chtotamtech"]);
-  assert.equal(t.workspaceStore.workspaces.length, 16);
+  assert.equal(t.workspaceStore.workspaces.length, 16 - REMOVED_CHANNELS_V055.length);
   const crypto = t.ws("chtotamcrypto");
   assert.equal(crypto.state.sources.length, 3, "latest snapshot wins");
   assert.equal(crypto.state.mode, "AUTO");
@@ -51,7 +52,7 @@ test("R2 missing channels come back from the latest snapshot; existing ones are 
   assert.equal(crypto.name, "Что там у крипты?");
   assert.equal(t.ws("chtotamtech").state.mode, "REVIEW");
   assert.equal(t.ws("chtotamkino").telegramChannel, "@chtotamvkino");
-  assert.equal(t.ws("chtotamnews").telegramChannel, "@chtotaminternet");
+  assert.ok(!t.ws("chtotamnews"), "removed in v0.55.0: not recreated");
   // channels without a snapshot are created fresh: nothing publishes until the auto-publish gate passed
   assert.equal(t.ws("chtotamdom").state.mode, "REVIEW");
   assert.equal(t.ws("chtotamdom").state.autoGate.pending, true);
@@ -59,7 +60,7 @@ test("R2 missing channels come back from the latest snapshot; existing ones are 
   // persisted to workspaces.json
   const fs = await import("node:fs");
   const onDisk = JSON.parse(fs.readFileSync(t.dir + "/workspaces.json", "utf8"));
-  assert.equal(onDisk.workspaces.length, 16);
+  assert.equal(onDisk.workspaces.length, 16 - REMOVED_CHANNELS_V055.length);
   // once only: a channel deleted afterwards is not resurrected
   assert.ok(t.ws("ai-main").state.migrations.includes(WORKSPACE_RECOVERY_MIGRATION));
   t.workspaceStore.workspaces = t.workspaceStore.workspaces.filter((w) => w.id !== "chtotamcrypto");
