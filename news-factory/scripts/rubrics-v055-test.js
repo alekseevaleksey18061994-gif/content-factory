@@ -21,7 +21,7 @@ const CHANNELS = [
 ];
 
 test("R1 plan: quotas add up to the slots, ids are unique, min 5 sources, no maximum, no hard slot rubrics", async () => {
-  const expected = { ai: 12, tech: 15, games: 14, kino: 14, sport: 16, stars: 14, travel: 14, food: 15, business: 12, crypto: 12 };
+  const expected = { ai: 12, tech: 15, games: 14, kino: 14, sport: 16, stars: 14, travel: 14, food: 15, business: 12, crypto: 12, money: 8, home: 10, auto: 15 };
   for (const [ch, n] of Object.entries(expected)) {
     const plan = RUBRIC_PLAN_V055[ch];
     const st = channelStrategy(ch);
@@ -35,10 +35,13 @@ test("R1 plan: quotas add up to the slots, ids are unique, min 5 sources, no max
     assert.equal(st.unifiedSlots, true);
     assert.deepEqual(st.slotRubrics, {}, "soft quotas only");
     assert.deepEqual(Object.keys(st.mix).sort(), ids.slice().sort(), "writer buckets = rubrics");
-    assert.ok(CHANNEL_NAME_TAILS_V055[ch], ch + " name tail");
+    if (!["money", "home", "auto"].includes(ch)) assert.ok(CHANNEL_NAME_TAILS_V055[ch], ch + " name tail");
     assert.ok(plan.rubrics.length >= 6);
   }
-  for (const ch of ["home", "money", "auto"]) assert.equal(channelStrategy(ch).unifiedSlots, false, ch + " untouched");
+  // money/home/auto keep their original rubric ids (existing source tags stay valid)
+  assert.deepEqual(channelStrategy("money").rubrics.map((r) => r.id), ["cards_banks","deposits","credits_mortgage","taxes","ruble_inflation_cb","income_benefits","financial_scams","money_howto"]);
+  assert.equal(channelStrategy("home").rubrics.length, 10);
+  assert.equal(channelStrategy("auto").rubrics.length, 8);
   for (const ch of ["shopping", "science", "world"]) assert.equal(isRubricsV055Channel(ch), false);
 });
 
