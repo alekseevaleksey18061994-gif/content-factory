@@ -189,6 +189,24 @@ test("S9 final refresh keeps the current item unless a stronger one appears, the
   assert.ok(Object.values(assigned).includes("q3"), "the previously selected strong story should move to a later slot");
 });
 
+
+test("S10 legacy manual assignments survive automatic refresh", async () => {
+  const AI = "ai-main";
+  const manual = mkQueueItem({ id: "manual", newsId: "n_manual", aiScore: 70, qualityScore: 90 });
+  const stronger = mkQueueItem({ id: "strong", newsId: "n_strong", aiScore: 99, qualityScore: 95 });
+  const t = await loadServer({
+    fixedNow: mskToUtc(12, 45),
+    channels: [[AI, "ai", "Что там у ИИ?"]],
+    state: { [AI]: { mode: "AUTO", queue: [stronger, manual] } }
+  });
+  const schedule = inWs(t, AI, () => t.ensureScheduleShape(t.ws(AI).state));
+  schedule.assignments["2026-10-04"] = { "13:00": "manual" }; // old builds stored manual choices without markers
+  const refreshed = inWs(t, AI, () => t.dynamicRefreshBest("2026-10-04", "13:00"));
+  assert.equal(refreshed.item.id, "manual");
+  assert.equal(refreshed.manual, true);
+  assert.equal(t.ws(AI).state.queue.find((q) => q.id === "manual").manualFor, "2026-10-04 13:00");
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {
