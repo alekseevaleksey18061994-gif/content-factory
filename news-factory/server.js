@@ -21,6 +21,7 @@ import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState,
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
 import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers, reassignCarRubricGroups } from "./lib/channel-rubric-migrations.js";
+import { evaluateHealth } from "./lib/health-alerts.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
@@ -13461,6 +13462,13 @@ async function buildSystemStatus(force) {
       if (!proxyProbe || !proxyProbe.ok) return { state: "partial", description: "Прокси задан, но проверочный запрос не прошёл", detail: String(sourceProxy.label || "") + " · " + String(proxyProbe && proxyProbe.error || "нет ответа") + (counters ? " · " + counters : ""), next: "Проверить доступность и оплату прокси" };
       return { state: "connected", description: "Российский прокси работает", detail: String(sourceProxy.label || "") + " · проверка " + new URL(SOURCE_PROXY_PROBE_URL).hostname + ": " + proxyProbe.status + " за " + proxyProbe.ms + " мс · " + counters, next: "" };
     })(),
+    alerts: (function(){
+      const chatId = TELEGRAM_ALERT_CHAT_ID || String(workspaceStore.workspaces.length && (getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0]).state.telegramAlertChatId || "").trim();
+      const bot = botProbe && botProbe.ok && botProbe.result && botProbe.result.username ? "@" + botProbe.result.username : "бота News Factory";
+      if (!BOT_TOKEN) return { state: "missing", description: "Оповещения невозможны: нет токена бота", detail: "", next: "Задать TELEGRAM_BOT_TOKEN" };
+      if (!chatId) return { state: "missing", description: "Оповещения не доходят: бот не знает ваш личный чат", detail: "Сбой, кончившиеся кредиты ИИ, молчащие каналы и проблемы бэкапа сейчас никуда не отправляются", next: "Откройте " + bot + " в Telegram и нажмите «Старт» — привязка произойдёт автоматически за ~10 минут" };
+      return { state: "connected", description: "Оповещения подключены (личный чат с ботом)", detail: "Приходят: кончились кредиты ИИ, канал молчит " + HEALTH_SILENCE_HOURS + "+ ч, сбой Postmypost / бота / прокси / базы, не удался бэкап" + (healthAlertsLast ? " · проверка " + Math.round((Date.now() - healthAlertsLast.at) / 60000) + " мин назад" : ""), next: "" };
+    })(),
     postmypost: (function(){
       if (!POSTMYPOST_TOKEN) return { state: "missing", description: "Postmypost не подключён", detail: "VK-посты с фото публикуются только через Postmypost", next: "Задать POSTMYPOST_TOKEN в Railway" };
       if (!VK_VIA_POSTMYPOST) return { state: "partial", description: "Postmypost отключён переменной VK_VIA_POSTMYPOST=false", detail: "", next: "Убрать VK_VIA_POSTMYPOST=false" };
@@ -16087,6 +16095,49 @@ async function runOffsiteBackup(reason) {
     setTimeout(tick, 10 * 60 * 1000).unref();
   }, 180000).unref();
 })();
+
+// v0.61.2: owner health alerts (silent channels, Postmypost, bot, proxy, database). See lib/health-alerts.js.
+const HEALTH_SILENCE_HOURS = Math.max(2, Math.min(24, Number(process.env.HEALTH_SILENCE_HOURS || 5) || 5));
+const HEALTH_ALERTS_ENABLED = !/^(0|false|no|off)$/i.test(String(process.env.HEALTH_ALERTS_ENABLED || ""));
+let healthAlertsPrev = {};
+let healthAlertsLast = null;
+async function healthAlertsTick() {
+  if (!HEALTH_ALERTS_ENABLED || !BOT_TOKEN) return;
+  // Link the owner's private chat as soon as they press Start; tell them it works.
+  const defaultId = workspaceStore.defaultWorkspaceId;
+  const hadChat = Boolean(TELEGRAM_ALERT_CHAT_ID || String((getWorkspaceById(defaultId) || {}).state && getWorkspaceById(defaultId).state.telegramAlertChatId || "").trim());
+  if (!hadChat) {
+    await workspaceContext.run({ workspaceId: defaultId }, async function(){ await discoverTelegramAlertChat(); });
+    const nowHas = Boolean(String((getWorkspaceById(defaultId) || {}).state && getWorkspaceById(defaultId).state.telegramAlertChatId || "").trim());
+    if (nowHas) await sendOwnerAlert("✅ News Factory: оповещения подключены. Сюда будут приходить: кончились кредиты ИИ, канал молчит " + HEALTH_SILENCE_HOURS + "+ часов, сбой Postmypost, бота, прокси или базы, неудавшийся бэкап.");
+    else return;
+  }
+  let botOk = true;
+  try { await telegramApi("getMe", {}); } catch (error) { botOk = !/401|unauthorized|not found/i.test(String(error && error.message || error)); }
+  let proxyOk = null;
+  if (sourceProxy) { try { const probe = await sourceProxyProbe(false); proxyOk = Boolean(probe && probe.ok); } catch { proxyOk = false; } }
+  const channels = workspaceStore.workspaces.map(function(ws){
+    let summary = null;
+    try { summary = workspaceContext.run({ workspaceId: ws.id }, function(){ return workspaceSummary(ws); }); } catch {}
+    return { id: ws.id, name: ws.name, autoPublish: Boolean(summary && summary.autoPublish), paused: Boolean(summary && summary.mode === "PAUSED"), lastPublishedMs: summary && summary.lastPublishedAt ? Date.parse(summary.lastPublishedAt) : 0 };
+  });
+  const result = evaluateHealth({
+    nowMs: Date.now(), channels: channels, silenceHours: HEALTH_SILENCE_HOURS,
+    postmypostError: VK_VIA_POSTMYPOST ? postmypostMap.error : "",
+    botConfigured: true, botOk: botOk, proxyConfigured: Boolean(sourceProxy), proxyOk: proxyOk,
+    dbConfigured: Boolean(db), dbReady: Boolean(db) ? dbReady : true
+  }, healthAlertsPrev);
+  healthAlertsPrev = result.next;
+  healthAlertsLast = { at: Date.now(), silent: result.silent.length };
+  for (const item of result.send.concat(result.recovered)) {
+    console.warn("HEALTH_ALERT " + JSON.stringify({ key: item.key }));
+    await sendOwnerAlert(item.text);
+  }
+}
+setTimeout(function healthTick() {
+  healthAlertsTick().catch(function(error){ console.warn("HEALTH_ALERTS_FAILED " + String(error && error.message || error).slice(0, 200)); });
+  setTimeout(healthTick, 10 * 60 * 1000).unref();
+}, 6 * 60 * 1000).unref();
 
 setTimeout(setupNewChannels, 30000);
 setTimeout(function(){ logPostmypostStatus().catch(function(){}); }, 20000);
