@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.62.0",
+  "version": "0.63.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,6 +19,7 @@
     "test:dedupe": "node scripts/dedupe-test.js",
     "test:process-guards": "node scripts/process-guards-test.js",
     "test:health-alerts": "node scripts/health-alerts-test.js",
+    "test:network-day": "node scripts/network-day-test.js",
     "test:security": "node scripts/security-test.js",
     "test:prompts-code": "node scripts/prompts-code-test.js",
     "test:publish-guards": "node scripts/publish-guards-test.js",

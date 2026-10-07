@@ -2420,6 +2420,26 @@ input,select,textarea{border-radius:12px!important}
 .acc-card>.acc-toggle-head{position:relative;padding-right:30px}
 .acc-card>.acc-toggle-head .rg-caret{position:absolute;right:8px;top:50%;margin:0;transform:translateY(-70%) rotate(45deg)}
 .acc-card.open>.acc-toggle-head .rg-caret{transform:translateY(-30%) rotate(-135deg);margin:0}
+
+/* v0.63.0 — network day summary (light theme) */
+.network-day-card{margin-top:14px}
+.network-day-card .panel-title{flex-wrap:wrap;align-items:flex-start}
+.network-day-controls{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;flex:0 0 auto}.network-day-controls input[type=date]{width:150px;flex:0 0 150px}
+.network-day-controls button{min-width:38px}
+.network-day-controls input[type=date]{background:#fff;color:#081735;border:1px solid rgba(67,129,185,.28);border-radius:12px;padding:9px 10px;font:inherit;font-size:13px;color-scheme:light;min-height:40px}
+.network-day-totals{display:flex;gap:20px;flex-wrap:wrap;margin:4px 0 14px;align-items:baseline}
+.network-day-totals span{font-size:12px;color:#667797}.network-day-totals b{font-size:22px;color:#081735;margin-right:5px}
+.nd-row{border:1px solid rgba(67,129,185,.16);background:linear-gradient(150deg,rgba(255,255,255,.98),rgba(245,251,255,.92));border-radius:16px;margin-bottom:8px;overflow:hidden;color:#081735}
+.nd-head{display:grid;grid-template-columns:minmax(0,2fr) 100px 120px 70px 80px 20px;gap:10px;align-items:center;padding:12px 15px;cursor:pointer;font-size:13px}
+.nd-head:hover{background:rgba(22,140,255,.05)}.nd-name{font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nd-bar{height:6px;border-radius:4px;background:rgba(67,129,185,.14);margin-top:6px;overflow:hidden}.nd-bar i{display:block;height:100%;background:#18b67b;border-radius:4px}.nd-bar i.low{background:#e79a27}.nd-bar i.zero{background:#ef5e69}
+.nd-bad{color:#bd4450;font-weight:800}.nd-muted{color:#667797;font-size:12px}
+.nd-body{display:none;padding:2px 15px 14px;border-top:1px solid rgba(67,129,185,.12)}.nd-row.open .nd-body{display:block}
+.nd-hours{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;margin:12px 0 8px}.nd-hours span{display:block;height:24px;border-radius:4px;background:rgba(67,129,185,.12)}.nd-hours span.on{background:#18b67b}.nd-hours small{display:block;font-size:9px;text-align:center;color:#667797;margin-top:2px;min-height:11px}
+.nd-post{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:10px;padding:6px 0;font-size:12.5px;border-bottom:1px solid rgba(67,129,185,.10)}
+.nd-post:last-of-type{border-bottom:0}.nd-post time{font-weight:800}.nd-post>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.network-day-note{font-size:11px;color:#667797;margin:8px 2px 0}
+@media(max-width:700px){.network-day-controls{flex-wrap:wrap;flex:1 1 100%}.network-day-controls input[type=date]{flex:1 1 130px;width:auto;min-width:0}.nd-head{grid-template-columns:minmax(0,1fr) 90px 20px}.nd-head .nd-hide{display:none}}
 </style>
 </head>
 <body>
@@ -2509,6 +2529,21 @@ input,select,textarea{border-radius:12px!important}
           <div class="kpi"><b id="networkIssues">—</b><span>Требуют внимания</span><small id="networkIssuesNote">Каналы с проблемами</small></div>
           <div class="kpi"><b id="networkQueue">—</b><span>В очереди</span><small>По всем каналам</small></div>
           <div class="kpi"><b id="networkSources">—</b><span>Источников</span><small>Активны сейчас</small></div>
+        </div>
+
+        <div class="card network-day-card" id="networkDayCard">
+          <div class="panel-title">
+            <div><h3>Итоги дня</h3><p id="networkDaySub">Что вышло по каждому каналу за выбранную дату (время московское).</p></div>
+            <div class="network-day-controls">
+              <button type="button" onclick="netDayShift(-1)" title="Предыдущий день">‹</button>
+              <input type="date" id="networkDayInput" onchange="netDaySet(this.value)" aria-label="Дата">
+              <button type="button" onclick="netDayShift(1)" title="Следующий день">›</button>
+              <button type="button" onclick="netDayToday()">Сегодня</button>
+            </div>
+          </div>
+          <div class="network-day-totals" id="networkDayTotals"></div>
+          <div id="networkDayRows"><div class="empty">Загрузка…</div></div>
+          <p class="network-day-note" id="networkDayNote"></p>
         </div>
 
         <div class="network-layout">
@@ -3488,9 +3523,62 @@ function netTime(iso){
   var sameDay=d.toDateString()===now.toDateString();
   return sameDay?d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):d.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 }
+
+/* v0.63.0 — network day summary */
+var netDayKey='';var netDayData=null;var netDayOpen={};
+function netDayEnsureKey(){if(!netDayKey)netDayKey=moscowDateKey(new Date());return netDayKey}
+async function netDayLoad(){
+  var key=netDayEnsureKey();
+  var input=el('networkDayInput');if(input)input.value=key;
+  try{
+    var j=await api('/api/network/day?date='+encodeURIComponent(key));
+    if(key!==netDayKey)return;
+    netDayData=j;renderNetworkDay();
+  }catch(e){var box=el('networkDayRows');if(box)box.innerHTML='<div class="empty">Не удалось загрузить: '+esc(e.message)+'</div>'}
+}
+function netDaySet(v){if(!v)return;netDayKey=v;netDayLoad()}
+function netDayShift(d){netDayKey=addCalendarDays(netDayEnsureKey(),d);netDayLoad()}
+function netDayToday(){netDayKey=moscowDateKey(new Date());netDayLoad()}
+function netDayToggle(id){netDayOpen[id]=!netDayOpen[id];var r=el('ndrow_'+id);if(r)r.classList.toggle('open',Boolean(netDayOpen[id]))}
+function renderNetworkDay(){
+  var d=netDayData;if(!d)return;
+  var t=d.totals||{};
+  var label=d.isToday?'сегодня':(d.isFuture?'будущая дата':'за выбранный день');
+  if(el('networkDaySub'))el('networkDaySub').textContent=prettyCalendarDate(d.date)+' · '+label+' · время московское';
+  if(el('networkDayTotals'))el('networkDayTotals').innerHTML=
+    '<span><b>'+Number(t.published||0)+(t.planned&&!d.isFuture?' из '+Number(t.planned):'')+'</b>постов</span>'+
+    '<span><b>'+Number(t.tg||0)+'</b>в Telegram</span>'+
+    '<span><b>'+Number(t.vk||0)+'</b>в VK</span>'+
+    (t.vkFailed?'<span class="nd-bad"><b>'+Number(t.vkFailed)+'</b>ошибок VK</span>':'')+
+    ((!d.isFuture&&t.silentChannels&&!d.isToday)?'<span class="nd-bad"><b>'+Number(t.silentChannels)+'</b>без постов</span>':'');
+  var rows=(d.rows||[]).slice().sort(function(a,b){return (a.published-b.published)||String(a.name).localeCompare(String(b.name),'ru')});
+  var box=el('networkDayRows');
+  if(box)box.innerHTML=rows.length?rows.map(function(r){
+    var pct=r.planned?Math.min(100,Math.round(r.published*100/r.planned)):(r.published?100:0);
+    var cls=r.published===0?'zero':(r.planned&&r.published<r.planned*0.6?'low':'');
+    var hoursHtml=(r.hours||[]).map(function(n,i){return '<div><span class="'+(n?'on':'')+'" title="'+String(i).padStart(2,'0')+':00 — '+n+'"></span>'+(i%3===0?'<small>'+i+'</small>':'<small>&nbsp;</small>')+'</div>'}).join('');
+    var posts=(r.posts||[]).map(function(p){
+      return '<div class="nd-post"><time>'+esc(p.time)+'</time><span title="'+esc(p.title)+'">'+esc(p.title)+(p.source?' <em class="nd-muted">· '+esc(p.source)+'</em>':'')+'</span><span class="nd-muted">'+(p.tg?'TG ':(p.tgUncertain?'TG? ':''))+(p.vk?'VK':(p.vkFailed?'<b class="nd-bad">VK✗</b>':''))+'</span></div>';
+    }).join('')||'<div class="empty">В этот день постов нет</div>';
+    return '<div class="nd-row'+(netDayOpen[r.id]?' open':'')+'" id="ndrow_'+esc(r.id)+'">'+
+      '<div class="nd-head" onclick="netDayToggle('+ja(r.id)+')">'+
+        '<div><div class="nd-name">'+esc(r.name||'Канал')+'</div><div class="nd-bar"><i class="'+cls+'" style="width:'+pct+'%"></i></div></div>'+
+        '<div><b>'+r.published+'</b>'+(r.planned&&!d.isFuture?' <span class="nd-muted">из '+r.planned+'</span>':'')+'</div>'+
+        '<div class="nd-hide nd-muted">'+(r.firstAt?esc(r.firstAt)+' – '+esc(r.lastAt):'—')+'</div>'+
+        '<div class="nd-hide">TG '+r.tg+'</div>'+
+        '<div class="nd-hide'+(r.vkFailed?' nd-bad':'')+'">VK '+r.vk+(r.vkFailed?' ✗'+r.vkFailed:'')+'</div>'+
+        '<div class="nd-muted">▾</div>'+
+      '</div>'+
+      '<div class="nd-body"><div class="nd-hours">'+hoursHtml+'</div>'+posts+
+        '<div style="margin-top:8px"><button type="button" onclick="openWorkspaceFromNetwork('+ja(r.id)+')">Открыть кабинет канала →</button></div></div>'+
+    '</div>';
+  }).join(''):'<div class="empty">Каналов нет</div>';
+  if(el('networkDayNote'))el('networkDayNote').textContent=d.isFuture?'Для будущей даты постов ещё нет.':(d.historyLimitNote||'')+(d.isToday?'':' План «из N» — текущий дневной план канала.');
+}
+window.netDayShift=netDayShift;window.netDaySet=netDaySet;window.netDayToday=netDayToday;window.netDayToggle=netDayToggle;
 async function refreshNetworkDashboard(){
   var btn=el('networkRefreshBtn');if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
-  try{await loadWorkspaces();renderNetworkDashboard()}
+  try{await loadWorkspaces();renderNetworkDashboard();await netDayLoad()}
   catch(e){toast('Дашборд: '+e.message)}
   finally{if(btn){btn.disabled=false;btn.textContent='Обновить'}}
 }

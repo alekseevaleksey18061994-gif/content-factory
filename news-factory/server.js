@@ -22,6 +22,7 @@ import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js"
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
 import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers, reassignCarRubricGroups } from "./lib/channel-rubric-migrations.js";
 import { evaluateHealth } from "./lib/health-alerts.js";
+import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
@@ -12474,6 +12475,16 @@ const server = http.createServer(async function(req, res) {
     }
     if (req.method === "GET" && p === "/api/workspaces") {
       return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, profiles: EDITORIAL_CHANNEL_IDS, workspaces: workspaceStore.workspaces.map(function(ws){ return Object.assign(publicWorkspaceMeta(ws), { summary: workspaceSummary(ws) }); }) });
+    }
+    if (req.method === "GET" && p === "/api/network/day") {
+      const rawDate = String(url.searchParams.get("date") || "").trim();
+      const dateKey = rawDate || moscowDateKey(new Date());
+      if (!isDateKey(dateKey)) return sendJson(res, 400, { ok: false, error: "date must be YYYY-MM-DD" });
+      const rows = workspaceStore.workspaces.map(function(ws){
+        const summary = workspaceSummary(ws);
+        return { id: ws.id, name: ws.name, handle: telegramUsernameOrEmpty(ws.telegramPublicUsername) || telegramUsernameOrEmpty(ws.slug) || "", autoPublish: summary.autoPublish, mode: summary.mode, plannedPerDay: summary.plannedPerDay, queue: summary.queue, history: ws.state && ws.state.history };
+      });
+      return sendJson(res, 200, Object.assign({ ok: true, historyLimitNote: "В истории каждого канала хранятся последние 300 постов; более старые дни могут быть неполными." }, networkDay(rows, dateKey, Date.now())));
     }
     if (req.method === "POST" && p === "/api/workspaces") {
       const body = await readJsonObject(req);
