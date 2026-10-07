@@ -1375,6 +1375,13 @@ function workspaceSummary(ws) {
     if (t >= dayStartMs) publishedToday += 1;
   }
   const lastPublishedAt = lastMs ? new Date(lastMs).toISOString() : "";
+  // planned posts per day: hourly slots of the channel plus its extra (:30) lane when it has one
+  let plannedPerDay = 0;
+  try {
+    const ownHours = channelSlotHours(ws);
+    const lane = channelUnifiedSlots(ws) ? null : (CHANNEL_EXTRA_LANES[resolveChannelId(ws)] || null);
+    plannedPerDay = (ownHours ? ownHours.length : DYNAMIC_DAILY_TARGET) + (lane ? Math.max(0, Number(lane.targetPerDay == null ? (lane.slots || []).length : lane.targetPerDay)) : 0);
+  } catch { plannedPerDay = 0; }
   const queue = Array.isArray(st.queue) ? st.queue.length : 0;
   // Operational problems (what stops posts from coming out), separate from
   // cosmetic settings like the avatar.
@@ -1390,6 +1397,7 @@ function workspaceSummary(ws) {
     sources: sources,
     published: Number(st.stats && st.stats.published || 0),
     publishedToday: publishedToday,
+    plannedPerDay: plannedPerDay,
     lastPublishedAt: lastPublishedAt,
     missing: missing,
     problems: problems
@@ -7406,7 +7414,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time) {
       if (desiredRubric && itemTheme !== desiredRubric) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
-        if (!wantsMoneyEmergency && themesToday.has(itemTheme)) return false; // exactly one normal post per rubric/day
+        if (!wantsMoneyEmergency && !unifiedFlow && themesToday.has(itemTheme)) return false; // unified flow: a filled rubric only ranks lower (a slot never stays empty)
         if (!onlyAboveThreshold) {
           const utility = Number(item.channelSignals && item.channelSignals.utility != null ? item.channelSignals.utility : item.editorialV2 && item.editorialV2.channelSignals && item.editorialV2.channelSignals.utility);
           if (!Number.isFinite(utility) || utility < 7) return false; // 70–79 only when genuinely useful

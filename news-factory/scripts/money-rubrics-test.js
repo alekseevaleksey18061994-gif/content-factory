@@ -59,7 +59,7 @@ await test("M1 DNA: 8 equal rubrics, five-source floor and approved 8 normal slo
   t.restoreConsole();
 });
 
-await test("M2 exactly one normal post per rubric: repeat is blocked, untouched rubric wins", async () => {
+await test("M2 one post per rubric a day is a preference: an untouched rubric wins, a repeat fills a slot only when nothing else is left", async () => {
   const t=await loadServer({fixedNow:msk(14,0)});
   const ws=t.ws(M);
   ws.state.history=[{id:"h1",publishedAt:msk(9,2),contentBucket:"cards_banks",publicationOrigin:"schedule",scheduledSlot:"2026-10-05 09:00"}];
@@ -69,7 +69,7 @@ await test("M2 exactly one normal post per rubric: repeat is blocked, untouched 
   ];
   assert.equal(inWs(t,M,()=>t.dynamicBestQueueItemRaw("",true)).id,"fresh");
   ws.state.queue=[ws.state.queue[0]];
-  assert.equal(inWs(t,M,()=>t.dynamicBestQueueItemRaw("",false)),null);
+  assert.equal(inWs(t,M,()=>t.dynamicBestQueueItemRaw("",false)).id,"repeat","soft quota: the slot is not left empty");
   t.restoreConsole();
 });
 

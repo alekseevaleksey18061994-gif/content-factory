@@ -233,6 +233,14 @@ test("R14 persisted money calendar gains the new hourly slots and keeps the 95+ 
   assert.equal(ws.state.publicationSchedule.targetPerDay, 8);
 });
 
+test("R15 dashboard: planned posts per day = hourly slots (+ extra lane only for non-unified channels)", async () => {
+  const t = await loadServer({ fixedNow: msk(12, 0) });
+  const plan = (id) => t.workspaceSummary(t.ws(id)).plannedPerDay;
+  assert.equal(plan("chtotamdengi"), 8, "money: 8 hourly slots, no lane");
+  assert.equal(plan("chtotamhome"), 10);
+  assert.ok(plan("chtotamtachki") >= 15, "cars: hourly slots plus its :30 lane");
+});
+
 async function main() {
   const only1 = process.argv[2];
   if (only1) {
