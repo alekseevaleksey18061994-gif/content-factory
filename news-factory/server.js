@@ -13,7 +13,7 @@ import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPassw
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
-import { SOURCES_V055 } from "./lib/channel-sources-v055.js";
+import { SOURCES_V055, SOURCES_TOPUP_V058 } from "./lib/channel-sources-v055.js";
 import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, isLegacyThemeChannelV055, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
@@ -2786,6 +2786,10 @@ function findVerbatimOverlap(sourceText, outputText, minWords) {
 }
 async function enforceCopyrightSafeMedia(post) {
   const out = Object.assign({}, post || {});
+  // Slot-preparation dry run (v0.58.0): same decisions, but no card file is rendered for a copy that is thrown away.
+  const dryRun = out.__photoPrecheck === true;
+  delete out.__photoPrecheck;
+  const renderCard = function(args) { return dryRun ? Promise.resolve({ url: "precheck://card", model: "precheck" }) : renderEconomyTextCard(args); };
   const license = sourceMediaLicense(out);
   out.mediaLicense = license;
   out.copyrightSafe = COPYRIGHT_SAFE_MODE;
@@ -2818,7 +2822,7 @@ async function enforceCopyrightSafeMedia(post) {
       throw error;
     }
     if (!out.imageUrl && !out.videoUrl && !out.generatedImageUrl && GENERATE_COVER_IF_MISSING) {
-      const local = await renderEconomyTextCard({
+      const local = await renderCard({
         id: out.newsId || out.postId || out.id || newId("media_gate"),
         title: out.title || currentWorkspace().name || "News Factory",
         text: out.text || "",
@@ -2864,7 +2868,7 @@ async function enforceCopyrightSafeMedia(post) {
       if (MEDIA_REQUIRED) throw new Error("Медиа этого источника запрещено настройками, а генерация резервной обложки отключена");
       return out;
     }
-    const generated = await renderEconomyTextCard({
+    const generated = await renderCard({
       id: out.newsId || out.postId || out.id || newId("copyright"),
       title: out.title || currentWorkspace().name || "News Factory",
       text: out.text || "",
@@ -3399,6 +3403,15 @@ function autoPauseWeakSources() {
     const enabledInGroup = (state.sources || []).filter(function(x){ return x && x.enabled && (x.group || "media") === group; }).length;
     const reason = autoPauseReason(source, ensureSourceStat(source), enabledInGroup);
     if (!reason) continue;
+    // The junk-share rule (v0.58.0) never takes a rubric below its minimum number of sources.
+    if (/^почти всё отсеяно/.test(reason)) {
+      const minIds = rubricIds();
+      if (minIds.size) {
+        const own = (Array.isArray(source.rubrics) && source.rubrics.length ? source.rubrics : [source.rubric]).map(String).filter(function(id){ return minIds.has(id); });
+        const have = rubricSourceCounts();
+        if (own.some(function(id){ return Number(have[id] || 0) <= rubricMinFor(id); })) continue;
+      }
+    }
     // at most 3 trial pauses per run: replacements arrive gradually, the channel never loses half its sources at once
     if (/пробный срок/.test(reason) && paused.filter(function(x){ return /пробный срок/.test(x.reason); }).length >= 3) continue;
     source.enabled = false;
@@ -6559,6 +6572,16 @@ async function collectOnce(trigger) {
       let baseSaved = false;
       let claimed = [];
       try {
+        // v0.58.0: the queue is full and this link is not a top story: do not even open the page. Before, a deferred link
+        // was downloaded again on every run only to be turned away at the gate below.
+        const earlyCapacity = capacityGateDecision(candidate, trigger);
+        if (!earlyCapacity.allow) {
+          summary.capacityDeferred = Number(summary.capacityDeferred || 0) + 1;
+          console.log("EDITORIAL_CAPACITY_DEFERRED " + JSON.stringify({
+            workspace: currentWorkspaceId(), url: url, depth: earlyCapacity.depth, score: earlyCapacity.score, target: EDITORIAL_QUEUE_TARGET, early: true
+          }));
+          continue;
+        }
         let articleHtml;
         try {
           articleHtml = await fetchText(url, 15000);
@@ -7529,6 +7552,37 @@ function dynamicRefreshBest(day, time, kind) {
   return { item: best, replaced: Boolean(currentId && best && currentId !== best.id), previousId: currentId, released: released.length };
 }
 
+// v0.58.0: the photo is judged when the slot is prepared, not at the publish minute. A post whose only photo fails the
+// quality check ("Нет подходящего фото") used to take the slot's first attempt and was swapped for the next one only at
+// publish time (up to 4 attempts per slot). Now such a post is set aside here and the next best one is chosen.
+// A hand-picked post is never touched; any other error is left for the publisher.
+const SLOT_PHOTO_PRECHECK_ENABLED = String(process.env.SLOT_PHOTO_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
+const SLOT_PHOTO_PRECHECK_MAX = 3;
+async function refreshBestWithPhotoCheck(day, time, kind) {
+  let refreshed = dynamicRefreshBest(day, time, kind);
+  if (!SLOT_PHOTO_PRECHECK_ENABLED) return refreshed;
+  const rejected = [];
+  for (let i = 0; i < SLOT_PHOTO_PRECHECK_MAX && refreshed.item && !refreshed.manual; i += 1) {
+    const item = refreshed.item;
+    try {
+      await enforceCopyrightSafeMedia(Object.assign({}, item, { postId: item.id, topicId: item.topicId || "default", __photoPrecheck: true }));
+      break;
+    } catch (error) {
+      if (!(error && error.code === "NO_PHOTO")) break;
+      item.publishFailures = Number(item.publishFailures || 0) + 1;
+      item.lastPublishError = String(error.message || error).slice(0, 300);
+      item.status = "publish_failed";
+      item.preparedFor = "";
+      rejected.push(String(item.id));
+      console.log("SLOT_PHOTO_PRECHECK_REJECTED " + JSON.stringify({ workspace: currentWorkspaceId(), slot: day + " " + time, queueId: item.id, error: item.lastPublishError }));
+      saveState();
+      refreshed = dynamicRefreshBest(day, time, kind);
+    }
+  }
+  if (rejected.length) refreshed.photoRejected = rejected;
+  return refreshed;
+}
+
 async function prepareDynamicSlot() {
   const now = new Date();
   const nowMinutes = moscowMinutes(now);
@@ -7554,13 +7608,13 @@ async function prepareDynamicSlot() {
   state.dynamicScheduler = state.dynamicScheduler || {};
   if (COLLECTION_STAGGER_ENABLED && state.dynamicScheduler.lastCollectKey === staggeredCollectKey(day, hour)) {
     await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-    const refreshed = dynamicRefreshBest(day, time);
+    const refreshed = await refreshBestWithPhotoCheck(day, time);
     const ready = refreshed.item;
-    if (ready) return { ok: true, slot: time, collector: { ok: true, skipped: "staggered_collect_done" }, prepared: ready.id, title: ready.title, replaced: refreshed.replaced };
+    if (ready) return { ok: true, slot: time, collector: { ok: true, skipped: "staggered_collect_done" }, prepared: ready.id, title: ready.title, replaced: refreshed.replaced, photoRejected: refreshed.photoRejected };
   }
   const collector = await collectOnce("slot-prep");
   await refreshEditorialLearning(false).catch(function(error){ console.warn("Editorial learning refresh failed:", error.message); });
-  const refreshed = dynamicRefreshBest(day, time);
+  const refreshed = await refreshBestWithPhotoCheck(day, time);
   const item = refreshed.item;
   return {
     ok: true,
@@ -15775,29 +15829,44 @@ setTimeout(function(){
 // v0.55.3: starting source set per rubric (hand-picked, lib/channel-sources-v055.js). Every candidate is validated by
 // reworkChannelSources before it is added; the automatic pause/replenish logic takes over from there.
 const SOURCES_LOAD_V055 = "v0.55.3-rubric-sources";
+const SOURCES_TOPUP_MARKER_V058 = "v0.58.0-rubric-topup";
 let sourcesLoadV055Running = false;
 async function loadRubricSourcesV055() {
   if (sourcesLoadV055Running) return;
   sourcesLoadV055Running = true;
   try {
     let retry = false;
-    for (const ws of workspaceStore.workspaces.slice()) {
-      if (!ws || !ws.state) continue;
-      const channelId = resolveChannelId(ws);
-      const list = SOURCES_V055[channelId];
-      if (!list || !list.length) continue;
-      ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
-      if (ws.state.migrations.includes(SOURCES_LOAD_V055)) continue;
-      if (!ws.state.migrations.includes(RUBRICS_V055_MIGRATION)) { retry = true; continue; }
-      await workspaceContext.run({ workspaceId: ws.id }, async function(){
-        const result = await reworkChannelSources(ws, { add: list.map(function(x){ return { name: x.name, url: x.url, group: x.group, rubrics: x.rubrics }; }), disable: [] }, "v0.55.3");
-        state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
-        state.seedAttempts[SOURCES_LOAD_V055] = Number(state.seedAttempts[SOURCES_LOAD_V055] || 0) + 1;
-        const done = (result && result.added.length > 0) || state.seedAttempts[SOURCES_LOAD_V055] >= 3;
-        if (done) state.migrations.push(SOURCES_LOAD_V055); else retry = true;
-        saveState();
-        console.log("RUBRIC_SOURCES_V055 " + JSON.stringify({ workspace: ws.id, planned: list.length, added: result ? result.added.length : 0, failed: result ? result.failed.length : 0, assigned: result && result.assigned ? result.assigned.length : 0, rubrics: rubricSourceCounts(ws) }));
-      });
+    // The v0.58.0 top-up (reserve candidates for weak rubrics) goes through the same validated path, once per channel.
+    const loads = [
+      { marker: SOURCES_LOAD_V055, lists: SOURCES_V055, tag: "v0.55.3" },
+      { marker: SOURCES_TOPUP_MARKER_V058, lists: SOURCES_TOPUP_V058, tag: "v0.58.0" }
+    ];
+    for (const load of loads) {
+      for (const ws of workspaceStore.workspaces.slice()) {
+        if (!ws || !ws.state) continue;
+        const channelId = resolveChannelId(ws);
+        let list = load.lists[channelId];
+        if (!list || !list.length) continue;
+        ws.state.migrations = Array.isArray(ws.state.migrations) ? ws.state.migrations : [];
+        if (ws.state.migrations.includes(load.marker)) continue;
+        if (!ws.state.migrations.includes(RUBRICS_V055_MIGRATION)) { retry = true; continue; }
+        await workspaceContext.run({ workspaceId: ws.id }, async function(){
+          // The top-up only ADDS: a source the channel already has (even paused, even with several rubrics) is left as it is,
+          // because reworkChannelSources would otherwise overwrite its rubrics with the single one listed here.
+          if (load.marker === SOURCES_TOPUP_MARKER_V058) {
+            const have = new Set((state.sources || []).map(function(x){ return x && sourceKey(x.url); }).filter(Boolean));
+            list = list.filter(function(x){ return !have.has(sourceKey(x.url)); });
+            if (!list.length) { state.migrations.push(load.marker); saveState(); return; }
+          }
+          const result = await reworkChannelSources(ws, { add: list.map(function(x){ return { name: x.name, url: x.url, group: x.group, rubrics: x.rubrics }; }), disable: [] }, load.tag);
+          state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
+          state.seedAttempts[load.marker] = Number(state.seedAttempts[load.marker] || 0) + 1;
+          const done = (result && result.added.length > 0) || state.seedAttempts[load.marker] >= 3;
+          if (done) state.migrations.push(load.marker); else retry = true;
+          saveState();
+          console.log("RUBRIC_SOURCES_V055 " + JSON.stringify({ workspace: ws.id, marker: load.marker, planned: list.length, added: result ? result.added.length : 0, failed: result ? result.failed.length : 0, assigned: result && result.assigned ? result.assigned.length : 0, rubrics: rubricSourceCounts(ws) }));
+        });
+      }
     }
     if (retry) setTimeout(function(){ loadRubricSourcesV055().catch(function(){}); }, 20 * 60 * 1000);
   } finally {

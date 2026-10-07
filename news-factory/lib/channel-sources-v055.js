@@ -5180,3 +5180,22 @@ export const SOURCES_V055 = {
   }
  ]
 };
+
+// v0.58.0: добор слабых подрубрик. В v0.55.3 часть кандидатов не прошла проверку (сайт не открылся или без списка
+// статей), и техника/интерьер в «Доме» остались на 4 и 2 источниках при минимуме 5. Это запасные кандидаты:
+// сервер так же проверяет каждый перед добавлением, недоступные отбрасываются, уже добавленные пропускаются.
+export const SOURCES_TOPUP_V058 = {
+ "home": [
+  { "name": "DNS Club — техника", "url": "https://club.dns-shop.ru/", "group": "media", "rubrics": ["home_appliances"] },
+  { "name": "Ситилинк — блог", "url": "https://www.citilink.ru/blog/", "group": "media", "rubrics": ["home_appliances"] },
+  { "name": "М.Видео — блог", "url": "https://www.mvideo.ru/blog", "group": "media", "rubrics": ["home_appliances"] },
+  { "name": "iXBT — Home", "url": "https://www.ixbt.com/home/", "group": "media", "rubrics": ["home_appliances"] },
+  { "name": "Hi-Tech Mail", "url": "https://hi-tech.mail.ru/", "group": "media", "rubrics": ["home_appliances"] },
+  { "name": "Ivd.ru — интерьер и дизайн", "url": "https://www.ivd.ru/", "group": "media", "rubrics": ["interior_trends"] },
+  { "name": "Dezeen — интерьеры", "url": "https://www.dezeen.com/interiors/", "group": "media", "rubrics": ["interior_trends"] },
+  { "name": "ArchDaily", "url": "https://www.archdaily.com/", "group": "media", "rubrics": ["interior_trends"] },
+  { "name": "Architectural Digest", "url": "https://www.architecturaldigest.com/", "group": "media", "rubrics": ["interior_trends"] },
+  { "name": "Homes & Gardens", "url": "https://www.homesandgardens.com/news", "group": "media", "rubrics": ["interior_trends"] },
+  { "name": "Elle — дом", "url": "https://www.elle.ru/dom/", "group": "media", "rubrics": ["interior_trends"] }
+ ]
+};
