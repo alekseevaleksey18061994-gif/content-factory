@@ -45,7 +45,7 @@ const src = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.ur
   assert.equal(sq.autoPauseReason(source, { junk: 30, useful: 20, published: 5, recent: ["junk","ok","junk","ok","junk","ok","junk","ok","junk","ok"] }, 10), "", "a mixed source (55% junk) is not paused");
   assert.equal(sq.autoPauseReason(source, { junk: 170, useful: 15, published: 15, recent: ["junk","junk","junk","junk","ok","junk","junk","junk","junk","junk"] }, 10), "", "a productive noisy source (15 published) is left alone");
   // never below a rubric's minimum, and the photo dry run renders no card
-  assert.ok(/\^почти всё отсеяно[\s\S]{0,700}rubricMinFor\(id\)/.test(src), "junk-share pause must respect the rubric minimum");
+  assert.ok(/\^сайт не открывается[\s\S]{0,700}rubricMinFor\(id\)/.test(src), "junk-share pause must respect the rubric minimum");
   assert.ok(/__photoPrecheck: true/.test(src) && /dryRun \? Promise\.resolve/.test(src), "photo precheck must be a dry run");
   assert.equal((src.match(/await renderCard\(/g) || []).length, 2, "both card renders go through the dry-run switch");
   console.log("ok P4 junk share rule");

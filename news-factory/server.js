@@ -3403,8 +3403,9 @@ function autoPauseWeakSources() {
     const enabledInGroup = (state.sources || []).filter(function(x){ return x && x.enabled && (x.group || "media") === group; }).length;
     const reason = autoPauseReason(source, ensureSourceStat(source), enabledInGroup);
     if (!reason) continue;
-    // The junk-share rule (v0.58.0) never takes a rubric below its minimum number of sources.
-    if (/^почти всё отсеяно/.test(reason)) {
+    // No quality rule (junk streak, junk share, trial, unconfirmable news) takes a rubric below its minimum number of
+    // sources (v0.59.0). Only a source whose site does not open at all is paused regardless: it gives nothing anyway.
+    if (!/^сайт не открывается/.test(reason)) {
       const minIds = rubricIds();
       if (minIds.size) {
         const own = (Array.isArray(source.rubrics) && source.rubrics.length ? source.rubrics : [source.rubric]).map(String).filter(function(id){ return minIds.has(id); });
@@ -9403,7 +9404,8 @@ async function vkApi(method, params, options) {
     const err = data && data.error;
     const code = err ? err.error_code : response.status;
     const msg = err ? err.error_msg : ("HTTP " + response.status);
-    logVkError(method, code, msg, context);
+    // A caller that handles a known code itself (e.g. wall.get 27 with a community token) keeps it out of the error log.
+    if (!(Array.isArray(opts.quietCodes) && opts.quietCodes.map(String).includes(String(code)))) logVkError(method, code, msg, context);
     throw createVkError(method, code, msg, context);
   }
 
@@ -10116,6 +10118,7 @@ async function vkProbe() {
   }
 }
 
+let vkWallGetBlockedUntil = 0;
 async function fetchVkAnalytics() {
   if (!VK_ACCESS_TOKEN || !VK_GROUP_ID || !VK_OWNER_ID) {
     return {
@@ -10134,11 +10137,18 @@ async function fetchVkAnalytics() {
       fields: "members_count"
     });
     const group = Array.isArray(groupResponse) ? groupResponse[0] : (groupResponse && Array.isArray(groupResponse.groups) ? groupResponse.groups[0] : null);
-    const wall = await vkApi("wall.get", {
-      owner_id: VK_OWNER_ID,
-      count: 100,
-      filter: "owner"
-    });
+    // wall.get is closed to community tokens (error 27). Asked once a day instead of every hour; the subscriber
+    // count above does not need it and keeps working.
+    let wall = null;
+    if (Date.now() >= vkWallGetBlockedUntil) {
+      try {
+        wall = await vkApi("wall.get", { owner_id: VK_OWNER_ID, count: 100, filter: "owner" }, { quietCodes: [27] });
+      } catch (wallError) {
+        if (String(wallError && wallError.vkErrorCode) !== "27") throw wallError;
+        vkWallGetBlockedUntil = Date.now() + 24 * 3600 * 1000;
+        console.log("VK_WALL_GET_UNAVAILABLE " + JSON.stringify({ error_code: 27, note: "community token cannot read the wall; post statistics skipped, retry in 24h" }));
+      }
+    }
     const items = wall && Array.isArray(wall.items) ? wall.items : [];
     const posts = items.map(function(item) {
       const views = Number(item && item.views && item.views.count || 0);
