@@ -5213,3 +5213,22 @@ export const SOURCES_TOPUP_V058 = {
   { "name": "Лента.ру — Экономика (RSS)", "url": "https://lenta.ru/rss/news", "group": "media", "rubrics": ["cards_banks", "financial_scams", "money_howto"] }
  ]
 };
+
+// v0.60.3: после подключения российского прокси часть сайтов, не открывавшихся из-за границы (Банки.ру, ЦБ, РБК, Т—Ж…),
+// проверяется заново. Берём все стартовые и резервные кандидаты по каналам без дублей по URL; сервер добавляет только отсутствующие.
+export function proxyRetryLists() {
+  const out = {};
+  const key = function(url) { return String(url || "").trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, ""); };
+  for (const src of [SOURCES_V055, SOURCES_TOPUP_V058]) {
+    for (const channelId of Object.keys(src)) {
+      const seen = out[channelId] ? new Set(out[channelId].map(function(x) { return key(x.url); })) : new Set();
+      out[channelId] = out[channelId] || [];
+      for (const item of src[channelId]) {
+        if (!item || !item.url || seen.has(key(item.url))) continue;
+        seen.add(key(item.url));
+        out[channelId].push(item);
+      }
+    }
+  }
+  return out;
+}
