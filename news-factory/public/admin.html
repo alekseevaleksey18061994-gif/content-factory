@@ -4602,14 +4602,15 @@ async function renderConnections(force){
     telegramChannel:'Telegram-канал',
     vk:'VK API / сообщество',
     collector:'Сборщик новостей',
-    scheduler:'Планировщик'
+    scheduler:'Планировщик',
+    sourceProxy:'Российский прокси (источники)'
   };
   var groups=[
     {title:'Инфраструктура',icon:'🖥️',keys:['railway','github','publicEndpoint','storage','adminUi','postgresql']},
     {title:'Разработка и AI',icon:'🤖',keys:['claudeCode','anthropic','openai','editorialV2','openaiImage','mediaEngine']},
     {title:'Telegram',icon:'✈️',keys:['telegramBot','telegramChannel']},
     {title:'VK',icon:'🅥',keys:['vk']},
-    {title:'Автоматизация',icon:'⚙️',keys:['collector','scheduler']}
+    {title:'Автоматизация',icon:'⚙️',keys:['collector','scheduler','sourceProxy']}
   ];
   function meta(state){if(state==='connected')return {cls:'done',label:'Подключено',dot:'on'};if(state==='partial')return {cls:'work',label:'Частично',dot:'partial'};return {cls:'wait',label:'Не подключено',dot:''}}
   function renderConn(key,details){

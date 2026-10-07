@@ -13252,6 +13252,27 @@ async function githubAutomationProbe() {
   return result;
 }
 
+// Russian proxy health for the "Подключения" page: one live request through the proxy to a Russian site (cached 5 min),
+// plus the routing counters of the source fetcher. Never exposes credentials: only host:port is shown.
+let sourceProxyProbeCache = { at: 0, value: null };
+const SOURCE_PROXY_PROBE_URL = process.env.SOURCE_PROXY_PROBE_URL || "https://www.cbr.ru/";
+async function sourceProxyProbe(force) {
+  if (!sourceProxy) return { enabled: false };
+  const now = Date.now();
+  if (!force && sourceProxyProbeCache.value && now - sourceProxyProbeCache.at < 5 * 60 * 1000) return sourceProxyProbeCache.value;
+  const started = Date.now();
+  let value;
+  try {
+    const response = await safeFetch(SOURCE_PROXY_PROBE_URL, { proxy: sourceProxy, timeoutMs: 8000, maxBytes: 300 * 1024 });
+    value = { enabled: true, ok: response.status >= 200 && response.status < 400, status: response.status, ms: Date.now() - started };
+    if (!value.ok) value.error = "HTTP " + response.status;
+  } catch (error) {
+    value = { enabled: true, ok: false, ms: Date.now() - started, error: String(error && error.message || error).slice(0, 160) };
+  }
+  sourceProxyProbeCache = { at: now, value: value };
+  return value;
+}
+
 async function buildSystemStatus(force) {
   const now = Date.now();
   const cacheKey = currentWorkspaceId();
@@ -13299,6 +13320,7 @@ async function buildSystemStatus(force) {
   );
   const publicEndpointOk = /^https:\/\//i.test(String(PUBLIC_BASE_URL || ""));
 
+  const proxyProbe = await sourceProxyProbe(force);
   const details = {
     railway: {
       state: railwayConnected ? "connected" : "partial",
@@ -13419,6 +13441,13 @@ async function buildSystemStatus(force) {
         : String(vkStatusProbe.error || ""),
       next: vkStatusProbe.ok ? "Довести подтверждённый способ публикации изображения в VK" : "Проверить права ключа сообщества VK"
     },
+    sourceProxy: (function(){
+      const fs2 = sourceFetcher.stats();
+      const counters = fs2.proxy_enabled ? ("через прокси: " + Number(fs2.proxy || 0) + " · сначала прокси: " + Number(fs2.proxyFirst || 0) + " · ошибок: " + Number(fs2.failed || 0)) : "";
+      if (!sourceProxy) return { state: "missing", description: "Российский прокси не подключён", detail: "Сайты с блокировкой по зарубежным IP (Банки.ру, ЦБ, РБК и др.) не открываются", next: "Задать SOURCE_PROXY_URL в Railway" };
+      if (!proxyProbe || !proxyProbe.ok) return { state: "partial", description: "Прокси задан, но проверочный запрос не прошёл", detail: String(sourceProxy.label || "") + " · " + String(proxyProbe && proxyProbe.error || "нет ответа") + (counters ? " · " + counters : ""), next: "Проверить доступность и оплату прокси" };
+      return { state: "connected", description: "Российский прокси работает", detail: String(sourceProxy.label || "") + " · проверка " + new URL(SOURCE_PROXY_PROBE_URL).hostname + ": " + proxyProbe.status + " за " + proxyProbe.ms + " мс · " + counters, next: "" };
+    })(),
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
       description: COLLECTOR_ENABLED ? "News Collector включён" : "News Collector выключен",
