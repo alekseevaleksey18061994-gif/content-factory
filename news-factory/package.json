@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.66.0",
+  "version": "0.67.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -25,6 +25,7 @@
     "test:replenish-idle": "node scripts/replenish-idle-test.js",
     "test:rubric-groups-ui": "node scripts/rubric-groups-ui-test.js",
     "test:source-cleanup": "node scripts/source-cleanup-test.js",
+    "test:source-rubric-assign": "node scripts/source-rubric-assign-test.js",
     "test:security": "node scripts/security-test.js",
     "test:prompts-code": "node scripts/prompts-code-test.js",
     "test:publish-guards": "node scripts/publish-guards-test.js",

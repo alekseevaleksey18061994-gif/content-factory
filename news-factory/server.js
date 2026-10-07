@@ -24,7 +24,8 @@ import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApproved
 import { evaluateHealth } from "./lib/health-alerts.js";
 import { runMigrations, migrationStatus } from "./lib/db-migrations.js";
 import { buildChannelConfig } from "./lib/channel-config.js";
-import { planSourceCleanup, sweepCandidates, applySourceRemoval, DEAD_GRACE_MS } from "./lib/source-cleanup.js";
+import { buildAssignPrompt, parseAssignResult, tagSource, ASSIGN_BATCH, ASSIGN_MARKER, ASSIGN_MIN_ANSWERED } from "./lib/source-rubric-assign.js";
+import { planSourceCleanup, sweepCandidates, applySourceRemoval, inAnyGroup, DEAD_GRACE_MS } from "./lib/source-cleanup.js";
 import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
@@ -14910,6 +14911,70 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("Source cleanup failed:", error.message); });
 }, 300000);
+
+// v0.67.0: enabled sources outside every theme group get attached to the theme(s) they fit (keywords first, then one AI call per batch).
+// A source nothing fits stays as it is. Never run twice; if the AI is unavailable nothing is marked and the next start retries.
+async function assignLooseSourcesForCurrentWorkspace() {
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (state.migrations.includes(ASSIGN_MARKER)) return { skipped: "done" };
+  const ws = currentWorkspace();
+  const channelId = resolveChannelId(ws);
+  const rubrics = channelRubrics(ws);
+  const ids = new Set(rubrics.map(function(r){ return r.id; }));
+  if (!ids.size) { state.migrations.push(ASSIGN_MARKER); return { skipped: "no_rubrics" }; }
+  const nowIso = new Date().toISOString();
+  const loose = (state.sources || []).filter(function(x){ return x && x.enabled && !inAnyGroup(x, ids) && !x.rubricAssignJudgedAt; });
+  let byKeywords = 0, byAi = 0, unfit = 0;
+  const rest = [];
+  for (const src of loose) {
+    const themes = RUBRIC_PLAN_V055[channelId] ? classifySourceV055(channelId, src).filter(function(id){ return ids.has(id); }) : [];
+    if (themes.length) { tagSource(src, themes, nowIso); byKeywords += 1; } else rest.push(src);
+  }
+  if (rest.length && !OPENAI_API_KEY) return { skipped: "no_ai", loose: loose.length };
+  for (let i = 0; i < rest.length; i += ASSIGN_BATCH) {
+    const batch = rest.slice(i, i + ASSIGN_BATCH);
+    const prompt = buildAssignPrompt({ channelName: ws && ws.name || "", topic: channelTopic(channelId) || CHANNEL_TOPICS_RU[channelId] || "", rubrics: rubrics, sources: batch });
+    let verdicts = null;
+    try {
+      const response = await llmResponsesFetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + OPENAI_API_KEY },
+        body: JSON.stringify({ model: OPENAI_MODEL, input: prompt, max_output_tokens: 4000, text: { format: { type: "json_object" } } }),
+        signal: AbortSignal.timeout(60000)
+      });
+      const data = await response.json().catch(function(){ return {}; });
+      if (!response.ok) throw new Error(data && data.error && data.error.message || ("HTTP " + response.status));
+      recordOpenAIResponseUsage(OPENAI_MODEL, "source_rubric_assign", data, "responses", { items: batch.length });
+      verdicts = parseAssignResult(extractOpenAIText(data), batch.length, ids);
+      if (!verdicts) throw new Error("не удалось разобрать ответ");
+      if (verdicts.size < Math.ceil(batch.length * ASSIGN_MIN_ANSWERED)) throw new Error("ответ неполный: " + verdicts.size + " из " + batch.length);
+    } catch (error) {
+      console.warn("SOURCE_RUBRIC_ASSIGN_ERROR " + JSON.stringify({ workspace: currentWorkspaceId(), error: String(error && error.message || error).slice(0, 160) }));
+      maybeBillingAlert(error && error.message);
+      saveState();
+      return { skipped: "ai_error", byKeywords: byKeywords, byAi: byAi };
+    }
+    batch.forEach(function(src, index) {
+      const got = verdicts.get(index + 1) || [];
+      if (got.length) { tagSource(src, got, nowIso); byAi += 1; } else { src.rubricAssignJudgedAt = nowIso; unfit += 1; } // judged once: never paid for twice
+    });
+  }
+  state.migrations.push(ASSIGN_MARKER);
+  saveState();
+  const report = { workspace: currentWorkspaceId(), loose: loose.length, byKeywords: byKeywords, byAi: byAi, unfit: unfit };
+  console.log("SOURCE_RUBRIC_ASSIGN_DONE " + JSON.stringify(report));
+  return report;
+}
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){
+        try { await assignLooseSourcesForCurrentWorkspace(); } catch (error) { console.warn("Source rubric assign failed for " + ws.id + ": " + error.message); }
+      });
+    }
+  })().catch(function(error){ console.warn("Source rubric assign failed:", error.message); });
+}, 420000);
 
 // Top up sources to the target shortly after start (respects the throttle).
 setTimeout(function() {
