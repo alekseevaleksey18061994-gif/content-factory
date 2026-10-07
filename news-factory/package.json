@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.65.0",
+  "version": "0.65.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,6 +22,7 @@
     "test:network-day": "node scripts/network-day-test.js",
     "test:db-migrations": "node scripts/db-migrations-test.js",
     "test:channel-config": "node scripts/channel-config-test.js",
+    "test:replenish-idle": "node scripts/replenish-idle-test.js",
     "test:security": "node scripts/security-test.js",
     "test:prompts-code": "node scripts/prompts-code-test.js",
     "test:publish-guards": "node scripts/publish-guards-test.js",

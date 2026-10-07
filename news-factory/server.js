@@ -3401,7 +3401,24 @@ async function replenishSourcesInner(reason) {
   // Once a theme migration tagged the sources, grow theme by theme only. Before that, preserve
   // the legacy generic replenisher so startup/tests cannot strand an untagged workspace.
   if (themedReady && Array.isArray(strategyNow.rubrics) && strategyNow.rubrics.length) need = 0;
-  if (!need && !needTelegram && !needLane && !rubricTarget) return { added: [], need: 0 };
+  if (!need && !needTelegram && !needLane && !rubricTarget) {
+    // v0.65.1: say WHY nothing is searched (at most once per 6 h per channel), so a stalled theme can be diagnosed from the log
+    try {
+      const diag = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : (state.sourceReplenish = {});
+      if (Date.now() - Date.parse(diag.idleLoggedAt || "") > 6 * 3600000 || !diag.idleLoggedAt) {
+        diag.idleLoggedAt = new Date().toISOString();
+        const countsNow = themedReady ? rubricSourceCounts() : {};
+        const below = Object.keys(countsNow).filter(function(id){ return countsNow[id] < rubricMinFor(id); });
+        const misses = diag.misses && diag.misses.rubric || null;
+        console.log("SOURCE_REPLENISH_IDLE " + JSON.stringify({
+          workspace: currentWorkspaceId(), themedReady: Boolean(themedReady), rubricSearchAllowed: discoveryAllowed("rubric"),
+          restUntil: misses && misses.until || "", missCount: misses ? Number(misses.count || 0) : 0,
+          roomLeft: roomLeft, belowMin: below, counts: countsNow, sourcesNeededLegacy: need
+        }));
+      }
+    } catch (error) { /* diagnostics must never break replenish */ }
+    return { added: [], need: 0 };
+  }
   state.sourceReplenish = state.sourceReplenish && typeof state.sourceReplenish === "object" ? state.sourceReplenish : {};
   const last = new Date(state.sourceReplenish.lastAt || 0).getTime();
   if (Date.now() - last < SOURCE_REPLENISH_INTERVAL_MINUTES * 60000) return { added: [], need: need, throttled: true };
