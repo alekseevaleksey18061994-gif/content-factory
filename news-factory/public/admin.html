@@ -3498,7 +3498,7 @@ window.refreshNetworkDashboard=refreshNetworkDashboard;
 function renderNetworkDashboard(){
   if(!Array.isArray(workspaces))return;
   var total=workspaces.length;
-  var autoCount=0,queue=0,sources=0,published=0,today=0,issues=0,last=null;
+  var autoCount=0,queue=0,sources=0,published=0,today=0,planned=0,issues=0,last=null;
   workspaces.forEach(function(item){
     var s=item.summary||{};
     if(s.autoPublish)autoCount+=1;
@@ -3506,10 +3506,11 @@ function renderNetworkDashboard(){
     sources+=Number(s.sources||0);
     published+=Number(s.published||0);
     today+=Number(s.publishedToday||0);
+    planned+=Number(s.plannedPerDay||0);
     if(s.lastPublishedAt&&(!last||new Date(s.lastPublishedAt)>new Date(last.at)))last={at:s.lastPublishedAt,name:item.name};
     if(netProblems(item).length)issues+=1;
   });
-  if(el('networkToday'))el('networkToday').textContent=today;
+  if(el('networkToday'))el('networkToday').textContent=planned?(today+' из '+planned):today;
   if(el('networkPublished'))el('networkPublished').textContent='Всего '+published;
   if(el('networkAuto'))el('networkAuto').textContent=autoCount+'/'+total;
   if(el('networkChannels'))el('networkChannels').textContent=autoCount===total?'Все каналы работают сами':ruChannels(total-autoCount)+' вручную или на паузе';
@@ -3535,7 +3536,7 @@ function renderNetworkDashboard(){
         '<span class="network-account-copy"><b>'+esc(item.name||'Канал')+'</b><small>'+esc(workspaceHandle(item))+'</small></span>'+
         '<span class="network-state '+statusClass+'">'+esc(status)+'</span></span>'+
         '<span class="network-account-metrics">'+
-          '<span><b>'+Number(s.publishedToday||0)+'</b><small>сегодня</small></span>'+
+          '<span><b>'+Number(s.publishedToday||0)+(Number(s.plannedPerDay||0)>0?' из '+Number(s.plannedPerDay):'')+'</b><small>сегодня</small></span>'+
           '<span><b>'+Number(s.queue||0)+'</b><small>очередь</small></span>'+
           '<span><b>'+Number(s.sources||0)+'</b><small>источники</small></span>'+
         '</span>'+

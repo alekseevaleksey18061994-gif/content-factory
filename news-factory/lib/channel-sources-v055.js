@@ -4934,5 +4934,249 @@ export const SOURCES_V055 = {
     "food_new_prices"
    ]
   }
+ ],
+ "money": [
+  {
+   "name": "Банки.ру — новости",
+   "url": "https://www.banki.ru/xml/news.rss",
+   "group": "media",
+   "rubrics": [
+    "cards_banks"
+   ]
+  },
+  {
+   "name": "Сравни.ру — новости",
+   "url": "https://www.sravni.ru/novosti/",
+   "group": "media",
+   "rubrics": [
+    "cards_banks"
+   ]
+  },
+  {
+   "name": "Т—Ж — деньги",
+   "url": "https://journal.tbank.ru/",
+   "group": "media",
+   "rubrics": [
+    "cards_banks"
+   ]
+  },
+  {
+   "name": "Frank RG — банки и финансы",
+   "url": "https://frankrg.com/",
+   "group": "media",
+   "rubrics": [
+    "cards_banks"
+   ]
+  },
+  {
+   "name": "РБК — финансы",
+   "url": "https://www.rbc.ru/finances/",
+   "group": "media",
+   "rubrics": [
+    "cards_banks"
+   ]
+  },
+  {
+   "name": "Банки.ру — тема дня",
+   "url": "https://www.banki.ru/news/daytheme/",
+   "group": "media",
+   "rubrics": [
+    "deposits"
+   ]
+  },
+  {
+   "name": "Сравни.ру — вклады",
+   "url": "https://www.sravni.ru/vklady/info/",
+   "group": "media",
+   "rubrics": [
+    "deposits"
+   ]
+  },
+  {
+   "name": "АСВ — новости",
+   "url": "https://www.asv.org.ru/news/",
+   "group": "official",
+   "rubrics": [
+    "deposits"
+   ]
+  },
+  {
+   "name": "Ведомости — финансы",
+   "url": "https://www.vedomosti.ru/rss/rubric/finance",
+   "group": "media",
+   "rubrics": [
+    "deposits"
+   ]
+  },
+  {
+   "name": "Интерфакс — деньги",
+   "url": "https://www.interfax.ru/business/",
+   "group": "media",
+   "rubrics": [
+    "deposits"
+   ]
+  },
+  {
+   "name": "Банк России — пресс-релизы",
+   "url": "https://www.cbr.ru/rss/RssPress",
+   "group": "official",
+   "rubrics": [
+    "ruble_inflation_cb"
+   ]
+  },
+  {
+   "name": "Банк России — новости",
+   "url": "https://www.cbr.ru/press/",
+   "group": "official",
+   "rubrics": [
+    "ruble_inflation_cb"
+   ]
+  },
+  {
+   "name": "Росстат — новости",
+   "url": "https://rosstat.gov.ru/folder/313",
+   "group": "official",
+   "rubrics": [
+    "ruble_inflation_cb"
+   ]
+  },
+  {
+   "name": "ТАСС — экономика",
+   "url": "https://tass.ru/ekonomika",
+   "group": "media",
+   "rubrics": [
+    "ruble_inflation_cb"
+   ]
+  },
+  {
+   "name": "Коммерсантъ — финансы",
+   "url": "https://www.kommersant.ru/finance",
+   "group": "media",
+   "rubrics": [
+    "ruble_inflation_cb"
+   ]
+  }
+ ],
+ "home": [
+  {
+   "name": "iCHIP — техника для дома",
+   "url": "https://ichip.ru/",
+   "group": "media",
+   "rubrics": [
+    "home_appliances"
+   ]
+  },
+  {
+   "name": "Яндекс Маркет — журнал",
+   "url": "https://market.yandex.ru/journal/",
+   "group": "media",
+   "rubrics": [
+    "home_appliances"
+   ]
+  },
+  {
+   "name": "Ferra — гаджеты",
+   "url": "https://ferra.ru/",
+   "group": "media",
+   "rubrics": [
+    "home_appliances"
+   ]
+  },
+  {
+   "name": "iXBT — новости",
+   "url": "https://www.ixbt.com/news/",
+   "group": "media",
+   "rubrics": [
+    "home_appliances"
+   ]
+  },
+  {
+   "name": "3DNews — новости",
+   "url": "https://3dnews.ru/",
+   "group": "media",
+   "rubrics": [
+    "home_appliances"
+   ]
+  },
+  {
+   "name": "Elle Decoration",
+   "url": "https://www.elledecoration.ru/",
+   "group": "media",
+   "rubrics": [
+    "interior_trends"
+   ]
+  },
+  {
+   "name": "AD Magazine",
+   "url": "https://www.admagazine.ru/",
+   "group": "media",
+   "rubrics": [
+    "interior_trends"
+   ]
+  },
+  {
+   "name": "Designmag",
+   "url": "https://www.designmag.ru/",
+   "group": "media",
+   "rubrics": [
+    "interior_trends"
+   ]
+  },
+  {
+   "name": "Houzz — Россия",
+   "url": "https://www.houzz.ru/",
+   "group": "media",
+   "rubrics": [
+    "interior_trends"
+   ]
+  },
+  {
+   "name": "Интерьер.ру",
+   "url": "https://www.interior.ru/",
+   "group": "media",
+   "rubrics": [
+    "interior_trends"
+   ]
+  },
+  {
+   "name": "Еда.ру — кухня",
+   "url": "https://eda.ru/",
+   "group": "media",
+   "rubrics": [
+    "kitchen"
+   ]
+  },
+  {
+   "name": "Едим Дома",
+   "url": "https://www.edimdoma.ru/",
+   "group": "media",
+   "rubrics": [
+    "kitchen"
+   ]
+  },
+  {
+   "name": "Povar.ru",
+   "url": "https://povar.ru/",
+   "group": "media",
+   "rubrics": [
+    "kitchen"
+   ]
+  },
+  {
+   "name": "Гастроном.ру",
+   "url": "https://www.gastronom.ru/",
+   "group": "media",
+   "rubrics": [
+    "kitchen"
+   ]
+  },
+  {
+   "name": "Кухня на районе",
+   "url": "https://kuking.net/",
+   "group": "media",
+   "rubrics": [
+    "kitchen"
+   ]
+  }
  ]
 };
