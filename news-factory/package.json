@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.58.0",
+  "version": "0.59.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -40,6 +40,7 @@
     "test:no-evening-digest": "node scripts/no-evening-digest-test.js",
     "test:money-rubrics": "node scripts/money-rubrics-test.js",
     "test:pipeline-v058": "node scripts/pipeline-v058-test.js",
+    "test:pipeline-v059": "node scripts/pipeline-v059-test.js",
     "test:policy-recovery": "node scripts/policy-recovery-test.js",
     "test:rating-gates": "node scripts/rating-gates-test.js",
     "test:cars-rubrics": "node scripts/cars-rubrics-test.js",
