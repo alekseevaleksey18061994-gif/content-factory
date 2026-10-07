@@ -6111,8 +6111,14 @@ function extractArticleLinks(html, sourceUrl) {
 let sourceProxy = null;
 try { sourceProxy = parseProxyUrl(process.env.SOURCE_PROXY_URL || ""); }
 catch (error) { console.error("SOURCE_PROXY_INVALID " + JSON.stringify({ error: error.message })); }
-const sourceFetcher = createSourceFetcher({ fetch: function(url, init) { return safeFetch(url, init); }, proxy: sourceProxy, maxConcurrent: envNumber("SOURCE_FETCH_CONCURRENCY", 48, 1, 200) });
-if (sourceProxy) console.log("SOURCE_PROXY_ENABLED " + JSON.stringify({ proxy: sourceProxy.label }));
+const SOURCE_PROXY_DOMAINS = String(process.env.SOURCE_PROXY_DOMAINS || ".ru,.su,.xn--p1ai,vk.com,t.me");
+const sourceFetcher = createSourceFetcher({
+  fetch: function(url, init) { return safeFetch(url, init); },
+  proxy: sourceProxy,
+  proxyFirstDomains: SOURCE_PROXY_DOMAINS,
+  maxConcurrent: envNumber("SOURCE_FETCH_CONCURRENCY", 48, 1, 200)
+});
+if (sourceProxy) console.log("SOURCE_PROXY_ENABLED " + JSON.stringify({ proxy: sourceProxy.label, proxyFirstDomains: SOURCE_PROXY_DOMAINS.split(",").map(function(x){ return x.trim(); }).filter(Boolean).length }));
 
 async function fetchText(url, timeoutMs) {
   // Source pages are third-party: SSRF-safe client (public IPs only, re-validated redirects, size cap).
