@@ -24,6 +24,7 @@ import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApproved
 import { evaluateHealth } from "./lib/health-alerts.js";
 import { runMigrations, migrationStatus } from "./lib/db-migrations.js";
 import { buildChannelConfig } from "./lib/channel-config.js";
+import { planSourceCleanup, sweepCandidates, applySourceRemoval, DEAD_GRACE_MS } from "./lib/source-cleanup.js";
 import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
@@ -3172,6 +3173,16 @@ function noteSourceEvent(sourceOrItem, event, extra) {
   else if (event === "media_bad") { stat.mediaBad = Number(stat.mediaBad || 0) + 1; stat.lastMediaScore = Number(extra && extra.score || 0); }
 }
 
+// v0.66.0: dead sources are removed (not just paused) and never come back: their keys go to state.sourceBlockedHosts.
+const SOURCE_DEAD_SWEEP_ENABLED = process.env.SOURCE_DEAD_SWEEP !== "0";
+// the start-up restore migrations (they re-enable sources paused by mistake) run in the first minutes: nothing is swept before they are done
+const SOURCE_DEAD_SWEEP_WARMUP_S = Number.isFinite(Number(process.env.SOURCE_DEAD_SWEEP_WARMUP_S)) && process.env.SOURCE_DEAD_SWEEP_WARMUP_S !== "" ? Number(process.env.SOURCE_DEAD_SWEEP_WARMUP_S) : 900;
+function removeSourcesFromState(removals, why) {
+  if (!removals.length) return 0;
+  const n = applySourceRemoval(state, removals, [sourceKey], new Date().toISOString(), why);
+  for (const r of removals) if (state.sourceStats && r.id && !isReservedKey(r.id)) delete state.sourceStats[String(r.id)];
+  return n;
+}
 // Pause sources that only bring junk or keep failing. Keeps at least a few
 // sources enabled per group and never touches sources the editor turned on
 // after an automatic pause (they are reset on toggle).
@@ -3230,6 +3241,14 @@ function autoPauseWeakSources() {
       themePaused += 1;
       counts[source.rubric] -= 1;
       console.log("SOURCE_AUTO_PAUSED " + JSON.stringify({ workspace: currentWorkspaceId(), id: source.id, name: source.name, reason: reason, rubric: source.rubric }));
+    }
+  }
+  // v0.66.0: a source the system paused and nobody switched back on within a day is dead: remove it and block its return
+  if (SOURCE_DEAD_SWEEP_ENABLED && process.uptime() >= SOURCE_DEAD_SWEEP_WARMUP_S) {
+    const dead = sweepCandidates(state.sources, Date.now(), DEAD_GRACE_MS);
+    if (dead.length) {
+      const n = removeSourcesFromState(dead, "авто-удаление мёртвого источника");
+      console.log("SOURCE_DEAD_REMOVED " + JSON.stringify({ workspace: currentWorkspaceId(), removed: n, names: dead.slice(0, 10).map(function(x){ return x.name; }) }));
     }
   }
   return paused;
@@ -14865,6 +14884,32 @@ function applyChannelNotes(ws) {
   result.migration = migration;
   return result;
 }
+
+// v0.66.0 one-time clean-up (the editor asked for it): every switched-off source and every source outside the theme groups
+// is removed and blocked. Without SOURCE_CLEANUP_EXECUTE=1 it only reports what it would remove (SOURCE_CLEANUP_PLAN).
+const SOURCE_CLEANUP_MIGRATION = "v0.66.0-source-cleanup";
+function sourceCleanupForCurrentWorkspace(execute) {
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (state.migrations.includes(SOURCE_CLEANUP_MIGRATION)) return { skipped: "done" };
+  const plan = planSourceCleanup(state.sources, { groupIds: rubricIds(), includeEnabledLoose: false });
+  const report = { workspace: currentWorkspaceId(), execute: Boolean(execute), total: (state.sources || []).length, dead: plan.dead.length, looseEnabledKept: plan.looseKept.length, keep: plan.keepCount, looseEnabledKeptNames: plan.looseKept.slice(0, 12).map(function(x){ return x.name; }) };
+  console.log("SOURCE_CLEANUP_PLAN " + JSON.stringify(report));
+  if (!execute) return Object.assign({ removed: 0 }, report);
+  const n = removeSourcesFromState(plan.remove, "разовая очистка v0.66.0");
+  state.migrations.push(SOURCE_CLEANUP_MIGRATION);
+  saveState();
+  console.log("SOURCE_CLEANUP_DONE " + JSON.stringify({ workspace: currentWorkspaceId(), removed: n, left: (state.sources || []).length }));
+  return Object.assign({ removed: n, left: (state.sources || []).length }, report);
+}
+setTimeout(function() {
+  (async function(){
+    const execute = process.env.SOURCE_CLEANUP_EXECUTE === "1";
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){ try { sourceCleanupForCurrentWorkspace(execute); } catch (error) { console.warn("Source cleanup failed for " + ws.id + ": " + error.message); } });
+    }
+  })().catch(function(error){ console.warn("Source cleanup failed:", error.message); });
+}, 300000);
 
 // Top up sources to the target shortly after start (respects the throttle).
 setTimeout(function() {
