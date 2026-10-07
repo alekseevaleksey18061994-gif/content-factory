@@ -4604,13 +4604,15 @@ async function renderConnections(force){
     collector:'Сборщик новостей',
     scheduler:'Планировщик',
     sourceProxy:'Российский прокси (источники)',
-    backup:'Резервные копии (внешние)'
+    backup:'Резервные копии (внешние)',
+    postmypost:'Postmypost (публикация в VK)',
+    processHealth:'Стабильность процесса'
   };
   var groups=[
-    {title:'Инфраструктура',icon:'🖥️',keys:['railway','github','publicEndpoint','storage','adminUi','postgresql','backup']},
+    {title:'Инфраструктура',icon:'🖥️',keys:['railway','github','publicEndpoint','storage','adminUi','postgresql','backup','processHealth']},
     {title:'Разработка и AI',icon:'🤖',keys:['claudeCode','anthropic','openai','editorialV2','openaiImage','mediaEngine']},
     {title:'Telegram',icon:'✈️',keys:['telegramBot','telegramChannel']},
-    {title:'VK',icon:'🅥',keys:['vk']},
+    {title:'VK',icon:'🅥',keys:['vk','postmypost']},
     {title:'Автоматизация',icon:'⚙️',keys:['collector','scheduler','sourceProxy']}
   ];
   function meta(state){if(state==='connected')return {cls:'done',label:'Подключено',dot:'on'};if(state==='partial')return {cls:'work',label:'Частично',dot:'partial'};return {cls:'wait',label:'Не подключено',dot:''}}
