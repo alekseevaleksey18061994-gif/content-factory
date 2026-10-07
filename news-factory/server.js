@@ -14,8 +14,8 @@ import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPassw
 import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
-import { SOURCES_V055, SOURCES_TOPUP_V058 } from "./lib/channel-sources-v055.js";
-import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, isLegacyThemeChannelV055, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
+import { SOURCES_V055, SOURCES_TOPUP_V058, proxyRetryLists } from "./lib/channel-sources-v055.js";
+import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, REMOVED_CHANNELS_V060, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, isLegacyThemeChannelV055, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
@@ -4498,8 +4498,20 @@ async function encodePreviewJpeg(inputBytes) {
     45
   ]));
   let last = null;
+  // v0.60.4: a photo whose shape differs from 1200x630 is shown WHOLE on a blurred copy of itself (no cropped edges/text);
+  // near-matching shapes still fill the frame.
+  let base = null;
+  try {
+    const rotated = await sharp(inputBytes, { limitInputPixels: 80 * 1000 * 1000 }).rotate().toBuffer({ resolveWithObject: true });
+    const ratio = rotated.info.width / Math.max(1, rotated.info.height);
+    if (Math.abs(ratio / (VK_PREVIEW_WIDTH / VK_PREVIEW_HEIGHT) - 1) > 0.08) {
+      const bg = await sharp(rotated.data).resize(VK_PREVIEW_WIDTH, VK_PREVIEW_HEIGHT, { fit: "cover", position: "centre" }).blur(28).modulate({ brightness: 0.75 }).toBuffer();
+      const fg = await sharp(rotated.data).resize(VK_PREVIEW_WIDTH, VK_PREVIEW_HEIGHT, { fit: "inside", withoutEnlargement: false }).toBuffer();
+      base = await sharp(bg).composite([{ input: fg, gravity: "centre" }]).png().toBuffer();
+    }
+  } catch (error) { base = null; }
   for (const quality of qualities) {
-    const out = await sharp(inputBytes, { limitInputPixels: 80 * 1000 * 1000 })
+    const out = await sharp(base || inputBytes, { limitInputPixels: 80 * 1000 * 1000 })
       .rotate()
       .resize(VK_PREVIEW_WIDTH, VK_PREVIEW_HEIGHT, { fit: "cover", position: "centre" })
       .jpeg({ quality: quality, mozjpeg: true, chromaSubsampling: "4:2:0" })
@@ -15720,7 +15732,7 @@ async function recoverMissingWorkspaces() {
     defaultWorkspace.state.migrations = Array.isArray(defaultWorkspace.state.migrations) ? defaultWorkspace.state.migrations : [];
     if (defaultWorkspace.state.migrations.includes(WORKSPACE_RECOVERY_MIGRATION)) return { skipped: "done" };
     if (!db || !dbReady) return { skipped: "db_not_ready" };
-    const missing = RECOVERY_CHANNELS.filter(function(entry){ return !getWorkspaceById(entry.id) && !REMOVED_CHANNELS_V055.includes(entry.id); });
+    const missing = RECOVERY_CHANNELS.filter(function(entry){ return !getWorkspaceById(entry.id) && !REMOVED_CHANNELS_V055.includes(entry.id) && !REMOVED_CHANNELS_V060.includes(entry.id); });
     const restored = [];
     const fresh = [];
     for (const entry of missing) {
@@ -15772,36 +15784,43 @@ async function recoverMissingWorkspaces() {
 //     sources are sorted into the new rubrics by keywords, sources paused by mistake in the no-credit hours are
 //     restored, and the rubrics/hours/soft quotas are switched on by the migration marker.
 const RUBRICS_V055_REMOVAL_MARKER = "v0.55.0-removed-channels";
+const REMOVAL_MARKER_V060 = "v0.60.3-removed-dengi";
 async function removeChannelsV055() {
   const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
   if (!defaultWorkspace || !defaultWorkspace.state) return { skipped: "no_default_workspace" };
   defaultWorkspace.state.migrations = Array.isArray(defaultWorkspace.state.migrations) ? defaultWorkspace.state.migrations : [];
-  if (defaultWorkspace.state.migrations.includes(RUBRICS_V055_REMOVAL_MARKER)) return { skipped: "done" };
+  const groups = [
+    { marker: RUBRICS_V055_REMOVAL_MARKER, ids: REMOVED_CHANNELS_V055 },
+    { marker: REMOVAL_MARKER_V060, ids: REMOVED_CHANNELS_V060 }
+  ].filter(function(g){ return !defaultWorkspace.state.migrations.includes(g.marker); });
+  if (!groups.length) return { skipped: "done" };
   const removed = [];
-  for (const id of REMOVED_CHANNELS_V055) {
-    const ws = getWorkspaceById(id);
-    if (!ws || id === workspaceStore.defaultWorkspaceId) continue;
-    try {
-      const dir = path.join(DATA_DIR, "archive");
-      fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, "removed-" + id + "-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json");
-      fs.writeFileSync(file, JSON.stringify({ id: ws.id, name: ws.name, channelId: ws.channelId || "", telegramChannel: ws.telegramChannel || "", state: ws.state }));
-    } catch (error) {
-      // no archive = no deletion: retry on the next start
-      console.warn("CHANNEL_REMOVE_V055 archive failed " + JSON.stringify({ workspace: id, error: String(error && error.message || error).slice(0, 160) }));
-      return { skipped: "archive_failed", removed: removed };
+  for (const group of groups) {
+    for (const id of group.ids) {
+      const ws = getWorkspaceById(id);
+      if (!ws || id === workspaceStore.defaultWorkspaceId) continue;
+      try {
+        const dir = path.join(DATA_DIR, "archive");
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, "removed-" + id + "-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json");
+        fs.writeFileSync(file, JSON.stringify({ id: ws.id, name: ws.name, channelId: ws.channelId || "", telegramChannel: ws.telegramChannel || "", state: ws.state }));
+      } catch (error) {
+        // no archive = no deletion: retry on the next start
+        console.warn("CHANNEL_REMOVE_V055 archive failed " + JSON.stringify({ workspace: id, error: String(error && error.message || error).slice(0, 160) }));
+        return { skipped: "archive_failed", removed: removed };
+      }
+      try { removeWorkspaceAvatar(ws); } catch {}
+      workspaceStore.workspaces = workspaceStore.workspaces.filter(function(x){ return x.id !== id; });
+      if (db && dbReady) await db.query("UPDATE workspace_registry SET removed_at=NOW() WHERE id=$1", [id]).catch(function(error){ console.warn("workspace_registry update failed:", error.message); });
+      statusCache.delete(id); analyticsCache.delete(id);
+      removed.push(id);
+      console.warn("CHANNEL_REMOVED_V055 " + JSON.stringify({ workspace: id, name: ws.name }));
     }
-    try { removeWorkspaceAvatar(ws); } catch {}
-    workspaceStore.workspaces = workspaceStore.workspaces.filter(function(x){ return x.id !== id; });
-    if (db && dbReady) await db.query("UPDATE workspace_registry SET removed_at=NOW() WHERE id=$1", [id]).catch(function(error){ console.warn("workspace_registry update failed:", error.message); });
-    statusCache.delete(id); analyticsCache.delete(id);
-    removed.push(id);
-    console.warn("CHANNEL_REMOVED_V055 " + JSON.stringify({ workspace: id, name: ws.name }));
   }
   persistWorkspaceStore();
   await workspaceContext.run({ workspaceId: defaultWorkspace.id }, async function(){
     state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
-    if (!state.migrations.includes(RUBRICS_V055_REMOVAL_MARKER)) state.migrations.push(RUBRICS_V055_REMOVAL_MARKER);
+    for (const group of groups) if (!state.migrations.includes(group.marker)) state.migrations.push(group.marker);
     saveState();
   });
   return { removed: removed };
@@ -15873,6 +15892,7 @@ setTimeout(function(){
 // reworkChannelSources before it is added; the automatic pause/replenish logic takes over from there.
 const SOURCES_LOAD_V055 = "v0.55.3-rubric-sources";
 const SOURCES_TOPUP_MARKER_V058 = "v0.58.0-rubric-topup";
+const SOURCES_PROXY_RETRY_MARKER = "v0.60.3-proxy-retry";
 let sourcesLoadV055Running = false;
 async function loadRubricSourcesV055() {
   if (sourcesLoadV055Running) return;
@@ -15884,6 +15904,8 @@ async function loadRubricSourcesV055() {
       { marker: SOURCES_LOAD_V055, lists: SOURCES_V055, tag: "v0.55.3" },
       { marker: SOURCES_TOPUP_MARKER_V058, lists: SOURCES_TOPUP_V058, tag: "v0.58.0" }
     ];
+    // v0.60.3: with the Russian proxy connected, candidates that failed validation from abroad are checked again (add-only).
+    if (sourceProxy) loads.push({ marker: SOURCES_PROXY_RETRY_MARKER, lists: proxyRetryLists(), tag: "v0.60.3", maxAttempts: 2 });
     for (const load of loads) {
       for (const ws of workspaceStore.workspaces.slice()) {
         if (!ws || !ws.state) continue;
@@ -15896,7 +15918,7 @@ async function loadRubricSourcesV055() {
         await workspaceContext.run({ workspaceId: ws.id }, async function(){
           // The top-up only ADDS: a source the channel already has (even paused, even with several rubrics) is left as it is,
           // because reworkChannelSources would otherwise overwrite its rubrics with the single one listed here.
-          if (load.marker === SOURCES_TOPUP_MARKER_V058) {
+          if (load.marker === SOURCES_TOPUP_MARKER_V058 || load.marker === SOURCES_PROXY_RETRY_MARKER) {
             const have = new Set((state.sources || []).map(function(x){ return x && sourceKey(x.url); }).filter(Boolean));
             list = list.filter(function(x){ return !have.has(sourceKey(x.url)); });
             if (!list.length) { state.migrations.push(load.marker); saveState(); return; }
@@ -15904,7 +15926,7 @@ async function loadRubricSourcesV055() {
           const result = await reworkChannelSources(ws, { add: list.map(function(x){ return { name: x.name, url: x.url, group: x.group, rubrics: x.rubrics }; }), disable: [] }, load.tag);
           state.seedAttempts = state.seedAttempts && typeof state.seedAttempts === "object" ? state.seedAttempts : {};
           state.seedAttempts[load.marker] = Number(state.seedAttempts[load.marker] || 0) + 1;
-          const done = (result && result.added.length > 0) || state.seedAttempts[load.marker] >= 3;
+          const done = (result && result.added.length > 0) || state.seedAttempts[load.marker] >= (load.maxAttempts || 3);
           if (done) state.migrations.push(load.marker); else retry = true;
           saveState();
           console.log("RUBRIC_SOURCES_V055 " + JSON.stringify({ workspace: ws.id, marker: load.marker, planned: list.length, added: result ? result.added.length : 0, failed: result ? result.failed.length : 0, assigned: result && result.assigned ? result.assigned.length : 0, rubrics: rubricSourceCounts(ws) }));

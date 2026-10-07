@@ -194,22 +194,11 @@ test("R11 starting sources: every rubric of the 10 channels has at least 6 candi
   }
 });
 
-test("R12 money/home keep their own source tags and pause history: the migration restores and re-tags nothing", async () => {
-  const NOW = "2026-10-06T12:00:00Z", day = (n) => new Date(Date.parse(NOW) - n * 86400000).toISOString();
-  const money = [
-    src("t1", "Налоги от ФНС", "https://t.me/s/nalog_gov_ru", { rubric: "taxes", rubrics: ["taxes"] }),
-    src("weak1", "Слабый налоговый", "https://x.example/n", { enabled: false, rubric: "taxes", rubrics: ["taxes"], autoPaused: { reason: "слабый источник темы «Налоги»: 0 публикаций", at: day(1) } }),
-    src("trial1", "Пробный", "https://x.example/p", { enabled: false, autoPaused: { reason: "пробный срок 24 ч: ни одной новости", at: day(1) } }),
-    src("bk", "Банкротство и долги", "https://bankrotstvo.example/", {})
-  ];
-  const t = await loadServer({ fixedNow: NOW, state: { chtotamdengi: { sources: money } } });
-  const before = JSON.stringify(t.ws("chtotamdengi").state.sources);
-  const name = t.ws("chtotamdengi").name;
+test("R12 v0.60.3: the money channel is removed on startup (archived) and home keeps its own sources", async () => {
+  const t = await loadServer({ fixedNow: "2026-10-06T12:00:00Z", state: { chtotamdengi: { sources: [src("t1", "Налоги от ФНС", "https://t.me/s/nalog_gov_ru", { rubric: "taxes" })] } } });
   await t.runRubricsV055();
-  const ws = t.ws("chtotamdengi");
-  assert.equal(JSON.stringify(ws.state.sources), before, "sources untouched");
-  assert.equal(ws.name, name);
-  assert.ok(ws.state.migrations.includes(RUBRICS_V055_MIGRATION), "marker set");
+  assert.equal(t.workspaceStore.workspaces.some((w) => w.id === "chtotamdengi"), false, "money workspace removed");
+  assert.ok(t.ws("chtotamhome"), "home stays");
   assert.equal(inWs(t, "chtotamtachki", () => t.channelUnifiedSlots()), false, "cars unchanged");
 });
 

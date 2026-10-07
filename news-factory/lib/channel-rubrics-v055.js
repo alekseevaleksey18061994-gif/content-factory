@@ -11,6 +11,8 @@ export const RUBRICS_V055_MIGRATION = "v0.55.0-rubrics";
 // Каналы на удаление (по просьбе владельца): архив состояния в /data, затем снятие с кабинета.
 // Сами Telegram-каналы не затрагиваются.
 export const REMOVED_CHANNELS_V055 = ["chtotampokupki", "chtotamnauka", "chtotamnews"];
+// v0.60.3: «Деньги» закрыт владельцем (группы в VK и Telegram удалены).
+export const REMOVED_CHANNELS_V060 = ["chtotamdengi"];
 
 // Хвост полного названия: «<прежнее название> | <тема>». Голова (до « | ») не меняется — по ней сопоставляется VK.
 export const CHANNEL_NAME_TAILS_V055 = {
