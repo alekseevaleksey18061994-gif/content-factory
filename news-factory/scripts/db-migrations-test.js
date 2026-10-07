@@ -42,6 +42,19 @@ const cases = {
     assert.ok(lintMigration("ALTER TABLE t RENAME TO u;").length);
     assert.deepEqual(lintMigration("ALTER TABLE t ADD COLUMN IF NOT EXISTS c int;CREATE INDEX IF NOT EXISTS i ON t(c);"), []);
   },
+  "M2b lint has no false positives on spacing, newlines, CRLF, string literals, DROP INDEX/CONSTRAINT IF EXISTS"() {
+    for (const ok of [
+      "CREATE TABLE  IF NOT EXISTS t(id int);",
+      "ALTER TABLE t ADD COLUMN\n  IF NOT EXISTS c int;",
+      "CREATE INDEX\r\n IF NOT EXISTS i ON t(c);",
+      "CREATE UNIQUE INDEX IF   NOT EXISTS i ON t(c);",
+      "DROP INDEX IF EXISTS old_idx;",
+      "ALTER TABLE t DROP CONSTRAINT IF EXISTS c;",
+      "COMMENT ON TABLE t IS 'we never DELETE FROM it, DROP TABLE x';"
+    ]) assert.deepEqual(lintMigration(ok), [], ok);
+    assert.ok(lintMigration("DROP TABLE IF EXISTS t;").length, "DROP TABLE stays flagged");
+    assert.ok(lintMigration("ALTER TABLE t DROP COLUMN c;").length, "DROP COLUMN stays flagged");
+  },
   "M3 plan: pending, drift, backfill of old rows, missing files"() {
     const files = [{ name: "001_a.sql", sql: "A" }, { name: "002_b.sql", sql: "B" }, { name: "003_c.sql", sql: "C" }];
     const p = planMigrations(files, [{ version: "001_a", checksum: checksumOf("A") }, { version: "002_b", checksum: checksumOf("OTHER") }, { version: "000_gone", checksum: null }]);

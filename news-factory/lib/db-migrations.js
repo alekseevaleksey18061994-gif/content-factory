@@ -10,10 +10,11 @@ export function checksumOf(sql) {
 
 // Migrations must be additive and re-runnable (CLAUDE.md). Returns a list of problems; empty = fine.
 export function lintMigration(sql) {
-  const text = String(sql).replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // strip comments and string literals (a COMMENT text must not trip the rules), then collapse whitespace
+  const text = String(sql).replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/'(?:[^']|'')*'/g, "''").replace(/\s+/g, " ");
   const problems = [];
   const rules = [
-    [/\bDROP\s+(TABLE|COLUMN|SCHEMA|DATABASE|INDEX|CONSTRAINT)\b/i, "destructive: DROP"],
+    [/\bDROP (TABLE|COLUMN|SCHEMA|DATABASE)\b/i, "destructive: DROP"],
     [/\bTRUNCATE\b/i, "destructive: TRUNCATE"],
     [/\bDELETE\s+FROM\b/i, "destructive: DELETE FROM"],
     [/\bALTER\s+TABLE\b[^;]*\bRENAME\b/i, "not backward compatible: RENAME"],
