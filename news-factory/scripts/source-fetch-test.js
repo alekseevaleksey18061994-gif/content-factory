@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createSourceFetcher, classifySourceFailure, parseFeed, discoverFeedUrl, guessFeedUrls, looksLikeFeed, BROWSER_HEADERS } from "../lib/source-fetch.js";
+import { createSourceFetcher, classifySourceFailure, parseFeed, discoverFeedUrl, guessFeedUrls, looksLikeFeed, BROWSER_HEADERS, parseProxyFirstDomains, hostUsesProxyFirst } from "../lib/source-fetch.js";
 import { createSafeFetch, parseProxyUrl, networkErrorText, SafeFetchError } from "../lib/safe-fetch.js";
 import { autoPauseReason } from "../lib/source-quality.js";
 import { loadServer, inWs, net, articleHtml, listHtml, LONG } from "./dedupe-harness.js";
@@ -68,6 +68,41 @@ test("F3 fetcher with proxy: blocked host goes through the proxy, is remembered,
   assert.deepEqual(calls, ["direct", "proxy"], "after the sticky window the direct route is tried again");
   const st = f.stats();
   assert.equal(st.proxy, 3); assert.equal(st.proxy_enabled, true);
+});
+
+test("F3b proxy-first: Russian domains use proxy immediately, fall back direct, non-Russian stay direct", async () => {
+  assert.deepEqual(parseProxyFirstDomains(".ru, *.su, vk.com, .ru"), [".ru", ".su", "vk.com"]);
+  assert.equal(hostUsesProxyFirst("news.example.ru", ".ru,.su"), true);
+  assert.equal(hostUsesProxyFirst("vk.com", ".ru,vk.com"), true);
+  assert.equal(hostUsesProxyFirst("example.com", ".ru,vk.com"), false);
+
+  const calls = [];
+  let proxyOk = true;
+  const f = createSourceFetcher({
+    proxy: { host: "p", port: 1, label: "p:1" },
+    proxyFirstDomains: ".ru,.su,.xn--p1ai,vk.com,t.me",
+    fetch: async (url, init) => {
+      calls.push((init.proxy ? "proxy:" : "direct:") + new URL(url).hostname);
+      if (init.proxy && !proxyOk) throw new SafeFetchError("proxy", "Прокси недоступен");
+      return resp(200, "<html>ok</html>");
+    }
+  });
+  let r = await f.fetch("https://www.rbc.ru/a", {});
+  assert.equal(r.status, 200); assert.equal(r.route, "proxy");
+  assert.deepEqual(calls, ["proxy:www.rbc.ru"]);
+
+  calls.length = 0;
+  proxyOk = false;
+  r = await f.fetch("https://tass.ru/b", {});
+  assert.equal(r.status, 200); assert.equal(r.route, "direct");
+  assert.deepEqual(calls, ["proxy:tass.ru", "direct:tass.ru"], "bad RU proxy falls back direct");
+
+  calls.length = 0;
+  r = await f.fetch("https://example.com/c", {});
+  assert.equal(r.status, 200); assert.equal(r.route, "direct");
+  assert.deepEqual(calls, ["direct:example.com"]);
+  assert.equal(f.stats().proxyFirst, 1);
+  assert.equal(f.stats().proxy_first_domains, 5);
 });
 
 test("F4 fetcher with proxy: proxy also fails -> original 403 / error is what the caller sees", async () => {
