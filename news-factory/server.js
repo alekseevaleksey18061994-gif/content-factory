@@ -68,150 +68,25 @@ import {
   dispatchBudgetAlerts,
   DEFAULT_USD_RUB_RATE
 } from "./lib/data-safety.js";
+import { ADMIN_KEY, ADMIN_UI_PASSWORD, ADMIN_UI_PASSWORD_SCRYPT, ADMIN_UI_PASSWORD_SHA256, ANTHROPIC_API_KEY, ANTHROPIC_ASSIST_MODEL, ANTHROPIC_CHECKER_MODEL, ANTHROPIC_CHECK_MIN_IMPORTANCE, ANTHROPIC_FALLBACK_WRITER_MODEL, ANTHROPIC_HEALTH_CACHE_MIN, ANTHROPIC_MODEL, ANTHROPIC_STRONG_CHECKER_MODEL, ANTHROPIC_STRONG_IMPORTANCE, AUTO_ENHANCE_SOURCE_IMAGES, AUTO_PUBLISH_ENABLED, AUTO_PUBLISH_MIN_INTERVAL_MINUTES, AUTO_QUALITY_MIN, BOT_TOKEN, CHANNEL, COLLECTOR_ENABLED, COPYRIGHT_MAX_VERBATIM_WORDS, COPYRIGHT_MEDIA_MODE, COPYRIGHT_SAFE_MODE, DAILY_REPORT_ENABLED, DAILY_REPORT_TIME, DATABASE_URL, DIGEST_ENABLED, DIGEST_EVENING_ENABLED, DIGEST_EVENING_TIME, DIGEST_SUNDAY_ENABLED, DIGEST_SUNDAY_TIME, DYNAMIC_ASSIGNMENT_GRACE_MIN, DYNAMIC_SLOT_END_HOUR, DYNAMIC_SLOT_PREP_MINUTE, DYNAMIC_SLOT_START_HOUR, EDITORIAL_CAPACITY_BYPASS_SCORE, EDITORIAL_LEARNING_ENABLED, EDITORIAL_LEARNING_REFRESH_MINUTES, EDITORIAL_QC_ENABLED, EDITORIAL_QUEUE_TARGET, EDITORIAL_V2_ENABLED, EDITORIAL_V2_MAX_FIX_ROUNDS, EDITORIAL_V2_REQUIRE_ALL_CHECKERS, EDITORIAL_VARIETY_ENABLED, GENERATE_COVER_IF_MISSING, HEADLINE_PREFILTER_ENABLED, IMAGE_ENHANCEMENT_ENABLED, IMAGE_ENHANCE_MIN_GAP_MS, MEDIA_AI_COVER_MIN_IMPORTANCE, MEDIA_DEFER_EXPENSIVE, MEDIA_DIRECTOR_MAX_IMAGES, MEDIA_EXTRA_MIN_HEIGHT, MEDIA_EXTRA_MIN_WIDTH, MEDIA_QUALITY_MIN_SCORE, MEDIA_REQUIRED, OPENAI_API_KEY, OPENAI_FALLBACK_MODEL, OPENAI_IMAGE_MODEL, OPENAI_IMAGE_QUALITY, OPENAI_MODEL, POSTMYPOST_TOKEN, POST_RATING_DROP_BELOW, POST_RATING_MIN_AUTO, PROVIDER_BREAKER_COOLDOWN_MIN, PROVIDER_FAILOVER_COVER_CARD, PROVIDER_FAILOVER_ENABLED, PUBLIC_BASE_URL, PUBLISH_REPAIR_MAX_ATTEMPTS, SOURCES_ADDED_PER_RUN, SOURCES_MAX_ACTIVE, SOURCES_MIN_ACTIVE, SOURCE_AUTO_PAUSE_ENABLED, SOURCE_IMAGE_ENHANCE_CONCURRENCY, SOURCE_PROBATION_HOURS, SOURCE_REPLENISH_INTERVAL_MINUTES, SOURCE_STARVING_RUNS, STORY_CLUSTER_ENABLED, STORY_CLUSTER_MAX_SOURCES, STORY_CLUSTER_MIN_SIMILARITY, STORY_CLUSTER_WINDOW_HOURS, STORY_MEDIA_PACK_COUNT, STORY_PRECHECK_ENABLED, STORY_UPDATE_WINDOW_HOURS, TELEGRAM_ALERT_CHAT_ID, TELEGRAM_API_TIMEOUT_MS, TELEGRAM_PUBLIC_USERNAME, TELEGRAM_RETRY_AFTER_MAX_SECONDS, TEXT_CARD_POSTS_ALLOWED, TRUSTED_PROXY_HOPS, VK_ACCESS_TOKEN, VK_API_VERSION, VK_APP_ID, VK_GROUP_ID, VK_OAUTH_HANDOFF_SECRET, VK_OAUTH_MODE, VK_OAUTH_REDIRECT_URI, VK_OAUTH_SCOPE, VK_OAUTH_TTL_MS, VK_OWNER_ID, VK_PUBLIC_URL, VK_PUBLISH_ENABLED, VK_VIA_POSTMYPOST, authFailureLimiter, envNumber } from "./lib/env-config.js";
+import { DATA_DIR, MEDIA_DIR, VK_PREVIEW_HEIGHT, VK_PREVIEW_WIDTH, canonicalizeUrl, ensureDataDir, escapeHtml, extractArticleMediaCandidates, extractMetaImage, extractMetaVideo, extractPublishedAt, extractSitePreview, extractTitle, isUsableNewsVideoUrl, localMediaPathFromUrl, mediaPublicUrl, normalizeDate, normalizePublicPostSources, prepareVkPreviewImage, previewDescription, previewPageUrl, previewSlug, stripHtml } from "./lib/article-extract.js";
+import { isTelegramFatalError, telegramApi, telegramPlainPayload, telegramRequest } from "./lib/telegram-errors.js";
+import { assertTelegramPublishResult, isLocalMediaUrl, telegramMediaApi } from "./lib/telegram-upload.js";
+import { escapeTelegramHtml, formatTelegramPost, newId } from "./lib/telegram-format.js";
+import { createVkError, logVkError, vkApi, vkOAuthCallbackHtml, vkPostContext } from "./lib/vk-errors.js";
+import { enhanceNewsImage, prepareReusableSourceImage } from "./lib/image-enhance.js";
+import { BLOGGER_DAILY_TARGET, BLOGGER_SLOTS, BLOGGER_SOURCES, CAR_SOURCES, CHANNEL_EXTRA_LANES, CURATED_SOURCES, RUSSIAN_AI_SOURCES } from "./lib/source-lists.js";
+import { analyticsCache, extractArticleLinks, extractTelegramSourcePosts, hasPublishableMedia, isTextCardOnly, parseTelegramPreview, statusCache, textCardBlocked } from "./lib/source-parse.js";
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CHANNEL = process.env.TELEGRAM_CHANNEL || "";
-const TELEGRAM_PUBLIC_USERNAME = String(process.env.TELEGRAM_PUBLIC_USERNAME || CHANNEL || "").replace(/^@/, "").trim();
-const ADMIN_KEY = process.env.ADMIN_KEY || crypto.randomBytes(32).toString("hex");
-const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || "";
-const ADMIN_UI_PASSWORD_SHA256 = String(process.env.ADMIN_UI_PASSWORD_SHA256 || "").trim().toLowerCase();
-// Optional salted hash ("scrypt$<salt hex>$<hash hex>", see lib/auth-guard.js hashPasswordScrypt). Preferred over SHA-256 / plain when set.
-const ADMIN_UI_PASSWORD_SCRYPT = String(process.env.ADMIN_UI_PASSWORD_SCRYPT || "").trim();
-// Railway puts exactly one proxy in front of the app; XFF entries to the left of it are client-controlled.
-const TRUSTED_PROXY_HOPS = Math.max(0, Math.min(5, Number(process.env.TRUSTED_PROXY_HOPS == null || process.env.TRUSTED_PROXY_HOPS === "" ? 1 : process.env.TRUSTED_PROXY_HOPS) || 0));
-const authFailureLimiter = createFailureLimiter({
-  maxFailures: Math.max(1, Number(process.env.AUTH_MAX_FAILURES || 8) || 8),
-  windowMs: 15 * 60 * 1000,
-  baseLockMs: 30 * 1000,
-  maxLockMs: 15 * 60 * 1000
-});
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
-const OPENAI_FALLBACK_MODEL = "gpt-5.6-luna";
-const DATABASE_URL = process.env.DATABASE_URL || "";
-const MEDIA_REQUIRED = String(process.env.MEDIA_REQUIRED || "true").toLowerCase() !== "false";
-const GENERATE_COVER_IF_MISSING = String(process.env.GENERATE_COVER_IF_MISSING || "true").toLowerCase() !== "false";
-// Editor's rule (2026-10-04): a post whose only picture is our text card (title on a coloured background) is not
-// published automatically — readers want a real photo. TEXT_CARD_POSTS_ALLOWED=true restores the old behaviour.
-const TEXT_CARD_POSTS_ALLOWED = String(process.env.TEXT_CARD_POSTS_ALLOWED || "false").toLowerCase() === "true";
-const IMAGE_ENHANCEMENT_ENABLED = String(process.env.IMAGE_ENHANCEMENT_ENABLED || "true").toLowerCase() !== "false";
-const AUTO_ENHANCE_SOURCE_IMAGES = String(process.env.AUTO_ENHANCE_SOURCE_IMAGES || "true").toLowerCase() !== "false";
-// Golden-mean pipeline: cheap validation first; expensive/generated media only after editorial approval.
-const MEDIA_DEFER_EXPENSIVE = String(process.env.MEDIA_DEFER_EXPENSIVE || "true").toLowerCase() !== "false";
-const MEDIA_QUALITY_MIN_SCORE = Math.max(35, Math.min(90, Number(process.env.MEDIA_QUALITY_MIN_SCORE || 62) || 62));
-const EDITORIAL_QUEUE_TARGET = Math.max(1, Math.min(12, Number(process.env.EDITORIAL_QUEUE_TARGET || 4) || 4));
-const EDITORIAL_CAPACITY_BYPASS_SCORE = Math.max(7, Math.min(10, Number(process.env.EDITORIAL_CAPACITY_BYPASS_SCORE || 9) || 9));
-const MEDIA_AI_COVER_MIN_IMPORTANCE = Math.max(6, Math.min(10, Number(process.env.MEDIA_AI_COVER_MIN_IMPORTANCE || 8) || 8));
-const COPYRIGHT_MEDIA_MODE = String(process.env.COPYRIGHT_MEDIA_MODE || "balanced").trim().toLowerCase();
-const COPYRIGHT_SAFE_MODE = COPYRIGHT_MEDIA_MODE === "strict";
-const COPYRIGHT_MAX_VERBATIM_WORDS = Math.max(8, Number(process.env.COPYRIGHT_MAX_VERBATIM_WORDS || 12));
-const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst";
-const OPENAI_IMAGE_QUALITY = process.env.OPENAI_IMAGE_QUALITY || "medium";
-const STORY_CLUSTER_ENABLED = String(process.env.STORY_CLUSTER_ENABLED || "true").toLowerCase() !== "false";
-const STORY_CLUSTER_WINDOW_HOURS = Math.max(2, Number(process.env.STORY_CLUSTER_WINDOW_HOURS || 8));
-const STORY_CLUSTER_MIN_SIMILARITY = Math.max(0.18, Math.min(0.8, Number(process.env.STORY_CLUSTER_MIN_SIMILARITY || 0.20)));
-const STORY_CLUSTER_MAX_SOURCES = Math.max(2, Math.min(6, Number(process.env.STORY_CLUSTER_MAX_SOURCES || 5)));
-const STORY_MEDIA_PACK_COUNT = Math.max(2, Math.min(4, Number(process.env.STORY_MEDIA_PACK_COUNT || 3)));
-const EDITORIAL_VARIETY_ENABLED = String(process.env.EDITORIAL_VARIETY_ENABLED || "true").toLowerCase() !== "false";
-const EDITORIAL_QC_ENABLED = String(process.env.EDITORIAL_QC_ENABLED || "true").toLowerCase() !== "false";
-// Editorial pipeline v2: one prompt for the whole channel network + double fact-check (GPT + Claude).
-// Rollback switch: EDITORIAL_V2_ENABLED=false returns to the previous rewrite + QC flow.
-const EDITORIAL_V2_ENABLED = String(process.env.EDITORIAL_V2_ENABLED || "true").toLowerCase() !== "false";
+
 const EDITORIAL_V2_PROMPT_FILE = fileURLToPath(new URL("./prompts/chto-tam.md", import.meta.url));
-const EDITORIAL_V2_MAX_FIX_ROUNDS = Math.max(0, Math.min(3, Number(process.env.EDITORIAL_V2_MAX_FIX_ROUNDS || 2)));
-const EDITORIAL_V2_REQUIRE_ALL_CHECKERS = String(process.env.EDITORIAL_V2_REQUIRE_ALL_CHECKERS || "true").toLowerCase() !== "false";
-const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || "").trim();
-// Cost control: routine second-pass fact checking and helper failover use Haiku.
-// Sonnet is reserved for high-risk/high-importance checks and writer failover.
-const ANTHROPIC_MODEL = String(process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5").trim();
-const ANTHROPIC_CHECKER_MODEL = String(process.env.ANTHROPIC_CHECKER_MODEL || "claude-haiku-4-5").trim();
-// v0.53.5: the strong checker inherits ANTHROPIC_MODEL only when it is not an Opus/Fable/Mythos-class model; those are capped to Sonnet unless ANTHROPIC_STRONG_CHECKER_MODEL is set.
-const ANTHROPIC_STRONG_CHECKER_MODEL = String(process.env.ANTHROPIC_STRONG_CHECKER_MODEL || (/opus|fable|mythos/i.test(ANTHROPIC_MODEL) ? "claude-sonnet-5-5" : ANTHROPIC_MODEL) || "claude-sonnet-5-5").trim();
-const ANTHROPIC_CHECK_MIN_IMPORTANCE = Math.max(0, Math.min(10, Number(process.env.ANTHROPIC_CHECK_MIN_IMPORTANCE == null || process.env.ANTHROPIC_CHECK_MIN_IMPORTANCE === "" ? 7 : process.env.ANTHROPIC_CHECK_MIN_IMPORTANCE) || 0));
-const ANTHROPIC_ASSIST_MODEL = String(process.env.ANTHROPIC_ASSIST_MODEL || ANTHROPIC_CHECKER_MODEL).trim();
-const ANTHROPIC_STRONG_IMPORTANCE = Math.max(7, Math.min(10, Number(process.env.ANTHROPIC_STRONG_IMPORTANCE || 10) || 10));
-const ANTHROPIC_HEALTH_CACHE_MIN = Math.max(10, Math.min(360, Number(process.env.ANTHROPIC_HEALTH_CACHE_MIN || 120) || 120));
-// Provider failover: OpenAI or Claude out of money (or down) -> the other one writes and checks, publishing goes on.
-const PROVIDER_FAILOVER_ENABLED = String(process.env.EDITORIAL_V2_PROVIDER_FAILOVER || "true").toLowerCase() !== "false";
-const ANTHROPIC_FALLBACK_WRITER_MODEL = String(process.env.ANTHROPIC_FALLBACK_WRITER_MODEL || "claude-sonnet-5-5").trim();
-const PROVIDER_BREAKER_COOLDOWN_MIN = Math.max(1, Math.min(240, Number(process.env.PROVIDER_BREAKER_COOLDOWN_MIN || 10) || 10));
-// When OpenAI cannot draw covers (no money) a local text card is used instead of blocking the post on MEDIA_REQUIRED.
-const PROVIDER_FAILOVER_COVER_CARD = String(process.env.PROVIDER_FAILOVER_COVER_CARD || "true").toLowerCase() !== "false";
-const HEADLINE_PREFILTER_ENABLED = String(process.env.HEADLINE_PREFILTER_ENABLED || "true").toLowerCase() !== "false";
-const SOURCE_AUTO_PAUSE_ENABLED = String(process.env.SOURCE_AUTO_PAUSE_ENABLED || "true").toLowerCase() !== "false";
-function envNumber(name, def, min, max) { const v = Number(String(process.env[name] == null ? "" : process.env[name]).replace(",", ".").replace(/[^0-9.\-]/g, "")); const n = process.env[name] == null || process.env[name] === "" || !Number.isFinite(v) ? def : v; return Math.max(min, Math.min(max, n)); }
-const POST_RATING_MIN_AUTO = envNumber("POST_RATING_MIN_AUTO", 50, 0, 100);
-// Nothing waits for a human: below POST_RATING_MIN_AUTO a post is a reserve
-// (published only when no better post is available), below
-// POST_RATING_DROP_BELOW it is removed from the queue automatically.
-const POST_RATING_DROP_BELOW = envNumber("POST_RATING_DROP_BELOW", 35, 0, 100);
-function normHHMM(v, def) { const m = String(v || "").trim().match(/^(\d{1,2}):(\d{2})$/); if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return def; return m[1].padStart(2, "0") + ":" + m[2]; }
-const DIGEST_ENABLED = String(process.env.DIGEST_ENABLED || "true").toLowerCase() !== "false";
-// Product rule: public digests are removed: both «Главное за день» and Sunday «Топ недели».
-// Each can only return if the editor explicitly enables its dedicated flag.
-const DIGEST_EVENING_ENABLED = String(process.env.DIGEST_EVENING_ENABLED || "false").toLowerCase() === "true";
-const DIGEST_SUNDAY_ENABLED = String(process.env.DIGEST_SUNDAY_ENABLED || "false").toLowerCase() === "true";
-const DIGEST_EVENING_TIME = normHHMM(process.env.DIGEST_EVENING_TIME, "21:15");
-const DIGEST_SUNDAY_TIME = normHHMM(process.env.DIGEST_SUNDAY_TIME, "20:15");
-const DAILY_REPORT_ENABLED = String(process.env.DAILY_REPORT_ENABLED || "true").toLowerCase() !== "false";
-const DAILY_REPORT_TIME = normHHMM(process.env.DAILY_REPORT_TIME, "22:50");
-const SOURCES_MIN_ACTIVE = envNumber("SOURCES_MIN_ACTIVE", 40, 0, 200);
-const SOURCE_REPLENISH_INTERVAL_MINUTES = Math.max(15, Number(process.env.SOURCE_REPLENISH_INTERVAL_MINUTES || 60));
-// How many new sources one top-up may add (was a fixed 5) and the ceiling a starving channel may grow to.
-const SOURCES_ADDED_PER_RUN = envNumber("SOURCES_ADDED_PER_RUN", 15, 1, 50);
-const SOURCES_MAX_ACTIVE = envNumber("SOURCES_MAX_ACTIVE", 150, 10, 400);
-// A channel whose slot preparations found nothing new this many times in a row gets new sources even when it
-// already has the target number: the count is fine, but they bring nothing.
-const SOURCE_STARVING_RUNS = envNumber("SOURCE_STARVING_RUNS", 2, 1, 24);
-const SOURCE_PROBATION_HOURS = envNumber("SOURCE_PROBATION_HOURS", 48, 6, 24 * 14);
-const STORY_PRECHECK_ENABLED = String(process.env.STORY_PRECHECK_ENABLED || "true").toLowerCase() !== "false";
-const AUTO_QUALITY_MIN = Math.max(50, Math.min(95, Number(process.env.AUTO_QUALITY_MIN || 72)));
-const STORY_UPDATE_WINDOW_HOURS = Math.max(6, Math.min(72, Number(process.env.STORY_UPDATE_WINDOW_HOURS || 36)));
-// Default 2: one main photo plus at most one genuinely different large photo.
-// One media per post: video → photo → generated cover. Albums are off by default.
-const MEDIA_DIRECTOR_MAX_IMAGES = Math.max(1, Math.min(6, Number(process.env.MEDIA_DIRECTOR_MAX_IMAGES || 1)));
-// Extra (non-main) album photos must be at least this large: filters "read also" thumbnails.
-const MEDIA_EXTRA_MIN_WIDTH = 700;
-const MEDIA_EXTRA_MIN_HEIGHT = 400;
-const EDITORIAL_LEARNING_ENABLED = String(process.env.EDITORIAL_LEARNING_ENABLED || "true").toLowerCase() !== "false";
-const EDITORIAL_LEARNING_REFRESH_MINUTES = Math.max(15, Number(process.env.EDITORIAL_LEARNING_REFRESH_MINUTES || 60));
-const PUBLISH_REPAIR_MAX_ATTEMPTS = Math.max(1, Math.min(3, Number(process.env.PUBLISH_REPAIR_MAX_ATTEMPTS || 2)));
-// Telegram Bot API: timeout of one JSON call, and the longest "retry_after" (429) we are willing to sit out once.
-const TELEGRAM_API_TIMEOUT_MS = Math.max(5000, Math.min(120000, Number(process.env.TELEGRAM_API_TIMEOUT_MS || 30000)));
-const TELEGRAM_RETRY_AFTER_MAX_SECONDS = Math.max(1, Math.min(120, Number(process.env.TELEGRAM_RETRY_AFTER_MAX_SECONDS || 30)));
-const SOURCE_IMAGE_ENHANCE_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.SOURCE_IMAGE_ENHANCE_CONCURRENCY || 1)));
-const IMAGE_ENHANCE_MIN_GAP_MS = Math.max(8000, Number(process.env.IMAGE_ENHANCE_MIN_GAP_MS || 13000));
-const PUBLIC_BASE_URL = (process.env.NEWS_FACTORY_PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "https://news-factory-api-production.up.railway.app")).replace(/\/$/, "");
-const VK_ACCESS_TOKEN = String(process.env.VK_ACCESS_TOKEN || process.env.VK_TOKEN || "").trim();
-const VK_USER_TOKEN = String(process.env.VK_USER_TOKEN || process.env.VK_USER_ACCESS_TOKEN || "").trim();
-const TELEGRAM_ALERT_CHAT_ID = String(process.env.TELEGRAM_ALERT_CHAT_ID || "").trim();
-const VK_GROUP_ID = Math.abs(Number(process.env.VK_GROUP_ID || 0)) || 0;
-const VK_OWNER_ID = Number(process.env.VK_OWNER_ID || (VK_GROUP_ID ? -VK_GROUP_ID : 0)) || 0;
-const VK_SCREEN_NAME = String(process.env.VK_SCREEN_NAME || "chtotamai").trim();
-const VK_PUBLIC_URL = String(process.env.VK_PUBLIC_URL || (VK_SCREEN_NAME ? "https://vk.ru/" + VK_SCREEN_NAME : "")).trim();
-const VK_API_VERSION = String(process.env.VK_API_VERSION || "5.199").trim();
-const VK_PUBLISH_ENABLED = String(process.env.VK_PUBLISH_ENABLED || "false").toLowerCase() === "true";
-// VK posts WITH a visible photo go through Postmypost (an app VK approved for photos). Set POSTMYPOST_TOKEN to enable;
-// VK_VIA_POSTMYPOST=false switches back to direct VK API without removing the token.
-const POSTMYPOST_TOKEN = String(process.env.POSTMYPOST_TOKEN || "").trim();
-const VK_VIA_POSTMYPOST = Boolean(POSTMYPOST_TOKEN) && String(process.env.VK_VIA_POSTMYPOST || "true").toLowerCase() !== "false";
-const VK_APP_ID = String(process.env.VK_APP_ID || "").trim();
-const VK_OAUTH_REDIRECT_URI = String(process.env.VK_OAUTH_REDIRECT_URI || (PUBLIC_BASE_URL + "/api/vk/oauth/callback")).trim();
-const VK_OAUTH_SCOPE = String(process.env.VK_OAUTH_SCOPE || "photos wall groups offline").trim();
-const VK_OAUTH_MODE = String(process.env.VK_OAUTH_MODE || "legacy").trim().toLowerCase();
-const VK_OAUTH_HANDOFF_SECRET = String(process.env.VK_OAUTH_HANDOFF_SECRET || "").trim();
-const VK_OAUTH_TTL_MS = 10 * 60 * 1000;
+
+
 let vkOAuthSession = null;
 let vkOAuthHandoff = null;
-const COLLECTOR_ENABLED = String(process.env.COLLECTOR_ENABLED || "true").toLowerCase() !== "false";
-const AUTO_PUBLISH_ENABLED = String(process.env.AUTO_PUBLISH_ENABLED || "false").toLowerCase() === "true";
-const AUTO_PUBLISH_MIN_INTERVAL_MINUTES = Math.max(10, Number(process.env.AUTO_PUBLISH_MIN_INTERVAL_MINUTES || 30));
-const POLL_INTERVAL_MINUTES = Math.max(5, Number(process.env.POLL_INTERVAL_MINUTES || 15));
-// declared early: cleanupScheduleAssignments() runs while workspaces load at startup
-const DYNAMIC_ASSIGNMENT_GRACE_MIN = Math.max(0, Number(process.env.DYNAMIC_ASSIGNMENT_GRACE_MIN || 90));
-const DYNAMIC_SLOT_START_HOUR = 8;
-const DYNAMIC_SLOT_END_HOUR = 23;
-const DYNAMIC_SLOT_PREP_MINUTE = 45; // default only; each channel picks at prepMinuteFor()
+
+
+ // default only; each channel picks at prepMinuteFor()
 // Staggered collection (2026-10-04): every channel used to collect at :45 at once (~1500 page requests in a few
 // minutes queued behind the global fetch limit, slowed each other down and once hung the whole morning). Each channel
 // now collects at its own minute between :10 and :40; :45 only picks the post from the queue it filled.
@@ -255,11 +130,11 @@ const AI_STRONG_NEWS_SCORE = Math.max(60, Math.min(95, Number.isFinite(AI_STRONG
 const AI_TOP_NEWS_SCORE_RAW = Number(process.env.AI_TOP_NEWS_SCORE || 88);
 const AI_TOP_NEWS_SCORE = Math.max(AI_STRONG_NEWS_SCORE, Math.min(100, Number.isFinite(AI_TOP_NEWS_SCORE_RAW) ? AI_TOP_NEWS_SCORE_RAW : 88));
 const PORT = Number(process.env.PORT || 3000);
-const DATA_DIR = process.env.DATA_DIR || "/data";
+
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const WORKSPACES_FILE = path.join(DATA_DIR, "workspaces.json");
 const DEFAULT_WORKSPACE_ID = "ai-main";
-const MEDIA_DIR = path.join(DATA_DIR, "media");
+
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 // Text in generated images (cover cards, VK previews) needs fonts; the server image has none, so every letter was
 // drawn as an empty box. Point fontconfig (used by sharp/librsvg) at the bundled DejaVu fonts.
@@ -274,10 +149,8 @@ const PUBLIC_DIR = path.join(process.cwd(), "public");
   } catch {}
 })();
 function fileURLToPathSafe(u) { try { return decodeURIComponent(u.pathname); } catch { return ""; } }
-const VK_PREVIEW_WIDTH = 1200;
-const VK_PREVIEW_HEIGHT = 630;
-const VK_PREVIEW_MAX_BYTES = Math.max(200000, Math.min(1048576, Number(process.env.VK_PREVIEW_MAX_BYTES || 950000)));
-const VK_PREVIEW_JPEG_QUALITY = Math.max(45, Math.min(90, Number(process.env.VK_PREVIEW_JPEG_QUALITY || 82)));
+
+
 let APP_VERSION = "0.0.0";
 try {
   APP_VERSION = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")).version || APP_VERSION;
@@ -294,93 +167,7 @@ const COST_PRICING = COST_PRICING_CONFIG.pricing;
 if (COST_PRICING_CONFIG.error) console.warn("COST_PRICING_JSON ignored:", COST_PRICING_CONFIG.error);
 for (const warning of (COST_PRICING_CONFIG.warnings || [])) console.warn("COST_PRICING_JSON:", warning);
 
-const CURATED_SOURCES = [
-  { id: "openai", name: "OpenAI News", type: "web", group: "official", priority: 1, url: "https://openai.com/news/", enabled: true },
-  { id: "anthropic", name: "Anthropic News", type: "web", group: "official", priority: 1, url: "https://www.anthropic.com/news", enabled: true },
-  { id: "google-deepmind", name: "Google DeepMind", type: "web", group: "official", priority: 1, url: "https://deepmind.google/blog/", enabled: true },
-  { id: "google-ai", name: "Google AI", type: "web", group: "official", priority: 1, url: "https://blog.google/technology/ai/", enabled: true },
-  { id: "meta-ai", name: "Meta AI", type: "web", group: "official", priority: 1, url: "https://ai.meta.com/blog/", enabled: true },
-  { id: "microsoft-ai", name: "Microsoft AI", type: "web", group: "official", priority: 1, url: "https://blogs.microsoft.com/ai/", enabled: true },
-  { id: "nvidia-ai", name: "NVIDIA AI", type: "web", group: "official", priority: 1, url: "https://blogs.nvidia.com/blog/category/generative-ai/", enabled: true },
-  { id: "xai", name: "xAI News", type: "web", group: "official", priority: 1, url: "https://x.ai/news", enabled: true },
-  { id: "mistral", name: "Mistral AI", type: "web", group: "official", priority: 1, url: "https://mistral.ai/news/", enabled: true },
-  { id: "huggingface", name: "Hugging Face", type: "web", group: "official", priority: 1, url: "https://huggingface.co/blog", enabled: true },
-  { id: "perplexity", name: "Perplexity", type: "web", group: "official", priority: 1, url: "https://www.perplexity.ai/hub/blog", enabled: true },
-  { id: "stability-ai", name: "Stability AI", type: "web", group: "official", priority: 1, url: "https://stability.ai/news-updates", enabled: true },
 
-  { id: "techcrunch-ai", name: "TechCrunch AI", type: "web", group: "media", priority: 2, url: "https://techcrunch.com/category/artificial-intelligence/", enabled: true },
-  { id: "the-verge-ai", name: "The Verge AI", type: "web", group: "media", priority: 2, url: "https://www.theverge.com/ai-artificial-intelligence", enabled: true },
-  { id: "ars-ai", name: "Ars Technica AI", type: "web", group: "media", priority: 2, url: "https://arstechnica.com/ai/", enabled: true },
-  { id: "venturebeat-ai", name: "VentureBeat AI", type: "web", group: "media", priority: 2, url: "https://venturebeat.com/category/ai/", enabled: true },
-  { id: "wired-ai", name: "WIRED AI", type: "web", group: "media", priority: 2, url: "https://www.wired.com/category/artificial-intelligence/", enabled: true },
-  { id: "mit-tech-ai", name: "MIT Technology Review AI", type: "web", group: "media", priority: 2, url: "https://www.technologyreview.com/topic/artificial-intelligence/", enabled: true },
-  { id: "the-decoder", name: "The Decoder", type: "web", group: "media", priority: 2, url: "https://the-decoder.com/", enabled: true },
-  { id: "the-batch", name: "DeepLearning.AI — The Batch", type: "web", group: "media", priority: 2, url: "https://www.deeplearning.ai/the-batch", enabled: true }
-];
-
-const RUSSIAN_AI_SOURCES = [
-  { id: "ru-yandex-ai", name: "Яндекс на Хабре", type: "web", group: "official", priority: 1, url: "https://habr.com/ru/companies/yandex/news/", enabled: true },
-  { id: "ru-sber-ai", name: "Sber AI / GigaChat", type: "web", group: "official", priority: 1, url: "https://habr.com/ru/companies/sberbank/news/page1/", enabled: true },
-  { id: "ru-mws-ai", name: "MWS AI", type: "web", group: "official", priority: 1, url: "https://mts.ai/news/", enabled: true },
-  { id: "ru-vk-ai", name: "VK AI", type: "web", group: "official", priority: 1, url: "https://vk.company.ru/ru/press/releases/", enabled: true },
-  { id: "ru-habr-ai", name: "Хабр: ИИ (новости)", type: "web", group: "media", priority: 2, url: "https://habr.com/ru/hubs/artificial_intelligence/news/", enabled: true },
-  { id: "ru-just-ai", name: "Just AI", type: "web", group: "official", priority: 1, url: "https://just-ai.com/blog/news", enabled: true },
-  { id: "ru-vc-ai", name: "vc.ru: ИИ", type: "web", group: "media", priority: 2, url: "https://vc.ru/ai", enabled: true },
-  { id: "ru-airi", name: "Институт AIRI", type: "web", group: "creator", priority: 1, url: "https://t.me/s/airi_research_institute", enabled: true },
-  { id: "ru-zheltyi-ai", name: "Жёлтый AI", type: "web", group: "creator", priority: 2, url: "https://t.me/s/zheltyi_ai", enabled: true },
-  { id: "ru-ai-happens", name: "AI Happens", type: "web", group: "creator", priority: 2, url: "https://t.me/s/AIhappens", enabled: true }
-];
-
-const CAR_SOURCES = [
-  { id: "cars-tesla", name: "Tesla Blog", type: "web", group: "official", priority: 1, url: "https://www.tesla.com/blog", enabled: true },
-  { id: "cars-byd", name: "BYD Global", type: "web", group: "official", priority: 1, url: "https://www.bydglobal.com/en/news", enabled: true },
-  { id: "cars-geely", name: "Geely Newsroom", type: "web", group: "official", priority: 1, url: "https://newsroom.geely.com/", enabled: true },
-  { id: "cars-chery", name: "Chery International", type: "web", group: "official", priority: 1, url: "https://www.cheryinternational.com/", enabled: true },
-  { id: "cars-nio", name: "NIO Newsroom", type: "web", group: "official", priority: 1, url: "https://www.nio.com/news", enabled: true },
-  { id: "cars-xpeng", name: "XPENG Pressroom", type: "web", group: "official", priority: 1, url: "https://www.xpeng.com/nl/pressroom", enabled: true },
-  { id: "cars-zeekr", name: "ZEEKR Global", type: "web", group: "official", priority: 1, url: "https://www.zeekrglobal.com/", enabled: true },
-  { id: "cars-gwm", name: "GWM Global", type: "web", group: "official", priority: 1, url: "https://www.gwm-global.com/news/", enabled: true },
-  { id: "cars-toyota", name: "Toyota Global Newsroom", type: "web", group: "official", priority: 1, url: "https://global.toyota/en/newsroom/", enabled: true },
-  { id: "cars-vw", name: "Volkswagen Newsroom", type: "web", group: "official", priority: 1, url: "https://www.volkswagen-newsroom.com/en/press-releases", enabled: true },
-  { id: "cars-bmw", name: "BMW Group PressClub", type: "web", group: "official", priority: 1, url: "https://www.press.bmwgroup.com/global/", enabled: true },
-  { id: "cars-mercedes", name: "Mercedes-Benz Media", type: "web", group: "official", priority: 1, url: "https://media.mercedes-benz.com/", enabled: true },
-
-  { id: "cars-reuters", name: "Reuters Autos & Transportation", type: "web", group: "media", priority: 2, url: "https://www.reuters.com/business/autos-transportation/", enabled: true },
-  { id: "cars-carnewschina", name: "CarNewsChina", type: "web", group: "media", priority: 2, url: "https://carnewschina.com/", enabled: true },
-  { id: "cars-cnevpost", name: "CnEVPost", type: "web", group: "media", priority: 2, url: "https://cnevpost.com/", enabled: true },
-  { id: "cars-gasgoo", name: "Gasgoo Auto News", type: "web", group: "media", priority: 2, url: "https://autonews.gasgoo.com/", enabled: true },
-  { id: "cars-electrek", name: "Electrek", type: "web", group: "media", priority: 2, url: "https://electrek.co/", enabled: true },
-  { id: "cars-insideevs", name: "InsideEVs", type: "web", group: "media", priority: 2, url: "https://insideevs.com/news/", enabled: true },
-  { id: "cars-motor1", name: "Motor1", type: "web", group: "media", priority: 2, url: "https://www.motor1.com/news/", enabled: true },
-  { id: "cars-carscoops", name: "Carscoops", type: "web", group: "media", priority: 2, url: "https://www.carscoops.com/category/news/", enabled: true },
-  { id: "cars-autocar", name: "Autocar", type: "web", group: "media", priority: 2, url: "https://www.autocar.co.uk/car-news", enabled: true },
-  { id: "cars-topgear", name: "Top Gear", type: "web", group: "media", priority: 2, url: "https://www.topgear.com/car-news", enabled: true },
-  { id: "cars-caranddriver", name: "Car and Driver", type: "web", group: "media", priority: 2, url: "https://www.caranddriver.com/news/", enabled: true },
-  { id: "cars-thedrive", name: "The Drive", type: "web", group: "media", priority: 2, url: "https://www.thedrive.com/news", enabled: true },
-  { id: "cars-jalopnik", name: "Jalopnik", type: "web", group: "media", priority: 2, url: "https://www.jalopnik.com/", enabled: true },
-  { id: "cars-autonews-ru", name: "Autonews.ru", type: "web", group: "media", priority: 2, url: "https://www.autonews.ru/", enabled: true },
-  { id: "cars-motor-ru", name: "Motor.ru", type: "web", group: "media", priority: 2, url: "https://motor.ru/", enabled: true },
-  { id: "cars-drom", name: "Drom Новости", type: "web", group: "media", priority: 2, url: "https://news.drom.ru/", enabled: true },
-  { id: "cars-quto", name: "Quto", type: "web", group: "media", priority: 2, url: "https://quto.ru/news/", enabled: true },
-  { id: "cars-autoevolution", name: "Autoevolution", type: "web", group: "media", priority: 2, url: "https://www.autoevolution.com/news/", enabled: true },
-  { id: "cars-zr", name: "За рулём", type: "web", group: "media", priority: 2, url: "https://www.zr.ru/", enabled: true },
-  { id: "cars-autostat", name: "Автостат", type: "web", group: "media", priority: 1, url: "https://www.autostat.ru/news/", enabled: true },
-  { id: "cars-kolesa", name: "Колёса.ру", type: "web", group: "media", priority: 2, url: "https://www.kolesa.ru/news", enabled: true },
-  { id: "cars-autoreview", name: "Авторевю", type: "web", group: "media", priority: 2, url: "https://autoreview.ru/news", enabled: true }
-];
-
-const BLOGGER_SOURCES = APPROVED_AUTO_BLOGGER_SOURCES;
-const BLOGGER_SLOTS = ["10:30", "12:30", "15:30", "18:30", "21:30"];
-const BLOGGER_DAILY_TARGET = 5;
-// Extra :30 lane per channel (the "blogger" lane, generalised). stars: three extra posts a day taken from all its
-// sources; kino: three posts a day from Telegram channels with film memes (group "blogger", found by discovery).
-const CHANNEL_EXTRA_LANES = {
-  stars: { slots: ["12:30", "18:30", "21:30"], anySource: true, label: "Доп. посты" },
-  kino: { slots: ["12:30", "16:30", "20:30"], anySource: false, label: "Кино-мемы" },
-  // Approved money cadence: six :00 slots + these two flexible :30 slots = max 8 normal posts/day.
-  money: { slots: ["14:30", "21:30"], targetPerDay: 2, anySource: true, label: "Личные финансы" },
-  shopping: { slots: ["08:45","09:30","10:15","11:45","12:30","13:15","14:45","15:30","16:15","17:45","18:30","19:15","20:45","21:30","22:15"], targetPerDay: 15, anySource: true, label: "Покупки" }
-};
 // Editor's notes per channel (2026-10-03): what discovery should look for, which channels get their sources
 // refreshed (24 h trial for every automatically added source; the ones that never brought a news item are
 // replaced), extra Telegram channels, and the source set for the kino meme lane.
@@ -631,24 +418,6 @@ const defaultState = {
   updatedAt: new Date().toISOString()
 };
 
-function ensureDataDir() {
-  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
-  try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch {}
-}
-
-// options.assumeMoscow: a timestamp without a zone ("2026-10-01T11:30:00") comes from a Russian site and means
-// Moscow time (+03:00); read as UTC it would look 3 hours newer than it is.
-function normalizeDate(value, options) {
-  if (!value) return "";
-  const raw = String(value).trim();
-  let d;
-  const naive = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/.exec(raw);
-  if (naive && options && options.assumeMoscow) d = new Date(naive[1] + "T" + naive[2] + "+03:00");
-  else d = new Date(raw);
-  if (!Number.isFinite(d.getTime())) return "";
-  if (d.getTime() > Date.now() + 24 * 60 * 60 * 1000) return "";
-  return d.toISOString();
-}
 
 // Per-channel freshness (prompts/chto-tam.md section 2): the base limits (ARTICLE_MAX_AGE_HOURS, DYNAMIC_SLOT_MAX_AGE_HOURS,
 // QUEUE_MAX_AGE_HOURS) are for 24-hour channels and are scaled up for the 72-hour ones (science, world, home, food).
@@ -2153,7 +1922,6 @@ async function getInfrastructureEstimate() {
     ]
   };
 }
-
 
 
 let costBudgetCheckTimer = null;
@@ -4170,492 +3938,6 @@ function scheduleStateSnapshot() {
   snapshotDebouncer.schedule(currentWorkspaceId());
 }
 
-function canonicalizeUrl(raw, base) {
-  try {
-    const u = new URL(raw, base);
-    u.hash = "";
-    ["utm_source","utm_medium","utm_campaign","utm_term","utm_content","fbclid","gclid"].forEach(function(k){ u.searchParams.delete(k); });
-    if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, "");
-    return u.toString();
-  } catch {
-    return "";
-  }
-}
-
-function htmlDecode(text) {
-  return String(text || "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&#(\d+);/g, function(_, n){ return String.fromCharCode(Number(n)); });
-}
-
-function stripHtml(html) {
-  return htmlDecode(String(html || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/<!--([\s\S]*?)-->/g, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-  ).trim();
-}
-
-function extractTitle(html) {
-  const og = String(html || "").match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i) ||
-             String(html || "").match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["'][^>]*>/i);
-  if (og && og[1]) return stripHtml(og[1]).slice(0, 300);
-  const m = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return m ? stripHtml(m[1]).slice(0, 300) : "";
-}
-
-function extractPublishedAt(html, hint) {
-  const source = String(html || "");
-  let assumeMoscow = false;
-  try { assumeMoscow = /(\.ru|\.su|\.рф|\.xn--p1ai)$/i.test(new URL(String(hint && hint.url || "")).hostname); } catch {}
-  const patterns = [
-    /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["'][^>]*>/i,
-    /<meta[^>]+name=["'](?:date|pubdate|publish-date|published_time)["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["'](?:date|pubdate|publish-date|published_time)["'][^>]*>/i,
-    /<time[^>]+datetime=["']([^"']+)["'][^>]*>/i,
-    /["']datePublished["']\s*:\s*["']([^"']+)["']/i
-  ];
-  for (const re of patterns) {
-    const m = source.match(re);
-    if (!m || !m[1]) continue;
-    const normalized = normalizeDate(htmlDecode(m[1]), { assumeMoscow: assumeMoscow });
-    if (normalized) return normalized;
-  }
-  return "";
-}
-
-// Site preview for the Sources page: share image, favicon and page title.
-function extractSitePreview(html, pageUrl) {
-  const src = String(html || "");
-  let icon = "";
-  const links = src.match(/<link[^>]+>/gi) || [];
-  const ranked = [];
-  for (const tag of links) {
-    const rel = (tag.match(/rel=["']([^"']+)["']/i) || [])[1] || "";
-    const href = (tag.match(/href=["']([^"']+)["']/i) || [])[1] || "";
-    if (!href || !/icon/i.test(rel)) continue;
-    const size = Number(((tag.match(/sizes=["'](\d+)x\d+["']/i) || [])[1]) || (/apple-touch/i.test(rel) ? 180 : 32));
-    ranked.push({ href: href, size: size });
-  }
-  ranked.sort(function(a, b){ return Math.abs(a.size - 96) - Math.abs(b.size - 96); });
-  if (ranked[0]) icon = canonicalizeUrl(htmlDecode(ranked[0].href), pageUrl) || "";
-  if (!icon) { try { icon = new URL("/favicon.ico", pageUrl).toString(); } catch {} }
-  const title = htmlDecode(((src.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i) || [])[1]) ||
-    ((src.match(/<title[^>]*>([^<]{1,160})<\/title>/i) || [])[1]) || "").trim().slice(0, 120);
-  return { image: extractMetaImage(src, pageUrl) || "", icon: /^https?:\/\//i.test(icon) ? icon : "", title: title, at: new Date().toISOString() };
-}
-
-function extractMetaImage(html, pageUrl) {
-  const source = String(html || "");
-  const patterns = [
-    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image(?::secure_url)?["'][^>]*>/i,
-    /<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image(?::src)?["'][^>]*>/i
-  ];
-  for (const re of patterns) {
-    const m = source.match(re);
-    if (!m || !m[1]) continue;
-    const url = canonicalizeUrl(htmlDecode(m[1]), pageUrl);
-    if (url && /^https?:\/\//i.test(url)) return url;
-  }
-  return "";
-}
-
-// Telegram sendVideo only plays MPEG-4 (.mp4 / .m4v): a .webm is delivered as a plain "logo.webm" file
-// attachment, and a QuickTime .mov is not reliably accepted, so only MPEG-4 containers pass. Short decorative clips (animated logos, backgrounds, hero loops) found on
-// article pages are not news video either, so neither is accepted as a post video.
-function isUsableNewsVideoUrl(rawUrl) {
-  const value = String(rawUrl || "").trim();
-  if (!value) return false;
-  let pathname = value;
-  try { pathname = new URL(value, PUBLIC_BASE_URL).pathname; } catch {}
-  if (!/\.(mp4|m4v)$/i.test(pathname)) return false;
-  let base = pathname.split("/").pop() || "";
-  try { base = decodeURIComponent(base); } catch { return false; }
-  if (/(^|[-_.\s])(logo|logotype|loop|intro|outro|bg|background|header|hero|banner|favicon|icon|sprite|placeholder|ambient|teaser-loop)([-_.\s\d]|$)/i.test(base)) return false;
-  return true;
-}
-
-function extractMetaVideo(html, pageUrl) {
-  const source = String(html || "");
-  const patterns = [
-    /<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["']([^"']+)["'][^>]*>/i,
-    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:video(?::secure_url)?["'][^>]*>/i,
-    /<video[^>]+src=["']([^"']+)["'][^>]*>/i,
-    /<source[^>]+src=["']([^"']+)["'][^>]*type=["']video\/[^"']+["'][^>]*>/i
-  ];
-  for (const re of patterns) {
-    const m = source.match(re);
-    if (!m || !m[1]) continue;
-    const url = canonicalizeUrl(htmlDecode(m[1]), pageUrl);
-    if (url && /^https?:\/\//i.test(url) && /\.(mp4|mov|m4v|webm)(\?|$)/i.test(url) && isUsableNewsVideoUrl(url)) return url;
-  }
-  return "";
-}
-
-
-function extractArticleMediaCandidates(html, pageUrl) {
-  const source = String(html || "");
-  const images = [];
-  const videos = [];
-  const imageSeen = new Set();
-  const videoSeen = new Set();
-
-  function addImage(raw, score, reason, meta) {
-    const url = canonicalizeUrl(htmlDecode(raw || ""), pageUrl);
-    if (!url || !/^https?:\/\//i.test(url) || imageSeen.has(url)) return;
-    if (/\.(svg|ico)(\?|$)/i.test(url)) return;
-    let nextScore = Number(score || 0);
-    if (/(?:logo|avatar|icon|sprite|emoji|badge|pixel|tracker|placeholder|favicon)/i.test(url)) nextScore -= 80;
-    if (/(?:article|news|upload|media|image|photo|press|cdn|content)/i.test(url)) nextScore += 8;
-    if (nextScore < 15) return;
-    imageSeen.add(url);
-    images.push(Object.assign({ url: url, score: nextScore, reason: reason || "page_image" }, meta || {}));
-  }
-
-  function addVideo(raw, score, reason) {
-    const url = canonicalizeUrl(htmlDecode(raw || ""), pageUrl);
-    if (!url || !/^https?:\/\//i.test(url) || videoSeen.has(url)) return;
-    if (!/\.(mp4|mov|m4v|webm)(\?|$)/i.test(url)) return;
-    if (!isUsableNewsVideoUrl(url)) return;
-    videoSeen.add(url);
-    videos.push({ url: url, score: score, reason: reason || "page_video" });
-  }
-
-  const og = extractMetaImage(source, pageUrl);
-  if (og) addImage(og, 120, "og:image");
-  const video = extractMetaVideo(source, pageUrl);
-  if (video) addVideo(video, 140, "og/video");
-
-  const imgRe = /<img\b([^>]+)>/gi;
-  let m;
-  while ((m = imgRe.exec(source))) {
-    const attrs = m[1] || "";
-    const srcMatch = attrs.match(/(?:src|data-src|data-original|data-lazy-src)=["']([^"']+)["']/i);
-    const srcsetMatch = attrs.match(/(?:srcset|data-srcset)=["']([^"']+)["']/i);
-    const altMatch = attrs.match(/(?:alt|title)=["']([^"']+)["']/i);
-    const widthMatch = attrs.match(/\bwidth=["']?(\d{2,5})/i);
-    const heightMatch = attrs.match(/\bheight=["']?(\d{2,5})/i);
-    let raw = srcMatch && srcMatch[1] || "";
-    if (!raw && srcsetMatch && srcsetMatch[1]) {
-      const parts = srcsetMatch[1].split(",").map(function(x){ return x.trim().split(/\s+/)[0]; }).filter(Boolean);
-      raw = parts[parts.length - 1] || "";
-    }
-    if (!raw) continue;
-    let score = 30;
-    const width = Number(widthMatch && widthMatch[1] || 0);
-    const height = Number(heightMatch && heightMatch[1] || 0);
-    if (width >= 1200 || height >= 800) score += 40;
-    else if (width >= 900 || height >= 600) score += 30;
-    else if (width >= 500 || height >= 350) score += 15;
-    else if (width && height && (width < 320 || height < 200)) score -= 35;
-    const alt = String(altMatch && altMatch[1] || "");
-    if (alt.length >= 20) score += 10;
-    if (/(?:logo|avatar|icon|banner|advert|реклам|логотип|флаг|герб|скриншот|screenshot)/i.test(alt)) score -= 50;
-    addImage(raw, score, "article_img", { alt: alt.slice(0, 300), width: width, height: height });
-  }
-
-  const posterRe = /<video\b[^>]*poster=["']([^"']+)["'][^>]*>/gi;
-  while ((m = posterRe.exec(source))) addImage(m[1], 85, "video_poster");
-
-  const videoRe = /<(?:video|source)\b[^>]*src=["']([^"']+)["'][^>]*>/gi;
-  while ((m = videoRe.exec(source))) addVideo(m[1], 90, "video_tag");
-
-  images.sort(function(a,b){ return b.score - a.score; });
-  videos.sort(function(a,b){ return b.score - a.score; });
-  return { images: images.slice(0, 12), videos: videos.slice(0, 4) };
-}
-
-function mediaPublicUrl(fileName) {
-  return PUBLIC_BASE_URL + "/media/" + encodeURIComponent(fileName);
-}
-
-function escapeHtml(value) {
-  return String(value == null ? "" : value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function previewDescription(post) {
-  const title = String(post && post.title || "").replace(/[*_>#`]/g, " ").replace(/\s+/g, " ").trim();
-  const body = String(post && post.text || "").replace(/[*_>#`]/g, " ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim();
-  return (title + (body ? " — " + body : "")).slice(0, 280);
-}
-
-function previewSlug(post) {
-  const base = String(post && (post.postId || post.id || post.newsId) || "post")
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "post";
-  return base + "-" + Date.now().toString(36) + "-" + crypto.randomBytes(5).toString("hex");
-}
-
-function previewPageUrl(slug) {
-  return PUBLIC_BASE_URL + "/p/" + encodeURIComponent(slug);
-}
-
-function localMediaPathFromUrl(rawUrl) {
-  try {
-    const u = new URL(String(rawUrl || ""), PUBLIC_BASE_URL);
-    const base = new URL(PUBLIC_BASE_URL);
-    if (u.origin !== base.origin || !u.pathname.startsWith("/media/")) return "";
-    const fileName = decodeURIComponent(u.pathname.slice("/media/".length));
-    if (!fileName || fileName !== path.basename(fileName)) return "";
-    return path.join(MEDIA_DIR, fileName);
-  } catch {
-    return "";
-  }
-}
-
-async function loadPreviewSourceBytes(rawUrl) {
-  const sourceUrl = String(rawUrl || "").trim();
-  if (!sourceUrl) return null;
-  const localPath = localMediaPathFromUrl(sourceUrl);
-  if (localPath) {
-    const bytes = fs.readFileSync(localPath);
-    if (!bytes.length) throw new Error("Локальное изображение пустое");
-    return bytes;
-  }
-
-  const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
-  if (!/^https:\/\//i.test(absolute)) throw new Error("Для preview требуется HTTPS-изображение");
-  // Third-party URL: SSRF-safe download with a hard size cap, raster formats only (no SVG).
-  const response = await safeFetch(absolute, {
-    headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryPreview/1.0)" },
-    timeoutMs: 30000,
-    maxBytes: 20 * 1024 * 1024
-  });
-  if (!response.ok) throw new Error("Не удалось скачать preview-изображение: HTTP " + response.status);
-  const type = String(response.headers.get("content-type") || "").toLowerCase();
-  if (!type.startsWith("image/")) throw new Error("Preview-источник не является изображением");
-  const bytes = response.body;
-  if (!bytes.length) throw new Error("Preview-изображение пустое");
-  await assertSafeRaster(bytes);
-  return bytes;
-}
-
-function wrapPreviewTitle(value, maxChars, maxLines) {
-  const words = String(value || "Что там у ИИ?").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
-  const lines = [];
-  let line = "";
-  for (const word of words) {
-    const next = line ? line + " " + word : word;
-    if (next.length <= maxChars || !line) {
-      line = next;
-    } else {
-      lines.push(line);
-      line = word;
-      if (lines.length >= maxLines - 1) break;
-    }
-  }
-  if (line && lines.length < maxLines) lines.push(line);
-  if (words.join(" ").length > lines.join(" ").length && lines.length) {
-    lines[lines.length - 1] = lines[lines.length - 1].replace(/[.…]*$/, "") + "…";
-  }
-  return lines.slice(0, maxLines);
-}
-
-function buildTemplatePreviewSvg(post) {
-  const lines = wrapPreviewTitle(post && post.title, 34, 3);
-  const tspans = lines.map(function(line, index) {
-    return '<tspan x="82" dy="' + (index === 0 ? "0" : "72") + '">' + escapeHtml(line) + "</tspan>";
-  }).join("");
-  const topic = escapeHtml(String(post && post.topicId || "default").toUpperCase());
-  return Buffer.from(
-    '<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">' +
-    '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset=".55" stop-color="#10265f"/><stop offset="1" stop-color="#31156e"/></linearGradient>' +
-    '<radialGradient id="r" cx=".78" cy=".18" r=".7"><stop stop-color="#42d5ff" stop-opacity=".34"/><stop offset="1" stop-color="#42d5ff" stop-opacity="0"/></radialGradient></defs>' +
-    '<rect width="1200" height="630" fill="url(#g)"/><rect width="1200" height="630" fill="url(#r)"/>' +
-    '<circle cx="1010" cy="115" r="150" fill="#7b4dff" opacity=".18"/><circle cx="1080" cy="505" r="210" fill="#20c9ff" opacity=".10"/>' +
-    '<rect x="82" y="70" width="96" height="96" rx="28" fill="#5166ff"/><text x="130" y="135" text-anchor="middle" font-family="Arial,sans-serif" font-size="42" font-weight="800" fill="#fff">AI</text>' +
-    '<text x="204" y="112" font-family="Arial,sans-serif" font-size="28" font-weight="700" fill="#d9e5ff">NEWS FACTORY</text>' +
-    '<text x="204" y="148" font-family="Arial,sans-serif" font-size="20" fill="#8ea7d7">Что там у ИИ? · ' + topic + '</text>' +
-    '<text x="82" y="285" font-family="Arial,sans-serif" font-size="58" font-weight="800" fill="#fff">' + tspans + '</text>' +
-    '<text x="82" y="565" font-family="Arial,sans-serif" font-size="20" fill="#91a8d2">Новости нейросетей и технологий</text>' +
-    '</svg>'
-  );
-}
-
-async function encodePreviewJpeg(inputBytes) {
-  const qualities = Array.from(new Set([
-    VK_PREVIEW_JPEG_QUALITY,
-    Math.max(45, VK_PREVIEW_JPEG_QUALITY - 8),
-    Math.max(45, VK_PREVIEW_JPEG_QUALITY - 16),
-    58,
-    50,
-    45
-  ]));
-  let last = null;
-  // v0.60.4: a photo whose shape differs from 1200x630 is shown WHOLE on a blurred copy of itself (no cropped edges/text);
-  // near-matching shapes still fill the frame.
-  let base = null;
-  try {
-    const rotated = await sharp(inputBytes, { limitInputPixels: 80 * 1000 * 1000 }).rotate().toBuffer({ resolveWithObject: true });
-    const ratio = rotated.info.width / Math.max(1, rotated.info.height);
-    if (Math.abs(ratio / (VK_PREVIEW_WIDTH / VK_PREVIEW_HEIGHT) - 1) > 0.08) {
-      const bg = await sharp(rotated.data).resize(VK_PREVIEW_WIDTH, VK_PREVIEW_HEIGHT, { fit: "cover", position: "centre" }).blur(28).modulate({ brightness: 0.75 }).toBuffer();
-      const fg = await sharp(rotated.data).resize(VK_PREVIEW_WIDTH, VK_PREVIEW_HEIGHT, { fit: "inside", withoutEnlargement: false }).toBuffer();
-      base = await sharp(bg).composite([{ input: fg, gravity: "centre" }]).png().toBuffer();
-    }
-  } catch (error) { base = null; }
-  for (const quality of qualities) {
-    const out = await sharp(base || inputBytes, { limitInputPixels: 80 * 1000 * 1000 })
-      .rotate()
-      .resize(VK_PREVIEW_WIDTH, VK_PREVIEW_HEIGHT, { fit: "cover", position: "centre" })
-      .jpeg({ quality: quality, mozjpeg: true, chromaSubsampling: "4:2:0" })
-      .toBuffer({ resolveWithObject: true });
-    last = out;
-    if (out.data.length <= VK_PREVIEW_MAX_BYTES) return out;
-  }
-  if (!last || last.data.length > 1048576) throw new Error("Не удалось уложить preview JPEG в 1 МБ");
-  return last;
-}
-
-
-async function buildMediaPackCollage(urls) {
-  const list = (Array.isArray(urls) ? urls : []).map(function(url){ return String(url || "").trim(); }).filter(Boolean).slice(0, 4);
-  if (list.length < 2) return null;
-
-  const loaded = [];
-  for (const url of list) {
-    try {
-      const bytes = await loadPreviewSourceBytes(url);
-      if (bytes) loaded.push(bytes);
-    } catch (error) {
-      console.warn("VK collage image skipped:", error.message);
-    }
-  }
-  if (loaded.length < 2) return null;
-
-  const gap = 8;
-  const cells = [];
-  if (loaded.length === 2) {
-    cells.push({ left: 0, top: 0, width: 596, height: 630 });
-    cells.push({ left: 604, top: 0, width: 596, height: 630 });
-  } else if (loaded.length === 3) {
-    cells.push({ left: 0, top: 0, width: 596, height: 630 });
-    cells.push({ left: 604, top: 0, width: 596, height: 311 });
-    cells.push({ left: 604, top: 319, width: 596, height: 311 });
-  } else {
-    cells.push({ left: 0, top: 0, width: 596, height: 311 });
-    cells.push({ left: 604, top: 0, width: 596, height: 311 });
-    cells.push({ left: 0, top: 319, width: 596, height: 311 });
-    cells.push({ left: 604, top: 319, width: 596, height: 311 });
-  }
-
-  const composites = [];
-  for (let i = 0; i < Math.min(loaded.length, cells.length); i += 1) {
-    const cell = cells[i];
-    const img = await sharp(loaded[i], { limitInputPixels: 80 * 1000 * 1000 })
-      .rotate()
-      .resize(cell.width, cell.height, { fit: "cover", position: "centre" })
-      .jpeg({ quality: 88 })
-      .toBuffer();
-    composites.push({ input: img, left: cell.left, top: cell.top });
-  }
-
-  return sharp({
-    create: { width: VK_PREVIEW_WIDTH, height: VK_PREVIEW_HEIGHT, channels: 3, background: { r: 245, g: 248, b: 252 } }
-  }).composite(composites).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
-}
-
-async function prepareVkPreviewImage(post, slug) {
-  ensureDataDir();
-  const sourceUrl = String(post && (post.imageUrl || post.generatedImageUrl) || "").trim();
-  const mediaPackUrls = Array.isArray(post && post.mediaPackUrls) ? post.mediaPackUrls.filter(Boolean).slice(0, 4) : [];
-  let input = null;
-
-  if (mediaPackUrls.length > 1) {
-    try {
-      input = await buildMediaPackCollage(mediaPackUrls);
-    } catch (error) {
-      console.warn("VK_PREVIEW_COLLAGE_FAILED " + JSON.stringify({
-        post_id: String(post && (post.postId || post.id) || "unknown"),
-        slug: slug,
-        error: String(error && error.message || error)
-      }));
-    }
-  }
-
-  if (!input && sourceUrl) {
-    try {
-      input = await loadPreviewSourceBytes(sourceUrl);
-    } catch (error) {
-      console.warn("VK_PREVIEW_SOURCE_FAILED " + JSON.stringify({
-        post_id: String(post && (post.postId || post.id) || "unknown"),
-        slug: slug,
-        error: String(error && error.message || error)
-      }));
-    }
-  }
-  if (!input) input = buildTemplatePreviewSvg(post);
-
-  let encoded;
-  try {
-    encoded = await encodePreviewJpeg(input);
-  } catch (error) {
-    if (sourceUrl) encoded = await encodePreviewJpeg(buildTemplatePreviewSvg(post));
-    else throw error;
-  }
-
-  const fileName = "vk_preview_" + slug + ".jpg";
-  fs.writeFileSync(path.join(MEDIA_DIR, fileName), encoded.data);
-  return {
-    fileName: fileName,
-    url: mediaPublicUrl(fileName),
-    width: encoded.info.width || VK_PREVIEW_WIDTH,
-    height: encoded.info.height || VK_PREVIEW_HEIGHT,
-    bytes: encoded.data.length
-  };
-}
-
-function normalizePublicPostSources(post) {
-  const p = post || {};
-  if (p.hidePublicSources === true) return [];
-  const out = [];
-  const seen = new Set();
-
-  function add(name, url) {
-    const sourceUrl = String(url || "").trim();
-    if (!sourceUrl || !/^https:\/\//i.test(sourceUrl) || seen.has(sourceUrl)) return;
-    seen.add(sourceUrl);
-    out.push({
-      name: String(name || sourceUrl).trim().slice(0, 200) || sourceUrl,
-      url: sourceUrl
-    });
-  }
-
-  if (Array.isArray(p.storySources)) {
-    p.storySources.forEach(function(source) {
-      if (source && typeof source === "object") add(source.sourceName || source.name || source.title || "", source.url || source.sourceUrl || source.href || "");
-    });
-  }
-  if (Array.isArray(p.sources)) {
-    p.sources.forEach(function(source) {
-      if (typeof source === "string") add("", source);
-      else if (source && typeof source === "object") add(source.name || source.title || "", source.url || source.href || "");
-    });
-  }
-  if (Array.isArray(p.sourceUrls)) {
-    p.sourceUrls.forEach(function(url){ add("", url); });
-  }
-  add(p.sourceName || "", p.sourceUrl || "");
-  return out.slice(0, 20);
-}
 
 async function createPublicPostPage(post) {
   if (!db || !dbReady) throw new Error("PostgreSQL недоступен — public preview нельзя создать");
@@ -5126,110 +4408,6 @@ function imageRetryDelayMs(response, data) {
   return 15000;
 }
 
-// Quality-only enhancement of a real news photo. Deliberately NOT generative: an image
-// model redraws the picture (invented details, changed sky, padded borders from a fixed
-// output size). Here the pixels of the scene stay the same — only technical quality:
-// EXIF orientation, moderate upscale of small photos, light denoise, gentle sharpening
-// and a very mild contrast lift. Same composition and aspect ratio.
-const ENHANCE_TARGET_WIDTH = 1600;
-async function enhanceNewsImage(payload) {
-  if (!IMAGE_ENHANCEMENT_ENABLED) throw new Error("Улучшение изображений отключено");
-
-  const imageUrl = String(payload.imageUrl || "").trim();
-  let bytes = null;
-  const localFile = localMediaPathFromUrl(imageUrl);
-  if (localFile && fs.existsSync(localFile)) {
-    bytes = fs.readFileSync(localFile);
-  } else {
-    if (!/^https?:\/\//i.test(imageUrl)) throw new Error("Нет исходного изображения для улучшения");
-    const sourceResponse = await safeFetch(imageUrl, {
-      headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryMedia/1.0)" },
-      timeoutMs: 30000,
-      maxBytes: 25 * 1024 * 1024
-    });
-    if (!sourceResponse.ok) throw new Error("Не удалось скачать исходное фото: HTTP " + sourceResponse.status);
-    bytes = sourceResponse.body;
-  }
-  if (!bytes || !bytes.length) throw new Error("Исходное изображение пустое");
-  if (bytes.length > 25 * 1024 * 1024) throw new Error("Исходное изображение слишком большое");
-
-  const meta = await assertSafeRaster(bytes);
-  const width = Number(meta.width || 0);
-  if (!width) throw new Error("Не удалось определить размер изображения");
-
-  let pipeline = sharp(bytes, { failOn: "none", limitInputPixels: SAFE_INPUT_PIXELS }).rotate();
-  if (width < ENHANCE_TARGET_WIDTH) {
-    // Upscale at most 2x: beyond that interpolation only adds blur.
-    pipeline = pipeline.resize({ width: Math.min(ENHANCE_TARGET_WIDTH, width * 2), kernel: "lanczos3", withoutEnlargement: false });
-  }
-  if (width < 1000) pipeline = pipeline.median(3);
-  pipeline = pipeline
-    .sharpen({ sigma: 0.8, m1: 0.6, m2: 1.6 })
-    .linear(1.04, -5)
-    .jpeg({ quality: 90, mozjpeg: true, chromaSubsampling: "4:4:4" });
-
-  const out = await pipeline.toBuffer();
-  ensureDataDir();
-  const safeId = String(payload.id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
-  const fileName = "enhanced_" + safeId + "_" + Date.now() + ".jpg";
-  fs.writeFileSync(path.join(MEDIA_DIR, fileName), out);
-  return { url: mediaPublicUrl(fileName), model: "quality-only-v1", fileName: fileName };
-}
-
-
-function isLocalMediaUrl(value) {
-  const url = String(value || "").trim();
-  return Boolean(url && PUBLIC_BASE_URL && url.startsWith(PUBLIC_BASE_URL + "/media/"));
-}
-
-async function cacheSourceImage(imageUrl, id) {
-  const sourceUrl = String(imageUrl || "").trim();
-  if (!sourceUrl) return "";
-  if (isLocalMediaUrl(sourceUrl)) return sourceUrl;
-
-  const response = await safeFetch(sourceUrl, {
-    headers: {
-      "user-agent": "Mozilla/5.0 (compatible; NewsFactory/1.0; +https://news-factory-api-production.up.railway.app)",
-      "accept": "image/webp,image/jpeg,image/png,image/gif,image/*;q=0.5"
-    },
-    timeoutMs: 30000,
-    maxBytes: 20 * 1024 * 1024
-  });
-  if (!response.ok) throw new Error("Фото источника HTTP " + response.status);
-  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-  if (!contentType.startsWith("image/")) throw new Error("Источник вернул не изображение");
-
-  const bytes = response.body;
-  if (!bytes.length) throw new Error("Фото источника пустое");
-  if (bytes.length > 20 * 1024 * 1024) throw new Error("Фото источника больше 20 МБ");
-  await assertSafeRaster(bytes); // jpeg/png/webp/gif/avif only: SVG is never rasterised
-
-  ensureDataDir();
-  const safeId = String(id || crypto.randomBytes(8).toString("hex")).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 70);
-  const fileName = "source_" + safeId + "_" + Date.now() + ".webp";
-  const filePath = path.join(MEDIA_DIR, fileName);
-
-  await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
-    .rotate()
-    .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 90 })
-    .toFile(filePath);
-
-  return mediaPublicUrl(fileName);
-}
-
-async function prepareReusableSourceImage(imageUrl, id) {
-  const sourceUrl = String(imageUrl || "").trim();
-  if (!sourceUrl) return { imageUrl: "", originalImageUrl: "" };
-  try {
-    const cached = await cacheSourceImage(sourceUrl, id);
-    return { imageUrl: cached || "", originalImageUrl: sourceUrl, cached: Boolean(cached) };
-  } catch (error) {
-    console.warn("Source image cache failed:", sourceUrl, error.message);
-    // Not an image / not reachable: never publish or show the raw remote URL.
-    return { imageUrl: "", originalImageUrl: sourceUrl, cached: false, cacheError: error.message };
-  }
-}
 
 async function repairBalancedQueueMedia() {
   if (COPYRIGHT_MEDIA_MODE !== "balanced") return { repaired: 0, failed: 0 };
@@ -5672,7 +4850,6 @@ async function ensureMediaForNews(payload) {
 }
 
 
-
 // URL patterns of thumbnails, avatars and logos that should never become extra album photos.
 function isLikelyThumbnailUrl(url) {
   const u = String(url || "").toLowerCase();
@@ -6034,91 +5211,6 @@ async function finalizeApprovedMedia(media, payload, tier) {
   return current;
 }
 
-// True when the post has no photo/video of its own and would go out with the locally drawn text card only.
-function isTextCardOnly(item) {
-  if (!item) return false;
-  const meta = item.metadata || {};
-  if (item.videoUrl || item.imageUrl || meta.videoUrl || meta.imageUrl) return false;
-  const generated = String(item.generatedImageUrl || meta.generatedImageUrl || "");
-  if (!generated) return false;
-  return item.mediaOrigin === "local_branded_card" || item.mediaStatus === "local_card" ||
-    /^local-branded-card/.test(String(item.generatedBy || "")) || /(?:^|\/)budget_card_[^/]*\.webp(?:\?|$)/.test(generated);
-}
-function textCardBlocked(item) { return !TEXT_CARD_POSTS_ALLOWED && isTextCardOnly(item); }
-
-function hasPublishableMedia(item) {
-  return Boolean(item && (item.videoUrl || item.imageUrl || item.generatedImageUrl || (item.metadata && (item.metadata.videoUrl || item.metadata.imageUrl || item.metadata.generatedImageUrl))));
-}
-
-
-function extractTelegramSourcePosts(html, sourceUrl) {
-  const source = String(html || "");
-  let channel = "";
-  try {
-    const u = new URL(sourceUrl);
-    const parts = u.pathname.split("/").filter(Boolean);
-    channel = parts[0] === "s" ? String(parts[1] || "") : String(parts[0] || "");
-  } catch {}
-  if (!channel) return [];
-
-  const posts = [];
-  const chunks = source.split(/<div[^>]+class=["'][^"']*tgme_widget_message_wrap[^"']*["'][^>]*>/i).slice(1);
-  for (const chunk of chunks) {
-    const dataPost = chunk.match(/data-post=["']([^"']+)\/([0-9]+)["']/i);
-    const messageId = dataPost ? Number(dataPost[2]) : 0;
-    if (!messageId) continue;
-
-    const textMatch = chunk.match(/<div[^>]+class=["'][^"']*tgme_widget_message_text[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
-    let text = textMatch ? stripHtml(textMatch[1]).replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim() : "";
-    if (!text || text.length < 20) continue;
-
-    const dateMatch = chunk.match(/<time[^>]+datetime=["']([^"']+)["']/i);
-    const hasVideo = /tgme_widget_message_video|tgme_widget_message_video_player|video_player|media is not supported|media is too big/i.test(chunk);
-    const hasPhoto = /tgme_widget_message_photo_wrap|background-image\s*:\s*url/i.test(chunk);
-    const firstLine = text.split("\n").map(function(x){ return x.trim(); }).find(Boolean) || text;
-    const title = firstLine.length > 150 ? firstLine.slice(0, 147) + "…" : firstLine;
-
-    posts.push({
-      url: "https://t.me/" + channel + "/" + messageId,
-      title: title,
-      text: text,
-      publishedAt: dateMatch ? normalizeDate(dateMatch[1]) : "",
-      hasVideo: hasVideo,
-      hasPhoto: hasPhoto,
-      score: 20 + (hasVideo ? 8 : 0) + (hasPhoto ? 3 : 0) + Math.min(5, Math.floor(text.length / 180))
-    });
-  }
-  return posts.sort(function(a,b){
-    const ta = new Date(a.publishedAt || 0).getTime();
-    const tb = new Date(b.publishedAt || 0).getTime();
-    if (tb !== ta) return tb - ta;
-    return b.score - a.score;
-  }).slice(0, 18);
-}
-
-function extractArticleLinks(html, sourceUrl) {
-  const base = new URL(sourceUrl);
-  const out = new Map();
-  const re = /<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  let m;
-  while ((m = re.exec(String(html || "")))) {
-    const url = canonicalizeUrl(m[1], sourceUrl);
-    const text = stripHtml(m[2]).replace(/\s+/g, " ").trim();
-    if (!url || text.length < 18 || text.length > 220) continue;
-    let u;
-    try { u = new URL(url); } catch { continue; }
-    if (u.hostname !== base.hostname && !u.hostname.endsWith("." + base.hostname.replace(/^www\./, ""))) continue;
-    if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip|mp4|mp3)$/i.test(u.pathname)) continue;
-    if (u.pathname === "/" || u.pathname.split("/").filter(Boolean).length < 1) continue;
-    const score =
-      (/news|blog|article|stories|technology|ai|research|product|updates/i.test(u.pathname) ? 4 : 0) +
-      (u.pathname.split("/").filter(Boolean).length >= 2 ? 2 : 0) +
-      (text.length >= 35 ? 1 : 0);
-    const prev = out.get(url);
-    if (!prev || score > prev.score) out.set(url, { url: url, title: text, score: score });
-  }
-  return Array.from(out.values()).sort(function(a,b){ return b.score - a.score; }).slice(0, 12);
-}
 
 // Source pages: browser-like headers, IPv4 retry after a dropped connection, and the Russian proxy
 // (SOURCE_PROXY_URL) for sites that block or time out from abroad. See lib/source-fetch.js.
@@ -8539,79 +7631,6 @@ function requireAuth(req, res) {
   return true;
 }
 
-function newId(prefix) {
-  return (prefix || "item") + "_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex");
-}
-
-function escapeTelegramHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function escapeTelegramAttr(value) {
-  return escapeTelegramHtml(value).replace(/"/g, "&quot;");
-}
-
-function formatTelegramInline(value) {
-  const escaped = escapeTelegramHtml(value);
-  const italic = function(part) { return part.replace(/__([^_\n]+)__/g, "<i>$1</i>"); };
-  // Bold spans first; italics are applied inside and outside them separately, so
-  // "**a __b** c__" can never produce crossed tags (<b>..<i>..</b>..</i>) that Telegram rejects.
-  let out = "";
-  let last = 0;
-  const boldRe = /\*\*([^*\n]+)\*\*/g;
-  let m;
-  while ((m = boldRe.exec(escaped)) !== null) {
-    out += italic(escaped.slice(last, m.index)) + "<b>" + italic(m[1]) + "</b>";
-    last = m.index + m[0].length;
-  }
-  return out + italic(escaped.slice(last));
-}
-
-function formatTelegramBody(value) {
-  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
-  const out = [];
-  let quote = [];
-  function flushQuote() {
-    if (!quote.length) return;
-    out.push("<blockquote>" + quote.map(formatTelegramInline).join("\n") + "</blockquote>");
-    quote = [];
-  }
-  for (const raw of lines) {
-    const line = String(raw || "");
-    if (/^>\s?/.test(line)) {
-      quote.push(line.replace(/^>\s?/, ""));
-      continue;
-    }
-    flushQuote();
-    out.push(formatTelegramInline(line));
-  }
-  flushQuote();
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function formatTelegramPost(post) {
-  const title = String(post.title || "").trim();
-  const text = String(post.text || "").trim();
-  const sources = normalizePublicPostSources(post).slice(0, 5);
-  let html = "";
-  if (title) html += "<b>" + escapeTelegramHtml(title) + "</b>";
-  if (text) html += (html ? "\n\n" : "") + formatTelegramBody(text);
-  if (sources.length === 1) {
-    html += (html ? "\n\n" : "") + '🔗 <a href="' + escapeTelegramAttr(sources[0].url) + '">Источник</a>';
-  } else if (sources.length > 1) {
-    const links = sources.map(function(source, index) {
-      const label = String(source.name || "").trim() && !/^https?:/i.test(String(source.name || ""))
-        ? String(source.name).trim()
-        : ("Источник " + (index + 1));
-      return '<a href="' + escapeTelegramAttr(source.url) + '">' + escapeTelegramHtml(label) + '</a>';
-    });
-    html += (html ? "\n\n" : "") + "🔗 Источники: " + links.join(" · ");
-  }
-  return html.trim();
-}
 
 // Telegram counts VISIBLE characters (tags and link URLs are free); see lib/telegram-caption.js.
 // The body is shortened, legal marks / hashtags / signature are always kept.
@@ -8689,131 +7708,6 @@ function normalizePublishTargets(value) {
   };
 }
 
-// Telegram errors carry the Bot API error_code / description so callers can tell
-// "the channel will never accept this" (permanent) from "try again / fix the media".
-const TELEGRAM_PERMANENT_DESCRIPTION = /chat not found|chat_id is empty|peer_id_invalid|bot was kicked|bot is not a member|bot was blocked|not enough rights|have no rights|need administrator rights|chat_admin_required|chat_write_forbidden|channel_private|chat_restricted|user is deactivated|group chat was upgraded|bot can't initiate|forbidden/i;
-function classifyTelegramError(errorCode, description) {
-  const code = Number(errorCode) || 0;
-  const text = String(description || "");
-  return {
-    parseError: code === 400 && /can't parse entities|can't find end tag|unsupported start tag|unmatched end tag/i.test(text),
-    // 401 = bad token, 403 = forbidden / kicked / blocked, 404 = unknown bot token or method.
-    permanent: code === 401 || code === 403 || code === 404 || (code === 400 && TELEGRAM_PERMANENT_DESCRIPTION.test(text))
-  };
-}
-function createTelegramError(method, httpStatus, data, fallbackMessage) {
-  const body = data && typeof data === "object" ? data : {};
-  const code = Number(body.error_code) || Number(httpStatus) || 0;
-  const description = String(body.description || fallbackMessage || "Telegram API error");
-  const params = body.parameters && typeof body.parameters === "object" ? body.parameters : {};
-  const retryAfter = Number(params.retry_after);
-  const kind = classifyTelegramError(code, description);
-  const error = new Error(description);
-  error.telegram = true;
-  error.telegramMethod = method;
-  error.telegramErrorCode = code;
-  error.telegramDescription = description;
-  error.telegramRetryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0;
-  error.telegramRateLimited = code === 429;
-  error.telegramPermanent = kind.permanent;
-  error.telegramParseError = kind.parseError;
-  return error;
-}
-// Errors where another attempt (URL -> upload, generated cover, repair loop) cannot help:
-// the chat rejects us, or Telegram told us to slow down.
-function isTelegramFatalError(error) {
-  return Boolean(error && ((error.telegram && (error.telegramPermanent || error.telegramRateLimited)) || error.telegramAmbiguous));
-}
-// No Telegram answer although the request may have reached it. Connection never made (DNS, refused, connect
-// timeout) is safe to retry; a timeout or a reset after sending is not.
-function telegramErrorIsAmbiguous(error) {
-  if (!error) return false;
-  const name = String(error.name || "");
-  if (name === "TimeoutError" || name === "AbortError") return true;
-  const cause = error.cause || {};
-  const code = String(cause.code || error.code || "");
-  if (/^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|UND_ERR_CONNECT_TIMEOUT|ENETUNREACH|EHOSTUNREACH)$/.test(code)) return false;
-  // TLS refused before any request byte was sent (certificate problems, handshake failure)
-  if (/CERT|SSL|TLS|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO|HANDSHAKE/i.test(code)) return false;
-  return true;
-}
-
-function stripTelegramHtml(html) {
-  return String(html || "")
-    .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, function(_m, href, label) {
-      const url = String(href).replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-      const text = String(label).replace(/<[^>]*>/g, "");
-      return text && text !== url ? text + " (" + url + ")" : url;
-    })
-    .replace(/<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|span|tg-emoji)(?:\s[^>]*)?>/gi, "")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-}
-// The same call without HTML parsing: used when Telegram answers "can't parse entities".
-function telegramPlainPayload(payload) {
-  const out = Object.assign({}, payload || {});
-  let changed = false;
-  if (String(out.parse_mode || "").toUpperCase() === "HTML") {
-    delete out.parse_mode;
-    changed = true;
-    ["caption", "text"].forEach(function(key) { if (typeof out[key] === "string") out[key] = stripTelegramHtml(out[key]); });
-  }
-  if (Array.isArray(out.media)) {
-    out.media = out.media.map(function(item) {
-      if (!item || String(item.parse_mode || "").toUpperCase() !== "HTML") return item;
-      changed = true;
-      const copy = Object.assign({}, item);
-      delete copy.parse_mode;
-      if (typeof copy.caption === "string") copy.caption = stripTelegramHtml(copy.caption);
-      return copy;
-    });
-  }
-  return changed ? out : null;
-}
-
-// One Telegram request with: timeout, error classification, one bounded 429 retry_after wait.
-async function telegramRequest(method, makeInit, timeoutMs) {
-  const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
-  for (let attempt = 0; ; attempt += 1) {
-    const init = makeInit();
-    init.signal = AbortSignal.timeout(timeoutMs);
-    let response;
-    try {
-      response = await fetch(endpoint, init);
-    } catch (networkError) {
-      // Sent but no answer (timeout, connection dropped mid-request): Telegram may well have published it.
-      // Any further attempt (URL -> upload, new cover, repair loop, next post) risks a duplicate post.
-      // Only calls that post something can leave a post behind; getChat & co. never do.
-      networkError.telegramAmbiguous = /^(send|copy|forward)/i.test(method) && telegramErrorIsAmbiguous(networkError);
-      throw networkError;
-    }
-    const data = await response.json().catch(function(){ return null; });
-    if (response.ok && data && data.ok) return data.result;
-    const error = createTelegramError(method, response.status, data, "Telegram " + method + " HTTP " + response.status);
-    if (error.telegramRateLimited && attempt === 0 && error.telegramRetryAfter > 0 && error.telegramRetryAfter <= TELEGRAM_RETRY_AFTER_MAX_SECONDS) {
-      console.warn("TELEGRAM_RATE_LIMITED " + JSON.stringify({ method: method, retry_after: error.telegramRetryAfter }));
-      await sleepMs(error.telegramRetryAfter * 1000 + 250);
-      continue;
-    }
-    throw error;
-  }
-}
-
-async function telegramApi(method, payload) {
-  if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
-  try {
-    return await telegramRequest(method, function() {
-      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) };
-    }, TELEGRAM_API_TIMEOUT_MS);
-  } catch (error) {
-    // Invalid markup (e.g. crossed tags) must not keep a post from going out: send it as plain text.
-    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
-    if (!plain) throw error;
-    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
-    return await telegramRequest(method, function() {
-      return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(plain) };
-    }, TELEGRAM_API_TIMEOUT_MS);
-  }
-}
 
 async function ensureTelegramPublishTarget(workspace, repair) {
   const ws = workspace || currentWorkspace();
@@ -8870,124 +7764,6 @@ async function ensureTelegramPublishTarget(workspace, repair) {
   };
 }
 
-function assertTelegramPublishResult(message, target) {
-  const chat = message && message.chat;
-  if (!chat || chat.id == null) throw new Error("Telegram не вернул чат опубликованного сообщения");
-  if (!target || target.chatId == null) throw new Error("Telegram target verification unavailable");
-  if (String(chat.id) !== String(target.chatId)) {
-    throw new Error("Telegram опубликовал сообщение не в тот канал");
-  }
-  if (chat.type !== "channel") {
-    throw new Error("Telegram публикация ушла не в канал: " + String(chat.type || "unknown"));
-  }
-  const expected = String(target.username || "").toLowerCase();
-  const actual = String(chat.username || "").replace(/^@/, "").toLowerCase();
-  if (expected && actual && expected !== actual) {
-    throw new Error("Telegram username не совпал после публикации");
-  }
-  return message;
-}
-
-function telegramUploadMeta(rawUrl, fallbackKind) {
-  const value = String(rawUrl || "").trim();
-  let ext = fallbackKind === "video" ? "mp4" : "jpg";
-  try {
-    const u = new URL(value, PUBLIC_BASE_URL);
-    const guessed = path.extname(u.pathname).replace(/^\./, "").toLowerCase();
-    if (guessed) ext = guessed;
-  } catch {}
-  let mime = fallbackKind === "video" ? "video/mp4" : "image/jpeg";
-  if (ext === "png") mime = "image/png";
-  else if (ext === "webp") mime = "image/webp";
-  else if (ext === "gif") mime = "image/gif";
-  else if (ext === "webm") mime = "video/webm";
-  else if (ext === "mov") mime = "video/quicktime";
-  else if (ext === "m4v") mime = "video/x-m4v";
-  return { ext: ext || (fallbackKind === "video" ? "mp4" : "jpg"), mime: mime };
-}
-
-async function loadTelegramUpload(rawUrl, kind) {
-  const sourceUrl = String(rawUrl || "").trim();
-  if (!sourceUrl) throw new Error("Telegram media URL is empty");
-  const meta = telegramUploadMeta(sourceUrl, kind);
-  const localPath = localMediaPathFromUrl(sourceUrl);
-  let bytes;
-  let mime = meta.mime;
-  let ext = meta.ext;
-
-  if (localPath) {
-    bytes = fs.readFileSync(localPath);
-  } else {
-    const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
-    const response = await safeFetch(absolute, {
-      headers: {
-        "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegram/1.0)",
-        "accept": kind === "video" ? "video/*,*/*;q=0.8" : "image/webp,image/jpeg,image/png,image/gif,image/*;q=0.5"
-      },
-      timeoutMs: 30000,
-      maxBytes: kind === "video" ? 50 * 1024 * 1024 : 20 * 1024 * 1024
-    });
-    if (!response.ok) throw new Error("Telegram media download HTTP " + response.status);
-    mime = String(response.headers.get("content-type") || mime).split(";")[0].trim() || mime;
-    bytes = response.body;
-    if (kind !== "video" && bytes.length) await assertSafeRaster(bytes); // no SVG / non-raster payloads
-  }
-
-  if (!bytes || !bytes.length) throw new Error("Telegram media is empty");
-  if (kind === "video") {
-    if (bytes.length > 49 * 1024 * 1024) throw new Error("Видео больше лимита Telegram Bot API");
-  } else {
-    if (bytes.length > 9 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/i.test(mime)) {
-      bytes = await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })
-        .rotate()
-        .resize(1800, 1800, { fit: "inside", withoutEnlargement: true })
-        .jpeg({ quality: 88, mozjpeg: true })
-        .toBuffer();
-      mime = "image/jpeg";
-      ext = "jpg";
-    }
-  }
-  return { bytes: bytes, mime: mime, ext: ext };
-}
-
-async function telegramMultipartApi(method, payload, fieldName, mediaUrl, kind) {
-  if (!BOT_TOKEN) throw new Error("Telegram bot token is not configured");
-  const media = await loadTelegramUpload(mediaUrl, kind);
-  const upload = async function(fields) {
-    return telegramRequest(method, function() {
-      const form = new FormData();
-      Object.entries(fields || {}).forEach(function(entry) {
-        const key = entry[0], value = entry[1];
-        if (value === undefined || value === null || value === "") return;
-        form.append(key, typeof value === "boolean" ? (value ? "true" : "false") : String(value));
-      });
-      form.append(fieldName, new Blob([media.bytes], { type: media.mime }), "news." + media.ext);
-      return { method: "POST", body: form };
-    }, kind === "video" ? 180000 : 90000); // a longer wait means fewer "no answer, maybe sent" outcomes
-  };
-  try {
-    return await upload(payload);
-  } catch (error) {
-    const plain = error && error.telegramParseError ? telegramPlainPayload(payload) : null;
-    if (!plain) throw error;
-    console.warn("TELEGRAM_HTML_FALLBACK " + JSON.stringify({ method: method, error: error.telegramDescription }));
-    return await upload(plain);
-  }
-}
-
-async function telegramMediaApi(method, payload, fieldName, mediaUrl, kind) {
-  // Our own media: upload the file. With a URL, Telegram has to download it from our server abroad, which
-  // regularly takes longer than our timeout — Telegram then posts anyway and the upload fallback posted a second copy.
-  if (isLocalMediaUrl(mediaUrl) && localMediaPathFromUrl(mediaUrl)) return telegramMultipartApi(method, payload, fieldName, mediaUrl, kind);
-  try {
-    return await telegramApi(method, Object.assign({}, payload, { [fieldName]: mediaUrl }));
-  } catch (urlError) {
-    // The chat rejects us / rate limit: uploading the same file again cannot succeed (and would double the calls).
-    if (isTelegramFatalError(urlError)) throw urlError;
-    console.warn(method + " URL mode failed, retrying upload:", urlError.message);
-    return telegramMultipartApi(method, payload, fieldName, mediaUrl, kind);
-  }
-}
 
 // A cover for a post whose media Telegram refused. At most one paid generation per post:
 // a cover created by an earlier attempt (or by the media director) is reused.
@@ -9321,118 +8097,6 @@ async function exchangeVkIdAuthorizationCode(code, deviceId, returnedState) {
   return data;
 }
 
-function vkOAuthCallbackHtml(ok, message) {
-  const cls = ok ? "ok" : "bad";
-  const title = ok ? "VK подключён" : "Ошибка подключения VK";
-  const safeMessage = escapeHtml(String(message || ""));
-  return `<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow">
-<title>VK OAuth — News Factory</title>
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0b0f17;color:#fff;margin:0;padding:28px}
-.card{max-width:620px;margin:8vh auto;background:#111722;border:1px solid #293347;border-radius:22px;padding:24px}
-h2{margin:0 0 12px}.muted{color:#9aa7ba;line-height:1.5}.ok{color:#71e0a7}.bad{color:#ff8d8d}
-a{color:#8db0ff}
-</style>
-</head>
-<body>
-<div class="card">
-<h2>${title}</h2>
-<p class="${cls}">${safeMessage}</p>
-<p class="muted">Эту вкладку можно закрыть и вернуться в ChatGPT.</p>
-<p><a href="/admin#social">Вернуться в News Factory</a></p>
-</div>
-</body>
-</html>`;
-}
-
-
-function vkPostContext(post, extra) {
-  const p = post || {};
-  return Object.assign({
-    topicId: String(p.topicId || p.topic_id || "default"),
-    postId: String(p.postId || p.id || p.newsId || "unknown"),
-    slug: String(p.slug || p.previewSlug || p.vkPreviewSlug || "")
-  }, extra || {});
-}
-
-function vkErrorPayload(method, errorCode, errorMsg, context) {
-  const ctx = context || {};
-  return {
-    method: String(method || ""),
-    error_code: errorCode == null ? null : errorCode,
-    error_msg: String(errorMsg || ""),
-    topic_id: String(ctx.topicId || "default"),
-    post_id: String(ctx.postId || "unknown"),
-    slug: String(ctx.slug || ""),
-    attempt: Number(ctx.attempt || 0) || undefined,
-    token_kind: String(ctx.tokenKind || "")
-  };
-}
-
-function logVkError(method, errorCode, errorMsg, context) {
-  const payload = vkErrorPayload(method, errorCode, errorMsg, context);
-  console.error("VK_API_ERROR " + JSON.stringify(payload));
-}
-
-function createVkError(method, errorCode, errorMsg, context) {
-  const error = new Error("VK " + method + " " + (errorCode == null ? "error" : errorCode) + ": " + String(errorMsg || "unknown error"));
-  error.vkMethod = method;
-  error.vkErrorCode = errorCode;
-  error.vkErrorMsg = String(errorMsg || "");
-  error.vkContext = context || {};
-  return error;
-}
-
-async function vkApi(method, params, options) {
-  const opts = options || {};
-  const token = String(opts.token || VK_ACCESS_TOKEN || "").trim();
-  const tokenKind = String(opts.tokenKind || (opts.token ? "custom" : "community"));
-  const context = Object.assign({}, opts.context || {}, { tokenKind: tokenKind });
-  if (!token || !VK_GROUP_ID) {
-    logVkError(method, "config_missing", "VK token or group ID is missing", context);
-    throw createVkError(method, "config_missing", "VK token or group ID is missing", context);
-  }
-
-  const body = new URLSearchParams();
-  Object.entries(params || {}).forEach(function(entry) {
-    const key = entry[0], value = entry[1];
-    if (value !== undefined && value !== null && value !== "") body.set(key, String(value));
-  });
-  body.set("access_token", token);
-  body.set("v", VK_API_VERSION);
-
-  let response;
-  let data = {};
-  try {
-    response = await fetch("https://api.vk.com/method/" + method, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-      signal: AbortSignal.timeout(20000)
-    });
-    data = await response.json().catch(function(){ return {}; });
-  } catch (error) {
-    logVkError(method, "network", error && error.message || error, context);
-    throw createVkError(method, "network", error && error.message || error, context);
-  }
-
-  if (!response.ok || data.error) {
-    const err = data && data.error;
-    const code = err ? err.error_code : response.status;
-    const msg = err ? err.error_msg : ("HTTP " + response.status);
-    // A caller that handles a known code itself (e.g. wall.get 27 with a community token) keeps it out of the error log.
-    if (!(Array.isArray(opts.quietCodes) && opts.quietCodes.map(String).includes(String(code)))) logVkError(method, code, msg, context);
-    throw createVkError(method, code, msg, context);
-  }
-
-  console.log("VK_API_RESULT " + JSON.stringify(vkErrorPayload(method, null, "", context)));
-  return data.response;
-}
 
 function formatVkPost(post, options) {
   const opts = options || {};
@@ -9455,9 +8119,6 @@ function formatVkPost(post, options) {
   return out.trim();
 }
 
-function sleepMs(ms) {
-  return new Promise(function(resolve){ setTimeout(resolve, ms); });
-}
 
 function topicSettingsForPost(post) {
   const p = post || {};
@@ -9597,7 +8258,6 @@ async function downloadVkImage(imageUrl, context) {
   const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
   return { bytes: bytes, mime: mime, ext: ext };
 }
-
 
 
 function isVkLinkPreviewError(error) {
@@ -10234,69 +8894,8 @@ async function fetchVkAnalytics() {
 }
 
 
-const statusCache = new Map();
-const analyticsCache = new Map();
 let anthropicProbeCache = { at: 0, value: null };
 
-function parseCompactNumber(value) {
-  const raw = stripHtml(String(value || "")).replace(/\s+/g, "").replace(",", ".").toUpperCase();
-  const m = raw.match(/([0-9]+(?:\.[0-9]+)?)([KMBКММЛН]*)/);
-  if (!m) return 0;
-  let n = Number(m[1] || 0);
-  const suffix = m[2] || "";
-  if (suffix === "K" || suffix === "К") n *= 1e3;
-  else if (suffix === "M" || suffix === "М" || suffix === "МЛН") n *= 1e6;
-  else if (suffix === "B") n *= 1e9;
-  return Math.round(n);
-}
-
-function metricFromChunk(chunk, classPattern) {
-  const re = new RegExp(
-    '<(?:span|div|a)[^>]+class=["\\\'][^"\\\']*' + classPattern + '[^"\\\']*["\\\'][^>]*>([\\s\\S]*?)<\\/(?:span|div|a)>',
-    'ig'
-  );
-  let total = 0;
-  let matched = false;
-  let m;
-  while ((m = re.exec(chunk))) {
-    matched = true;
-    const text = stripHtml(m[1]);
-    const nums = text.match(/[0-9]+(?:[.,][0-9]+)?\s*[KMBКМ]?/ig) || [];
-    if (nums.length) total += parseCompactNumber(nums[nums.length - 1]);
-  }
-  return matched ? total : null;
-}
-
-function parseTelegramPreview(html) {
-  const source = String(html || "");
-  const posts = [];
-  const parts = source.split(/<div[^>]+class=["'][^"']*tgme_widget_message_wrap[^"']*["'][^>]*>/i).slice(1);
-  for (const chunk of parts) {
-    const idMatch = chunk.match(/data-post=["'][^"']+\/(\d+)["']/i);
-    if (!idMatch) continue;
-    const messageId = Number(idMatch[1]);
-    const viewsMatch = chunk.match(/class=["'][^"']*tgme_widget_message_views[^"']*["'][^>]*>([^<]+)</i);
-    const dateMatch = chunk.match(/<time[^>]+datetime=["']([^"']+)["']/i);
-    const reactions = metricFromChunk(chunk, 'tgme_widget_message_reaction\\b');
-    let comments = metricFromChunk(chunk, 'tgme_widget_message_comments\\b');
-    if (comments == null) comments = metricFromChunk(chunk, 'tgme_widget_message_repl(?:y|ies)\\b');
-    posts.push({
-      messageId: messageId,
-      views: viewsMatch ? parseCompactNumber(viewsMatch[1]) : 0,
-      reactions: reactions == null ? 0 : reactions,
-      comments: comments == null ? 0 : comments,
-      forwards: null,
-      publishedAt: dateMatch ? normalizeDate(dateMatch[1]) : ""
-    });
-  }
-  const subsMatch = source.match(/class=["'][^"']*tgme_header_counter[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i);
-  const beforeMatch = source.match(/data-before=["'](\d+)["']/i) || source.match(/[?&]before=(\d+)/i);
-  return {
-    posts: posts,
-    subscribers: subsMatch ? parseCompactNumber(subsMatch[1]) : null,
-    before: beforeMatch ? Number(beforeMatch[1]) : null
-  };
-}
 
 async function fetchTelegramAnalytics(force) {
   const telegramPublicUsername = currentTelegramPublicUsername();
@@ -10807,7 +9406,6 @@ function startPromotionSnapshotMonitor() {
 }
 
 
-
 function addLearningSample(map, key, value) {
   const k = String(key || "").trim().toLowerCase();
   if (!k || !Number.isFinite(Number(value))) return;
@@ -11185,7 +9783,6 @@ async function callOpenAIRewrite(payload) {
   }
   throw new Error(lastError || "Не удалось получить ответ OpenAI");
 }
-
 
 
 // ---------------------------------------------------------------------------

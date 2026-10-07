@@ -1,10 +1,11 @@
 // v0.59.0: защита минимума рубрики для всех правил автопаузы; wall.get 27 не спамит лог каждый час.
 import assert from "node:assert/strict";
+import { readServerSource } from "./server-source.js";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as sq from "../lib/source-quality.js";
 
-const src = fs.readFileSync(fileURLToPath(new URL("../server.js", import.meta.url)), "utf8");
+const src = readServerSource();
 
 // G1: every quality reason is guarded by the rubric minimum; only a dead site is paused regardless.
 {
