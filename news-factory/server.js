@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { safeFetch, validateUrl as validateFetchUrl, parseProxyUrl } from "./lib/safe-fetch.js";
 import { createSourceFetcher, parseFeed, looksLikeFeed, discoverFeedUrl, guessFeedUrls } from "./lib/source-fetch.js";
 import { assertSafeRaster, SAFE_INPUT_PIXELS } from "./lib/image-guard.js";
+import { adaptVkBody, vkTail } from "./lib/vk-format.js";
 import { ADMIN_CSP, baseSecurityHeaders, originAllowed } from "./lib/http-security.js";
 import { safeEqual, clientIp as proxyClientIp, createFailureLimiter, verifyPasswordScrypt, createSessionEpochStore, sessionTokenFor } from "./lib/auth-guard.js";
 import { fileURLToPath } from "node:url";
@@ -9422,18 +9423,15 @@ function formatVkPost(post, options) {
     .replace(/__(.*?)__/g, "$1")
     .replace(/^>\s?/gm, "▌ ")
     .replace(/\n{3,}/g, "\n\n");
+  const ws = currentWorkspace();
+  const handle = ws ? (telegramUsernameOrEmpty(ws.telegramPublicUsername) || telegramUsernameOrEmpty(ws.slug)) : "";
+  text = adaptVkBody(text, { handle: handle });
   let out = "";
   if (title) out += title;
   if (text) out += (out ? "\n\n" : "") + text;
-  const sources = normalizePublicPostSources(post).slice(0, 5);
-  if (opts.includeSource !== false && sources.length === 1) {
-    out += (out ? "\n\n" : "") + "Источник: " + sources[0].url;
-  } else if (opts.includeSource !== false && sources.length > 1) {
-    out += (out ? "\n\n" : "") + "Источники:\n" + sources.map(function(source) {
-      const name = String(source.name || "Источник").replace(/https?:\/\/\S+/g, "").trim() || "Источник";
-      return "• " + name + " — " + source.url;
-    }).join("\n");
-  }
+  const sources = opts.includeSource !== false ? normalizePublicPostSources(post).slice(0, 5) : [];
+  const tail = vkTail({ handle: handle, sources: sources });
+  if (tail) out += (out ? "\n\n" : "") + tail;
   return out.trim();
 }
 
