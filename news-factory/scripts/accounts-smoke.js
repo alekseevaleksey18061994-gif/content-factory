@@ -37,6 +37,16 @@ try {
   const list = await call("GET", "/api/workspaces");
   assert.equal(list.status, 200);
   assert.ok(Array.isArray(list.json.profiles) && list.json.profiles.includes("crypto"), "profiles list exposed");
+  // v0.65.0: unified read-only channel config + its status card
+  const cc = await call("GET", "/api/channels/config");
+  assert.equal(cc.status, 200);
+  assert.equal(cc.json.ok, true);
+  assert.equal(cc.json.channels.length, list.json.workspaces.length, "channel config covers every workspace");
+  for (const k of ["id", "name", "telegram", "profile", "sources", "issues"]) assert.ok(k in cc.json.channels[0], "channel config." + k);
+  const stat = await call("GET", "/api/status");
+  assert.equal(stat.status, 200);
+  const card = JSON.stringify(stat.json).includes('"channelConfig"');
+  assert.ok(card, "status exposes channelConfig card");
   const first = list.json.workspaces[0];
   for (const k of ["mode", "autoPublish", "queue", "sources", "published", "missing"]) assert.ok(k in first.summary, "summary." + k);
   assert.ok(Array.isArray(first.summary.missing));

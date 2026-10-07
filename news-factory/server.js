@@ -23,6 +23,7 @@ import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/chan
 import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers, reassignCarRubricGroups } from "./lib/channel-rubric-migrations.js";
 import { evaluateHealth } from "./lib/health-alerts.js";
 import { runMigrations, migrationStatus } from "./lib/db-migrations.js";
+import { buildChannelConfig } from "./lib/channel-config.js";
 import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
@@ -1122,6 +1123,16 @@ function normalizeTelegramChannelInput(raw) {
   if (link) return "@" + link[1];
   if (/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(text)) return "@" + text;
   return text; // @username и числовые chat_id (-100…) не трогаем
+}
+function channelConfigReport() {
+  return buildChannelConfig(workspaceStore.workspaces, {
+    profiles: EDITORIAL_CHANNEL_IDS,
+    resolveChannelId: resolveChannelId,
+    recovery: RECOVERY_CHANNELS,
+    removed: REMOVED_CHANNELS_V055.concat(REMOVED_CHANNELS_V060),
+    vkMap: VK_VIA_POSTMYPOST ? postmypostMap.byWorkspace : null,
+    defaultWorkspaceId: workspaceStore.defaultWorkspaceId
+  });
 }
 function workspaceSummary(ws) {
   const st = ws && ws.state && typeof ws.state === "object" ? ws.state : {};
@@ -12064,6 +12075,14 @@ async function buildSystemStatus(force) {
       if (m.error || (m.drift && m.drift.length) || (m.missingFiles && m.missingFiles.length)) return { state: "partial", description: m.error || "Применённая миграция изменена или её файл пропал", detail: detail + (m.drift && m.drift.length ? " · изменены: " + m.drift.join(", ") : "") + (m.missingFiles && m.missingFiles.length ? " · нет файла: " + m.missingFiles.join(", ") : ""), next: "Не править применённые миграции, добавлять новую" };
       return { state: "connected", description: "Миграции БД применены, файлы не менялись", detail: detail, next: "" };
     })(),
+    channelConfig: (function(){
+      const r = channelConfigReport();
+      const worst = r.channels.filter(function(c){ return c.issues.some(function(i){ return i.level !== "info"; }); });
+      const detail = "каналов: " + r.channels.length + " · ошибок: " + r.errors + " · предупреждений: " + r.warnings + (worst.length ? " · " + worst.slice(0, 4).map(function(c){ const i = c.issues.find(function(x){ return x.level !== "info"; }); return c.name + ": " + i.text; }).join("; ") : "");
+      if (r.errors) return { state: "failed", description: "В конфигурации каналов есть ошибки", detail: detail, next: "Открыть /api/channels/config и исправить расхождения" };
+      if (r.warnings || r.orphanRecovery.length) return { state: "partial", description: "Конфигурация каналов с предупреждениями", detail: detail + (r.orphanRecovery.length ? " · нет в хранилище: " + r.orphanRecovery.join(", ") : ""), next: "Проверить предупреждения" };
+      return { state: "connected", description: "Конфигурация каналов согласована", detail: detail, next: "" };
+    })(),
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
       description: COLLECTOR_ENABLED ? "News Collector включён" : "News Collector выключен",
@@ -12439,6 +12458,9 @@ const server = http.createServer(async function(req, res) {
     }
     if (req.method === "GET" && p === "/api/workspaces") {
       return sendJson(res, 200, { ok: true, activeWorkspaceId: currentWorkspaceId(), defaultWorkspaceId: workspaceStore.defaultWorkspaceId, profiles: EDITORIAL_CHANNEL_IDS, workspaces: workspaceStore.workspaces.map(function(ws){ return Object.assign(publicWorkspaceMeta(ws), { summary: workspaceSummary(ws) }); }) });
+    }
+    if (req.method === "GET" && p === "/api/channels/config") {
+      return sendJson(res, 200, Object.assign({ ok: true }, channelConfigReport()));
     }
     if (req.method === "GET" && p === "/api/network/day") {
       const rawDate = String(url.searchParams.get("date") || "").trim();
