@@ -20,6 +20,27 @@ function hostOf(url) {
   try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; }
 }
 
+export function parseProxyFirstDomains(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(",");
+  return Array.from(new Set(list.map(function(raw) {
+    let p = String(raw || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+    if (!p) return "";
+    if (p.startsWith("*.")) p = p.slice(1);
+    return p.replace(/\/$/, "");
+  }).filter(Boolean)));
+}
+
+export function hostUsesProxyFirst(host, domains) {
+  const h = String(host || "").toLowerCase().replace(/^www\./, "");
+  if (!h) return false;
+  for (const raw of parseProxyFirstDomains(domains)) {
+    const p = raw.startsWith(".") ? raw.slice(1) : raw;
+    if (!p) continue;
+    if (h === p || h.endsWith("." + p)) return true;
+  }
+  return false;
+}
+
 // "network": the connection itself failed (reset, refused, AggregateError) — worth an IPv4-only retry.
 // "blocked": the site answered with a refusal / overload, or did not answer in time — worth the proxy.
 export function classifySourceFailure(outcome) {
@@ -37,10 +58,11 @@ export function createSourceFetcher(options) {
   const opt = options || {};
   const fetchImpl = opt.fetch;
   const proxy = opt.proxy || null; // parsed proxy object or URL string, passed through to fetchImpl
+  const proxyFirstDomains = parseProxyFirstDomains(opt.proxyFirstDomains || []);
   const now = opt.now || Date.now;
   const stickyMs = Number(opt.stickyMs == null ? 24 * 3600000 : opt.stickyMs);
   const sticky = new Map(); // host -> until (ms): opens only through the proxy
-  const stats = { direct: 0, ipv4: 0, proxy: 0, failed: 0, waiting: 0, peak: 0 };
+  const stats = { direct: 0, ipv4: 0, proxy: 0, proxyFirst: 0, failed: 0, waiting: 0, peak: 0 };
   // All channels collect at the same minute, each opening every source at once: a thousand parallel requests
   // made almost every one of them time out. A global limit keeps requests fast; each one's timeout starts only
   // when it gets its turn.
@@ -80,11 +102,18 @@ export function createSourceFetcher(options) {
     base.headers = Object.assign({}, BROWSER_HEADERS, base.headers || {});
     const host = hostOf(url);
     const until = sticky.get(host) || 0;
-    if (proxy && until > now()) {
+    const preferProxy = Boolean(proxy && hostUsesProxyFirst(host, proxyFirstDomains));
+    let proxyTried = false;
+    if (proxy && (until > now() || preferProxy)) {
+      proxyTried = true;
       const viaProxy = await attempt(url, base, { proxy: proxy });
-      if (viaProxy.response && !classifySourceFailure(viaProxy)) return done(viaProxy, "proxy");
-      // the proxy stopped helping for this host: forget it and fall through to the normal path
-      sticky.delete(host);
+      if (viaProxy.response && !classifySourceFailure(viaProxy)) {
+        if (preferProxy) stats.proxyFirst += 1;
+        return done(viaProxy, "proxy");
+      }
+      // Sticky routing is learned from failures abroad; if the proxy stops helping, forget it.
+      // Configured proxy-first hosts still get a direct fallback so one bad proxy never kills collection.
+      if (until > now()) sticky.delete(host);
     } else if (until) {
       sticky.delete(host);
     }
@@ -100,7 +129,7 @@ export function createSourceFetcher(options) {
       outcome = v4; kind = v4kind;
     }
 
-    if (proxy) {
+    if (proxy && !proxyTried) {
       const viaProxy = await attempt(url, base, { proxy: proxy });
       if (viaProxy.response && !classifySourceFailure(viaProxy)) {
         if (viaProxy.response && viaProxy.response.ok) sticky.set(host, now() + stickyMs);
@@ -113,7 +142,7 @@ export function createSourceFetcher(options) {
 
   return {
     fetch: sourceFetch,
-    stats: function() { return Object.assign({ stickyHosts: sticky.size, proxy_enabled: Boolean(proxy) }, stats); },
+    stats: function() { return Object.assign({ stickyHosts: sticky.size, proxy_enabled: Boolean(proxy), proxy_first_domains: proxyFirstDomains.length }, stats); },
     stickyHosts: function() { return Array.from(sticky.keys()); },
     proxyEnabled: Boolean(proxy)
   };
