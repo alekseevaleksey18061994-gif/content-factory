@@ -1,10 +1,11 @@
 {
   "name": "news-factory",
-  "version": "0.59.0",
+  "version": "0.60.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "test:vk-format": "node scripts/vk-format-test.js",
     "test:vk-media": "node scripts/vk-media-smoke.js",
     "test:vk-photo": "node scripts/vk-photo-smoke-test.js",
     "test:vk-link-preview": "node scripts/vk-link-preview-smoke.js",
