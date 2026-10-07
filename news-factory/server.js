@@ -14912,6 +14912,30 @@ setTimeout(function() {
   })().catch(function(error){ console.warn("Source cleanup failed:", error.message); });
 }, 300000);
 
+// v0.67.1 one-time (the editor asked for it): enabled sources that stayed outside every theme group after the v0.67.0 assignment are removed and blocked.
+const LOOSE_REMOVE_MARKER = "v0.67.1-loose-remove";
+function removeUnfitLooseForCurrentWorkspace() {
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (state.migrations.includes(LOOSE_REMOVE_MARKER)) return { skipped: "done" };
+  if (!state.migrations.includes(ASSIGN_MARKER)) return { skipped: "assign_not_done" };
+  const plan = planSourceCleanup(state.sources, { groupIds: rubricIds(), includeEnabledLoose: true });
+  const judged = new Set((state.sources || []).filter(function(x){ return x && x.rubricAssignJudgedAt; }).map(function(x){ return x.id; }));
+  const targets = plan.remove.filter(function(x){ return judged.has(x && x.id !== undefined ? x.id : x); });
+  const n = removeSourcesFromState(targets, "удаление не подошедших v0.67.1");
+  state.migrations.push(LOOSE_REMOVE_MARKER);
+  saveState();
+  console.log("SOURCE_LOOSE_REMOVED " + JSON.stringify({ workspace: currentWorkspaceId(), removed: n }));
+  return { removed: n };
+}
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){ try { removeUnfitLooseForCurrentWorkspace(); } catch (error) { console.warn("Loose remove failed for " + ws.id + ": " + error.message); } });
+    }
+  })().catch(function(error){ console.warn("Loose remove failed:", error.message); });
+}, 600000);
+
 // v0.67.0: enabled sources outside every theme group get attached to the theme(s) they fit (keywords first, then one AI call per batch).
 // A source nothing fits stays as it is. Never run twice; if the AI is unavailable nothing is marked and the next start retries.
 async function assignLooseSourcesForCurrentWorkspace() {
