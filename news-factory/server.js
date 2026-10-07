@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { safeFetch, validateUrl as validateFetchUrl, parseProxyUrl } from "./lib/safe-fetch.js";
 import { createSourceFetcher, parseFeed, looksLikeFeed, discoverFeedUrl, guessFeedUrls } from "./lib/source-fetch.js";
@@ -13460,6 +13461,27 @@ async function buildSystemStatus(force) {
       if (!proxyProbe || !proxyProbe.ok) return { state: "partial", description: "Прокси задан, но проверочный запрос не прошёл", detail: String(sourceProxy.label || "") + " · " + String(proxyProbe && proxyProbe.error || "нет ответа") + (counters ? " · " + counters : ""), next: "Проверить доступность и оплату прокси" };
       return { state: "connected", description: "Российский прокси работает", detail: String(sourceProxy.label || "") + " · проверка " + new URL(SOURCE_PROXY_PROBE_URL).hostname + ": " + proxyProbe.status + " за " + proxyProbe.ms + " мс · " + counters, next: "" };
     })(),
+    postmypost: (function(){
+      if (!POSTMYPOST_TOKEN) return { state: "missing", description: "Postmypost не подключён", detail: "VK-посты с фото публикуются только через Postmypost", next: "Задать POSTMYPOST_TOKEN в Railway" };
+      if (!VK_VIA_POSTMYPOST) return { state: "partial", description: "Postmypost отключён переменной VK_VIA_POSTMYPOST=false", detail: "", next: "Убрать VK_VIA_POSTMYPOST=false" };
+      const total = workspaceStore.workspaces.length;
+      const mapped = workspaceStore.workspaces.filter(function(ws){ return postmypostMap.byWorkspace[ws.id]; });
+      const without = workspaceStore.workspaces.filter(function(ws){ return !postmypostMap.byWorkspace[ws.id]; }).map(function(ws){ return ws.name; });
+      const ageMin = postmypostMap.at ? Math.round((Date.now() - postmypostMap.at) / 60000) : null;
+      const head = "VK-групп в Postmypost: " + mapped.length + " из " + total + (ageMin !== null ? " · проверено " + ageMin + " мин назад" : "");
+      if (postmypostMap.error) return { state: "partial", description: "Postmypost не отвечает, используется последняя карта групп", detail: head + " · ошибка: " + postmypostMap.error.slice(0, 120), next: "Проверить POSTMYPOST_TOKEN и доступность postmypost.io" };
+      if (!postmypostMap.at) return { state: "partial", description: "Postmypost ещё не проверен после запуска", detail: head, next: "" };
+      if (without.length) return { state: "partial", description: "Postmypost работает, но не у всех каналов есть VK-группа", detail: head + " · без VK: " + without.slice(0, 6).join(", "), next: "Подключить эти группы в кабинете Postmypost" };
+      return { state: "connected", description: "Postmypost: публикация в VK работает", detail: head, next: "" };
+    })(),
+    processHealth: (function(){
+      const lag = loopLagHistogram ? Math.round(loopLagHistogram.percentile(99) / 1e6) : 0;
+      const rss = Math.round(process.memoryUsage().rss / 1048576);
+      const up = Math.round(process.uptime() / 60);
+      const detail = "аптайм " + (up >= 120 ? Math.round(up / 60) + " ч" : up + " мин") + " · память " + rss + " МБ · задержка цикла p99 " + lag + " мс · необработанных ошибок: " + processFaults.rejections + " · критических: " + processFaults.exceptions;
+      if (processFaults.exceptions > 0 || lag > 2000 || rss > 1800) return { state: "partial", description: "Процесс работает, но есть признаки перегрузки или ошибок", detail: detail, next: "Посмотреть логи PROCESS_UNHANDLED_*" };
+      return { state: "connected", description: "Процесс стабилен", detail: detail, next: "" };
+    })(),
     backup: (function(){
       const cfg = backupConfig();
       if (!cfg) return { state: "missing", description: "Внешние резервные копии не настроены", detail: "Данные хранятся только на томе Railway", next: "Задать BACKUP_S3_* и BACKUP_ENCRYPTION_KEY в Railway" };
@@ -16528,6 +16550,21 @@ function criticalWorkInFlight() {
   return collectorRunningWorkspaces.size + schedulerTickRunning.size + replenishRunning.size + digestRunning.size + publishLocks.size;
 }
 
+// v0.61.1: one stray rejection must not take the whole network down. Rejections are logged and counted; a truly
+// uncaught exception flushes state through the graceful path and exits so Railway restarts a clean process.
+const processFaults = { rejections: 0, exceptions: 0, last: "" };
+const loopLagHistogram = (function(){ try { const h = monitorEventLoopDelay({ resolution: 20 }); h.enable(); return h; } catch { return null; } })();
+process.on("unhandledRejection", function(reason) {
+  processFaults.rejections += 1;
+  processFaults.last = String(reason && reason.message || reason).slice(0, 200);
+  console.error("PROCESS_UNHANDLED_REJECTION " + JSON.stringify({ count: processFaults.rejections, error: processFaults.last, stack: String(reason && reason.stack || "").split("\n").slice(0, 4).join(" | ").slice(0, 400) }));
+});
+process.on("uncaughtException", function(error) {
+  processFaults.exceptions += 1;
+  console.error("PROCESS_UNCAUGHT_EXCEPTION " + JSON.stringify({ error: String(error && error.message || error).slice(0, 200), stack: String(error && error.stack || "").split("\n").slice(0, 4).join(" | ").slice(0, 400) }));
+  gracefulShutdown("uncaughtException").catch(function(){ process.exit(1); });
+  setTimeout(function(){ process.exit(1); }, 15000).unref();
+});
 async function gracefulShutdown(signal) {
   if (shutdownStarted) return;
   shutdownStarted = true;
