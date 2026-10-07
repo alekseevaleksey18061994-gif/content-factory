@@ -148,9 +148,21 @@ export async function loadServer(opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nf-dedupe-"));
   const appDir = path.join(dir, "app");
   fs.mkdirSync(appDir);
-  for (const name of ["lib", "prompts", "public", "migrations", "node_modules", "package.json"]) {
+  for (const name of ["prompts", "public", "migrations", "node_modules", "package.json"]) {
     const src = path.join(APP_DIR, name);
     if (fs.existsSync(src)) fs.symlinkSync(src, path.join(appDir, name));
+  }
+  // lib/: symlinks, except the modules extracted from server.js (v0.62.0). They read process.env when first
+  // evaluated, so every load gets its own fresh copy, exactly like the server.js copy it belongs to.
+  fs.mkdirSync(path.join(appDir, "lib"));
+  for (const f of fs.readdirSync(path.join(APP_DIR, "lib"))) {
+    const from = path.join(APP_DIR, "lib", f);
+    const text = f.endsWith(".js") ? fs.readFileSync(from, "utf8") : "";
+    if (text.startsWith("// Extracted from server.js")) {
+      // Third-party fetches in moved code go through the harness's fake fetch too (same as the server.js copy).
+      fs.writeFileSync(path.join(appDir, "lib", f), text.replace('import { safeFetch } from "./safe-fetch.js";', "const safeFetch = (u, o) => globalThis.fetch(u, o);"));
+    }
+    else fs.symlinkSync(from, path.join(appDir, "lib", f));
   }
   // NF_SERVER_SRC lets a test run against another copy of server.js (e.g. the pre-fix version) to prove it fails there.
   let src = fs.readFileSync(process.env.NF_SERVER_SRC || path.join(APP_DIR, "server.js"), "utf8");
@@ -161,6 +173,19 @@ export async function loadServer(opts = {}) {
   else if (src.includes(OLD_SAFE_IMPORT)) src = src.replace(OLD_SAFE_IMPORT, 'import { validateUrl as validateFetchUrl } from "./lib/safe-fetch.js";\nconst safeFetch = (u, o) => globalThis.fetch(u, o);');
   else throw new Error("harness: safe-fetch import line changed in server.js");
   src = src.replace(/^startCollectorScheduler\(\);$/m, "/* startCollectorScheduler(); disabled in harness */");
+  // v0.62.0: names that moved from server.js into lib modules are still exposed to the tests (as imports).
+  {
+    const libDir = path.join(APP_DIR, "lib");
+    const missing = [];
+    for (const f of fs.readdirSync(libDir).filter((x) => x.endsWith(".js"))) {
+      const text = fs.readFileSync(path.join(libDir, f), "utf8");
+      if (!text.startsWith("// Extracted from server.js")) continue;
+      const names = [...text.matchAll(/^export (?:async )?(?:function|const|class) ([A-Za-z0-9_$]+)/gm)].map((m) => m[1]).filter((n) => EXPORT_NAMES.includes(n));
+      const need = names.filter((n) => !new RegExp("import\\s*\\{[^}]*\\b" + n + "\\b[^}]*\\}").test(src) && !new RegExp("^(?:async )?(?:function|const|let|class) " + n + "\\b", "m").test(src));
+      if (need.length) missing.push('import { ' + need.join(", ") + ' } from "./lib/' + f + '";');
+    }
+    if (missing.length) src += "\n" + missing.join("\n") + "\n";
+  }
   src += "\nexport const __t = (function(){ const o = {}; for (const n of " + JSON.stringify(EXPORT_NAMES) +
     ") { Object.defineProperty(o, n, { enumerable: true, get() { try { return n === 'dbReadyFlag' ? dbReady : eval(n); } catch { return undefined; } } }); } return o; })();\n";
   const file = path.join(appDir, "server.mjs");

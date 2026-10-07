@@ -1,5 +1,6 @@
 import fs from "node:fs";
-const server = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
+import { readServerSource } from "./server-source.js";
+const server = readServerSource();
 
 function has(needle, label) {
   if (!server.includes(needle)) throw new Error("Missing: " + label);

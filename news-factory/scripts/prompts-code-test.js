@@ -1,5 +1,6 @@
 // Offline regression tests for the prompt-vs-code audit fixes (npm run test:prompts-code).
 import assert from "node:assert/strict";
+import { readServerSource } from "./server-source.js";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -15,7 +16,7 @@ const SERVER_FILE = fileURLToPath(new URL("../server.js", import.meta.url));
 const ADMIN_FILE = fileURLToPath(new URL("../public/admin.html", import.meta.url));
 const promptText = fs.readFileSync(PROMPT_FILE, "utf8");
 const parsed = parsePromptFile(promptText);
-const serverSrc = fs.readFileSync(SERVER_FILE, "utf8");
+const serverSrc = readServerSource();
 const adminSrc = fs.readFileSync(ADMIN_FILE, "utf8");
 
 let passed = 0;

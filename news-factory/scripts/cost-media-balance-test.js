@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { readServerSource } from "./server-source.js";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const serverPath = fileURLToPath(new URL("../server.js", import.meta.url));
-const src = fs.readFileSync(serverPath, "utf8");
+const src = readServerSource();
 
 function has(re, message) { assert.match(src, re, message); }
 
