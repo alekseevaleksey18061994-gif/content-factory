@@ -13460,6 +13460,18 @@ async function buildSystemStatus(force) {
       if (!proxyProbe || !proxyProbe.ok) return { state: "partial", description: "Прокси задан, но проверочный запрос не прошёл", detail: String(sourceProxy.label || "") + " · " + String(proxyProbe && proxyProbe.error || "нет ответа") + (counters ? " · " + counters : ""), next: "Проверить доступность и оплату прокси" };
       return { state: "connected", description: "Российский прокси работает", detail: String(sourceProxy.label || "") + " · проверка " + new URL(SOURCE_PROXY_PROBE_URL).hostname + ": " + proxyProbe.status + " за " + proxyProbe.ms + " мс · " + counters, next: "" };
     })(),
+    backup: (function(){
+      const cfg = backupConfig();
+      if (!cfg) return { state: "missing", description: "Внешние резервные копии не настроены", detail: "Данные хранятся только на томе Railway", next: "Задать BACKUP_S3_* и BACKUP_ENCRYPTION_KEY в Railway" };
+      const problem = backupConfigProblem(cfg);
+      if (problem) return { state: "partial", description: "Резервные копии настроены неверно", detail: String(problem), next: "Проверить BACKUP_ENCRYPTION_KEY (не короче 16 символов)" };
+      const st = readBackupStatus();
+      const last = st.lastSuccessAt ? Date.parse(st.lastSuccessAt) : 0;
+      const ageH = last ? Math.round((Date.now() - last) / 3600000) : null;
+      const base = (last ? "последняя успешная: " + new Date(last).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК (" + ageH + " ч назад) · " + Math.round(Number(st.lastBytes || 0) / 1024) + " КБ · каналов: " + Number(st.workspaces || 0) : "ещё не было успешной копии") + " · раз в " + cfg.intervalHours + " ч · " + (cfg.passphrase ? "зашифровано" : "без шифрования");
+      if (Number(st.consecutiveFailures || 0) > 0 || !last || ageH > cfg.intervalHours * 1.5 + 2) return { state: "partial", description: "Резервная копия давно не обновлялась или была ошибка", detail: base + (st.lastError ? " · ошибка: " + String(st.lastError).slice(0, 120) : ""), next: "Проверить доступ к хранилищу копий" };
+      return { state: "connected", description: "Резервные копии делаются по расписанию", detail: base, next: "" };
+    })(),
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",
       description: COLLECTOR_ENABLED ? "News Collector включён" : "News Collector выключен",
