@@ -22,6 +22,7 @@ import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js"
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
 import { normalizeShoppingFindSources, normalizeAutoRubricSources, resetApprovedAutoBloggers, reassignCarRubricGroups } from "./lib/channel-rubric-migrations.js";
 import { evaluateHealth } from "./lib/health-alerts.js";
+import { runMigrations, migrationStatus } from "./lib/db-migrations.js";
 import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
@@ -3772,51 +3773,6 @@ function pgJsonString(value) {
   });
 }
 
-async function runMigrations() {
-  if (!db) return;
-  const migrationsDir = path.join(process.cwd(), "migrations");
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  let files = [];
-  try {
-    files = fs.readdirSync(migrationsDir)
-      .filter(function(name){ return /\.sql$/i.test(name); })
-      .sort();
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
-      console.error("DB migrations directory not found, no migrations were applied: " + migrationsDir);
-      return;
-    }
-    throw error;
-  }
-
-  for (const fileName of files) {
-    const version = fileName.replace(/\.sql$/i, "");
-    const exists = await db.query("SELECT 1 FROM schema_migrations WHERE version=$1 LIMIT 1", [version]);
-    if (exists.rowCount) continue;
-
-    const sql = fs.readFileSync(path.join(migrationsDir, fileName), "utf8");
-    const client = await db.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(sql);
-      await client.query("INSERT INTO schema_migrations(version) VALUES($1)", [version]);
-      await client.query("COMMIT");
-      console.log("DB migration applied:", version);
-    } catch (error) {
-      try { await client.query("ROLLBACK"); } catch {}
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-}
-
 // Serialises schema bootstrap + migrations between concurrently starting instances
 // (rolling deploys): the session-level advisory lock is held on a dedicated connection.
 const DB_INIT_ADVISORY_LOCK_KEY = 7242001;
@@ -3867,7 +3823,7 @@ async function initDbAttempt() {
       );
       CREATE INDEX IF NOT EXISTS app_snapshots_created_idx ON app_snapshots(created_at DESC);
     `);
-    await runMigrations();
+    await runMigrations(db);
   });
   {
     dbReady = true;
@@ -12099,6 +12055,14 @@ async function buildSystemStatus(force) {
       const base = (last ? "последняя успешная: " + new Date(last).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК (" + ageH + " ч назад) · " + Math.round(Number(st.lastBytes || 0) / 1024) + " КБ · каналов: " + Number(st.workspaces || 0) : "ещё не было успешной копии") + " · раз в " + cfg.intervalHours + " ч · " + (cfg.passphrase ? "зашифровано" : "без шифрования");
       if (Number(st.consecutiveFailures || 0) > 0 || !last || ageH > cfg.intervalHours * 1.5 + 2) return { state: "partial", description: "Резервная копия давно не обновлялась или была ошибка", detail: base + (st.lastError ? " · ошибка: " + String(st.lastError).slice(0, 120) : ""), next: "Проверить доступ к хранилищу копий" };
       return { state: "connected", description: "Резервные копии делаются по расписанию", detail: base, next: "" };
+    })(),
+    migrations: (function(){
+      if (!db) return { state: "missing", description: "База данных не подключена, миграции не применялись", detail: "", next: "" };
+      const m = migrationStatus();
+      if (!m.ranAt) return { state: "partial", description: "Миграции ещё не запускались", detail: "", next: "Дождаться старта сервиса" };
+      const detail = "применено файлов: " + m.total + (m.newlyApplied && m.newlyApplied.length ? " · при этом старте новых: " + m.newlyApplied.length : "");
+      if (m.error || (m.drift && m.drift.length) || (m.missingFiles && m.missingFiles.length)) return { state: "partial", description: m.error || "Применённая миграция изменена или её файл пропал", detail: detail + (m.drift && m.drift.length ? " · изменены: " + m.drift.join(", ") : "") + (m.missingFiles && m.missingFiles.length ? " · нет файла: " + m.missingFiles.join(", ") : ""), next: "Не править применённые миграции, добавлять новую" };
+      return { state: "connected", description: "Миграции БД применены, файлы не менялись", detail: detail, next: "" };
     })(),
     collector: {
       state: COLLECTOR_ENABLED ? "connected" : "missing",

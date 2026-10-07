@@ -4693,12 +4693,13 @@ async function renderConnections(force){
     scheduler:'Планировщик',
     sourceProxy:'Российский прокси (источники)',
     backup:'Резервные копии (внешние)',
+    migrations:'Миграции БД',
     postmypost:'Postmypost (публикация в VK)',
     alerts:'Оповещения в Telegram',
     processHealth:'Стабильность процесса'
   };
   var groups=[
-    {title:'Инфраструктура',icon:'🖥️',keys:['railway','github','publicEndpoint','storage','adminUi','postgresql','backup','processHealth','alerts']},
+    {title:'Инфраструктура',icon:'🖥️',keys:['railway','github','publicEndpoint','storage','adminUi','postgresql','migrations','backup','processHealth','alerts']},
     {title:'Разработка и AI',icon:'🤖',keys:['claudeCode','anthropic','openai','editorialV2','openaiImage','mediaEngine']},
     {title:'Telegram',icon:'✈️',keys:['telegramBot','telegramChannel']},
     {title:'VK',icon:'🅥',keys:['vk','postmypost']},
