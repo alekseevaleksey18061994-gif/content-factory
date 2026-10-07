@@ -3878,6 +3878,8 @@ document.querySelectorAll('[data-page]').forEach(function(btn){btn.addEventListe
 
 async function api(url,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});if(activeWorkspaceId)opt.headers['x-workspace-id']=activeWorkspaceId;var r=await fetch(url,opt);if(r.status===401){location.href='/login';throw new Error('unauthorized')}var j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');return j}
 async function load(){await loadWorkspaces();var j=await api('/api/dashboard');state=j.state;sourceRankings=Array.isArray(j.sourceRankings)?j.sourceRankings:[];rubricGroups=Array.isArray(j.rubricGroups)?j.rubricGroups:[];itemRubrics=j.itemRubrics&&typeof j.itemRubrics==='object'?j.itemRubrics:{};postCosts=j.postCosts&&typeof j.postCosts==='object'?j.postCosts:{};if(j.ratingMinAuto!=null)ratingMinAuto=Number(j.ratingMinAuto);if(j.ratingDropBelow!=null)ratingDropBelow=Number(j.ratingDropBelow);currentWorkspaceMeta=j.workspace||currentWorkspaceMeta||{};renderWorkspaceChrome();render();renderNetworkDashboard();renderConnections(false).catch(function(e){toast(e.message)})}
+// A source may belong to several themes (source.rubrics[]); the server counts it in each of them, so the admin shows it in each of them too.
+function rubricGroupIdsOf(source,groups){var known={};(groups||[]).forEach(function(g){known[g.id]=1});var seen={},out=[];[source&&source.rubric].concat(source&&Array.isArray(source.rubrics)?source.rubrics:[]).forEach(function(id){id=String(id||'');if(id&&known[id]&&!seen[id]){seen[id]=1;out.push(id)}});return out}
 function render(){
   var labels={AUTO:'Автоматически',REVIEW:'На проверку',PAUSED:'Пауза'};
   el('modes').innerHTML=['AUTO','REVIEW','PAUSED'].map(function(m){return '<button class="'+(state.mode===m?'active':'')+'" onclick="setMode('+ja(m)+')">'+labels[m]+'</button>'}).join('');
@@ -3976,7 +3978,7 @@ function render(){
   if(themed&&rubricGroups.length){
     // theme channel: one panel per group, only its own sources, and a minimum limit for the group
     var byGroup={},loose=[];
-    sortedSources.forEach(function(s){var g=String(s.rubric||'');if(g&&rubricGroups.some(function(x){return x.id===g}))(byGroup[g]=byGroup[g]||[]).push(s);else loose.push(s)});
+    sortedSources.forEach(function(s){var ids=rubricGroupIdsOf(s,rubricGroups);if(ids.length)ids.forEach(function(g){(byGroup[g]=byGroup[g]||[]).push(s)});else loose.push(s)});
     var panels=rubricGroups.map(function(g){
       var list=byGroup[g.id]||[];
       var active=list.filter(function(x){return x.enabled}).length;
