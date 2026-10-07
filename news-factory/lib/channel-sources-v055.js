@@ -5197,5 +5197,19 @@ export const SOURCES_TOPUP_V058 = {
   { "name": "Architectural Digest", "url": "https://www.architecturaldigest.com/", "group": "media", "rubrics": ["interior_trends"] },
   { "name": "Homes & Gardens", "url": "https://www.homesandgardens.com/news", "group": "media", "rubrics": ["interior_trends"] },
   { "name": "Elle — дом", "url": "https://www.elle.ru/dom/", "group": "media", "rubrics": ["interior_trends"] }
+ ],
+ // v0.60.1: «Деньги» голодали: Banki.ru отдаёт 0 новостей, Telegram-источники старые. Резерв: открытые RSS крупных изданий,
+ // тематику (личные финансы) отбирает префильтр канала.
+ "money": [
+  { "name": "РИА Новости — Экономика", "url": "https://ria.ru/export/rss2/economy/index.xml", "group": "media", "rubrics": ["cards_banks", "credits_mortgage", "income_benefits"] },
+  { "name": "Коммерсантъ — Деньги (RSS)", "url": "https://www.kommersant.ru/RSS/money.xml", "group": "media", "rubrics": ["cards_banks", "deposits", "ruble_inflation_cb"] },
+  { "name": "Ведомости — новости (RSS)", "url": "https://www.vedomosti.ru/rss/news", "group": "media", "rubrics": ["cards_banks", "taxes", "ruble_inflation_cb"] },
+  { "name": "Интерфакс — лента (RSS)", "url": "https://www.interfax.ru/rss.asp", "group": "media", "rubrics": ["ruble_inflation_cb", "cards_banks", "taxes"] },
+  { "name": "ТАСС — лента (RSS)", "url": "https://tass.ru/rss/v2.xml", "group": "media", "rubrics": ["income_benefits", "taxes", "ruble_inflation_cb"] },
+  { "name": "РБК — лента (RSS)", "url": "https://rssexport.rbc.ru/rbcnews/news/30/full.rss", "group": "media", "rubrics": ["cards_banks", "credits_mortgage", "deposits"] },
+  { "name": "Финмаркет — новости (RSS)", "url": "https://www.finmarket.ru/rss/mainnews.asp", "group": "media", "rubrics": ["ruble_inflation_cb", "deposits"] },
+  { "name": "Известия — Экономика (RSS)", "url": "https://iz.ru/xml/rss/all.xml", "group": "media", "rubrics": ["income_benefits", "financial_scams", "taxes"] },
+  { "name": "Российская газета — Экономика (RSS)", "url": "https://rg.ru/xml/index.xml", "group": "media", "rubrics": ["income_benefits", "taxes", "financial_scams"] },
+  { "name": "Лента.ру — Экономика (RSS)", "url": "https://lenta.ru/rss/news", "group": "media", "rubrics": ["cards_banks", "financial_scams", "money_howto"] }
  ]
 };
