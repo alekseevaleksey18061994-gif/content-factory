@@ -4,6 +4,10 @@
 
 export const RECENT_OUTCOMES = 10;
 export const AUTO_PAUSE_JUNK_STREAK = 10;
+export const AUTO_PAUSE_JUNK_MIN_SAMPLE = 30;
+export const AUTO_PAUSE_JUNK_SHARE = 0.85;
+export const AUTO_PAUSE_JUNK_RECENT = 8;
+export const AUTO_PAUSE_JUNK_MAX_PUBLISHED = 5;
 export const AUTO_PAUSE_ERROR_STREAK = 12;
 export const MIN_ENABLED_PER_GROUP = 4;
 
@@ -118,6 +122,18 @@ export function autoPauseReason(source, stat, enabledInGroup) {
   const recent = Array.isArray(stat.recent) ? stat.recent : [];
   if (recent.length >= AUTO_PAUSE_JUNK_STREAK && recent.slice(-AUTO_PAUSE_JUNK_STREAK).every(function(x){ return x === "junk"; })) {
     return AUTO_PAUSE_JUNK_STREAK + " новостей подряд отсеяны: реклама, старьё или не по теме";
+  }
+  // v0.58.0: a source that is mostly noise but lets an occasional item through never reached a 10-in-a-row streak and
+  // was filtered (and paid for) every hour. Judged on the whole record: enough items seen, almost all of them junk,
+  // and the latest ones are still mostly junk (so a source that has improved is left alone).
+  const junkTotal = Number(stat.junk || 0);
+  const goodTotal = Number(stat.useful || 0) + Number(stat.published || 0);
+  // A source that has really published several posts is noisy but productive: it stays (the headline filter keeps
+  // the noise out of the editors' hands anyway).
+  if (Number(stat.published || 0) < AUTO_PAUSE_JUNK_MAX_PUBLISHED &&
+      junkTotal + goodTotal >= AUTO_PAUSE_JUNK_MIN_SAMPLE && junkTotal / (junkTotal + goodTotal) >= AUTO_PAUSE_JUNK_SHARE &&
+      recent.length >= AUTO_PAUSE_JUNK_STREAK && recent.filter(function(x){ return x === "junk"; }).length >= AUTO_PAUSE_JUNK_RECENT) {
+    return "почти всё отсеяно: " + junkTotal + " из " + (junkTotal + goodTotal) + " новостей (реклама, старьё или не по теме)";
   }
   return "";
 }
