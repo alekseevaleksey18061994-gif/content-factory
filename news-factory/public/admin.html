@@ -2438,7 +2438,6 @@ input,select,textarea{border-radius:12px!important}
 .strip-row{display:flex;align-items:flex-start;gap:8px;margin:8px 0}.strip-row>b{flex:0 0 74px;font-size:12px;padding-top:6px}.strip-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
 .sc{display:inline-flex;flex-direction:column;min-width:74px;max-width:150px;padding:5px 8px;border-radius:9px;font-size:11px;line-height:1.25;border:1px solid transparent}.sc b{font-size:12px}.sc span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sc.ok{background:#d9f5e6;color:#0b6b3a;border-color:#8fd9b0}.sc.bad{background:#fde1e3;color:#a1192a;border-color:#f19aa3}.sc.wait{background:#fff0cc;color:#8a5a00;border-color:#f0cf7a}.sc.future,.sc.none{background:rgba(67,129,185,.10);color:#667797;border-color:transparent}
-@media (prefers-color-scheme:dark){.sc.ok{background:rgba(26,154,91,.2);color:#7be0ad}.sc.bad{background:rgba(255,107,115,.18);color:#ff9aa1}.sc.wait{background:rgba(255,190,85,.16);color:#ffcf7a}}
 /* v0.69.5: slot strips as a tidy grid (label above, 2+ columns on phones, icon instead of status words) */
 .strip-row{display:block;margin:14px 0 6px}
 .strip-row>b{display:flex;align-items:center;gap:8px;flex:none;padding:0 0 7px;font-size:13px;font-weight:800;letter-spacing:.01em}
@@ -2447,7 +2446,9 @@ input,select,textarea{border-radius:12px!important}
 .sc{min-width:0;max-width:none;padding:6px 9px 7px;border-radius:11px;gap:1px}
 .sc b{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:13px;font-weight:800;font-variant-numeric:tabular-nums}
 .sc b i{font-style:normal}.sc b em{font-style:normal;font-size:12px;font-weight:900;line-height:1}
-.sc span{display:block;min-height:14px;font-size:10.5px;opacity:.85}
+.sc span{display:block;min-height:14px;font-size:10.5px;font-weight:600}
+/* v0.69.6: dark text on solid light fills in every colour scheme (the page itself stays light, so the old dark-mode light-green text was unreadable) */
+.sc.ok{background:#d3f3e1;color:#064d29;border-color:#7fd1a4}.sc.bad{background:#fcd9dc;color:#8f1222;border-color:#ee8a95}.sc.wait{background:#ffecb8;color:#6b4400;border-color:#ebc65e}.sc.future,.sc.none{background:#e6edf7;color:#41516f;border-color:#cbd6e8}
 @media(min-width:720px){.strip-chips{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}.sc span{font-size:11px}}
 .nd-hours{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;margin:12px 0 8px}.nd-hours span{display:block;height:24px;border-radius:4px;background:rgba(67,129,185,.12)}.nd-hours span.on{background:#18b67b}.nd-hours small{display:block;font-size:9px;text-align:center;color:#667797;margin-top:2px;min-height:11px}
 .nd-post{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:10px;padding:6px 0;font-size:12.5px;border-bottom:1px solid rgba(67,129,185,.10)}
