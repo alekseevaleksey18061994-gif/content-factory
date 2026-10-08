@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { recordPending, classify, applyStatuses, summarize, PMP_STUCK_MS } from "../lib/pmp-reconcile.js";
+import { vkSlotState } from "../lib/network-day.js";
 import { evaluateHealth } from "../lib/health-alerts.js";
 const now = Date.parse("2026-10-08T10:00:00Z");
 try {
@@ -32,5 +33,14 @@ try {
   const ok = evaluateHealth({ nowMs: now, channels: [], pmpPending: { stuck: 0, failed: 0 } }, h.next);
   assert.equal(ok.recovered.length, 1);
   console.log("ok - P5 health alert + recovery");
+  const t0 = new Date(now - 10 * 60000).toISOString(), t1 = new Date(now - 90 * 60000).toISOString();
+  assert.equal(vkSlotState({ vkPostId: "pmp-1", publishedAt: t1 }, now), "ok", "legacy confirmed/unknown mode stays ok");
+  assert.equal(vkSlotState({ vkPostId: "pmp-1", vkMode: "postmypost", publishedAt: t1 }, now), "ok");
+  assert.equal(vkSlotState({ vkPostId: "pmp-1", vkMode: "postmypost_pending", publishedAt: t0 }, now), "wait");
+  assert.equal(vkSlotState({ vkPostId: "pmp-1", vkMode: "postmypost_pending", publishedAt: t1 }, now), "bad", "queued > 30 min is red");
+  assert.equal(vkSlotState({ vkPostId: "pmp-1", vkStatus: "pmp_failed", vkError: "x", publishedAt: t0 }, now), "bad");
+  assert.equal(vkSlotState({ vkStatus: "failed", vkError: "boom", publishedAt: t0 }, now), "bad");
+  assert.equal(vkSlotState({ publishedAt: t0 }, now), "none");
+  console.log("ok - P6 vkSlotState");
   console.log("pmp-reconcile tests passed");
 } catch (e) { console.error(e); process.exit(1); }

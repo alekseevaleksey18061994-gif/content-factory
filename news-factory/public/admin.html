@@ -2435,6 +2435,10 @@ input,select,textarea{border-radius:12px!important}
 .nd-bar{height:6px;border-radius:4px;background:rgba(67,129,185,.14);margin-top:6px;overflow:hidden}.nd-bar i{display:block;height:100%;background:#18b67b;border-radius:4px}.nd-bar i.low{background:#e79a27}.nd-bar i.zero{background:#ef5e69}
 .nd-bad{color:#bd4450;font-weight:800}.nd-muted{color:#667797;font-size:12px}
 .nd-body{display:none;padding:2px 15px 14px;border-top:1px solid rgba(67,129,185,.12)}.nd-row.open .nd-body{display:block}
+.strip-row{display:flex;align-items:flex-start;gap:8px;margin:8px 0}.strip-row>b{flex:0 0 74px;font-size:12px;padding-top:6px}.strip-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.sc{display:inline-flex;flex-direction:column;min-width:74px;max-width:150px;padding:5px 8px;border-radius:9px;font-size:11px;line-height:1.25;border:1px solid transparent}.sc b{font-size:12px}.sc span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc.ok{background:#d9f5e6;color:#0b6b3a;border-color:#8fd9b0}.sc.bad{background:#fde1e3;color:#a1192a;border-color:#f19aa3}.sc.wait{background:#fff0cc;color:#8a5a00;border-color:#f0cf7a}.sc.future,.sc.none{background:rgba(67,129,185,.10);color:#667797;border-color:transparent}
+@media (prefers-color-scheme:dark){.sc.ok{background:rgba(26,154,91,.2);color:#7be0ad}.sc.bad{background:rgba(255,107,115,.18);color:#ff9aa1}.sc.wait{background:rgba(255,190,85,.16);color:#ffcf7a}}
 .nd-hours{display:grid;grid-template-columns:repeat(24,1fr);gap:2px;margin:12px 0 8px}.nd-hours span{display:block;height:24px;border-radius:4px;background:rgba(67,129,185,.12)}.nd-hours span.on{background:#18b67b}.nd-hours small{display:block;font-size:9px;text-align:center;color:#667797;margin-top:2px;min-height:11px}
 .nd-post{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:10px;padding:6px 0;font-size:12.5px;border-bottom:1px solid rgba(67,129,185,.10)}
 .nd-post:last-of-type{border-bottom:0}.nd-post time{font-weight:800}.nd-post>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2600,6 +2604,7 @@ input,select,textarea{border-radius:12px!important}
 
         <section class="card dashboard-calendar-card" style="margin-top:14px">
           <div class="panel-title"><div><h3>Календарь публикаций</h3><p>Ближайшие публикации сегодня · Москва</p></div><button class="primary" onclick="goPage('calendarPage')">Открыть календарь</button></div>
+          <div id="dashStrips"></div>
           <div id="dashCalendar" class="dashboard-calendar"><div class="empty">Формирую план…</div></div>
         </section>
 
@@ -2958,6 +2963,7 @@ input,select,textarea{border-radius:12px!important}
             <div class="cal-stat"><b id="calendarRegular">16</b><span>слотов 08–23</span></div>
             <div class="cal-stat"><b id="calendarReserve">—</b><span id="calendarReserveLabel">доп. слотов</span></div>
           </div>
+          <div id="calendarStrips"></div>
           <div id="calendarSlots" class="calendar-slots"></div>
           <div class="calendar-note" id="calendarNote">Новости не назначаются заранее. За 15 минут до каждого часа система ищет свежие новости, выбирает лучшую и готовит её к публикации.</div>
         </section>
@@ -3549,7 +3555,8 @@ function renderNetworkDay(){
     '<span><b>'+Number(t.published||0)+(t.planned&&!d.isFuture?' из '+Number(t.planned):'')+'</b>постов</span>'+
     '<span><b>'+Number(t.tg||0)+'</b>в Telegram</span>'+
     '<span><b>'+Number(t.vk||0)+'</b>в VK</span>'+
-    (t.vkFailed?'<span class="nd-bad"><b>'+Number(t.vkFailed)+'</b>ошибок VK</span>':'')+
+    (t.vkWait?'<span><b>'+Number(t.vkWait)+'</b>VK в очереди</span>':'')+
+    (t.vkFailed?'<span class="nd-bad"><b>'+Number(t.vkFailed)+'</b>VK не вышло</span>':'')+
     ((!d.isFuture&&t.silentChannels&&!d.isToday)?'<span class="nd-bad"><b>'+Number(t.silentChannels)+'</b>без постов</span>':'');
   var rows=(d.rows||[]).slice().sort(function(a,b){return (a.published-b.published)||String(a.name).localeCompare(String(b.name),'ru')});
   var box=el('networkDayRows');
@@ -3557,8 +3564,9 @@ function renderNetworkDay(){
     var pct=r.planned?Math.min(100,Math.round(r.published*100/r.planned)):(r.published?100:0);
     var cls=r.published===0?'zero':(r.planned&&r.published<r.planned*0.6?'low':'');
     var hoursHtml=(r.hours||[]).map(function(n,i){return '<div><span class="'+(n?'on':'')+'" title="'+String(i).padStart(2,'0')+':00 — '+n+'"></span>'+(i%3===0?'<small>'+i+'</small>':'<small>&nbsp;</small>')+'</div>'}).join('');
+    var vkChips=(r.posts||[]).map(function(p){return slotChipHtml(p.time,p.title,p.vkState==='none'?'bad':(p.vkState||'none'))}).join('')||'<span class="nd-muted">нет постов</span>';
     var posts=(r.posts||[]).map(function(p){
-      return '<div class="nd-post"><time>'+esc(p.time)+'</time><span title="'+esc(p.title)+'">'+esc(p.title)+(p.source?' <em class="nd-muted">· '+esc(p.source)+'</em>':'')+'</span><span class="nd-muted">'+(p.tg?'TG ':(p.tgUncertain?'TG? ':''))+(p.vk?'VK':(p.vkFailed?'<b class="nd-bad">VK✗</b>':''))+'</span></div>';
+      return '<div class="nd-post"><time>'+esc(p.time)+'</time><span title="'+esc(p.title)+'">'+esc(p.title)+(p.source?' <em class="nd-muted">· '+esc(p.source)+'</em>':'')+'</span><span class="nd-muted">'+(p.tg?'TG ':(p.tgUncertain?'TG? ':''))+(p.vk?'VK':(p.vkState==='wait'?'VK⏳':(p.vkFailed?'<b class="nd-bad">VK✗</b>':'')))+'</span></div>';
     }).join('')||'<div class="empty">В этот день постов нет</div>';
     return '<div class="nd-row'+(netDayOpen[r.id]?' open':'')+'" id="ndrow_'+esc(r.id)+'">'+
       '<div class="nd-head" onclick="netDayToggle('+ja(r.id)+')">'+
@@ -3569,7 +3577,7 @@ function renderNetworkDay(){
         '<div class="nd-hide'+(r.vkFailed?' nd-bad':'')+'">VK '+r.vk+(r.vkFailed?' ✗'+r.vkFailed:'')+'</div>'+
         '<div class="nd-muted">▾</div>'+
       '</div>'+
-      '<div class="nd-body"><div class="nd-hours">'+hoursHtml+'</div>'+posts+
+      '<div class="nd-body"><div class="strip-row"><b>Telegram</b><div class="nd-hours" style="flex:1">'+hoursHtml+'</div></div><div class="strip-row"><b>VK</b><div class="strip-chips">'+vkChips+'</div></div>'+posts+
         '<div style="margin-top:8px"><button type="button" onclick="openWorkspaceFromNetwork('+ja(r.id)+')">Открыть кабинет канала →</button></div></div>'+
     '</div>';
   }).join(''):'<div class="empty">Каналов нет</div>';
@@ -4147,6 +4155,45 @@ function calendarHistorySlot(h){
   if(hour<8||hour>23||withinHour>10)return '';
   return historyMoscowKey(h)+' '+String(hour).padStart(2,'0')+':00';
 }
+function vkStateOf(h){
+  if(!h)return 'none';
+  var st=String(h.vkStatus||'').toLowerCase(),failed=Boolean(h.vkError)||/fail|error|media_failed/.test(st);
+  if(h.vkPostId&&!failed){
+    if(h.vkMode!=='postmypost_pending')return 'ok';
+    return (Date.now()-Date.parse(h.publishedAt))>=30*60000?'bad':'wait';
+  }
+  return (h.vkPostId||failed)?'bad':'none';
+}
+var STRIP_LABEL={ok:'вышло',wait:'в очереди',bad:'не вышло',future:'ждём',none:'—'};
+function slotChipHtml(time,title,state,hint){
+  return '<div class="sc '+state+'" title="'+esc(time+' · '+STRIP_LABEL[state]+(title?' · '+title:'')+(hint?' · '+hint:''))+'"><b>'+esc(time)+' '+STRIP_LABEL[state]+'</b><span>'+esc(title||'')+'</span></div>';
+}
+// Two rows for one day: every planned slot with its Telegram and VK result (green came out, red did not).
+function slotStripsHtml(dateKey){
+  var slots=((state.publicationSchedule||{}).slots)||[];
+  var today=moscowDateKey(new Date()),isToday=dateKey===today,past=dateKey.localeCompare(today)<0,nowMin=moscowMinutes(new Date());
+  var hist=(state.history||[]).filter(function(h){return historyMoscowKey(h)===dateKey&&h.publicationOrigin!=='test'});
+  var used={};
+  var rowsTg=[],rowsVk=[];
+  slots.forEach(function(slot){
+    var key=dateKey+' '+slot.time,h=null;
+    hist.forEach(function(x,i){if(!h&&!used[i]&&calendarHistorySlot(x)===key){h=x;used[i]=1}});
+    var min=Number(slot.time.slice(0,2))*60+Number(slot.time.slice(3,5));
+    var due=past||(isToday&&min<=nowMin-5);
+    var title=h?String(h.title||'').slice(0,60):'';
+    rowsTg.push(slotChipHtml(slot.time,title,h?(h.messageId?'ok':'bad'):(due?'bad':'future')));
+    rowsVk.push(slotChipHtml(slot.time,title,h?(vkStateOf(h)==='none'?'bad':vkStateOf(h)):(due?'bad':'future'),h&&h.vkError?String(h.vkError).slice(0,120):''));
+  });
+  hist.forEach(function(x,i){ // posts outside the slot grid (extra / manual)
+    if(used[i])return;
+    var t=moscowTimeLabel(x.publishedAt),title=String(x.title||'').slice(0,60);
+    rowsTg.push(slotChipHtml(t,title,x.messageId?'ok':'bad'));
+    rowsVk.push(slotChipHtml(t,title,vkStateOf(x)==='none'?'bad':vkStateOf(x)));
+  });
+  if(!rowsTg.length)return '';
+  return '<div class="strip-row"><b>Telegram</b><div class="strip-chips">'+rowsTg.join('')+'</div></div><div class="strip-row"><b>VK</b><div class="strip-chips">'+rowsVk.join('')+'</div></div>';
+}
+function moscowTimeLabel(iso){var d=new Date(new Date(iso).getTime()+3*3600000);return String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0')}
 function renderCalendar(){
   if(!el('calendarSlots'))return;
   var schedule=state.publicationSchedule||{};
@@ -4180,6 +4227,7 @@ function renderCalendar(){
   var todayCmp=calendarDateKey.localeCompare(today);
   var dayAssignments=assignments[calendarDateKey]||{};
 
+  if(el('calendarStrips'))el('calendarStrips').innerHTML=slotStripsHtml(calendarDateKey);
   el('calendarSlots').innerHTML=slots.map(function(slot){
     var slotMin=Number(String(slot.time||'00:00').split(':')[0]||0)*60+Number(String(slot.time||'00:00').split(':')[1]||0);
     var expectedSlot=calendarDateKey+' '+slot.time;
@@ -4200,7 +4248,7 @@ function renderCalendar(){
     if(match>=0){
       used.add(match);
       title=scheduledHistory[match].title||'Опубликованная новость';
-      meta='Опубликовано '+safeDate(scheduledHistory[match].publishedAt);
+      meta='Опубликовано '+safeDate(scheduledHistory[match].publishedAt)+' · Telegram '+(scheduledHistory[match].messageId?'✓':'✗')+' · VK '+({ok:'✓',wait:'⏳ в очереди',bad:'✗ не вышло',none:'—'})[vkStateOf(scheduledHistory[match])];
       status='Опубликовано';cls='done';
     }else if(item){
       var pp=postParts(item);
@@ -4251,6 +4299,7 @@ function calendarToday(){calendarDateKey=moscowDateKey(new Date());renderCalenda
 
 function renderDashboardCalendar(){
   if(!el('dashCalendar'))return;
+  if(el('dashStrips'))el('dashStrips').innerHTML=slotStripsHtml(moscowDateKey(new Date()));
   var schedule=state.publicationSchedule||{},slots=Array.isArray(schedule.slots)?schedule.slots:[];
   var today=moscowDateKey(new Date()),assignments=(schedule.assignments&&schedule.assignments[today])||{};
   var now=moscowMinutes(new Date());
