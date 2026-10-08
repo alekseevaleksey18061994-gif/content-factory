@@ -1,3 +1,4 @@
+import { vkMediaRetryDecision, VK_MEDIA_RETRY_MAX_DEFAULT, VK_MEDIA_RETRY_GAP_MIN_DEFAULT, VK_MEDIA_RETRY_WINDOW_MIN_DEFAULT } from "./lib/vk-retry-guard.js";
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -15276,6 +15277,74 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("VK ENOSPC retry failed:", error.message); });
 }, 180000).unref();
+
+// v0.71.0: a post that reached Telegram but whose VK media step failed on a temporary Postmypost/network problem
+// is re-sent to VK ONLY (never Telegram), at most VK_MEDIA_RETRY_MAX times, VK_MEDIA_RETRY_GAP_MIN apart,
+// within VK_MEDIA_RETRY_WINDOW_MIN of the failure. Decision lives in lib/vk-retry-guard.js.
+const VK_MEDIA_RETRY_OPTS = {
+  max: envNumber("VK_MEDIA_RETRY_MAX", VK_MEDIA_RETRY_MAX_DEFAULT, 0, 10),
+  gapMin: envNumber("VK_MEDIA_RETRY_GAP_MIN", VK_MEDIA_RETRY_GAP_MIN_DEFAULT, 1, 120),
+  windowMin: envNumber("VK_MEDIA_RETRY_WINDOW_MIN", VK_MEDIA_RETRY_WINDOW_MIN_DEFAULT, 10, 720)
+};
+async function retryVkMediaFailuresForCurrentWorkspace() {
+  if (!VK_PUBLISH_ENABLED || storageNotSaving()) return { skipped: true };
+  const nowMs = Date.now();
+  const items = (state.queue || []).filter(function(q){ return vkMediaRetryDecision(q, nowMs, VK_MEDIA_RETRY_OPTS).retry; });
+  let sent = 0, failed = 0;
+  for (const item of items) {
+    if (!(state.queue || []).includes(item)) continue;
+    if (storageNotSaving()) break;
+    const alreadyInVk = (state.history || []).some(function(h){
+      return h && h.vkPostId && h.id !== item.historyId && ((item.newsId && h.newsId === item.newsId) || h.queueId === item.id || (h.title && h.title === item.title));
+    });
+    if (alreadyInVk) { item.vkMediaRetryCount = VK_MEDIA_RETRY_OPTS.max; continue; }
+    const release = acquirePublishLock(item.id);
+    if (!release) continue;
+    // Re-check at send time: earlier awaits in this loop may have changed the item (manual retry, new failure).
+    if (!vkMediaRetryDecision(item, Date.now(), VK_MEDIA_RETRY_OPTS).retry) { release(); continue; }
+    item.vkMediaRetryCount = Number(item.vkMediaRetryCount || 0) + 1;
+    item.vkMediaRetryAt = new Date().toISOString();
+    item.vkMediaRetryInFlight = true;
+    saveState(); // recorded BEFORE sending: a crash mid-send leaves the in-flight flag, so it is never auto-sent twice
+    try {
+      const result = await sendMultiPlatformPost(Object.assign({}, item, { postId: item.id, topicId: item.topicId || "default", allow_text_fallback: allowTextFallbackForPost(item) }), { telegram: false, vk: true });
+      if (result.safeMedia) Object.assign(item, result.safeMedia);
+      const at = new Date().toISOString();
+      const hist = item.historyId ? (state.history || []).find(function(h){ return h && h.id === item.historyId; }) : null;
+      if (result.vkPublished) {
+        item.vkPublished = true; item.vkPostId = result.vkPostId || null; item.vkStatus = result.vkUncertain ? "uncertain" : "published";
+        item.vkPublishedAt = at; item.vkError = ""; item.status = "published";
+        if (hist) { hist.vkPostId = result.vkPostId || hist.vkPostId || null; hist.vkStatus = item.vkStatus; hist.vkError = ""; if (result.vkMediaMode) hist.vkMode = result.vkMediaMode; hist.vkPreviewSlug = result.vkPreviewSlug || hist.vkPreviewSlug || ""; hist.vkPreviewUrl = result.vkPreviewUrl || hist.vkPreviewUrl || ""; }
+        state.queue = (state.queue || []).filter(function(q){ return q.id !== item.id; });
+        if (db && dbReady && item.newsId) {
+          try { await db.query("UPDATE news_items SET status='published', vk_post_id=COALESCE($2,vk_post_id), vk_status=$3, vk_error_msg='', updated_at=NOW() WHERE id=$1 AND workspace_id=$4", [item.newsId, vkPostIdForDb(result.vkPostId), item.vkStatus, currentWorkspaceId()]); } catch (error) { console.warn("VK_MEDIA_RETRY DB update failed:", error.message); }
+        }
+        sent += 1;
+      } else {
+        item.vkError = String(result.vkError || item.vkError || "").slice(0, 300);
+        failed += 1;
+      }
+    } catch (error) {
+      item.vkError = String(error && (error.vkErrorMsg || error.message) || error).slice(0, 300);
+      failed += 1;
+      console.warn("VK_MEDIA_RETRY_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), post_id: item.id, slug: item.vkPreviewSlug || "", try: item.vkMediaRetryCount, error: item.vkError }));
+    } finally { delete item.vkMediaRetryInFlight; release(); }
+    saveState();
+  }
+  if (items.length) console.log("VK_MEDIA_RETRY " + JSON.stringify({ workspace: currentWorkspaceId(), candidates: items.length, sent: sent, failed: failed }));
+  return { candidates: items.length, sent: sent, failed: failed };
+}
+let vkMediaRetryRunning = false;
+setInterval(function() {
+  if (vkMediaRetryRunning) return;
+  vkMediaRetryRunning = true;
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){ try { await retryVkMediaFailuresForCurrentWorkspace(); } catch (error) { console.warn("VK_MEDIA_RETRY failed for " + ws.id + ": " + error.message); } });
+    }
+  })().catch(function(error){ console.warn("VK_MEDIA_RETRY failed:", error.message); }).finally(function(){ vkMediaRetryRunning = false; });
+}, 5 * 60000).unref();
 
 // v0.67.0: enabled sources outside every theme group get attached to the theme(s) they fit (keywords first, then one AI call per batch).
 // A source nothing fits stays as it is. Never run twice; if the AI is unavailable nothing is marked and the next start retries.
