@@ -68,7 +68,7 @@ export function channelDay(ws, dateKey, nowMs) {
   const posts = [];
   const hours = new Array(24).fill(0);
   for (const h of Array.isArray(ws.history) ? ws.history : []) {
-    if (!h || !h.publishedAt || h.publicationOrigin === "test") continue;
+    if (!h || !h.publishedAt || h.publicationOrigin === "test" || h.publicationOrigin === "duplicate-removed") continue;
     const t = Date.parse(h.publishedAt);
     if (!Number.isFinite(t) || moscowDayKey(t) !== dateKey) continue;
     const tg = Boolean(h.messageId) && !h.telegramUncertain;

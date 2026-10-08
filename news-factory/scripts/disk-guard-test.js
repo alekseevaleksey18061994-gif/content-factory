@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { diskUsage, diskIsLow, referencedMediaNames, planMediaPrune, listMediaFiles, pruneMedia, DISK_STOP_FREE_MB } from "../lib/disk-guard.js";
 import { evaluateHealth } from "../lib/health-alerts.js";
+import { channelDay } from "../lib/network-day.js";
 const now = Date.parse("2026-10-08T12:00:00Z");
 const DAY = 86400000;
 try {
@@ -54,6 +55,13 @@ try {
   const none = evaluateHealth({ nowMs: now, channels: [], disk: { usedPct: 84, freeMB: 800, totalMB: 5000 } }, {});
   assert.equal(Object.keys(none.next).length, 0, "below the threshold nothing is tracked");
   console.log("ok - D5 disk alert + recovery");
+  const dd = channelDay({ id: "z", name: "Z", slots: ["13:00"], history: [
+    { publishedAt: "2026-10-08T10:12:00Z", messageId: 95, vkPostId: "pmp-1", title: "A" },
+    { publishedAt: "2026-10-08T10:15:00Z", messageId: 96, title: "A", publicationOrigin: "duplicate-removed" }
+  ] }, "2026-10-08", Date.parse("2026-10-08T12:00:00Z"));
+  assert.equal(dd.published, 1, "a removed duplicate does not count as a published post");
+  assert.equal(dd.tgFailed, 0);
+  console.log("ok - D6 removed duplicates are ignored by the day view");
   fs.rmSync(dir, { recursive: true, force: true });
   console.log("disk-guard tests passed");
 } catch (e) { console.error(e); process.exit(1); }

@@ -1157,7 +1157,7 @@ function workspaceSummary(ws) {
   const dayStartMs = now.getTime() - nowMinutes * 60000 - (now.getUTCSeconds() * 1000 + now.getUTCMilliseconds());
   let publishedToday = 0, lastMs = 0;
   for (const h of history) {
-    if (!h || !h.publishedAt || h.publicationOrigin === "test") continue;
+    if (!h || !h.publishedAt || h.publicationOrigin === "test" || h.publicationOrigin === "duplicate-removed") continue;
     const t = Date.parse(h.publishedAt);
     if (!Number.isFinite(t)) continue;
     if (t > lastMs) lastMs = t;
@@ -14770,7 +14770,7 @@ function tgMissedSummary() {
   const out = { count: 0, channels: [] };
   for (const ws of workspaceStore.workspaces) {
     const n = ((ws && ws.state && ws.state.history) || []).filter(function(h){
-      if (!h || !h.publishedAt || h.publicationOrigin === "test") return false;
+      if (!h || !h.publishedAt || h.publicationOrigin === "test" || h.publicationOrigin === "duplicate-removed") return false;
       const t = Date.parse(h.publishedAt);
       return t >= since && t <= minAge && !h.messageId && !h.telegramUncertain;
     }).length;
@@ -15063,6 +15063,51 @@ setTimeout(function mediaPruneTimer() {
   try { mediaPruneRun(); } catch (error) { console.warn("MEDIA_PRUNE_FAILED " + String(error && error.message || error).slice(0, 200)); }
   setTimeout(mediaPruneTimer, 6 * 3600000).unref();
 }, 25 * 60000).unref();
+
+// v0.69.1 one-time (the owner asked for it): the 13:00 slot of "Что там у звёзд?" was published three times while the state
+// could not be saved (Telegram messages 95, 96, 97). 95 stays (the one in VK); 96 and 97 are deleted through the bot and their
+// history entries are marked so they no longer count as published/failed posts. Only these exact message ids, only this channel.
+const TG_DUP_DELETE_MARKER = "v0.69.1-tg-dup-delete";
+const TG_DUP_DELETE = { chtotamzvezd: [96, 97] };
+async function deleteKnownTelegramDuplicatesForCurrentWorkspace() {
+  const ids = TG_DUP_DELETE[currentWorkspaceId()];
+  if (!ids) return { skipped: "none" };
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (state.migrations.includes(TG_DUP_DELETE_MARKER)) return { skipped: "done" };
+  if (storageNotSaving()) return { skipped: "storage_not_saving" };
+  const target = await ensureTelegramPublishTarget(currentWorkspace(), true);
+  const out = { deleted: [], gone: [], kept: [], failed: [] };
+  for (const id of ids) {
+    // Never delete a message whose post is the one linked to VK.
+    const linked = (state.history || []).some(function(h){ return h && Number(h.messageId) === id && h.vkPostId; });
+    if (linked) { out.kept.push(id); continue; }
+    try {
+      await telegramApi("deleteMessage", { chat_id: target.chatId, message_id: id });
+      out.deleted.push(id);
+    } catch (error) {
+      const msg = String(error && error.message || error);
+      if (/message to delete not found/i.test(msg)) out.gone.push(id);
+      else out.failed.push({ id: id, error: msg.slice(0, 160) });
+    }
+  }
+  for (const h of state.history || []) {
+    if (h && ids.includes(Number(h.messageId)) && !h.vkPostId && !out.failed.some(function(f){ return f.id === Number(h.messageId); })) {
+      h.publicationOrigin = "duplicate-removed"; h.telegramDeletedAt = new Date().toISOString();
+    }
+  }
+  state.migrations.push(TG_DUP_DELETE_MARKER);
+  saveState();
+  console.log("TG_DUP_DELETE " + JSON.stringify(Object.assign({ workspace: currentWorkspaceId() }, out)));
+  return out;
+}
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state || !TG_DUP_DELETE[ws.id]) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){ try { await deleteKnownTelegramDuplicatesForCurrentWorkspace(); } catch (error) { console.warn("TG_DUP_DELETE_FAILED " + String(error && error.message || error).slice(0, 200)); } });
+    }
+  })().catch(function(error){ console.warn("TG_DUP_DELETE_FAILED " + String(error && error.message || error).slice(0, 200)); });
+}, 120000).unref();
 
 // v0.69.0 one-time: posts that reached Telegram but whose VK part failed only because the disk was full
 // (vkError ENOSPC, last 6 h) are sent to VK now - VK only, never Telegram again. Never run twice per channel.
