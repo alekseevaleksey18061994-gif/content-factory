@@ -1,0 +1,23 @@
+import { vkMediaRetryDecision as d } from "../lib/vk-retry-guard.js";
+let failed = 0;
+function check(n, c) { if (c) console.log("ok - " + n); else { failed += 1; console.log("FAIL - " + n); } }
+const now = Date.parse("2026-10-09T10:00:00Z");
+const base = { telegramPublished: true, vkPublished: false, vkStatus: "media_failed", vkError: "Postmypost GET /upload/status → 500: An internal server error occurred.", vkFailedAt: "2026-10-09T09:40:00Z" };
+check("V0 transient Postmypost 500 is retried", d(base, now).retry === true);
+check("V1 timeout text retried", d({ ...base, vkError: "Postmypost: обработка картинки не завершилась вовремя" }, now).retry);
+check("V2 too soon (3 min)", d({ ...base, vkFailedAt: "2026-10-09T09:57:00Z" }, now).reason === "too_soon");
+check("V3 too old (>3 h)", d({ ...base, vkFailedAt: "2026-10-09T05:00:00Z" }, now).reason === "too_old");
+check("V4 max tries", d({ ...base, vkMediaRetryCount: 3 }, now).reason === "max_tries");
+check("V5 pause after a retry", d({ ...base, vkMediaRetryCount: 1, vkMediaRetryAt: "2026-10-09T09:55:00Z" }, now).reason === "too_soon");
+check("V6 Telegram not published -> no", d({ ...base, telegramPublished: false }, now).retry === false);
+check("V7 already in VK -> no", d({ ...base, vkPostId: 12 }, now).retry === false && d({ ...base, vkPublished: true }, now).retry === false);
+check("V8 uncertain -> no", d({ ...base, vkStatus: "uncertain" }, now).retry === false && d({ ...base, vkUncertain: true }, now).retry === false);
+check("V9 disk full -> no", d({ ...base, vkError: "ENOSPC: no space left on device" }, now).reason === "permanent_error");
+check("V10 unknown error -> no", d({ ...base, vkError: "Картинка содержит запрещённый контент" }, now).reason === "unknown_error");
+check("V11 disabled with max 0", d(base, now, { max: 0 }).reason === "disabled");
+check("V12 bad input", d(null, now).retry === false && d({}, now).retry === false && d({ ...base, vkFailedAt: "x" }, now).retry === false);
+check("V13 permanent Postmypost errors are not retried", ["Postmypost: публикация завершилась ошибкой (статус 0)", "Postmypost POST /publications → 422: bad image", "Postmypost: нужна повторная авторизация VK", "Postmypost: группа не найдена"].every(function(e){ return d({ ...base, vkError: e }, now).retry === false; }));
+check("V14 crash window: in-flight flag blocks auto retry", d({ ...base, vkMediaRetryInFlight: true }, now).reason === "in_flight_unknown");
+check("V15 502/503 retried", d({ ...base, vkError: "Postmypost GET /x → 503: Service Unavailable" }, now).retry === true);
+console.log(failed ? "vk-retry-guard tests FAILED" : "vk-retry-guard tests passed");
+process.exit(failed ? 1 : 0);
