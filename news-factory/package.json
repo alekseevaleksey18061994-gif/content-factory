@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.70.1",
+  "version": "0.70.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -61,7 +61,8 @@
     "test:pmp-reconcile": "node scripts/pmp-reconcile-test.js",
     "test:disk-guard": "node scripts/disk-guard-test.js",
     "test:collect-guard": "node scripts/collect-guard-test.js",
-    "test:cost-range": "node scripts/cost-range-test.js"
+    "test:cost-range": "node scripts/cost-range-test.js",
+    "test:enhance-tiny": "node scripts/enhance-tiny-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",

@@ -11961,6 +11961,16 @@ async function sourceProxyProbe(force) {
   return value;
 }
 
+// One transient network failure ("fetch failed") must not flip the status to "partial".
+async function telegramProbeWithRetry(method, params) {
+  let result = await telegramProbe(method, params);
+  if (!result.ok && /fetch failed|timeout|timed out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network/i.test(String(result.error || ""))) {
+    await new Promise(function(resolve){ setTimeout(resolve, 600); });
+    result = await telegramProbe(method, params);
+  }
+  return result;
+}
+
 async function buildSystemStatus(force) {
   const now = Date.now();
   const cacheKey = currentWorkspaceId();
@@ -11980,8 +11990,8 @@ async function buildSystemStatus(force) {
   }
 
   const probes = await Promise.all([
-    BOT_TOKEN ? telegramProbe("getMe") : Promise.resolve({ ok: false, error: "TELEGRAM_BOT_TOKEN не задан" }),
-    BOT_TOKEN && telegramChannel ? telegramProbe("getChat", { chat_id: telegramChannel }) : Promise.resolve({ ok: false, error: "Канал или токен не заданы" }),
+    BOT_TOKEN ? telegramProbeWithRetry("getMe") : Promise.resolve({ ok: false, error: "TELEGRAM_BOT_TOKEN не задан" }),
+    BOT_TOKEN && telegramChannel ? telegramProbeWithRetry("getChat", { chat_id: telegramChannel }) : Promise.resolve({ ok: false, error: "Канал или токен не заданы" }),
     OPENAI_API_KEY ? openAIModelProbe() : Promise.resolve({ ok: false, error: "OPENAI_API_KEY не задан" }),
     ANTHROPIC_API_KEY ? anthropicEditorialProbe(Boolean(force)) : Promise.resolve({ ok: false, error: "ANTHROPIC_API_KEY не задан" }),
     VK_ACCESS_TOKEN && VK_GROUP_ID ? vkProbe() : Promise.resolve({ ok: false, error: "VK не настроен" }),
