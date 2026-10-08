@@ -3554,6 +3554,7 @@ function renderNetworkDay(){
   if(el('networkDayTotals'))el('networkDayTotals').innerHTML=
     '<span><b>'+Number(t.published||0)+(t.planned&&!d.isFuture?' из '+Number(t.planned):'')+'</b>постов</span>'+
     '<span><b>'+Number(t.tg||0)+'</b>в Telegram</span>'+
+    (t.tgFailed?'<span class="nd-bad"><b>'+Number(t.tgFailed)+'</b>Telegram не дошло</span>':'')+
     '<span><b>'+Number(t.vk||0)+'</b>в VK</span>'+
     (t.vkWait?'<span><b>'+Number(t.vkWait)+'</b>VK в очереди</span>':'')+
     (t.vkFailed?'<span class="nd-bad"><b>'+Number(t.vkFailed)+'</b>VK не вышло</span>':'')+
@@ -3575,7 +3576,7 @@ function renderNetworkDay(){
         '<div><div class="nd-name">'+esc(r.name||'Канал')+'</div><div class="nd-bar"><i class="'+cls+'" style="width:'+pct+'%"></i></div></div>'+
         '<div><b>'+r.published+'</b>'+(r.planned&&!d.isFuture?' <span class="nd-muted">из '+r.planned+'</span>':'')+'</div>'+
         '<div class="nd-hide nd-muted">'+(r.firstAt?esc(r.firstAt)+' – '+esc(r.lastAt):'—')+'</div>'+
-        '<div class="nd-hide">TG '+r.tg+'</div>'+
+        '<div class="nd-hide'+(r.tgFailed?' nd-bad':'')+'">TG '+r.tg+(r.tgFailed?' ✗'+r.tgFailed:'')+'</div>'+
         '<div class="nd-hide'+(r.vkFailed?' nd-bad':'')+'">VK '+r.vk+(r.vkFailed?' ✗'+r.vkFailed:'')+'</div>'+
         '<div class="nd-muted">▾</div>'+
       '</div>'+
@@ -4183,8 +4184,16 @@ function slotStripsHtml(dateKey){
     var min=Number(slot.time.slice(0,2))*60+Number(slot.time.slice(3,5));
     var due=past||(isToday&&min<=nowMin-5);
     var title=h?String(h.title||'').slice(0,60):'';
-    rowsTg.push(slotChipHtml(slot.time,title,h?(h.messageId?'ok':'bad'):(due?'bad':'future')));
-    rowsVk.push(slotChipHtml(slot.time,title,h?(vkStateOf(h)==='none'?'bad':vkStateOf(h)):(due?'bad':'future'),h&&h.vkError?String(h.vkError).slice(0,120):''));
+    // a news item already chosen for this slot: yellow "in queue" with its title; nothing chosen yet: grey
+    var planned=null;
+    if(!h&&!due){
+      var qid=(((state.publicationSchedule||{}).assignments||{})[dateKey]||{})[slot.time];
+      planned=qid?(state.queue||[]).find(function(q){return q.id===qid}):null;
+      if(planned){var pp0=postParts(planned);title=String((pp0&&pp0.title)||planned.title||'').slice(0,60)}
+    }
+    var idle=planned?'wait':(due?'bad':'future');
+    rowsTg.push(slotChipHtml(slot.time,title,h?(h.messageId?'ok':'bad'):idle));
+    rowsVk.push(slotChipHtml(slot.time,title,h?(vkStateOf(h)==='none'?'bad':vkStateOf(h)):idle,h&&h.vkError?String(h.vkError).slice(0,120):''));
   });
   hist.forEach(function(x,i){ // posts outside the slot grid (extra / manual)
     if(used[i])return;

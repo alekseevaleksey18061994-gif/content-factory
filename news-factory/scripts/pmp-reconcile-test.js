@@ -50,10 +50,14 @@ try {
   assert.equal(day.slots.length, 5, "all slots listed");
   assert.deepEqual(day.slots.map(function(x){ return x.vk; }), ["ok", "bad", "bad", "bad", "future"], "ok, failed, 2 missed (due), 1 future");
   assert.deepEqual(day.slots.map(function(x){ return x.tg; }), ["ok", "ok", "bad", "bad", "future"]);
+  assert.equal(day.tgFailed, 0);
   console.log("ok - P7 every planned slot of the day is listed");
   let h2 = evaluateHealth({ nowMs: now, channels: [], tgMissed: { count: 1, channels: ["Спорт (1)"] } }, {});
   h2 = evaluateHealth({ nowMs: now, channels: [], tgMissed: { count: 1, channels: ["Спорт (1)"] } }, h2.next);
   assert.equal(h2.send.length, 1); assert.match(h2.send[0].text, /В Telegram не дошло/);
   console.log("ok - P8 Telegram missed alert");
+  const day2 = channelDay({ id: "y", name: "Y", history: [{ publishedAt: "2026-10-08T06:03:00Z", vkPostId: "pmp-2", title: "T" }], slots: ["09:00"] }, "2026-10-08", Date.parse("2026-10-08T09:50:00Z"));
+  assert.equal(day2.tgFailed, 1, "published without Telegram message id counts as Telegram failure");
+  console.log("ok - P9 tgFailed");
   console.log("pmp-reconcile tests passed");
 } catch (e) { console.error(e); process.exit(1); }

@@ -87,6 +87,7 @@ export function channelDay(ws, dateKey, nowMs) {
     tg: posts.filter(function(p){ return p.tg; }).length,
     vk: posts.filter(function(p){ return p.vk; }).length,
     vkFailed: posts.filter(function(p){ return p.vkFailed; }).length,
+    tgFailed: posts.filter(function(p){ return !p.tg && !p.tgUncertain; }).length,
     vkWait: posts.filter(function(p){ return p.vkState === "wait"; }).length,
     firstAt: posts.length ? posts[0].time : "", lastAt: posts.length ? posts[posts.length - 1].time : "",
     queue: Number(ws.queue) || 0,
@@ -108,6 +109,7 @@ export function networkDay(workspaces, dateKey, nowMs) {
       tg: rows.reduce(function(a, r){ return a + r.tg; }, 0),
       vk: rows.reduce(function(a, r){ return a + r.vk; }, 0),
       vkFailed: rows.reduce(function(a, r){ return a + r.vkFailed; }, 0),
+      tgFailed: rows.reduce(function(a, r){ return a + r.tgFailed; }, 0),
       vkWait: rows.reduce(function(a, r){ return a + r.vkWait; }, 0),
       silentChannels: rows.filter(function(r){ return r.published === 0; }).length
     },
