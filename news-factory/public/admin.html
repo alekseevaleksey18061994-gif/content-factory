@@ -3564,7 +3564,9 @@ function renderNetworkDay(){
     var pct=r.planned?Math.min(100,Math.round(r.published*100/r.planned)):(r.published?100:0);
     var cls=r.published===0?'zero':(r.planned&&r.published<r.planned*0.6?'low':'');
     var hoursHtml=(r.hours||[]).map(function(n,i){return '<div><span class="'+(n?'on':'')+'" title="'+String(i).padStart(2,'0')+':00 — '+n+'"></span>'+(i%3===0?'<small>'+i+'</small>':'<small>&nbsp;</small>')+'</div>'}).join('');
-    var vkChips=(r.posts||[]).map(function(p){return slotChipHtml(p.time,p.title,p.vkState==='none'?'bad':(p.vkState||'none'))}).join('')||'<span class="nd-muted">нет постов</span>';
+    var slotList=(r.slots&&r.slots.length)?r.slots:(r.posts||[]).map(function(p){return {time:p.time,title:p.title,tg:p.tg?'ok':'bad',vk:p.vkState==='none'?'bad':(p.vkState||'none')}});
+    var tgChips=slotList.map(function(x){return slotChipHtml(x.time,x.title,x.tg)}).join('')||'<span class="nd-muted">нет слотов</span>';
+    var vkChips=slotList.map(function(x){return slotChipHtml(x.time,x.title,x.vk)}).join('')||'<span class="nd-muted">нет слотов</span>';
     var posts=(r.posts||[]).map(function(p){
       return '<div class="nd-post"><time>'+esc(p.time)+'</time><span title="'+esc(p.title)+'">'+esc(p.title)+(p.source?' <em class="nd-muted">· '+esc(p.source)+'</em>':'')+'</span><span class="nd-muted">'+(p.tg?'TG ':(p.tgUncertain?'TG? ':''))+(p.vk?'VK':(p.vkState==='wait'?'VK⏳':(p.vkFailed?'<b class="nd-bad">VK✗</b>':'')))+'</span></div>';
     }).join('')||'<div class="empty">В этот день постов нет</div>';
@@ -3577,7 +3579,7 @@ function renderNetworkDay(){
         '<div class="nd-hide'+(r.vkFailed?' nd-bad':'')+'">VK '+r.vk+(r.vkFailed?' ✗'+r.vkFailed:'')+'</div>'+
         '<div class="nd-muted">▾</div>'+
       '</div>'+
-      '<div class="nd-body"><div class="strip-row"><b>Telegram</b><div class="nd-hours" style="flex:1">'+hoursHtml+'</div></div><div class="strip-row"><b>VK</b><div class="strip-chips">'+vkChips+'</div></div>'+posts+
+      '<div class="nd-body"><div class="strip-row"><b>Telegram</b><div class="strip-chips">'+tgChips+'</div></div><div class="strip-row"><b>VK</b><div class="strip-chips">'+vkChips+'</div></div>'+posts+
         '<div style="margin-top:8px"><button type="button" onclick="openWorkspaceFromNetwork('+ja(r.id)+')">Открыть кабинет канала →</button></div></div>'+
     '</div>';
   }).join(''):'<div class="empty">Каналов нет</div>';
