@@ -14807,7 +14807,15 @@ async function reconcilePostmypostPending() {
       if (!list.length) return;
       const statuses = new Map();
       for (const e of list.filter(function(x){ return x && !x.failedAt; }).slice(0, 40)) {
-        try { const pub = await pmp.getPublication(e.id); statuses.set(e.id, Number(pub && pub.publication_status)); } catch (error) { console.warn("VK_PMP_RECONCILE_CHECK_FAILED " + JSON.stringify({ workspace: ws.id, publication_id: e.id, error: String(error && error.message || error).slice(0, 160) })); }
+        try {
+          const pub = await pmp.getPublication(e.id);
+          statuses.set(e.id, Number(pub && pub.publication_status));
+          // Diagnostics for posts that Postmypost accepted but did not publish (no tokens in this payload).
+          if (Number(pub && pub.publication_status) !== 1 && Date.now() - Date.parse(e.at) >= 30 * 60000 && (!e.diagAt || Date.now() - Date.parse(e.diagAt) >= 6 * 3600000)) {
+            e.diagAt = new Date().toISOString();
+            console.warn("VK_PMP_STUCK_DETAIL " + JSON.stringify({ workspace: ws.id, publication_id: e.id, age_min: Math.round((Date.now() - Date.parse(e.at)) / 60000), raw: JSON.stringify(pub).replace(/"content":"[^"]{0,2000}"/g, '"content":"…"').slice(0, 900) }));
+          }
+        } catch (error) { console.warn("VK_PMP_RECONCILE_CHECK_FAILED " + JSON.stringify({ workspace: ws.id, publication_id: e.id, error: String(error && error.message || error).slice(0, 160) })); }
       }
       const res = pmpApplyStatuses(list, statuses, Date.now());
       state.pmpPending = res.keep;
