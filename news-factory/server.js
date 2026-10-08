@@ -15068,7 +15068,19 @@ setTimeout(function mediaPruneTimer() {
 // could not be saved (Telegram messages 95, 96, 97). 95 stays (the one in VK); 96 and 97 are deleted through the bot and their
 // history entries are marked so they no longer count as published/failed posts. Only these exact message ids, only this channel.
 const TG_DUP_DELETE_MARKER = "v0.69.1-tg-dup-delete";
-const TG_DUP_DELETE = { chtotamzvezd: [96, 97] };
+// Second batch (same owner request): duplicates found on the public channel pages after the full-disk incident (13:00 slot)
+// and after a redeploy that overlapped the 16:00 slot. Every id was checked on t.me/s/<channel>: identical text to the
+// earlier message right before it. The earliest message of each group stays.
+const TG_DUP_DELETE = {
+  chtotamzvezd: [96, 97],
+  chtotamsport: [95, 99],
+  chtotamigry: [90, 93],
+  chtotamkino: [90, 94],
+  chtotamtachki: [105, 106, 110],
+  chtotamtech: [91, 92],
+  chtotamtour: [93, 94],
+  chtotameda: [94]
+};
 async function deleteKnownTelegramDuplicatesForCurrentWorkspace() {
   const ids = TG_DUP_DELETE[currentWorkspaceId()];
   if (!ids) return { skipped: "none" };
