@@ -15067,19 +15067,13 @@ setTimeout(function mediaPruneTimer() {
 // v0.69.1 one-time (the owner asked for it): the 13:00 slot of "Что там у звёзд?" was published three times while the state
 // could not be saved (Telegram messages 95, 96, 97). 95 stays (the one in VK); 96 and 97 are deleted through the bot and their
 // history entries are marked so they no longer count as published/failed posts. Only these exact message ids, only this channel.
-const TG_DUP_DELETE_MARKER = "v0.69.1-tg-dup-delete";
-// Second batch (same owner request): duplicates found on the public channel pages after the full-disk incident (13:00 slot)
-// and after a redeploy that overlapped the 16:00 slot. Every id was checked on t.me/s/<channel>: identical text to the
-// earlier message right before it. The earliest message of each group stays.
+const TG_DUP_DELETE_MARKER = "v0.69.3-tg-dup-delete-3";
+// Third batch (same owner request): in three channels the later duplicate carries the VK link and was kept by the guard of
+// batch 2, so the identical EARLIER message is removed instead (verified on t.me/s/<channel>: 104/106, 90/92, 92/94 are identical).
 const TG_DUP_DELETE = {
-  chtotamzvezd: [96, 97],
-  chtotamsport: [95, 99],
-  chtotamigry: [90, 93],
-  chtotamkino: [90, 94],
-  chtotamtachki: [105, 106, 110],
-  chtotamtech: [91, 92],
-  chtotamtour: [93, 94],
-  chtotameda: [94]
+  chtotamtachki: [104],
+  chtotamtech: [90],
+  chtotamtour: [92]
 };
 async function deleteKnownTelegramDuplicatesForCurrentWorkspace() {
   const ids = TG_DUP_DELETE[currentWorkspaceId()];
