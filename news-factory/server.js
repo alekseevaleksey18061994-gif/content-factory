@@ -30,6 +30,7 @@ import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
+import { collectSkipDecision, COLLECT_SKIP_MIN_QUEUE_DEFAULT, COLLECT_SKIP_MAX_STALE_MIN_DEFAULT } from "./lib/collect-guard.js";
 import { diskUsage, diskIsLow, DISK_ALERT_PCT, MEDIA_PRUNE_DEFAULT_DAYS, referencedMediaNames, planMediaPrune, listMediaFiles, pruneMedia } from "./lib/disk-guard.js";
 import { recordPending as pmpRecordPending, applyStatuses as pmpApplyStatuses, summarize as pmpSummarize } from "./lib/pmp-reconcile.js";
 import { createPostmypostClient, resolvePostmypostTarget, listPostmypostAccounts, matchWorkspacesToAccounts, PUBLICATION_STATUS as PMP_STATUS } from "./lib/postmypost.js";
@@ -6840,6 +6841,31 @@ function staggeredCollectKey(day, hour) {
   return day + "-" + String(hour).padStart(2, "0") + "-collect";
 }
 
+// Posts that could be assigned to the next hourly slot right now: the same filters as dynamicBestQueueItemRaw for an ordinary
+// slot. Channels with special lanes (money, blogger / russian-ai extra lane) report 0, so their collection is never skipped.
+function readyQueueDepth(time) {
+  const channelId = editorialChannelId();
+  if (channelId === "money" || channelExtraLane()) return 0;
+  const used = dynamicUsedQueueIds();
+  const themes = rubricIds();
+  const desiredRubric = time ? channelSlotRubric(time) : "";
+  const excludedBuckets = new Set(channelStrategy(channelId).excludeBuckets || []);
+  const foreignPublished = CROSS_CHANNEL_DEDUPE_ENABLED ? crossChannelIndex({ publishedOnly: true }) : null;
+  const unifiedFlow = channelUnifiedSlots();
+  return (state.queue || []).filter(function(item) {
+    if (!(item && item.id && item.newsId && item.status !== "media_failed" && item.status !== "publish_failed" && !used.has(item.id) && dynamicItemAgeMs(item) <= dynamicItemMaxAgeMs(item))) return false;
+    if (item.publishRetryAfter && Date.parse(item.publishRetryAfter) > Date.now()) return false;
+    { const pending = pendingAutoTargets(item); if (!pending.telegram && !pending.vk) return false; }
+    if (foreignPublished && crossChannelConflict(item, { index: foreignPublished })) return false;
+    if (!autoQualityEligible(item) || textCardBlocked(item) || ratingBelowAutoThreshold(item)) return false;
+    if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
+    if (desiredRubric && itemRubric(item, themes) !== desiredRubric) return false;
+    if (channelId === "auto") return !isRussianAISource(item);
+    if (unifiedFlow) return true;
+    return !isBloggerSource(item) && !isRussianAISource(item);
+  }).length;
+}
+
 // Runs this channel's collection for the next hourly slot at its own minute. Its completion is kept apart from
 // lastTickKey, so it can never make a slot's publish/prepare action look undone (or done).
 async function staggeredCollectTick(day, hour, minute) {
@@ -6853,6 +6879,22 @@ async function staggeredCollectTick(day, hour, minute) {
   if (state.dynamicScheduler.lastCollectKey === key) return null;
   if (state.mode !== "AUTO") return null;
   if (dynamicDailyPublishedCount(day) >= channelDailyMax()) return null;
+  // v0.70.0: enough ready posts in the queue and a recent real collection -> no LLM work this hour.
+  const skipEnv = process.env.COLLECT_SKIP_MIN_QUEUE;
+  const decision = collectSkipDecision({
+    minDepth: skipEnv == null || skipEnv.trim() === "" || !Number.isFinite(Number(skipEnv)) ? COLLECT_SKIP_MIN_QUEUE_DEFAULT : Number(skipEnv),
+    depth: readyQueueDepth(String(hour + 1).padStart(2, "0") + ":00"),
+    lastCollectAtMs: Date.parse(state.dynamicScheduler.lastCollectAt || ""),
+    nowMs: Date.now(),
+    maxStaleMs: Math.min(240, Math.max(10, Number(process.env.COLLECT_SKIP_MAX_STALE_MIN || COLLECT_SKIP_MAX_STALE_MIN_DEFAULT) || COLLECT_SKIP_MAX_STALE_MIN_DEFAULT)) * 60000
+  });
+  if (decision.skip) {
+    state.dynamicScheduler.lastCollectKey = key; // slot-prep then picks from the queue; it still collects if nothing fits
+    state.dynamicScheduler.lastCollectSkippedAt = new Date().toISOString();
+    saveState();
+    console.log("COLLECT_SKIPPED " + JSON.stringify({ workspace: currentWorkspaceId(), depth: readyQueueDepth(String(hour + 1).padStart(2, "0") + ":00"), reason: decision.reason }));
+    return { ok: true, skipped: "queue_ready" };
+  }
   const started = Date.now();
   try {
     const result = await withDeadline(collectOnce("slot-collect"), SCHEDULER_PREPARE_TIMEOUT_MS, "staggered collect");
@@ -15140,6 +15182,27 @@ setTimeout(function() {
     workspaceContext.run({ workspaceId: ws.id }, function(){ try { closeKnownTelegramMissedForCurrentWorkspace(); } catch (error) { console.warn("TG_MISSED_CLOSE_FAILED " + String(error && error.message || error).slice(0, 200)); } });
   }
 }, 150000).unref();
+
+// v0.70.0: once a day (and 4 min after start) log where the last 24 h of API money went, with cache hit numbers.
+// One line per provider/model/operation, no secrets. Used to decide where caching or smaller prompts pay off.
+async function logCostBreakdown() {
+  if (!db || !dbReady) return;
+  const q = await db.query(
+    "SELECT provider, model, operation, COUNT(*)::int AS calls, COALESCE(SUM(cost_usd),0)::float8 AS cost_usd, " +
+    "COALESCE(SUM(input_tokens),0)::float8 AS input, COALESCE(SUM(cached_input_tokens),0)::float8 AS cached_input, " +
+    "COALESCE(SUM(cache_read_tokens),0)::float8 AS cache_read, COALESCE(SUM(cache_write_tokens),0)::float8 AS cache_write, " +
+    "COALESCE(SUM(output_tokens),0)::float8 AS output FROM cost_events WHERE at >= $1 GROUP BY provider, model, operation ORDER BY cost_usd DESC LIMIT 25",
+    [new Date(Date.now() - 24 * 3600000)]
+  );
+  for (const r of q.rows) {
+    console.log("COST_BREAKDOWN " + JSON.stringify({ provider: r.provider, model: r.model, operation: r.operation, calls: r.calls, usd: Math.round(r.cost_usd * 100) / 100,
+      input_k: Math.round(r.input / 1000), cached_input_k: Math.round(r.cached_input / 1000), cache_read_k: Math.round(r.cache_read / 1000), cache_write_k: Math.round(r.cache_write / 1000), output_k: Math.round(r.output / 1000) }));
+  }
+}
+setTimeout(function costBreakdownTimer() {
+  logCostBreakdown().catch(function(error){ console.warn("COST_BREAKDOWN_FAILED " + String(error && error.message || error).slice(0, 200)); });
+  setTimeout(costBreakdownTimer, 24 * 3600000).unref();
+}, 4 * 60000).unref();
 
 // v0.69.0 one-time: posts that reached Telegram but whose VK part failed only because the disk was full
 // (vkError ENOSPC, last 6 h) are sent to VK now - VK only, never Telegram again. Never run twice per channel.
