@@ -30,6 +30,7 @@ import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
+import { recordPending as pmpRecordPending, applyStatuses as pmpApplyStatuses, summarize as pmpSummarize } from "./lib/pmp-reconcile.js";
 import { createPostmypostClient, resolvePostmypostTarget, listPostmypostAccounts, matchWorkspacesToAccounts, PUBLICATION_STATUS as PMP_STATUS } from "./lib/postmypost.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
 import { isPolicySkipReason, staleYearInTitle, buildPrefilterPrompt, parsePrefilterResult, recordOutcome, autoPauseReason, outcomeForStatus, sourcesNeeded, freshCandidates, sourceHost, sourceKey, RESERVE_SOURCES, SEED_SOURCES, retiredSeedSources, MAX_SOURCES_ADDED_PER_RUN, buildDiscoveryPrompt, parseDiscoveryResult } from "./lib/source-quality.js";
@@ -8501,6 +8502,10 @@ async function publishVkPost(post) {
       throw Object.assign(new Error("Postmypost: публикация " + pubId + " завершилась ошибкой (статус " + waited.status + ")"), { pmpCode: "publication_error", pmpPublicationId: pubId });
     }
     const mode = waited.status === PMP_STATUS.PUBLISHED ? "postmypost" : "postmypost_pending";
+    if (mode === "postmypost_pending") {
+      // Not confirmed yet: remember it, the reconcile timer re-checks it and alerts if it never goes out.
+      try { pmpRecordPending(state, { id: pubId, slug: preview.slug, postId: context.postId, status: waited.status }, Date.now()); saveState(); } catch {}
+    }
     console.log("VK_POSTMYPOST_RESULT " + JSON.stringify(Object.assign({}, pmpContext, { publication_id: pubId, file_id: fileId, status: waited.status, timed_out: Boolean(waited.timedOut) })));
     return published({ post_id: "pmp-" + pubId }, mode, { pmp_publication_id: pubId });
   }
@@ -12082,7 +12087,9 @@ async function buildSystemStatus(force) {
       if (postmypostMap.error) return { state: "partial", description: "Postmypost не отвечает, используется последняя карта групп", detail: head + " · ошибка: " + postmypostMap.error.slice(0, 120), next: "Проверить POSTMYPOST_TOKEN и доступность postmypost.io" };
       if (!postmypostMap.at) return { state: "partial", description: "Postmypost ещё не проверен после запуска", detail: head, next: "" };
       if (without.length) return { state: "partial", description: "Postmypost работает, но не у всех каналов есть VK-группа", detail: head + " · без VK: " + without.slice(0, 6).join(", "), next: "Подключить эти группы в кабинете Postmypost" };
-      return { state: "connected", description: "Postmypost: публикация в VK работает", detail: head, next: "" };
+      const pend = pmpPendingSummary();
+      if (pend.failed || pend.stuck) return { state: "partial", description: "Postmypost принял посты, но в VK они не вышли: зависло " + pend.stuck + ", с ошибкой " + pend.failed, detail: head + " · ждут: " + pend.waiting + " · самый старый " + pend.oldestMin + " мин", next: "Открыть кабинет Postmypost: проверить подключение VK-групп и очередь публикаций" };
+      return { state: "connected", description: "Postmypost: публикация в VK работает", detail: head + (pend.waiting ? " · в очереди Postmypost: " + pend.waiting : ""), next: "" };
     })(),
     processHealth: (function(){
       const lag = loopLagHistogram ? Math.round(loopLagHistogram.percentile(99) / 1e6) : 0;
@@ -14755,6 +14762,7 @@ async function healthAlertsTick() {
   const result = evaluateHealth({
     nowMs: Date.now(), channels: channels, silenceHours: HEALTH_SILENCE_HOURS,
     postmypostError: VK_VIA_POSTMYPOST ? postmypostMap.error : "",
+    pmpPending: VK_VIA_POSTMYPOST ? pmpPendingSummary() : null,
     botConfigured: true, botOk: botOk, proxyConfigured: Boolean(sourceProxy), proxyOk: proxyOk,
     dbConfigured: Boolean(db), dbReady: Boolean(db) ? dbReady : true
   }, healthAlertsPrev);
@@ -14769,6 +14777,38 @@ setTimeout(function healthTick() {
   healthAlertsTick().catch(function(error){ console.warn("HEALTH_ALERTS_FAILED " + String(error && error.message || error).slice(0, 200)); });
   setTimeout(healthTick, 10 * 60 * 1000).unref();
 }, 6 * 60 * 1000).unref();
+
+// Re-checks Postmypost publications that were still queued when we stopped waiting (see lib/pmp-reconcile.js).
+async function reconcilePostmypostPending() {
+  if (!POSTMYPOST_TOKEN || !VK_VIA_POSTMYPOST) return;
+  const pmp = postmypostClient();
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    await workspaceContext.run({ workspaceId: ws.id }, async function(){
+      const list = Array.isArray(state.pmpPending) ? state.pmpPending : [];
+      if (!list.length) return;
+      const statuses = new Map();
+      for (const e of list.filter(function(x){ return x && !x.failedAt; }).slice(0, 40)) {
+        try { const pub = await pmp.getPublication(e.id); statuses.set(e.id, Number(pub && pub.publication_status)); } catch (error) { console.warn("VK_PMP_RECONCILE_CHECK_FAILED " + JSON.stringify({ workspace: ws.id, publication_id: e.id, error: String(error && error.message || error).slice(0, 160) })); }
+      }
+      const res = pmpApplyStatuses(list, statuses, Date.now());
+      state.pmpPending = res.keep;
+      for (const e of res.published) console.log("VK_PMP_PUBLISHED_LATE " + JSON.stringify({ workspace: ws.id, publication_id: e.id, slug: e.slug, minutes: Math.round((Date.now() - Date.parse(e.at)) / 60000) }));
+      for (const e of res.failed) console.error("VK_PMP_FAILED_LATE " + JSON.stringify({ workspace: ws.id, publication_id: e.id, slug: e.slug, pmp_status: e.status }));
+      for (const e of res.expired) console.error("VK_PMP_EXPIRED " + JSON.stringify({ workspace: ws.id, publication_id: e.id, slug: e.slug }));
+      if (res.published.length || res.failed.length || res.expired.length) saveState();
+    });
+  }
+}
+function pmpPendingSummary() {
+  const all = [];
+  for (const ws of workspaceStore.workspaces) { const l = ws && ws.state && ws.state.pmpPending; if (Array.isArray(l)) for (const e of l) all.push(Object.assign({ ws: ws.name }, e)); }
+  return pmpSummarize(all, Date.now());
+}
+setTimeout(function pmpTick() {
+  reconcilePostmypostPending().catch(function(error){ console.warn("VK_PMP_RECONCILE_FAILED " + String(error && error.message || error).slice(0, 200)); });
+  setTimeout(pmpTick, 5 * 60 * 1000).unref();
+}, 4 * 60 * 1000).unref();
 
 setTimeout(setupNewChannels, 30000);
 setTimeout(function(){ logPostmypostStatus().catch(function(){}); }, 20000);

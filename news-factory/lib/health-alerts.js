@@ -42,6 +42,8 @@ export function evaluateHealth(snapshot, prev) {
     for (const c of silent) bad["silent:" + c.id] = "🔕 Канал «" + c.name + "» не публикует уже " + c.hours + " ч (с 09:00 МСК).\nПроверьте очередь и источники в админке.";
   }
   if (snapshot.postmypostError) bad["postmypost"] = "⚠️ Postmypost не отвечает — посты в VK могут не уходить.\n" + String(snapshot.postmypostError).slice(0, 160) + "\nПроверьте POSTMYPOST_TOKEN и доступ к postmypost.io.";
+  const pp = snapshot.pmpPending;
+  if (pp && (pp.stuck || pp.failed)) bad["pmp:stuck"] = "⚠️ Посты в VK не вышли: Postmypost принял, но не опубликовал — зависло " + pp.stuck + ", с ошибкой " + pp.failed + (pp.oldestMin ? " (самому старому " + pp.oldestMin + " мин)" : "") + ".\nОткройте кабинет Postmypost: проверьте подключение VK-групп и очередь публикаций.";
   if (snapshot.botConfigured && snapshot.botOk === false) bad["bot"] = "⚠️ Telegram-бот не отвечает на проверку — возможно, токен отозван. Публикация в Telegram может не работать.";
   if (snapshot.proxyConfigured && snapshot.proxyOk === false) bad["proxy"] = "⚠️ Российский прокси не отвечает — российские источники перестанут собираться. Проверьте оплату прокси.";
   if (snapshot.dbConfigured && snapshot.dbReady === false) bad["db"] = "🚨 База данных PostgreSQL недоступна. Часть функций остановлена.";
@@ -71,6 +73,7 @@ export function evaluateHealth(snapshot, prev) {
 
 function describeKey(key, snapshot) {
   if (key === "postmypost") return "Postmypost отвечает.";
+  if (key === "pmp:stuck") return "посты в VK выходят.";
   if (key === "bot") return "Telegram-бот отвечает.";
   if (key === "proxy") return "российский прокси работает.";
   if (key === "db") return "база данных доступна.";
