@@ -2435,6 +2435,7 @@ input,select,textarea{border-radius:12px!important}
 .nd-bar{height:6px;border-radius:4px;background:rgba(67,129,185,.14);margin-top:6px;overflow:hidden}.nd-bar i{display:block;height:100%;background:#18b67b;border-radius:4px}.nd-bar i.low{background:#e79a27}.nd-bar i.zero{background:#ef5e69}
 .nd-bad{color:#bd4450;font-weight:800}.nd-muted{color:#667797;font-size:12px}
 .nd-body{display:none;padding:2px 15px 14px;border-top:1px solid rgba(67,129,185,.12)}.nd-row.open .nd-body{display:block}
+.cost-range[hidden]{display:none}.cost-range{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.cost-range label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700}.cost-range input[type=date]{min-height:40px;padding:0 10px;border-radius:12px;font:inherit}
 .strip-row{display:flex;align-items:flex-start;gap:8px;margin:8px 0}.strip-row>b{flex:0 0 74px;font-size:12px;padding-top:6px}.strip-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
 .sc{display:inline-flex;flex-direction:column;min-width:74px;max-width:150px;padding:5px 8px;border-radius:9px;font-size:11px;line-height:1.25;border:1px solid transparent}.sc b{font-size:12px}.sc span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sc.ok{background:#d9f5e6;color:#0b6b3a;border-color:#8fd9b0}.sc.bad{background:#fde1e3;color:#a1192a;border-color:#f19aa3}.sc.wait{background:#fff0cc;color:#8a5a00;border-color:#f0cf7a}.sc.future,.sc.none{background:rgba(67,129,185,.10);color:#667797;border-color:transparent}
@@ -2898,12 +2899,17 @@ input,select,textarea{border-radius:12px!important}
         <div class="page-head">
           <div><h2>Расходы</h2><p>API и инфраструктура: сколько тратит каждый сервис и на какие операции.</p></div>
           <div class="cost-toolbar">
-            <select id="costDays" onchange="loadCosts(true)">
+            <select id="costDays" onchange="costPeriodChanged()">
               <option value="1">Сегодня / 24 ч</option>
               <option value="7">7 дней</option>
               <option value="30" selected>30 дней</option>
               <option value="62">62 дня</option>
+              <option value="range">Выбрать дату…</option>
             </select>
+            <div id="costRange" class="cost-range" hidden>
+              <label>с <input type="date" id="costFrom" onchange="loadCosts(true)"></label>
+              <label>по <input type="date" id="costTo" onchange="loadCosts(true)"></label>
+            </div>
             <select id="costScope" onchange="loadCosts(true)">
               <option value="network" selected>Вся сеть каналов</option>
               <option value="workspace">Текущий канал</option>
@@ -4912,12 +4918,30 @@ async function saveApiBalance(provider){
     renderCostBalances(j.balances||[],true);toast('Остаток сохранён');
   }catch(e){toast('Остаток: '+e.message)}
 }
+function costTodayKey(){return moscowDateKey(new Date())}
+// "Выбрать дату…": show two date fields (one day = same date in both), start with today.
+function costPeriodChanged(){
+  var custom=String((el('costDays')||{}).value)==='range',box=el('costRange');
+  if(box)box.hidden=!custom;
+  if(custom){
+    var today=costTodayKey();
+    ['costFrom','costTo'].forEach(function(id){var f=el(id);if(f){f.max=today;if(!f.value)f.value=today}});
+  }
+  loadCosts(true);
+}
 async function loadCosts(force){
-  var days=Number((el('costDays')||{}).value||30);
+  var rawDays=String((el('costDays')||{}).value||'30'),isRange=rawDays==='range';
+  var days=isRange?30:Number(rawDays||30);
   var scope=String((el('costScope')||{}).value||'network');
+  var rangeQuery='';
+  if(isRange){
+    var from=String((el('costFrom')||{}).value||''),to=String((el('costTo')||{}).value||'')||from;
+    if(from&&to&&from>to){var t=from;from=to;to=t;if(el('costFrom'))el('costFrom').value=from;if(el('costTo'))el('costTo').value=to}
+    if(from)rangeQuery='&from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to);
+  }
   try{
     if(el('costPeriod'))el('costPeriod').textContent='Обновляю…';
-    var j=await api('/api/costs?days='+encodeURIComponent(days)+'&scope='+encodeURIComponent(scope));
+    var j=await api('/api/costs?days='+encodeURIComponent(days)+'&scope='+encodeURIComponent(scope)+rangeQuery);
     var totals=j.totals||{},providers=j.providers||[],infra=j.infrastructure||{};renderCostBudget(j.budget||{});renderCostBalances(j.balances||[]);
     var byProvider={};providers.forEach(function(x){byProvider[x.id]=x});
     var oa=byProvider.openai||{},an=byProvider.anthropic||{};
@@ -4934,7 +4958,7 @@ async function loadCosts(force){
     if(el('costFx'))el('costFx').textContent=j.currency&&j.currency.usdRub?'$1 = '+Number(j.currency.usdRub).toFixed(2)+' ₽':'Курс USD';
     if(el('costPeriod')){
       var since=j.trackingStartedAt?new Date(j.trackingStartedAt).toLocaleString('ru-RU'):'сейчас';
-      el('costPeriod').textContent=(scope==='workspace'?'Текущий канал':'Вся сеть')+' · '+days+' дн. · учёт с '+since;
+      el('costPeriod').textContent=(scope==='workspace'?'Текущий канал':'Вся сеть')+' · '+(isRange&&j.selectedPeriod&&j.selectedPeriod.label?j.selectedPeriod.label:days+' дн.')+' · учёт с '+since;
     }
     if(el('costNotice')){
       var extra=Number(totals.unpricedCalls||0)>0?' · Без цены: '+totals.unpricedCalls+' вызовов.':'';

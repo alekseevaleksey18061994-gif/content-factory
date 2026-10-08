@@ -58,6 +58,7 @@ import {
   resolveCostPricing,
   calculateUsageCost as calculateApiUsageCost,
   moscowPeriodBounds,
+  moscowRangeBounds,
   monthForecastCost,
   percentChange,
   BALANCE_PROVIDERS,
@@ -2302,13 +2303,14 @@ function publishedCountsBetween(startAt, endAt, workspaceOnly, workspaceId) {
   return out;
 }
 
-async function buildCostsReport(days, scope, workspaceId, requestedPeriod) {
+async function buildCostsReport(days, scope, workspaceId, requestedPeriod, requestedRange) {
   const now = new Date();
   const safeDays = Math.max(1, Math.min(COST_TRACKING_RETENTION_DAYS, Number(days || 30)));
   const workspaceOnly = scope === "workspace";
   const requested = String(requestedPeriod || "").toLowerCase();
   const period = ["today","7","30","month","year"].includes(requested) ? requested : "";
-  const bounds = moscowPeriodBounds(period, now, safeDays);
+  const rangeBounds = requestedRange && requestedRange.from ? moscowRangeBounds(requestedRange.from, requestedRange.to, now) : null;
+  const bounds = rangeBounds || moscowPeriodBounds(period, now, safeDays);
   const rate = await getUsdRubRate();
   const infrastructure = await getInfrastructureEstimate();
   const convertRub = function(usd){ return rate ? Number(usd || 0) * rate : null; };
@@ -2403,8 +2405,8 @@ async function buildCostsReport(days, scope, workspaceId, requestedPeriod) {
     workspaceParams
   );
 
-  const dailyBounds = moscowPeriodBounds("30", now, 30);
-  const dailyParams = [dailyBounds.start.toISOString(), now.toISOString()];
+  const dailyBounds = rangeBounds || moscowPeriodBounds("30", now, 30);
+  const dailyParams = [dailyBounds.start.toISOString(), (rangeBounds ? rangeBounds.end : now).toISOString()];
   let dailyWorkspace = "";
   if (workspaceOnly) {
     dailyParams.push(workspaceId);
@@ -12483,7 +12485,9 @@ const server = http.createServer(async function(req, res) {
       const days = Number(url.searchParams.get("days") || 30);
       const scope = String(url.searchParams.get("scope") || "network").toLowerCase() === "workspace" ? "workspace" : "network";
       const period = String(url.searchParams.get("period") || "").toLowerCase();
-      return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId(), period), { "cache-control": "no-store" });
+      const from = String(url.searchParams.get("from") || "").trim(), to = String(url.searchParams.get("to") || "").trim();
+      if (from && !moscowRangeBounds(from, to || from, new Date())) return sendJson(res, 400, { ok: false, error: "Неверная дата: нужен формат ГГГГ-ММ-ДД, не позже сегодняшнего дня, не длиннее 366 дней." });
+      return sendJson(res, 200, await buildCostsReport(days, scope, currentWorkspaceId(), period, from ? { from: from, to: to || from } : null), { "cache-control": "no-store" });
     }
     if (req.method === "POST" && p === "/api/costs/budget") {
       const body = await readJsonObject(req);

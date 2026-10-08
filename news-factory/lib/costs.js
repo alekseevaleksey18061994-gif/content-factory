@@ -405,6 +405,42 @@ export function moscowPeriodBounds(period, nowInput, fallbackDays) {
   };
 }
 
+// v0.70.1: any calendar range chosen by the owner (Moscow days, both ends included). Returns null for anything invalid.
+export const COST_RANGE_MAX_DAYS = 366;
+const RU_MONTHS_SHORT = ["янв","фев","мар","апр","мая","июн","июл","авг","сен","окт","ноя","дек"];
+function parseDayKey(key) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || "").trim());
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  const probe = new Date(Date.UTC(y, mo - 1, d));
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;
+  return { y, mo, d };
+}
+function dayLabel(k) { return k.d + " " + RU_MONTHS_SHORT[k.mo - 1] + " " + k.y; }
+export function moscowRangeBounds(fromKey, toKey, nowInput) {
+  const now = nowInput instanceof Date ? nowInput : new Date(nowInput || Date.now());
+  const a = parseDayKey(fromKey), b = parseDayKey(toKey || fromKey);
+  if (!a || !b) return null;
+  const start = moscowMidnightUtc(a.y, a.mo, a.d);
+  const nextMidnight = new Date(moscowMidnightUtc(b.y, b.mo, b.d).getTime() + DAY_MS);
+  if (start.getTime() >= nextMidnight.getTime()) return null;
+  if ((nextMidnight.getTime() - start.getTime()) / DAY_MS > COST_RANGE_MAX_DAYS) return null;
+  if (start.getTime() >= now.getTime()) return null; // a range that has not started yet has nothing to show
+  const end = nextMidnight.getTime() > now.getTime() ? now : nextMidnight;
+  const duration = Math.max(1, end.getTime() - start.getTime());
+  const p = moscowParts(now);
+  return {
+    period: "range",
+    label: fromKey === (toKey || fromKey) ? dayLabel(a) : dayLabel(a) + " – " + dayLabel(b),
+    start, end,
+    previousStart: new Date(start.getTime() - duration),
+    previousEnd: start,
+    moscowYear: p.year, moscowMonth: p.month, moscowDay: p.day,
+    daysInMonth: new Date(Date.UTC(p.year, p.month, 0)).getUTCDate(),
+    from: String(fromKey), to: String(toKey || fromKey)
+  };
+}
+
 export function monthForecastCost(monthToDate, nowInput) {
   const value = Number(monthToDate || 0);
   const p = moscowParts(nowInput instanceof Date ? nowInput : new Date(nowInput || Date.now()));
