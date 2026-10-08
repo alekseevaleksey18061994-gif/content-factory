@@ -3554,6 +3554,7 @@ function renderNetworkDay(){
   if(el('networkDayTotals'))el('networkDayTotals').innerHTML=
     '<span><b>'+Number(t.published||0)+(t.planned&&!d.isFuture?' из '+Number(t.planned):'')+'</b>постов</span>'+
     '<span><b>'+Number(t.tg||0)+'</b>в Telegram</span>'+
+    (t.tgFailed?'<span class="nd-bad"><b>'+Number(t.tgFailed)+'</b>Telegram не дошло</span>':'')+
     '<span><b>'+Number(t.vk||0)+'</b>в VK</span>'+
     (t.vkWait?'<span><b>'+Number(t.vkWait)+'</b>VK в очереди</span>':'')+
     (t.vkFailed?'<span class="nd-bad"><b>'+Number(t.vkFailed)+'</b>VK не вышло</span>':'')+
@@ -3575,7 +3576,7 @@ function renderNetworkDay(){
         '<div><div class="nd-name">'+esc(r.name||'Канал')+'</div><div class="nd-bar"><i class="'+cls+'" style="width:'+pct+'%"></i></div></div>'+
         '<div><b>'+r.published+'</b>'+(r.planned&&!d.isFuture?' <span class="nd-muted">из '+r.planned+'</span>':'')+'</div>'+
         '<div class="nd-hide nd-muted">'+(r.firstAt?esc(r.firstAt)+' – '+esc(r.lastAt):'—')+'</div>'+
-        '<div class="nd-hide">TG '+r.tg+'</div>'+
+        '<div class="nd-hide'+(r.tgFailed?' nd-bad':'')+'">TG '+r.tg+(r.tgFailed?' ✗'+r.tgFailed:'')+'</div>'+
         '<div class="nd-hide'+(r.vkFailed?' nd-bad':'')+'">VK '+r.vk+(r.vkFailed?' ✗'+r.vkFailed:'')+'</div>'+
         '<div class="nd-muted">▾</div>'+
       '</div>'+
