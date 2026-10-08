@@ -14770,7 +14770,7 @@ function tgMissedSummary() {
   const out = { count: 0, channels: [] };
   for (const ws of workspaceStore.workspaces) {
     const n = ((ws && ws.state && ws.state.history) || []).filter(function(h){
-      if (!h || !h.publishedAt || h.publicationOrigin === "test" || h.publicationOrigin === "duplicate-removed") return false;
+      if (!h || !h.publishedAt || h.publicationOrigin === "test" || h.publicationOrigin === "duplicate-removed" || h.tgMissedClosedAt) return false;
       const t = Date.parse(h.publishedAt);
       return t >= since && t <= minAge && !h.messageId && !h.telegramUncertain;
     }).length;
@@ -15114,6 +15114,32 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("TG_DUP_DELETE_FAILED " + String(error && error.message || error).slice(0, 200)); });
 }, 120000).unref();
+
+// v0.69.4 one-time (the owner said "закрой"): the Sport 12:00 post "17 медалей: Россия выиграла юниорское Евро" is in VK but never
+// reached Telegram (no message id). It is ~8 h old and is NOT republished; the entry is only marked closed so the tg:missed alert stops.
+const TG_MISSED_CLOSE_MARKER = "v0.69.4-tg-missed-close";
+function closeKnownTelegramMissedForCurrentWorkspace() {
+  if (currentWorkspaceId() !== "chtotamsport") return { skipped: "none" };
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (state.migrations.includes(TG_MISSED_CLOSE_MARKER)) return { skipped: "done" };
+  if (storageNotSaving()) return { skipped: "storage_not_saving" };
+  const closed = [];
+  for (const h of state.history || []) {
+    if (h && !h.messageId && !h.telegramUncertain && !h.tgMissedClosedAt && /17 медалей/i.test(String(h.title || ""))) {
+      h.tgMissedClosedAt = new Date().toISOString(); closed.push(h.id || h.title);
+    }
+  }
+  state.migrations.push(TG_MISSED_CLOSE_MARKER);
+  saveState();
+  console.log("TG_MISSED_CLOSE " + JSON.stringify({ workspace: currentWorkspaceId(), closed: closed }));
+  return { closed: closed };
+}
+setTimeout(function() {
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state || ws.id !== "chtotamsport") continue;
+    workspaceContext.run({ workspaceId: ws.id }, function(){ try { closeKnownTelegramMissedForCurrentWorkspace(); } catch (error) { console.warn("TG_MISSED_CLOSE_FAILED " + String(error && error.message || error).slice(0, 200)); } });
+  }
+}, 150000).unref();
 
 // v0.69.0 one-time: posts that reached Telegram but whose VK part failed only because the disk was full
 // (vkError ENOSPC, last 6 h) are sent to VK now - VK only, never Telegram again. Never run twice per channel.
