@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.68.4",
+  "version": "0.69.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -58,7 +58,8 @@
     "test:safe-fetch-cookie": "node scripts/safe-fetch-cookie-test.js",
     "test:text-card-upgrade": "node scripts/text-card-upgrade-test.js",
     "test:rubrics-v055": "node scripts/rubrics-v055-test.js",
-    "test:pmp-reconcile": "node scripts/pmp-reconcile-test.js"
+    "test:pmp-reconcile": "node scripts/pmp-reconcile-test.js",
+    "test:disk-guard": "node scripts/disk-guard-test.js"
   },
   "dependencies": {
     "pg": "^8.13.1",

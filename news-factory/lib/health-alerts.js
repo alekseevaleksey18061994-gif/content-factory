@@ -44,6 +44,8 @@ export function evaluateHealth(snapshot, prev) {
   if (snapshot.postmypostError) bad["postmypost"] = "⚠️ Postmypost не отвечает — посты в VK могут не уходить.\n" + String(snapshot.postmypostError).slice(0, 160) + "\nПроверьте POSTMYPOST_TOKEN и доступ к postmypost.io.";
   const pp = snapshot.pmpPending;
   if (pp && (pp.stuck || pp.failed)) bad["pmp:stuck"] = "⚠️ Посты в VK не вышли: Postmypost принял, но не опубликовал — зависло " + pp.stuck + ", с ошибкой " + pp.failed + (pp.oldestMin ? " (самому старому " + pp.oldestMin + " мин)" : "") + ".\nОткройте кабинет Postmypost: проверьте подключение VK-групп и очередь публикаций.";
+  const dk = snapshot.disk;
+  if (dk && Number(dk.usedPct) >= Number(snapshot.diskAlertPct || 85)) bad["disk:full"] = "🚨 Диск /data заполнен на " + dk.usedPct + "% (свободно " + dk.freeMB + " МБ из " + dk.totalMB + "). При нуле состояние не сохраняется и посты могут выходить повторно.\nУвеличьте том в Railway или включите очистку картинок (MEDIA_PRUNE_EXECUTE=true).";
   const tm = snapshot.tgMissed;
   if (tm && tm.count) bad["tg:missed"] = "⚠️ В Telegram не дошло постов: " + tm.count + " (" + (tm.channels || []).slice(0, 4).join(", ") + ").\nВ слотах дня они красные; причина в логах: TELEGRAM_PUBLISH_FAILED.";
   if (snapshot.botConfigured && snapshot.botOk === false) bad["bot"] = "⚠️ Telegram-бот не отвечает на проверку — возможно, токен отозван. Публикация в Telegram может не работать.";
@@ -77,6 +79,7 @@ function describeKey(key, snapshot) {
   if (key === "postmypost") return "Postmypost отвечает.";
   if (key === "pmp:stuck") return "посты в VK выходят.";
   if (key === "tg:missed") return "посты доходят в Telegram.";
+  if (key === "disk:full") return "на диске достаточно места.";
   if (key === "bot") return "Telegram-бот отвечает.";
   if (key === "proxy") return "российский прокси работает.";
   if (key === "db") return "база данных доступна.";
