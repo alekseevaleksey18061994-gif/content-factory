@@ -23,8 +23,23 @@ function vkFailed(h) {
   return Boolean(h.vkError) || /fail|error|media_failed/.test(status);
 }
 
+export const VK_STUCK_MS = 30 * 60000;
+// What really happened to the VK copy of a published post:
+// ok = confirmed on the wall, wait = Postmypost still has it queued (< 30 min), bad = failed / stuck / never sent, none = VK not used.
+export function vkSlotState(h, nowMs) {
+  const hasId = Boolean(h && h.vkPostId);
+  if (hasId && h.vkStatus !== "pmp_failed" && !vkFailed(h)) {
+    if (h.vkMode !== "postmypost_pending") return "ok";
+    const age = nowMs - Date.parse(h.publishedAt);
+    return age >= VK_STUCK_MS ? "bad" : "wait";
+  }
+  if (hasId || vkFailed(h) || Number(h && h.vkAttempts) > 0) return "bad";
+  return "none";
+}
+
 // ws: { id, name, handle, autoPublish, mode, plannedPerDay, queue, history }
-export function channelDay(ws, dateKey) {
+export function channelDay(ws, dateKey, nowMs) {
+  nowMs = Number(nowMs) || Date.now();
   const posts = [];
   const hours = new Array(24).fill(0);
   for (const h of Array.isArray(ws.history) ? ws.history : []) {
@@ -32,8 +47,9 @@ export function channelDay(ws, dateKey) {
     const t = Date.parse(h.publishedAt);
     if (!Number.isFinite(t) || moscowDayKey(t) !== dateKey) continue;
     const tg = Boolean(h.messageId) && !h.telegramUncertain;
-    const vk = Boolean(h.vkPostId);
-    posts.push({ ms: t, time: hhmm(t), title: String(h.title || "Публикация").slice(0, 140), source: String(h.sourceName || "").slice(0, 60), tg: tg, tgUncertain: Boolean(h.telegramUncertain), vk: vk, vkFailed: !vk && vkFailed(h), origin: String(h.publicationOrigin || "") });
+    const vkState = vkSlotState(h, nowMs);
+    const vk = vkState === "ok";
+    posts.push({ ms: t, time: hhmm(t), title: String(h.title || "Публикация").slice(0, 140), source: String(h.sourceName || "").slice(0, 60), tg: tg, tgUncertain: Boolean(h.telegramUncertain), vk: vk, vkState: vkState, vkFailed: vkState === "bad", origin: String(h.publicationOrigin || "") });
     hours[new Date(t + MSK_OFFSET_MS).getUTCHours()] += 1;
   }
   posts.sort(function(a, b){ return a.ms - b.ms; });
@@ -45,15 +61,16 @@ export function channelDay(ws, dateKey) {
     tg: posts.filter(function(p){ return p.tg; }).length,
     vk: posts.filter(function(p){ return p.vk; }).length,
     vkFailed: posts.filter(function(p){ return p.vkFailed; }).length,
+    vkWait: posts.filter(function(p){ return p.vkState === "wait"; }).length,
     firstAt: posts.length ? posts[0].time : "", lastAt: posts.length ? posts[posts.length - 1].time : "",
     queue: Number(ws.queue) || 0,
     hours: hours,
-    posts: posts.map(function(p){ return { time: p.time, title: p.title, source: p.source, tg: p.tg, tgUncertain: p.tgUncertain, vk: p.vk, vkFailed: p.vkFailed }; })
+    posts: posts.map(function(p){ return { time: p.time, title: p.title, source: p.source, tg: p.tg, tgUncertain: p.tgUncertain, vk: p.vk, vkState: p.vkState, vkFailed: p.vkFailed }; })
   };
 }
 
 export function networkDay(workspaces, dateKey, nowMs) {
-  const rows = (workspaces || []).map(function(ws){ return channelDay(ws, dateKey); });
+  const rows = (workspaces || []).map(function(ws){ return channelDay(ws, dateKey, nowMs); });
   const today = moscowDayKey(nowMs || Date.now());
   return {
     date: dateKey, isToday: dateKey === today, isFuture: dateKey > today,
@@ -64,6 +81,7 @@ export function networkDay(workspaces, dateKey, nowMs) {
       tg: rows.reduce(function(a, r){ return a + r.tg; }, 0),
       vk: rows.reduce(function(a, r){ return a + r.vk; }, 0),
       vkFailed: rows.reduce(function(a, r){ return a + r.vkFailed; }, 0),
+      vkWait: rows.reduce(function(a, r){ return a + r.vkWait; }, 0),
       silentChannels: rows.filter(function(r){ return r.published === 0; }).length
     },
     rows: rows

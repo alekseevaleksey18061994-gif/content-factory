@@ -7146,6 +7146,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
       vkError: result.vkError || item.vkError || "",
       vkPreviewSlug: result.vkPreviewSlug || item.vkPreviewSlug || "",
       vkPreviewUrl: result.vkPreviewUrl || item.vkPreviewUrl || "",
+      vkMode: result.vkMediaMode || "",
       publishedAt: publishedAt,
       sourceId: item.sourceId || "",
       sourceName: item.sourceName || "",
@@ -7196,6 +7197,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
     historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
     historyItem.vkStatus = result.vkStatus || item.vkStatus || historyItem.vkStatus || "";
     historyItem.vkError = result.vkError || item.vkError || "";
+    if (result.vkMediaMode) historyItem.vkMode = result.vkMediaMode;
     historyItem.vkPreviewSlug = result.vkPreviewSlug || historyItem.vkPreviewSlug || "";
     historyItem.vkPreviewUrl = result.vkPreviewUrl || historyItem.vkPreviewUrl || "";
     historyItem.repairLog = (historyItem.repairLog || []).concat(Array.isArray(result.repairLog) ? result.repairLog : []);
@@ -14779,12 +14781,26 @@ setTimeout(function healthTick() {
 }, 6 * 60 * 1000).unref();
 
 // Re-checks Postmypost publications that were still queued when we stopped waiting (see lib/pmp-reconcile.js).
+const PMP_BACKFILL_MARKER = "v0.68.0-pmp-backfill";
 async function reconcilePostmypostPending() {
   if (!POSTMYPOST_TOKEN || !VK_VIA_POSTMYPOST) return;
   const pmp = postmypostClient();
   for (const ws of workspaceStore.workspaces) {
     if (!ws || !ws.state) continue;
     await workspaceContext.run({ workspaceId: ws.id }, async function(){
+      state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+      if (!state.migrations.includes(PMP_BACKFILL_MARKER)) {
+        // One time: VK posts of the last 48 h that went through Postmypost were never verified. Queue them for a check.
+        const since = Date.now() - 48 * 3600000;
+        for (const h of (state.history || [])) {
+          if (!h || !/^pmp-\d+$/.test(String(h.vkPostId || "")) || h.vkMode === "postmypost") continue;
+          const t = Date.parse(h.publishedAt);
+          if (!Number.isFinite(t) || t < since) continue;
+          pmpRecordPending(state, { id: Number(String(h.vkPostId).slice(4)), slug: h.vkPreviewSlug || "", postId: h.id || "", status: 5 }, t);
+        }
+        state.migrations.push(PMP_BACKFILL_MARKER);
+        saveState();
+      }
       const list = Array.isArray(state.pmpPending) ? state.pmpPending : [];
       if (!list.length) return;
       const statuses = new Map();
@@ -14793,6 +14809,9 @@ async function reconcilePostmypostPending() {
       }
       const res = pmpApplyStatuses(list, statuses, Date.now());
       state.pmpPending = res.keep;
+      const histFor = function(e) { return (state.history || []).find(function(h){ return h && String(h.vkPostId) === "pmp-" + e.id; }); };
+      for (const e of res.published) { const h = histFor(e); if (h) { h.vkMode = "postmypost"; h.vkConfirmedAt = new Date().toISOString(); } }
+      for (const e of res.failed.concat(res.expired)) { const h = histFor(e); if (h) { h.vkStatus = "pmp_failed"; h.vkError = "Postmypost принял пост, но в VK он не вышел (статус " + (e.status == null ? "не подтверждён" : e.status) + ")"; } }
       for (const e of res.published) console.log("VK_PMP_PUBLISHED_LATE " + JSON.stringify({ workspace: ws.id, publication_id: e.id, slug: e.slug, minutes: Math.round((Date.now() - Date.parse(e.at)) / 60000) }));
       for (const e of res.failed) console.error("VK_PMP_FAILED_LATE " + JSON.stringify({ workspace: ws.id, publication_id: e.id, slug: e.slug, pmp_status: e.status }));
       for (const e of res.expired) console.error("VK_PMP_EXPIRED " + JSON.stringify({ workspace: ws.id, publication_id: e.id, slug: e.slug }));
