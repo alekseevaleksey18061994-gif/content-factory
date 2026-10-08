@@ -30,6 +30,7 @@ import { networkDay, isDateKey } from "./lib/network-day.js";
 import { backupConfig, backupConfigProblem, packBackup, backupObjectKey, uploadBackup, backupDue } from "./lib/offsite-backup.js";
 import { missingWorkspaces, missingAlertText, createAlertThrottle } from "./lib/workspace-watchdog.js";
 import { createProviderBreaker, createResponsesFailover, classifyProviderFailure, tripsBreaker } from "./lib/llm-failover.js";
+import { diskUsage, diskIsLow, DISK_ALERT_PCT, MEDIA_PRUNE_DEFAULT_DAYS, referencedMediaNames, planMediaPrune, listMediaFiles, pruneMedia } from "./lib/disk-guard.js";
 import { recordPending as pmpRecordPending, applyStatuses as pmpApplyStatuses, summarize as pmpSummarize } from "./lib/pmp-reconcile.js";
 import { createPostmypostClient, resolvePostmypostTarget, listPostmypostAccounts, matchWorkspacesToAccounts, PUBLICATION_STATUS as PMP_STATUS } from "./lib/postmypost.js";
 import { moscowParts, historyFormat, historyHook, bucketWeights, bestHours, isDigestHistory, pickDigestPosts, buildDailyReportText, topReasons } from "./lib/insights.js";
@@ -6901,6 +6902,20 @@ async function publishDynamicSlot(kind, explicitTime) {
   throw lastError || new Error("slot publish failed");
 }
 
+let storageGuardLogAt = 0;
+function storageNotSaving() {
+  if (storeFlushStats.lastError) {
+    // The failed save is only retried by the next save; try it now so the guard lifts as soon as the disk is fixed.
+    try { flushWorkspaceStoreNow(); } catch (error) { storeFlushStats.lastError = String(error && error.message || error); }
+  }
+  const usage = diskUsage(DATA_DIR);
+  const blocked = Boolean(storeFlushStats.lastError) || diskIsLow(usage);
+  if (blocked && Date.now() - storageGuardLogAt > 5 * 60000) {
+    storageGuardLogAt = Date.now();
+    console.error("PUBLISH_PAUSED_STORAGE " + JSON.stringify({ save_error: storeFlushStats.lastError || "", free_mb: usage ? usage.freeMB : null }));
+  }
+  return blocked;
+}
 async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   const publishKind = kind === "blogger" ? "blogger" : (kind === "russian-ai" ? "russian-ai" : (kind === "money-emergency" ? "money-emergency" : "regular"));
   const now = new Date();
@@ -6909,6 +6924,9 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   if (hour < DYNAMIC_SLOT_START_HOUR || hour > DYNAMIC_SLOT_END_HOUR) {
     return { ok: true, skipped: "outside_hours" };
   }
+  // v0.69.0: while the state cannot be saved (disk full) a published slot would be forgotten at the next restart and
+  // published again. Better to wait: the slot is retried on the next tick as soon as the disk allows writing.
+  if (storageNotSaving()) return { ok: true, skipped: "storage_not_saving" };
 
   const day = moscowDateKey(now);
   const time = explicitTime
@@ -7397,6 +7415,8 @@ async function dynamicSchedulerTick() {
       }
       throw error;
     });
+    // Paused because the state cannot be saved: the action is NOT done, the next 30-second tick tries again.
+    if (result && result.skipped === "storage_not_saving") return;
     state.dynamicScheduler.lastTickKey = key;
     state.dynamicScheduler.lastTickCompletedAt = new Date().toISOString();
     saveState();
@@ -14783,6 +14803,7 @@ async function healthAlertsTick() {
     postmypostError: VK_VIA_POSTMYPOST ? postmypostMap.error : "",
     pmpPending: VK_VIA_POSTMYPOST ? pmpPendingSummary() : null,
     tgMissed: tgMissedSummary(),
+    disk: diskUsage(DATA_DIR), diskAlertPct: DISK_ALERT_PCT,
     botConfigured: true, botOk: botOk, proxyConfigured: Boolean(sourceProxy), proxyOk: proxyOk,
     dbConfigured: Boolean(db), dbReady: Boolean(db) ? dbReady : true
   }, healthAlertsPrev);
@@ -15020,6 +15041,87 @@ setTimeout(function() {
     }
   })().catch(function(error){ console.warn("Loose remove failed:", error.message); });
 }, 600000);
+
+// v0.69.0: media files nothing refers to any more (no queue item, no history entry, no avatar) and older than
+// MEDIA_PRUNE_DAYS are listed every 6 h. They are deleted only with MEDIA_PRUNE_EXECUTE=1; otherwise it only reports
+// (MEDIA_PRUNE log) how much space it would free, same convention as SOURCE_CLEANUP_EXECUTE.
+function mediaPruneRun() {
+  const execute = process.env.MEDIA_PRUNE_EXECUTE === "1";
+  const days = Math.max(3, Number(process.env.MEDIA_PRUNE_DAYS || MEDIA_PRUNE_DEFAULT_DAYS) || MEDIA_PRUNE_DEFAULT_DAYS);
+  const refs = referencedMediaNames([JSON.stringify(workspaceStore)]);
+  const files = listMediaFiles(MEDIA_DIR);
+  const plan = planMediaPrune(files, refs, Date.now(), days * 86400000);
+  const out = { execute: execute, days: days, files: files.length, candidates: plan.delete.length, candidate_mb: Math.round(plan.bytes / 1048576), keep_referenced: plan.keepReferenced, keep_young: plan.keepYoung };
+  if (execute && plan.delete.length) {
+    const done = pruneMedia(MEDIA_DIR, plan);
+    out.deleted = done.deleted; out.deleted_mb = Math.round(done.bytes / 1048576);
+  }
+  console.log("MEDIA_PRUNE " + JSON.stringify(out));
+  return out;
+}
+setTimeout(function mediaPruneTimer() {
+  try { mediaPruneRun(); } catch (error) { console.warn("MEDIA_PRUNE_FAILED " + String(error && error.message || error).slice(0, 200)); }
+  setTimeout(mediaPruneTimer, 6 * 3600000).unref();
+}, 25 * 60000).unref();
+
+// v0.69.0 one-time: posts that reached Telegram but whose VK part failed only because the disk was full
+// (vkError ENOSPC, last 6 h) are sent to VK now - VK only, never Telegram again. Never run twice per channel.
+const VK_ENOSPC_RETRY_MARKER = "v0.69.0-vk-enospc-retry";
+async function retryVkAfterDiskFullForCurrentWorkspace() {
+  state.migrations = Array.isArray(state.migrations) ? state.migrations : [];
+  if (state.migrations.includes(VK_ENOSPC_RETRY_MARKER)) return { skipped: "done" };
+  if (storageNotSaving()) return { skipped: "storage_not_saving" };
+  const sinceMs = Date.now() - 6 * 3600000;
+  const items = (state.queue || []).filter(function(q){
+    return q && q.telegramPublished && !q.vkPublished && q.vkStatus === "media_failed"
+      && /ENOSPC|no space left/i.test(String(q.vkError || "")) && Date.parse(q.vkFailedAt || "") >= sinceMs;
+  });
+  let sent = 0, failed = 0, skippedDuplicate = 0;
+  for (const item of items) {
+    if (!(state.queue || []).includes(item)) continue;
+    // The disk filled up again mid-way: stop without the marker, so a post sent to VK is never left unrecorded and the next start retries.
+    if (storageNotSaving()) { console.warn("VK_ENOSPC_RETRY_PAUSED " + JSON.stringify({ workspace: currentWorkspaceId(), sent: sent })); return { paused: "storage_not_saving", sent: sent }; }
+    // The same story may already be in VK (a slot published twice while the state could not be saved): never a second VK post.
+    const alreadyInVk = (state.history || []).some(function(h){
+      return h && h.vkPostId && h.id !== item.historyId && ((item.newsId && h.newsId === item.newsId) || h.queueId === item.id || (h.title && h.title === item.title));
+    });
+    if (alreadyInVk) { skippedDuplicate += 1; continue; }
+    const release = acquirePublishLock(item.id);
+    if (!release) { failed += 1; continue; }
+    try {
+      const result = await sendMultiPlatformPost(Object.assign({}, item, { postId: item.id, topicId: item.topicId || "default", allow_text_fallback: allowTextFallbackForPost(item) }), { telegram: false, vk: true });
+      if (result.safeMedia) Object.assign(item, result.safeMedia);
+      item.vkAttempts = Number(item.vkAttempts || 0) + 1;
+      const at = new Date().toISOString();
+      const hist = item.historyId ? (state.history || []).find(function(h){ return h && h.id === item.historyId; }) : null;
+      if (result.vkPublished) {
+        item.vkPublished = true; item.vkPostId = result.vkPostId || null; item.vkStatus = result.vkUncertain ? "uncertain" : "published";
+        item.vkPublishedAt = at; item.vkError = ""; item.status = "published";
+        if (hist) { hist.vkPostId = result.vkPostId || hist.vkPostId || null; hist.vkStatus = item.vkStatus; hist.vkError = ""; if (result.vkMediaMode) hist.vkMode = result.vkMediaMode; hist.vkPreviewSlug = result.vkPreviewSlug || hist.vkPreviewSlug || ""; hist.vkPreviewUrl = result.vkPreviewUrl || hist.vkPreviewUrl || ""; }
+        state.queue = (state.queue || []).filter(function(q){ return q.id !== item.id; });
+        sent += 1;
+      } else { failed += 1; }
+    } catch (error) {
+      item.vkAttempts = Number(item.vkAttempts || 0) + 1;
+      item.vkError = String(error && (error.vkErrorMsg || error.message) || error).slice(0, 300);
+      failed += 1;
+      console.warn("VK_ENOSPC_RETRY_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), post_id: item.id, slug: item.vkPreviewSlug || "", error: item.vkError }));
+    } finally { release(); }
+    saveState();
+  }
+  state.migrations.push(VK_ENOSPC_RETRY_MARKER);
+  saveState();
+  console.log("VK_ENOSPC_RETRY " + JSON.stringify({ workspace: currentWorkspaceId(), candidates: items.length, sent: sent, failed: failed, skipped_duplicate: skippedDuplicate }));
+  return { candidates: items.length, sent: sent, failed: failed };
+}
+setTimeout(function() {
+  (async function(){
+    for (const ws of workspaceStore.workspaces) {
+      if (!ws || !ws.state) continue;
+      await workspaceContext.run({ workspaceId: ws.id }, async function(){ try { await retryVkAfterDiskFullForCurrentWorkspace(); } catch (error) { console.warn("VK ENOSPC retry failed for " + ws.id + ": " + error.message); } });
+    }
+  })().catch(function(error){ console.warn("VK ENOSPC retry failed:", error.message); });
+}, 180000).unref();
 
 // v0.67.0: enabled sources outside every theme group get attached to the theme(s) they fit (keywords first, then one AI call per batch).
 // A source nothing fits stays as it is. Never run twice; if the AI is unavailable nothing is marked and the next start retries.
