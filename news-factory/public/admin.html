@@ -4184,8 +4184,16 @@ function slotStripsHtml(dateKey){
     var min=Number(slot.time.slice(0,2))*60+Number(slot.time.slice(3,5));
     var due=past||(isToday&&min<=nowMin-5);
     var title=h?String(h.title||'').slice(0,60):'';
-    rowsTg.push(slotChipHtml(slot.time,title,h?(h.messageId?'ok':'bad'):(due?'bad':'future')));
-    rowsVk.push(slotChipHtml(slot.time,title,h?(vkStateOf(h)==='none'?'bad':vkStateOf(h)):(due?'bad':'future'),h&&h.vkError?String(h.vkError).slice(0,120):''));
+    // a news item already chosen for this slot: yellow "in queue" with its title; nothing chosen yet: grey
+    var planned=null;
+    if(!h&&!due){
+      var qid=(((state.publicationSchedule||{}).assignments||{})[dateKey]||{})[slot.time];
+      planned=qid?(state.queue||[]).find(function(q){return q.id===qid}):null;
+      if(planned){var pp0=postParts(planned);title=String((pp0&&pp0.title)||planned.title||'').slice(0,60)}
+    }
+    var idle=planned?'wait':(due?'bad':'future');
+    rowsTg.push(slotChipHtml(slot.time,title,h?(h.messageId?'ok':'bad'):idle));
+    rowsVk.push(slotChipHtml(slot.time,title,h?(vkStateOf(h)==='none'?'bad':vkStateOf(h)):idle,h&&h.vkError?String(h.vkError).slice(0,120):''));
   });
   hist.forEach(function(x,i){ // posts outside the slot grid (extra / manual)
     if(used[i])return;
