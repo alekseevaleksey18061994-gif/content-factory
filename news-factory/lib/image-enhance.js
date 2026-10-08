@@ -46,7 +46,9 @@ export async function enhanceNewsImage(payload) {
     // Upscale at most 2x: beyond that interpolation only adds blur.
     pipeline = pipeline.resize({ width: Math.min(ENHANCE_TARGET_WIDTH, width * 2), kernel: "lanczos3", withoutEnlargement: false });
   }
-  if (width < 1000) pipeline = pipeline.median(3);
+  // median(3) throws "rank: window too large" on tiny images (a side under the window).
+  const height = Number(meta.height || 0);
+  if (width < 1000 && width >= 16 && height >= 16) pipeline = pipeline.median(3);
   pipeline = pipeline
     .sharpen({ sigma: 0.8, m1: 0.6, m2: 1.6 })
     .linear(1.04, -5)
