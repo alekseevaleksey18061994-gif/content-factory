@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { recordPending, classify, applyStatuses, summarize, PMP_STUCK_MS } from "../lib/pmp-reconcile.js";
-import { vkSlotState } from "../lib/network-day.js";
+import { vkSlotState, channelDay } from "../lib/network-day.js";
 import { evaluateHealth } from "../lib/health-alerts.js";
 const now = Date.parse("2026-10-08T10:00:00Z");
 try {
@@ -42,5 +42,14 @@ try {
   assert.equal(vkSlotState({ vkStatus: "failed", vkError: "boom", publishedAt: t0 }, now), "bad");
   assert.equal(vkSlotState({ publishedAt: t0 }, now), "none");
   console.log("ok - P6 vkSlotState");
+  const hist = [
+    { publishedAt: "2026-10-08T06:03:00Z", messageId: 1, vkPostId: "pmp-1", title: "A" },
+    { publishedAt: "2026-10-08T07:04:00Z", messageId: 2, vkError: "boom", title: "B" }
+  ];
+  const day = channelDay({ id: "x", name: "X", history: hist, slots: ["09:00", "10:00", "11:00", "12:00", "20:00"] }, "2026-10-08", Date.parse("2026-10-08T09:50:00Z"));
+  assert.equal(day.slots.length, 5, "all slots listed");
+  assert.deepEqual(day.slots.map(function(x){ return x.vk; }), ["ok", "bad", "bad", "bad", "future"], "ok, failed, 2 missed (due), 1 future");
+  assert.deepEqual(day.slots.map(function(x){ return x.tg; }), ["ok", "ok", "bad", "bad", "future"]);
+  console.log("ok - P7 every planned slot of the day is listed");
   console.log("pmp-reconcile tests passed");
 } catch (e) { console.error(e); process.exit(1); }

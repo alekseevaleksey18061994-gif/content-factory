@@ -37,6 +37,31 @@ export function vkSlotState(h, nowMs) {
   return "none";
 }
 
+// Every planned slot of the day with what happened in it. A post belongs to the latest slot that is not later than it
+// (10 min tolerance); posts outside the grid get their own entry. state: ok | wait | bad | future | none (VK not used).
+export function daySlots(ws, dateKey, posts, nowMs) {
+  const times = Array.from(new Set((Array.isArray(ws.slots) ? ws.slots : []).filter(function(t){ return /^\d{2}:\d{2}$/.test(String(t)); }))).sort();
+  const toMin = function(t){ return Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)); };
+  const dayStartMs = Date.parse(dateKey + "T00:00:00Z") - MSK_OFFSET_MS;
+  const dueMs = function(t){ return dayStartMs + toMin(t) * 60000 + 5 * 60000; };
+  const bySlot = new Map();
+  const extra = [];
+  for (const p of posts) {
+    const m = toMin(p.time);
+    let slot = null;
+    for (const t of times) { if (toMin(t) <= m + 10 && !bySlot.has(t)) slot = t; }
+    if (slot) bySlot.set(slot, p); else extra.push(p);
+  }
+  const out = [];
+  for (const t of times) {
+    const p = bySlot.get(t);
+    const due = nowMs >= dueMs(t);
+    out.push({ time: t, title: p ? p.title : "", tg: p ? (p.tg ? "ok" : "bad") : (due ? "bad" : "future"), vk: p ? (p.vkState === "none" ? "bad" : p.vkState) : (due ? "bad" : "future"), posted: Boolean(p), postTime: p ? p.time : "" });
+  }
+  for (const p of extra) out.push({ time: p.time, title: p.title, tg: p.tg ? "ok" : "bad", vk: p.vkState === "none" ? "bad" : p.vkState, posted: true, postTime: p.time, extra: true });
+  return out.sort(function(a, b){ return a.time.localeCompare(b.time); });
+}
+
 // ws: { id, name, handle, autoPublish, mode, plannedPerDay, queue, history }
 export function channelDay(ws, dateKey, nowMs) {
   nowMs = Number(nowMs) || Date.now();
@@ -53,6 +78,7 @@ export function channelDay(ws, dateKey, nowMs) {
     hours[new Date(t + MSK_OFFSET_MS).getUTCHours()] += 1;
   }
   posts.sort(function(a, b){ return a.ms - b.ms; });
+  const slots = daySlots(ws, dateKey, posts, nowMs);
   const planned = Math.max(0, Number(ws.plannedPerDay) || 0);
   return {
     id: ws.id, name: ws.name, handle: ws.handle || "",
@@ -65,6 +91,7 @@ export function channelDay(ws, dateKey, nowMs) {
     firstAt: posts.length ? posts[0].time : "", lastAt: posts.length ? posts[posts.length - 1].time : "",
     queue: Number(ws.queue) || 0,
     hours: hours,
+    slots: slots,
     posts: posts.map(function(p){ return { time: p.time, title: p.title, source: p.source, tg: p.tg, tgUncertain: p.tgUncertain, vk: p.vk, vkState: p.vkState, vkFailed: p.vkFailed }; })
   };
 }

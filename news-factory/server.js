@@ -12514,7 +12514,9 @@ const server = http.createServer(async function(req, res) {
       if (!isDateKey(dateKey)) return sendJson(res, 400, { ok: false, error: "date must be YYYY-MM-DD" });
       const rows = workspaceStore.workspaces.map(function(ws){
         const summary = workspaceSummary(ws);
-        return { id: ws.id, name: ws.name, handle: telegramUsernameOrEmpty(ws.telegramPublicUsername) || telegramUsernameOrEmpty(ws.slug) || "", autoPublish: summary.autoPublish, mode: summary.mode, plannedPerDay: summary.plannedPerDay, queue: summary.queue, history: ws.state && ws.state.history };
+        let slotTimes = [];
+        try { ensureScheduleShape(ws.state); slotTimes = ((ws.state.publicationSchedule || {}).slots || []).map(function(sl){ return String(sl && sl.time || ""); }); } catch {}
+        return { id: ws.id, name: ws.name, handle: telegramUsernameOrEmpty(ws.telegramPublicUsername) || telegramUsernameOrEmpty(ws.slug) || "", autoPublish: summary.autoPublish, mode: summary.mode, plannedPerDay: summary.plannedPerDay, queue: summary.queue, history: ws.state && ws.state.history, slots: slotTimes };
       });
       return sendJson(res, 200, Object.assign({ ok: true, historyLimitNote: "В истории каждого канала хранятся последние 300 постов; более старые дни могут быть неполными." }, networkDay(rows, dateKey, Date.now())));
     }
