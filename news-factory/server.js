@@ -8730,6 +8730,7 @@ async function sendMultiPlatformPost(post, targets) {
       const error = tgSettled.reason || new Error("Telegram publish failed");
       result.telegramStatus = "failed";
       result.telegramError = String(error && error.message || error);
+      console.warn("TELEGRAM_PUBLISH_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), post_id: String(post.postId || post.id || ""), vk_selected: Boolean(selected.vk), error: result.telegramError.slice(0, 300) }));
       result.telegramPermanent = Boolean(error && (error.permanent || error.telegramPermanent));
       result.telegramRateLimited = Boolean(error && error.telegramRateLimited);
       // No answer from Telegram at all (network/timeout): the message may have been delivered.
@@ -14743,6 +14744,20 @@ const HEALTH_SILENCE_HOURS = Math.max(2, Math.min(24, Number(process.env.HEALTH_
 const HEALTH_ALERTS_ENABLED = !/^(0|false|no|off)$/i.test(String(process.env.HEALTH_ALERTS_ENABLED || ""));
 let healthAlertsPrev = {};
 let healthAlertsLast = null;
+// Posts of the last 24 h that count as published but never reached Telegram (no message id, not "sent, no answer").
+function tgMissedSummary() {
+  const since = Date.now() - 24 * 3600000, minAge = Date.now() - 20 * 60000;
+  const out = { count: 0, channels: [] };
+  for (const ws of workspaceStore.workspaces) {
+    const n = ((ws && ws.state && ws.state.history) || []).filter(function(h){
+      if (!h || !h.publishedAt || h.publicationOrigin === "test") return false;
+      const t = Date.parse(h.publishedAt);
+      return t >= since && t <= minAge && !h.messageId && !h.telegramUncertain;
+    }).length;
+    if (n) { out.count += n; out.channels.push(ws.name + " (" + n + ")"); }
+  }
+  return out;
+}
 async function healthAlertsTick() {
   if (!HEALTH_ALERTS_ENABLED || !BOT_TOKEN) return;
   // Link the owner's private chat as soon as they press Start; tell them it works.
@@ -14767,6 +14782,7 @@ async function healthAlertsTick() {
     nowMs: Date.now(), channels: channels, silenceHours: HEALTH_SILENCE_HOURS,
     postmypostError: VK_VIA_POSTMYPOST ? postmypostMap.error : "",
     pmpPending: VK_VIA_POSTMYPOST ? pmpPendingSummary() : null,
+    tgMissed: tgMissedSummary(),
     botConfigured: true, botOk: botOk, proxyConfigured: Boolean(sourceProxy), proxyOk: proxyOk,
     dbConfigured: Boolean(db), dbReady: Boolean(db) ? dbReady : true
   }, healthAlertsPrev);
