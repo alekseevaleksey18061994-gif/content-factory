@@ -43,7 +43,7 @@ export function daySlots(ws, dateKey, posts, nowMs) {
   const times = Array.from(new Set((Array.isArray(ws.slots) ? ws.slots : []).filter(function(t){ return /^\d{2}:\d{2}$/.test(String(t)); }))).sort();
   const toMin = function(t){ return Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)); };
   const dayStartMs = Date.parse(dateKey + "T00:00:00Z") - MSK_OFFSET_MS;
-  const dueMs = function(t){ return dayStartMs + toMin(t) * 60000 + 5 * 60000; };
+  const dueMs = function(t){ return dayStartMs + toMin(t) * 60000 + 20 * 60000; };
   const bySlot = new Map();
   const extra = [];
   for (const p of posts) {
