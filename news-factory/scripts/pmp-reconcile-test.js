@@ -51,5 +51,9 @@ try {
   assert.deepEqual(day.slots.map(function(x){ return x.vk; }), ["ok", "bad", "bad", "bad", "future"], "ok, failed, 2 missed (due), 1 future");
   assert.deepEqual(day.slots.map(function(x){ return x.tg; }), ["ok", "ok", "bad", "bad", "future"]);
   console.log("ok - P7 every planned slot of the day is listed");
+  let h2 = evaluateHealth({ nowMs: now, channels: [], tgMissed: { count: 1, channels: ["Спорт (1)"] } }, {});
+  h2 = evaluateHealth({ nowMs: now, channels: [], tgMissed: { count: 1, channels: ["Спорт (1)"] } }, h2.next);
+  assert.equal(h2.send.length, 1); assert.match(h2.send[0].text, /В Telegram не дошло/);
+  console.log("ok - P8 Telegram missed alert");
   console.log("pmp-reconcile tests passed");
 } catch (e) { console.error(e); process.exit(1); }
