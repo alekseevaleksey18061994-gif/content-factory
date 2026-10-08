@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import { recordPending, classify, applyStatuses, summarize, PMP_STUCK_MS } from "../lib/pmp-reconcile.js";
+import { evaluateHealth } from "../lib/health-alerts.js";
+const now = Date.parse("2026-10-08T10:00:00Z");
+try {
+  const st = {};
+  assert.equal(recordPending(st, { id: 1, slug: "a" }, now - 40 * 60000), true);
+  assert.equal(recordPending(st, { id: 1, slug: "a" }, now), false, "no duplicates");
+  recordPending(st, { id: 2, slug: "b" }, now - 5 * 60000);
+  recordPending(st, { id: 3, slug: "c" }, now - 50 * 60000);
+  console.log("ok - P1 record + dedupe");
+  assert.equal(classify(st.pmpPending[0], 1, now), "published");
+  assert.equal(classify(st.pmpPending[0], 3, now), "failed");
+  assert.equal(classify(st.pmpPending[0], 5, now), "stuck");
+  assert.equal(classify(st.pmpPending[1], 5, now), "waiting");
+  assert.equal(classify(st.pmpPending[0], null, now), "stuck", "unknown status stays pending, never 'published'");
+  console.log("ok - P2 classify");
+  const r = applyStatuses(st.pmpPending, new Map([[1, 1], [3, 3]]), now);
+  assert.equal(r.published.length, 1); assert.equal(r.failed.length, 1);
+  assert.deepEqual(r.keep.map(function(x){ return x.id; }).sort(), [2, 3]);
+  console.log("ok - P3 apply");
+  const sum = summarize(r.keep, now);
+  assert.equal(sum.failed, 1); assert.equal(sum.waiting, 1); assert.equal(sum.stuck, 0);
+  const sum2 = summarize([{ id: 9, slug: "x", at: new Date(now - PMP_STUCK_MS - 60000).toISOString() }], now);
+  assert.equal(sum2.stuck, 1);
+  console.log("ok - P4 summarize");
+  const snap = { nowMs: now, channels: [], pmpPending: sum };
+  let h = evaluateHealth(snap, {});
+  assert.equal(h.send.length, 0, "needs 2 ticks");
+  h = evaluateHealth(snap, h.next);
+  assert.equal(h.send.length, 1); assert.match(h.send[0].text, /Посты в VK не вышли/);
+  const ok = evaluateHealth({ nowMs: now, channels: [], pmpPending: { stuck: 0, failed: 0 } }, h.next);
+  assert.equal(ok.recovered.length, 1);
+  console.log("ok - P5 health alert + recovery");
+  console.log("pmp-reconcile tests passed");
+} catch (e) { console.error(e); process.exit(1); }
