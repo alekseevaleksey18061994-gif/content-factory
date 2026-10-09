@@ -2494,6 +2494,8 @@ input,select,textarea{border-radius:12px!important}
 .conn-group-head>span.cg-icon{width:44px!important;flex:0 0 auto!important;align-self:center!important;margin:0 auto!important}
 .cg-head .cg-title{align-items:center!important;text-align:center!important;width:100%}
 .cg-head .cg-count{margin-left:0!important;align-self:center!important}
+.network-account-last .network-account-ok-inline{color:#16865e;font-weight:700;white-space:nowrap}
+.network-account-last{margin-top:8px!important}
 </style>
 </head>
 <body>
@@ -3694,8 +3696,8 @@ function renderNetworkDashboard(){
           '<span><b>'+Number(s.queue||0)+'</b><small>очередь</small></span>'+
           '<span><b>'+Number(s.sources||0)+'</b><small>источники</small></span>'+
         '</span>'+
-        '<span class="network-account-last">Последний пост: '+esc(netTime(s.lastPublishedAt))+' · всего '+Number(s.published||0)+'</span>'+
-        (problems.length?'<span class="network-account-warning">⚠️ '+esc(problems.slice(0,2).join(' · '))+(problems.length>2?'…':'')+'</span>':'<span class="network-account-ok">✓ Работает</span>')+
+        '<span class="network-account-last">Последний пост: '+esc(netTime(s.lastPublishedAt))+' · всего '+Number(s.published||0)+(problems.length?'':' · <span class="network-account-ok-inline">✓ Работает</span>')+'</span>'+
+        (problems.length?'<span class="network-account-warning">⚠️ '+esc(problems.slice(0,2).join(' · '))+(problems.length>2?'…':'')+'</span>':'')+
         (wsMissing(item).indexOf('avatar')>=0?'<span class="network-account-soft">Нет фото канала в админке</span>':'')+
       '</button>';
     }).join(''):'<div class="empty">Каналы ещё не созданы</div>';
