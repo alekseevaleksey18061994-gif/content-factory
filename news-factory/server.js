@@ -15497,6 +15497,7 @@ async function repairBrokenQueueImages() {
   let broken = 0;
   for (const q of withImages) {
     const image = q.enhancedImageUrl || q.imageUrl;
+    if (!localMediaPathFromUrl(image)) continue; // remote photo: cannot be fingerprinted here, not broken
     const fp = await localImageFingerprint(image);
     const quality = assessMediaQuality(fp, { url: image, score: 80, reason: "queue_repair" });
     if (!quality.pass) broken += 1;
@@ -15506,8 +15507,10 @@ async function repairBrokenQueueImages() {
     if (!item || !item.newsId || item.telegramPublished) continue;
     const img = String(item.enhancedImageUrl || item.imageUrl || "").trim();
     let ok = false;
+    // v0.71.10: a remote source photo cannot be fingerprinted here; it used to count as broken and every restart
+    // replaced real photos with a text card (then the AI upgrade paid to redraw them). Only our own /media files are checked.
+    if (img && !localMediaPathFromUrl(img)) continue;
     if (img) {
-      // Only files in our /media folder count; remote URLs give no fingerprint.
       const fp = await localImageFingerprint(img);
       ok = assessMediaQuality(fp, { url: img, score: 80, reason: "queue_repair" }).pass;
     }
