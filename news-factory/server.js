@@ -81,6 +81,7 @@ import {
 import { ADMIN_KEY, ADMIN_UI_PASSWORD, ADMIN_UI_PASSWORD_SCRYPT, ADMIN_UI_PASSWORD_SHA256, ANTHROPIC_API_KEY, ANTHROPIC_ASSIST_MODEL, ANTHROPIC_CHECKER_MODEL, ANTHROPIC_CHECK_MIN_IMPORTANCE, ANTHROPIC_FALLBACK_WRITER_MODEL, ANTHROPIC_HEALTH_CACHE_MIN, ANTHROPIC_MODEL, ANTHROPIC_STRONG_CHECKER_MODEL, ANTHROPIC_STRONG_IMPORTANCE, AUTO_ENHANCE_SOURCE_IMAGES, AUTO_PUBLISH_ENABLED, AUTO_PUBLISH_MIN_INTERVAL_MINUTES, AUTO_QUALITY_MIN, BOT_TOKEN, CHANNEL, COLLECTOR_ENABLED, COPYRIGHT_MAX_VERBATIM_WORDS, COPYRIGHT_MEDIA_MODE, COPYRIGHT_SAFE_MODE, DAILY_REPORT_ENABLED, DAILY_REPORT_TIME, DATABASE_URL, DIGEST_ENABLED, DIGEST_EVENING_ENABLED, DIGEST_EVENING_TIME, DIGEST_SUNDAY_ENABLED, DIGEST_SUNDAY_TIME, DYNAMIC_ASSIGNMENT_GRACE_MIN, DYNAMIC_SLOT_END_HOUR, DYNAMIC_SLOT_PREP_MINUTE, DYNAMIC_SLOT_START_HOUR, EDITORIAL_CAPACITY_BYPASS_SCORE, EDITORIAL_LEARNING_ENABLED, EDITORIAL_LEARNING_REFRESH_MINUTES, EDITORIAL_QC_ENABLED, EDITORIAL_QUEUE_TARGET, EDITORIAL_V2_ENABLED, EDITORIAL_V2_MAX_FIX_ROUNDS, EDITORIAL_V2_REQUIRE_ALL_CHECKERS, EDITORIAL_VARIETY_ENABLED, GENERATE_COVER_IF_MISSING, HEADLINE_PREFILTER_ENABLED, IMAGE_ENHANCEMENT_ENABLED, IMAGE_ENHANCE_MIN_GAP_MS, MEDIA_AI_COVER_MIN_IMPORTANCE, MEDIA_DEFER_EXPENSIVE, MEDIA_DIRECTOR_MAX_IMAGES, MEDIA_EXTRA_MIN_HEIGHT, MEDIA_EXTRA_MIN_WIDTH, MEDIA_QUALITY_MIN_SCORE, MEDIA_REQUIRED, OPENAI_API_KEY, OPENAI_FALLBACK_MODEL, OPENAI_IMAGE_MODEL, OPENAI_IMAGE_QUALITY, OPENAI_MODEL, POSTMYPOST_TOKEN, POST_RATING_DROP_BELOW, POST_RATING_MIN_AUTO, PROVIDER_BREAKER_COOLDOWN_MIN, PROVIDER_FAILOVER_COVER_CARD, PROVIDER_FAILOVER_ENABLED, PUBLIC_BASE_URL, PUBLISH_REPAIR_MAX_ATTEMPTS, SOURCES_ADDED_PER_RUN, SOURCES_MAX_ACTIVE, SOURCES_MIN_ACTIVE, SOURCE_AUTO_PAUSE_ENABLED, SOURCE_IMAGE_ENHANCE_CONCURRENCY, SOURCE_PROBATION_HOURS, SOURCE_REPLENISH_INTERVAL_MINUTES, SOURCE_STARVING_RUNS, STORY_CLUSTER_ENABLED, STORY_CLUSTER_MAX_SOURCES, STORY_CLUSTER_MIN_SIMILARITY, STORY_CLUSTER_WINDOW_HOURS, STORY_MEDIA_PACK_COUNT, STORY_PRECHECK_ENABLED, STORY_UPDATE_WINDOW_HOURS, TELEGRAM_ALERT_CHAT_ID, TELEGRAM_API_TIMEOUT_MS, TELEGRAM_PUBLIC_USERNAME, TELEGRAM_RETRY_AFTER_MAX_SECONDS, TEXT_CARD_POSTS_ALLOWED, TRUSTED_PROXY_HOPS, VK_ACCESS_TOKEN, VK_API_VERSION, VK_APP_ID, VK_GROUP_ID, VK_OAUTH_HANDOFF_SECRET, VK_OAUTH_MODE, VK_OAUTH_REDIRECT_URI, VK_OAUTH_SCOPE, VK_OAUTH_TTL_MS, VK_OWNER_ID, VK_PUBLIC_URL, VK_PUBLISH_ENABLED, VK_VIA_POSTMYPOST, authFailureLimiter, envNumber } from "./lib/env-config.js";
 import { DATA_DIR, MEDIA_DIR, VK_PREVIEW_HEIGHT, VK_PREVIEW_WIDTH, canonicalizeUrl, ensureDataDir, escapeHtml, extractArticleMediaCandidates, extractMetaImage, extractMetaVideo, extractPublishedAt, extractSitePreview, extractTitle, isUsableNewsVideoUrl, localMediaPathFromUrl, mediaPublicUrl, normalizeDate, normalizePublicPostSources, prepareVkPreviewImage, previewDescription, previewPageUrl, previewSlug, stripHtml } from "./lib/article-extract.js";
 import { isTelegramFatalError, telegramApi, telegramPlainPayload, telegramRequest } from "./lib/telegram-errors.js";
+import { createNotifier, classifyAlertText, splitAlertText } from "./lib/notifications.js";
 import { assertTelegramPublishResult, isLocalMediaUrl, telegramMediaApi, telegramVideoTooLarge } from "./lib/telegram-upload.js";
 import { escapeTelegramHtml, formatTelegramPost, newId } from "./lib/telegram-format.js";
 import { createVkError, logVkError, vkApi, vkOAuthCallbackHtml, vkPostContext } from "./lib/vk-errors.js";
@@ -2050,6 +2051,27 @@ async function apiBalanceSnapshot(knownRate) {
   return out;
 }
 
+// In-app notifications (bell in the admin) and Web Push. VAPID keys come from the environment only; without them the
+// feed still works and push is simply off.
+const VAPID_PUBLIC_KEY = String(process.env.VAPID_PUBLIC_KEY || "").trim();
+const VAPID_PRIVATE_KEY = String(process.env.VAPID_PRIVATE_KEY || "").trim();
+let webPushLib = null;
+async function sendWebPush(subscription, payload) {
+  if (!webPushLib) {
+    const mod = await import("web-push");
+    webPushLib = mod.default || mod;
+    webPushLib.setVapidDetails(PUBLIC_BASE_URL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  }
+  await webPushLib.sendNotification(subscription, payload, { TTL: 86400, urgency: "high" });
+}
+const notifier = createNotifier({
+  getDb: function() { return db && dbReady ? db : null; },
+  sendPush: VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY ? sendWebPush : null
+});
+function notifyApp(n) {
+  try { return notifier.add(n).catch(function() { return null; }); } catch { return Promise.resolve(null); }
+}
+
 // Provider out of money: tell the owner in Telegram (once per 3 hours per provider)
 // instead of silently failing every call.
 const billingAlertSentAt = {};
@@ -2069,6 +2091,7 @@ function maybeBillingAlert(text, forcedProvider) {
   // Throttle the log line too, but retry the message soon if no chat is known yet.
   billingAlertSentAt[provider] = chatId ? Date.now() : Date.now() - 3 * 3600000 + 10 * 60000;
   console.warn("BILLING_EXHAUSTED " + JSON.stringify({ provider: provider, alerted: Boolean(chatId) }));
+  notifyApp({ key: "billing:" + provider, kind: "billing", severity: "critical", title: "У " + provider + " закончились деньги (или ключ не принят)", body: "Пополните баланс: " + (provider === "OpenAI" ? "platform.openai.com/settings/organization/billing" : "console.anthropic.com/settings/billing"), throttleMs: 3 * 3600000 });
   if (!chatId) return;
   const key = provider === "OpenAI" ? "openai" : "anthropic";
   const other = key === "openai" ? "anthropic" : "openai";
@@ -7167,12 +7190,14 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
     const unclear = Boolean(partial.telegramNetwork);
     if (channelLevel || unclear) {
       item.lastPublishError = String(error && error.message || error).slice(0, 300);
+      if (channelLevel) notifyApp({ key: "chan:" + currentWorkspaceId(), kind: "publish_failed", severity: "critical", title: "Канал не принимает посты: " + currentWorkspace().name, body: item.lastPublishError, workspace: currentWorkspaceId(), throttleMs: 3600000 });
       if (unclear) {
         item.publishFailures = Number(item.publishFailures || 0) + 1;
         if (item.publishFailures >= PUBLISH_FAILURE_MAX) {
           item.status = "publish_failed";
           delete schedule.assignments[day][time];
           console.warn("PUBLISH_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), queueId: queueId, failures: item.publishFailures, unclear: true, error: item.lastPublishError }));
+          notifyApp({ key: "pubfail:" + currentWorkspaceId() + ":" + queueId, kind: "publish_failed", severity: "warn", title: "Пост не вышел: " + String(item.title || "").slice(0, 80), body: currentWorkspace().name + ". " + item.lastPublishError, workspace: currentWorkspaceId(), throttleMs: 3600000 });
         }
       }
       saveState();
@@ -7188,6 +7213,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
     if (permanent || item.publishFailures >= PUBLISH_FAILURE_MAX) {
       item.status = "publish_failed";
       console.warn("PUBLISH_FAILED " + JSON.stringify({ workspace: currentWorkspaceId(), queueId: queueId, failures: item.publishFailures, permanent: permanent, error: item.lastPublishError }));
+      notifyApp({ key: "pubfail:" + currentWorkspaceId() + ":" + queueId, kind: "publish_failed", severity: "warn", title: "Пост не вышел: " + String(item.title || "").slice(0, 80), body: currentWorkspace().name + ". " + item.lastPublishError, workspace: currentWorkspaceId(), throttleMs: 3600000 });
     } else {
       item.publishRetryAfter = new Date(Date.now() + PUBLISH_RETRY_COOLDOWN_MIN * 60000).toISOString();
     }
@@ -12327,6 +12353,19 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, service: "news-factory", version: APP_VERSION });
     }
 
+    // App shell files for "install as app" + Web Push. Public on purpose: the browser fetches them without the session.
+    const APP_ASSETS = { "/sw.js": ["application/javascript; charset=utf-8", "no-cache"], "/manifest.webmanifest": ["application/manifest+json; charset=utf-8", "no-cache"],
+      "/icon-192.png": ["image/png", "public, max-age=86400"], "/icon-512.png": ["image/png", "public, max-age=86400"], "/apple-touch-icon.png": ["image/png", "public, max-age=86400"] };
+    if (req.method === "GET" && Object.prototype.hasOwnProperty.call(APP_ASSETS, p)) {
+      try {
+        const body = fs.readFileSync(path.join(PUBLIC_DIR, p.slice(1)));
+        const headers = { "content-type": APP_ASSETS[p][0], "content-length": body.length, "cache-control": APP_ASSETS[p][1] };
+        if (p === "/sw.js") headers["service-worker-allowed"] = "/";
+        res.writeHead(200, headers);
+        return res.end(body);
+      } catch { return sendJson(res, 404, { ok: false, error: "not found" }); }
+    }
+
     if ((req.method === "GET" || req.method === "HEAD") && p.startsWith("/p/")) {
       let slug = "";
       try { slug = decodeURIComponent(p.slice("/p/".length)); } catch { return sendJson(res, 400, { ok: false, error: "invalid page path" }); }
@@ -12554,6 +12593,31 @@ const server = http.createServer(async function(req, res) {
     }
     const selectedWorkspace = getWorkspaceById(requestedWorkspaceId) || getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
     workspaceContext.enterWith({ workspaceId: selectedWorkspace.id });
+
+    if (req.method === "GET" && p === "/api/notifications") {
+      return sendJson(res, 200, { ok: true, items: notifier.list(Number(url.searchParams.get("limit") || 50)), unread: notifier.unread(),
+        push: { enabled: Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY), publicKey: VAPID_PUBLIC_KEY, devices: notifier.subscriptionCount() } }, { "cache-control": "no-store" });
+    }
+    if (req.method === "POST" && p === "/api/notifications/read") {
+      const body = await readJsonObject(req);
+      await notifier.markRead(Array.isArray(body.ids) ? body.ids : null);
+      return sendJson(res, 200, { ok: true, unread: notifier.unread() });
+    }
+    if (req.method === "POST" && p === "/api/push/subscribe") {
+      if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return sendJson(res, 409, { ok: false, error: "Пуши не настроены на сервере" });
+      const body = await readJsonObject(req);
+      const ok = await notifier.subscribe(body.subscription, req.headers["user-agent"]);
+      return sendJson(res, ok ? 200 : 400, { ok: ok, devices: notifier.subscriptionCount(), error: ok ? undefined : "Неверная подписка" });
+    }
+    if (req.method === "POST" && p === "/api/push/unsubscribe") {
+      const body = await readJsonObject(req);
+      await notifier.unsubscribe(body.endpoint);
+      return sendJson(res, 200, { ok: true, devices: notifier.subscriptionCount() });
+    }
+    if (req.method === "POST" && p === "/api/notifications/test") {
+      const item = await notifier.add({ kind: "health", severity: "info", title: "Проверка уведомлений", body: "Если вы это видите, уведомления работают." });
+      return sendJson(res, 200, { ok: true, id: item && item.id, devices: notifier.subscriptionCount() });
+    }
 
     if (req.method === "GET" && p === "/api/costs") {
       const days = Number(url.searchParams.get("days") || 30);
@@ -14771,6 +14835,10 @@ setTimeout(function(){ loadRubricSourcesV055().catch(function(error){ console.wa
 // Data protection: channel-list watchdog + off-site backup (see lib/workspace-watchdog.js, lib/offsite-backup.js)
 // ---------------------------------------------------------------------------
 function sendOwnerAlert(text) {
+  try {
+    const kind = classifyAlertText(text), parts = splitAlertText(text);
+    notifyApp({ key: "owner:" + parts.title, kind: kind.kind, severity: kind.severity, title: parts.title, body: parts.body, throttleMs: 60000 });
+  } catch {}
   if (!BOT_TOKEN) return Promise.resolve(false);
   const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
   const chatId = TELEGRAM_ALERT_CHAT_ID || String(ws && ws.state && ws.state.telegramAlertChatId || "").trim();
@@ -14931,11 +14999,24 @@ async function healthAlertsTick() {
   }, healthAlertsPrev);
   healthAlertsPrev = result.next;
   healthAlertsLast = { at: Date.now(), silent: result.silent.length };
+  for (const ws of workspaceStore.workspaces) {
+    const ch = channels.find(function(c) { return c.id === ws.id; });
+    if (!ch || !ch.autoPublish) continue;
+    const ready = ((ws.state && ws.state.queue) || []).filter(function(i) { return i && !i.telegramPublished && i.status !== "publish_failed" && i.status !== "media_failed"; }).length;
+    if (ready === 0) notifyApp({ key: "empty:" + ws.id, kind: "empty_queue", severity: "warn", title: "Очередь пуста: " + ws.name, body: "Нет готовых постов к ближайшим слотам.", workspace: ws.id, throttleMs: 6 * 3600000 });
+  }
   for (const item of result.send.concat(result.recovered)) {
     console.warn("HEALTH_ALERT " + JSON.stringify({ key: item.key }));
     await sendOwnerAlert(item.text);
   }
 }
+setTimeout(function bootNotice() {
+  (async function() {
+    for (let i = 0; i < 24 && Boolean(db) && !dbReady; i += 1) await new Promise(function(r) { setTimeout(r, 5000); });
+    await notifier.load();
+    await notifyApp({ key: "boot", kind: "deploy", severity: "info", title: "Сервис перезапущен · v" + APP_VERSION, body: "Деплой или перезапуск завершён, всё запущено." });
+  })().catch(function() {});
+}, 20000).unref();
 setTimeout(function healthTick() {
   healthAlertsTick().catch(function(error){ console.warn("HEALTH_ALERTS_FAILED " + String(error && error.message || error).slice(0, 200)); });
   setTimeout(healthTick, 10 * 60 * 1000).unref();
