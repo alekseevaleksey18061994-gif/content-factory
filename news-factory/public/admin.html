@@ -2460,7 +2460,7 @@ input,select,textarea{border-radius:12px!important}
   .top{padding:8px 10px!important;margin-bottom:12px!important;border-radius:18px!important;gap:8px!important}
   .top-left,.brand{gap:8px!important}
   .top .sub{display:none!important}
-  .top h1,#topTitle{font-size:17px!important;line-height:1.15!important;white-space:nowrap;overflow:hidden!important;text-overflow:ellipsis;max-width:46vw}
+  .top h1,#topTitle{font-size:16px!important;line-height:1.15!important;white-space:normal!important;overflow:visible!important;text-overflow:clip!important;max-width:none!important;overflow-wrap:anywhere}
   .top .mark{width:38px!important;height:38px!important;border-radius:12px!important;font-size:15px!important}
   .top .menu-toggle{width:38px!important;height:38px!important}
 }
@@ -2473,6 +2473,25 @@ input,select,textarea{border-radius:12px!important}
 .network-account-last,.network-account-ok,.network-account-warning,.network-account-soft{display:block!important;text-align:center!important;width:100%}
 .network-day-totals,.network-day-note{text-align:center!important}
 .network-day-totals>*{text-align:center!important}
+/* v0.71.2: centered text for source tiles, service rows, group heads and slot chips */
+.source-summary-box{text-align:center!important;align-items:center!important;justify-content:center!important}
+.source-summary-box b,.source-summary-box span{text-align:center!important;width:100%}
+.conn{flex-direction:column!important;align-items:center!important;text-align:center!important;gap:10px!important}
+.conn-left{flex-direction:column!important;align-items:center!important;text-align:center!important;gap:6px!important;width:100%}
+.conn-left>span:not(.conn-dot){display:flex;flex-direction:column;align-items:center;text-align:center;width:100%}
+.conn small,.conn b{text-align:center!important}
+.conn .status{align-self:center!important}
+.conn-group-head,.cg-head{flex-direction:column!important;align-items:center!important;text-align:center!important;gap:8px!important}
+.cg-title,.cg-title b,.cg-title small{text-align:center!important}
+.sc{text-align:center!important;align-items:center!important}
+.sc b{width:100%;justify-content:center!important;gap:8px}
+.sc span{text-align:center!important;width:100%}
+.cg-icon,.conn-group-icon{align-self:center!important;width:44px!important;flex:0 0 auto!important;margin:0 auto}
+.cg-count,.conn-group-count{align-self:center!important}
+.cg-title{width:100%;display:flex;flex-direction:column;align-items:center}
+.conn-group-head>span.cg-icon{width:44px!important;flex:0 0 auto!important;align-self:center!important;margin:0 auto!important}
+.cg-head .cg-title{align-items:center!important;text-align:center!important;width:100%}
+.cg-head .cg-count{margin-left:0!important;align-self:center!important}
 </style>
 </head>
 <body>
