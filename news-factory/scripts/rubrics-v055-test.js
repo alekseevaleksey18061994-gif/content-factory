@@ -202,6 +202,17 @@ test("R12 v0.60.3: the money channel is removed on startup (archived) and home k
   assert.equal(inWs(t, "chtotamtachki", () => t.channelUnifiedSlots()), false, "cars unchanged");
 });
 
+test("R12b v0.71.6: business, food and home are removed on startup (archived); the other channels stay", async () => {
+  const channels = [["ai-main", "ai", "Что там у ИИ?"], ["chtotamtachki", "auto", "Что там у тачек?"], ["chtotamsport", "sport", "Что там в спорте?"],
+    ["chtotambusiness", "business", "Что там у бизнеса?"], ["chtotameda", "food", "Что там с едой?"], ["chtotamdom", "home", "Что там для дома?"]];
+  const t = await loadServer({ fixedNow: "2026-10-09T12:00:00Z", channels });
+  const gone = ["chtotambusiness", "chtotameda", "chtotamdom"];
+  for (const id of gone) assert.ok(t.workspaceStore.workspaces.some((w) => w.id === id), id + " exists before");
+  await t.runRubricsV055();
+  const after = t.workspaceStore.workspaces.map((w) => w.id).sort();
+  assert.deepEqual(after, ["ai-main", "chtotamsport", "chtotamtachki"], "only the three are removed");
+});
+
 test("R13 money/home fallback bucket keeps the old classifier (a phishing post is not cards_banks)", async () => {
   const { classifyContentBucket } = await import("../lib/channel-strategy.js");
   assert.equal(classifyContentBucket("money", { title: "Мошенники украли деньги с карты: новая схема фишинга" }), "financial_scams");
