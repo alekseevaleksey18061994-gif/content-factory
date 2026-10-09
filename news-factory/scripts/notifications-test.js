@@ -16,7 +16,7 @@ function fakeDb() {
       if (/SELECT \* FROM app_notifications/.test(sql)) return { rows: rows.slice().reverse() };
       if (/INSERT INTO push_subscriptions/.test(sql)) { subs.set(args[0], JSON.parse(args[1])); return { rows: [] }; }
       if (/DELETE FROM push_subscriptions/.test(sql)) { subs.delete(args[0]); return { rows: [] }; }
-      if (/SELECT endpoint, keys FROM push_subscriptions/.test(sql)) return { rows: Array.from(subs, ([endpoint, keys]) => ({ endpoint, keys })) };
+      if (/SELECT endpoint, keys, prefs FROM push_subscriptions/.test(sql)) return { rows: Array.from(subs, ([endpoint, keys]) => ({ endpoint, keys, prefs: {} })) };
       return { rows: [] };
     }
   };
@@ -51,7 +51,7 @@ await test("N3 push goes to every device; a gone device (410) is removed; other 
   await n.add({ kind: "publish_failed", title: "Пост не вышел" });
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].title, "Пост не вышел");
+  assert.equal(sent[0].title, "❌ Пост не вышел");
   assert.equal(n.subscriptionCount(), 2);
 });
 await test("N4 invalid subscriptions are rejected", async () => {
@@ -136,6 +136,22 @@ await test("N13 at most 20 devices", async () => {
   const n = createNotifier({ logger: quiet });
   for (let i = 0; i < 25; i += 1) await n.subscribe(SUB("d" + i));
   assert.equal(n.subscriptionCount(), 20);
+});
+await test("N14 per-device type choice: unticked kinds are not pushed, test push ignores it", async () => {
+  const got = { a: [], b: [] };
+  const n = createNotifier({ logger: quiet, sendPush: async (sub, payload) => { got[sub.endpoint.endsWith("/a") ? "a" : "b"].push(JSON.parse(payload)); } });
+  await n.subscribe(SUB("a"), "ua", { deploy: false });
+  await n.subscribe(SUB("b"), "ua", {});
+  await n.add({ kind: "deploy", title: "Сервис перезапущен" });
+  await n.add({ kind: "billing", title: "Деньги" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(got.a.length, 1);
+  assert.equal(got.b.length, 2);
+  assert.match(got.b[0].title, /^🚀 /);
+  await n.setPrefs(SUB("b").endpoint, { billing: false, bogus: false });
+  assert.deepEqual(n.devicePrefs(SUB("b").endpoint), { billing: false });
+  assert.equal(await n.pushTo(SUB("a").endpoint, { kind: "deploy", title: "t", body: "" }), true);
+  assert.equal(got.a.length, 2);
 });
 console.log(passed + " passed");
 process.exit(0);

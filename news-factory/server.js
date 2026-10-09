@@ -12606,8 +12606,19 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "POST" && p === "/api/push/subscribe") {
       if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return sendJson(res, 409, { ok: false, error: "Пуши не настроены на сервере" });
       const body = await readJsonObject(req);
-      const ok = await notifier.subscribe(body.subscription, req.headers["user-agent"]);
+      const ok = await notifier.subscribe(body.subscription, req.headers["user-agent"], body.prefs);
+      if (ok && body.test) await notifier.pushTo(body.subscription.endpoint, { kind: "deploy", title: "Уведомления включены", body: "Сюда будут приходить сбои, деньги и ключи, пустая очередь и перезапуски." });
       return sendJson(res, ok ? 200 : 400, { ok: ok, devices: notifier.subscriptionCount(), error: ok ? undefined : "Неверная подписка" });
+    }
+    if (req.method === "POST" && p === "/api/push/prefs") {
+      const body = await readJsonObject(req);
+      const ok = await notifier.setPrefs(body.endpoint, body.prefs);
+      return sendJson(res, ok ? 200 : 404, { ok: ok, prefs: ok ? notifier.devicePrefs(body.endpoint) : undefined });
+    }
+    if (req.method === "POST" && p === "/api/push/test") {
+      const body = await readJsonObject(req);
+      const ok = await notifier.pushTo(body.endpoint, { kind: "health", title: "Проверка уведомлений", body: "Если вы это видите, уведомления работают." });
+      return sendJson(res, ok ? 200 : 502, { ok: ok });
     }
     if (req.method === "POST" && p === "/api/push/unsubscribe") {
       const body = await readJsonObject(req);
