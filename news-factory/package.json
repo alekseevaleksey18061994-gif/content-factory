@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.71.9",
+  "version": "0.71.10",
   "private": true,
   "type": "module",
   "scripts": {
@@ -64,6 +64,7 @@
     "test:cost-range": "node scripts/cost-range-test.js",
     "test:slot-rubric-fallback": "node scripts/slot-rubric-fallback-test.js",
     "test:qa-skip": "node scripts/qa-skip-test.js",
+    "test:queue-repair": "node scripts/queue-repair-test.js",
     "test:github-probe": "node scripts/github-probe-test.js",
     "test:telegram-video-size": "node scripts/telegram-video-size-test.js",
     "test:enhance-tiny": "node scripts/enhance-tiny-test.js",
