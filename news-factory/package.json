@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.71.2",
+  "version": "0.71.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -62,6 +62,7 @@
     "test:disk-guard": "node scripts/disk-guard-test.js",
     "test:collect-guard": "node scripts/collect-guard-test.js",
     "test:cost-range": "node scripts/cost-range-test.js",
+    "test:slot-rubric-fallback": "node scripts/slot-rubric-fallback-test.js",
     "test:enhance-tiny": "node scripts/enhance-tiny-test.js",
     "test:media-retry-guard": "node scripts/vk-retry-guard-test.js"
   },
