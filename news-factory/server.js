@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { postRating, queueItemRatingInput } from "./lib/post-rating.js";
 import { channelTopic, channelFocus, channelStrategy, SOURCE_REWORK_V0430, INTERNET_SOURCE_FIX_V0451, HOME_RUBRIC_SOURCES_V0513, MONEY_RUBRIC_SOURCES_V0526 } from "./lib/channel-dna.js";
 import { SOURCES_V055, SOURCES_TOPUP_V058, proxyRetryLists } from "./lib/channel-sources-v055.js";
-import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, REMOVED_CHANNELS_V060, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, isLegacyThemeChannelV055, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
+import { RUBRICS_V055_MIGRATION, REMOVED_CHANNELS_V055, REMOVED_CHANNELS_V060, REMOVED_CHANNELS_V0716, CHANNEL_NAME_TAILS_V055, RUBRIC_PLAN_V055, isRubricsV055Channel, isLegacyThemeChannelV055, classifySourceV055, classifyTextV055, shouldRestoreAutoPausedV055 } from "./lib/channel-rubrics-v055.js";
 import { WORKSPACE_RECOVERY_MIGRATION, RECOVERY_CHANNELS, isUsableSnapshotState, recoveredWorkspaceRecord } from "./lib/workspace-recovery.js";
 import { channelStrategyScore, sourceClassFor } from "./lib/channel-strategy.js";
 import { APPROVED_AUTO_BLOGGER_SOURCES, SHOPPING_FIND_SOURCES } from "./lib/channel-curated-sources.js";
@@ -1136,7 +1136,7 @@ function channelConfigReport() {
     profiles: EDITORIAL_CHANNEL_IDS,
     resolveChannelId: resolveChannelId,
     recovery: RECOVERY_CHANNELS,
-    removed: REMOVED_CHANNELS_V055.concat(REMOVED_CHANNELS_V060),
+    removed: REMOVED_CHANNELS_V055.concat(REMOVED_CHANNELS_V060, REMOVED_CHANNELS_V0716),
     vkMap: VK_VIA_POSTMYPOST ? postmypostMap.byWorkspace : null,
     defaultWorkspaceId: workspaceStore.defaultWorkspaceId
   });
@@ -14521,7 +14521,7 @@ async function recoverMissingWorkspaces() {
     defaultWorkspace.state.migrations = Array.isArray(defaultWorkspace.state.migrations) ? defaultWorkspace.state.migrations : [];
     if (defaultWorkspace.state.migrations.includes(WORKSPACE_RECOVERY_MIGRATION)) return { skipped: "done" };
     if (!db || !dbReady) return { skipped: "db_not_ready" };
-    const missing = RECOVERY_CHANNELS.filter(function(entry){ return !getWorkspaceById(entry.id) && !REMOVED_CHANNELS_V055.includes(entry.id) && !REMOVED_CHANNELS_V060.includes(entry.id); });
+    const missing = RECOVERY_CHANNELS.filter(function(entry){ return !getWorkspaceById(entry.id) && !REMOVED_CHANNELS_V055.includes(entry.id) && !REMOVED_CHANNELS_V060.includes(entry.id) && !REMOVED_CHANNELS_V0716.includes(entry.id); });
     const restored = [];
     const fresh = [];
     for (const entry of missing) {
@@ -14574,13 +14574,15 @@ async function recoverMissingWorkspaces() {
 //     restored, and the rubrics/hours/soft quotas are switched on by the migration marker.
 const RUBRICS_V055_REMOVAL_MARKER = "v0.55.0-removed-channels";
 const REMOVAL_MARKER_V060 = "v0.60.3-removed-dengi";
+const REMOVAL_MARKER_V0716 = "v0.71.6-removed-business-food-home";
 async function removeChannelsV055() {
   const defaultWorkspace = getWorkspaceById(workspaceStore.defaultWorkspaceId);
   if (!defaultWorkspace || !defaultWorkspace.state) return { skipped: "no_default_workspace" };
   defaultWorkspace.state.migrations = Array.isArray(defaultWorkspace.state.migrations) ? defaultWorkspace.state.migrations : [];
   const groups = [
     { marker: RUBRICS_V055_REMOVAL_MARKER, ids: REMOVED_CHANNELS_V055 },
-    { marker: REMOVAL_MARKER_V060, ids: REMOVED_CHANNELS_V060 }
+    { marker: REMOVAL_MARKER_V060, ids: REMOVED_CHANNELS_V060 },
+    { marker: REMOVAL_MARKER_V0716, ids: REMOVED_CHANNELS_V0716 }
   ].filter(function(g){ return !defaultWorkspace.state.migrations.includes(g.marker); });
   if (!groups.length) return { skipped: "done" };
   const removed = [];

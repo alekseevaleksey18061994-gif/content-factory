@@ -13,6 +13,8 @@ export const RUBRICS_V055_MIGRATION = "v0.55.0-rubrics";
 export const REMOVED_CHANNELS_V055 = ["chtotampokupki", "chtotamnauka", "chtotamnews"];
 // v0.60.3: «Деньги» закрыт владельцем (группы в VK и Telegram удалены).
 export const REMOVED_CHANNELS_V060 = ["chtotamdengi"];
+// v0.71.6: «Бизнес», «Еда», «Дом» убраны владельцем (слабые, неинтересные). Архив состояния в /data, Telegram-каналы не трогаем.
+export const REMOVED_CHANNELS_V0716 = ["chtotambusiness", "chtotameda", "chtotamdom"];
 
 // Хвост полного названия: «<прежнее название> | <тема>». Голова (до « | ») не меняется — по ней сопоставляется VK.
 export const CHANNEL_NAME_TAILS_V055 = {

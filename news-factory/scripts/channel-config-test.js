@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { buildChannelConfig } from "../lib/channel-config.js";
 import { RECOVERY_CHANNELS } from "../lib/workspace-recovery.js";
-import { REMOVED_CHANNELS_V055, REMOVED_CHANNELS_V060 } from "../lib/channel-rubrics-v055.js";
+import { REMOVED_CHANNELS_V055, REMOVED_CHANNELS_V060, REMOVED_CHANNELS_V0716 } from "../lib/channel-rubrics-v055.js";
 
 const src = (n) => Array.from({ length: n }, (_, i) => ({ id: "s" + i, enabled: true }));
 const ws = (id, over) => Object.assign({ id, name: "Канал " + id, telegramChannel: "@" + id, telegramPublicUsername: id, avatarUrl: "x", channelId: id, state: { mode: "AUTO", sources: src(20), topicSettings: { default: {} } } }, over || {});
@@ -59,7 +59,7 @@ const cases = {
     const r = buildChannelConfig(RECOVERY_CHANNELS.map((e) => ({ id: e.id, name: e.name, telegramChannel: e.handle, telegramPublicUsername: e.handle.slice(1), avatarUrl: "x", channelId: e.channelId, state: { sources: src(20) } })),
       ctx({ profiles: RECOVERY_CHANNELS.map((e) => e.channelId), recovery: RECOVERY_CHANNELS, removed: [], defaultWorkspaceId: "" }));
     assert.equal(r.errors, 0, JSON.stringify(r.channels.flatMap((c) => c.issues.filter((i) => i.level === "error"))));
-    assert.ok(REMOVED_CHANNELS_V055.concat(REMOVED_CHANNELS_V060).every((id) => RECOVERY_CHANNELS.some((e) => e.id === id)), "removed ids exist in manifest");
+    assert.ok(REMOVED_CHANNELS_V055.concat(REMOVED_CHANNELS_V060, REMOVED_CHANNELS_V0716).every((id) => RECOVERY_CHANNELS.some((e) => e.id === id)), "removed ids exist in manifest");
   }
 };
 let failed = 0;
