@@ -33,5 +33,17 @@ await test("P2 a missing local /media file is still replaced by a card", async (
   assert.ok(t.ws(CHAN).state.queue[0].generatedImageUrl);
   t.restoreConsole();
 });
+await test("P3 boot media repair does not restore a weak source photo over a generated cover", async () => {
+  const gen = "https://news-factory-api-production.up.railway.app/media/cover_x_1.png";
+  const item = mkQueueItem({ id: "c", newsId: "n_c", imageUrl: "", generatedImageUrl: gen, mediaOrigin: "ai_generated", originalImageUrl: "https://example.invalid/weak.jpg" });
+  const t = await load([item]);
+  let calls = 0;
+  const r = await inWs(t, CHAN, () => t.repairBalancedQueueMedia());
+  const q = t.ws(CHAN).state.queue[0];
+  assert.equal(q.imageUrl, "");
+  assert.equal(q.generatedImageUrl, gen);
+  assert.equal((r.repaired || 0) + (r.failed || 0), 0, "item must not even be attempted");
+  t.restoreConsole();
+});
 console.log(passed + " passed");
 process.exit(0);
