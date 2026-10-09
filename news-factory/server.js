@@ -6515,6 +6515,23 @@ function dynamicUsedQueueIds() {
   return used;
 }
 
+// v0.71.3: a channel with hard slot rubrics ("Тачки": 12:00 = bloggers_tests) used to leave the slot EMPTY when the queue had
+// no post of that rubric, even with 16 other ready posts (2026-10-09 12:00). When the slot's own rubric has no candidate at
+// publish time, the best post of any other rubric may take it. A post of the slot's own rubric always wins when one exists.
+// SLOT_RUBRIC_FALLBACK=false restores the old behaviour.
+const SLOT_RUBRIC_FALLBACK = String(process.env.SLOT_RUBRIC_FALLBACK || "true").toLowerCase() !== "false";
+const slotRubricRelaxed = new Set();
+function slotRubricRelaxKey(time) { return currentWorkspaceId() + "|" + moscowDateKey(new Date()) + "|" + String(time || ""); }
+function slotRubricIsRelaxed(time) { return slotRubricRelaxed.has(slotRubricRelaxKey(time)); }
+// The relaxation is scoped to one synchronous selection (set -> select -> unrelax in finally): it must never apply to
+// another day's slot of the same time (calendar "auto" for tomorrow) or to later calls.
+function relaxSlotRubric(time) {
+  if (!SLOT_RUBRIC_FALLBACK) return false;
+  slotRubricRelaxed.add(slotRubricRelaxKey(time));
+  return true;
+}
+function unrelaxSlotRubric(time) { slotRubricRelaxed.delete(slotRubricRelaxKey(time)); }
+
 function dynamicBestQueueItem(kind, time) {
   // Posts at or above the rating threshold first; reserve posts only when none is available.
   // A thematic slot is never backfilled by another rubric: if its own queue is weak/empty, the slot is skipped.
@@ -6559,7 +6576,7 @@ function dynamicBestQueueItemRaw(kind, onlyAboveThreshold, time) {
       if (excludedBuckets.size && excludedBuckets.has(String(item.contentBucket || (item.editorialV2 && item.editorialV2.contentBucket) || ""))) return false;
       const itemTheme = itemRubric(item, themes);
       const desiredRubric = channelSlotRubric(time);
-      if (desiredRubric && itemTheme !== desiredRubric) return false;
+      if (desiredRubric && itemTheme !== desiredRubric && !slotRubricIsRelaxed(time)) return false;
       if (channelId === "money") {
         if (!itemTheme) return false; // old/unclassified queue cannot leak into the rebuilt channel
         if (!wantsMoneyEmergency && !unifiedFlow && themesToday.has(itemTheme)) return false; // unified flow: a filled rubric only ranks lower (a slot never stays empty)
@@ -7014,6 +7031,14 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   // the 15-minute preparation, it replaces the automatic reservation now; manual choices stay locked.
   const publishRefresh = dynamicRefreshBest(day, time, laneKind);
   let queueId = publishRefresh.item && publishRefresh.item.id || "";
+
+  // The slot's own rubric has no post: let the best post of another rubric take the slot instead of leaving it empty.
+  if (!queueId && channelSlotRubric(time) && relaxSlotRubric(time)) {
+    let relaxed = { item: null };
+    try { relaxed = dynamicRefreshBest(day, time, laneKind); } finally { unrelaxSlotRubric(time); }
+    queueId = relaxed.item && relaxed.item.id || "";
+    if (queueId) console.log("SLOT_RUBRIC_RELAXED " + JSON.stringify({ workspace: currentWorkspaceId(), slot: slotKey, wanted: channelSlotRubric(time), queueId: queueId, got: itemRubric(relaxed.item, rubricIds()) || "" }));
+  }
 
   if (!queueId) {
     let lastChanceItem = dynamicRefreshBest(day, time, laneKind).item;
