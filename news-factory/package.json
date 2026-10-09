@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.71.10",
+  "version": "0.71.11",
   "private": true,
   "type": "module",
   "scripts": {
