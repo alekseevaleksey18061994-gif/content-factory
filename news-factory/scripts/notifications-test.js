@@ -1,7 +1,7 @@
 // In-app notifications (bell) + Web Push.  npm run test:notifications
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { createNotifier, classifyAlertText, splitAlertText } from "../lib/notifications.js";
+import { createNotifier, classifyAlertText, splitAlertText, allowedPushEndpoint } from "../lib/notifications.js";
 
 let passed = 0;
 async function test(name, fn) { await fn(); passed += 1; console.log("ok - " + name); }
@@ -21,7 +21,7 @@ function fakeDb() {
     }
   };
 }
-const SUB = (n) => ({ endpoint: "https://push.example/" + n, keys: { p256dh: "p", auth: "a" } });
+const SUB = (n) => ({ endpoint: "https://fcm.googleapis.com/fcm/send/" + n, keys: { p256dh: "p", auth: "a" } });
 
 await test("N1 add / list / unread / markRead", async () => {
   const n = createNotifier({ logger: quiet });
@@ -49,6 +49,7 @@ await test("N3 push goes to every device; a gone device (410) is removed; other 
   await n.subscribe(SUB("ok")); await n.subscribe(SUB("gone")); await n.subscribe(SUB("flaky"));
   assert.equal(n.subscriptionCount(), 3);
   await n.add({ kind: "publish_failed", title: "Пост не вышел" });
+  await new Promise((r) => setTimeout(r, 50));
   assert.equal(sent.length, 1);
   assert.equal(sent[0].title, "Пост не вышел");
   assert.equal(n.subscriptionCount(), 2);
@@ -95,6 +96,46 @@ await test("N8 app shell files and server routes exist", async () => {
   assert.ok(!/VAPID_PRIVATE_KEY[^\n]*(console|JSON\.stringify)/.test(server), "private key must never be logged");
   const mig = fs.readFileSync(new URL("../migrations/20261010_009_app_notifications.sql", import.meta.url), "utf8");
   assert.ok(/CREATE TABLE IF NOT EXISTS app_notifications/.test(mig) && !/DROP|DELETE|TRUNCATE/i.test(mig), "migration must be additive");
+});
+await test("N9 one hung endpoint neither blocks add() nor the healthy device", async () => {
+  const got = [];
+  const n = createNotifier({ logger: quiet, sendPush: (sub, payload) => sub.endpoint.endsWith("/hang") ? new Promise(() => {}) : Promise.resolve(got.push(payload)) });
+  await n.subscribe(SUB("hang")); await n.subscribe(SUB("fine"));
+  const started = Date.now();
+  await n.add({ title: "x" });
+  assert.ok(Date.now() - started < 500, "add() must not wait for push");
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(got.length, 1, "healthy device got it while the other hangs");
+});
+await test("N10 only real push services are accepted (no server-side requests to arbitrary hosts)", async () => {
+  assert.equal(allowedPushEndpoint("https://fcm.googleapis.com/fcm/send/abc"), true);
+  assert.equal(allowedPushEndpoint("https://updates.push.services.mozilla.com/wpush/v2/abc"), true);
+  assert.equal(allowedPushEndpoint("https://web.push.apple.com/abc"), true);
+  assert.equal(allowedPushEndpoint("https://wns2-par02p.notify.windows.com/?token=x"), true);
+  for (const bad of ["https://evil.example/x", "https://127.0.0.1/x", "https://fcm.googleapis.com.evil.example/x", "https://169.254.169.254/", "http://fcm.googleapis.com/x", "https://fcm.googleapis.com:8443/x", "https://evilgoogleapis.com/x"]) assert.equal(allowedPushEndpoint(bad), false, bad);
+});
+await test("N11 a ✅ message is never critical; a message raised before the DB was ready survives load()", async () => {
+  assert.equal(classifyAlertText("✅ News Factory: оповещения подключены. кончились кредиты ИИ").severity, "info");
+  const db = fakeDb();
+  let ready = false;
+  const n = createNotifier({ getDb: () => (ready ? db : null), logger: quiet });
+  await n.add({ title: "early" });
+  ready = true;
+  await n.load();
+  assert.equal(n.list().length, 1);
+  assert.equal(n.list()[0].title, "early");
+});
+await test("N12 markRead: bad input never marks everything; empty list is a no-op", async () => {
+  const n = createNotifier({ logger: quiet });
+  await n.add({ title: "a" });
+  await n.markRead([]); assert.equal(n.unread(), 1);
+  await n.markRead("x"); assert.equal(n.unread(), 1);
+  await n.markRead(null); assert.equal(n.unread(), 0);
+});
+await test("N13 at most 20 devices", async () => {
+  const n = createNotifier({ logger: quiet });
+  for (let i = 0; i < 25; i += 1) await n.subscribe(SUB("d" + i));
+  assert.equal(n.subscriptionCount(), 20);
 });
 console.log(passed + " passed");
 process.exit(0);

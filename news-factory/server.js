@@ -2060,9 +2060,9 @@ async function sendWebPush(subscription, payload) {
   if (!webPushLib) {
     const mod = await import("web-push");
     webPushLib = mod.default || mod;
-    webPushLib.setVapidDetails(PUBLIC_BASE_URL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    webPushLib.setVapidDetails(/^https:\/\//.test(PUBLIC_BASE_URL) ? PUBLIC_BASE_URL : "https://example.com", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
   }
-  await webPushLib.sendNotification(subscription, payload, { TTL: 86400, urgency: "high" });
+  await webPushLib.sendNotification(subscription, payload, { TTL: 86400, urgency: "high", timeout: 8000 });
 }
 const notifier = createNotifier({
   getDb: function() { return db && dbReady ? db : null; },
@@ -12600,7 +12600,7 @@ const server = http.createServer(async function(req, res) {
     }
     if (req.method === "POST" && p === "/api/notifications/read") {
       const body = await readJsonObject(req);
-      await notifier.markRead(Array.isArray(body.ids) ? body.ids : null);
+      await notifier.markRead(body.ids === undefined || body.ids === null ? null : (Array.isArray(body.ids) ? body.ids : []));
       return sendJson(res, 200, { ok: true, unread: notifier.unread() });
     }
     if (req.method === "POST" && p === "/api/push/subscribe") {
@@ -12615,8 +12615,8 @@ const server = http.createServer(async function(req, res) {
       return sendJson(res, 200, { ok: true, devices: notifier.subscriptionCount() });
     }
     if (req.method === "POST" && p === "/api/notifications/test") {
-      const item = await notifier.add({ kind: "health", severity: "info", title: "Проверка уведомлений", body: "Если вы это видите, уведомления работают." });
-      return sendJson(res, 200, { ok: true, id: item && item.id, devices: notifier.subscriptionCount() });
+      const item = await notifier.add({ key: "test", throttleMs: 5000, kind: "health", severity: "info", title: "Проверка уведомлений", body: "Если вы это видите, уведомления работают." });
+      return sendJson(res, item ? 200 : 429, { ok: Boolean(item), id: item && item.id, devices: notifier.subscriptionCount() });
     }
 
     if (req.method === "GET" && p === "/api/costs") {
@@ -14837,7 +14837,7 @@ setTimeout(function(){ loadRubricSourcesV055().catch(function(error){ console.wa
 function sendOwnerAlert(text) {
   try {
     const kind = classifyAlertText(text), parts = splitAlertText(text);
-    notifyApp({ key: "owner:" + parts.title, kind: kind.kind, severity: kind.severity, title: parts.title, body: parts.body, throttleMs: 60000 });
+    notifyApp({ key: "owner:" + parts.title + "|" + parts.body.slice(0, 80), kind: kind.kind, severity: kind.severity, title: parts.title, body: parts.body, throttleMs: 60000 });
   } catch {}
   if (!BOT_TOKEN) return Promise.resolve(false);
   const ws = getWorkspaceById(workspaceStore.defaultWorkspaceId) || workspaceStore.workspaces[0];
@@ -14999,17 +14999,26 @@ async function healthAlertsTick() {
   }, healthAlertsPrev);
   healthAlertsPrev = result.next;
   healthAlertsLast = { at: Date.now(), silent: result.silent.length };
-  for (const ws of workspaceStore.workspaces) {
-    const ch = channels.find(function(c) { return c.id === ws.id; });
-    if (!ch || !ch.autoPublish) continue;
-    const ready = ((ws.state && ws.state.queue) || []).filter(function(i) { return i && !i.telegramPublished && i.status !== "publish_failed" && i.status !== "media_failed"; }).length;
-    if (ready === 0) notifyApp({ key: "empty:" + ws.id, kind: "empty_queue", severity: "warn", title: "Очередь пуста: " + ws.name, body: "Нет готовых постов к ближайшим слотам.", workspace: ws.id, throttleMs: 6 * 3600000 });
-  }
   for (const item of result.send.concat(result.recovered)) {
     console.warn("HEALTH_ALERT " + JSON.stringify({ key: item.key }));
     await sendOwnerAlert(item.text);
   }
 }
+// Independent of Telegram: an auto-publish channel with nothing ready for its next slots.
+function emptyQueueNotices() {
+  for (const ws of workspaceStore.workspaces) {
+    if (!ws || !ws.state) continue;
+    let auto = false;
+    try { auto = workspaceContext.run({ workspaceId: ws.id }, function() { return Boolean(workspaceSummary(ws).autoPublish); }); } catch {}
+    if (!auto) continue;
+    const ready = (ws.state.queue || []).filter(function(i) { return i && !i.telegramPublished && i.status !== "publish_failed" && i.status !== "media_failed"; }).length;
+    if (ready === 0) notifyApp({ key: "empty:" + ws.id, kind: "empty_queue", severity: "warn", title: "Очередь пуста: " + ws.name, body: "Нет готовых постов к ближайшим слотам.", workspace: ws.id, throttleMs: 6 * 3600000 });
+  }
+}
+setTimeout(function emptyQueueTick() {
+  try { emptyQueueNotices(); } catch (error) { console.warn("EMPTY_QUEUE_NOTICE_FAILED " + String(error && error.message || error).slice(0, 200)); }
+  setTimeout(emptyQueueTick, 10 * 60 * 1000).unref();
+}, 7 * 60 * 1000).unref();
 setTimeout(function bootNotice() {
   (async function() {
     for (let i = 0; i < 24 && Boolean(db) && !dbReady; i += 1) await new Promise(function(r) { setTimeout(r, 5000); });
