@@ -11928,7 +11928,26 @@ function hasEnv() {
   return true;
 }
 
+// api.github.com allows 60 unauthenticated requests/hour per IP and Railway's address is shared: the status page used to
+// ask on every refresh and got HTTP 403 (rate limit) although the workflow runs fine. Cache for 10 min and, when GitHub
+// refuses, keep showing the last good answer (marked stale) instead of a red "not connected".
+let githubProbeCache = { at: 0, value: null, lastGood: null };
+const GITHUB_PROBE_TTL_MS = 10 * 60 * 1000;
 async function githubAutomationProbe() {
+  const now = Date.now();
+  if (githubProbeCache.value && now - githubProbeCache.at < GITHUB_PROBE_TTL_MS) return githubProbeCache.value;
+  let value = await githubAutomationProbeRaw();
+  if (value.workflowOk) {
+    githubProbeCache.lastGood = Object.assign({}, value, { at: now });
+  } else if (githubProbeCache.lastGood && now - githubProbeCache.lastGood.at < 6 * 3600 * 1000 && /HTTP (403|429)\b/.test(String(value.error || ""))) {
+    value = Object.assign({}, githubProbeCache.lastGood, { stale: true, error: value.error });
+  }
+  githubProbeCache.at = now;
+  githubProbeCache.value = value;
+  return value;
+}
+
+async function githubAutomationProbeRaw() {
   const repoName = String(process.env.GITHUB_REPOSITORY || "alekseevaleksey18061994-gif/content-factory").trim();
   const headers = {
     "user-agent": "NewsFactoryStatus/1.0",
@@ -12074,20 +12093,22 @@ async function buildSystemStatus(force) {
       next: gitConnected ? "" : "Проверить source connection в Railway"
     },
     claudeCode: {
-      state: claudeLatestOk ? "connected" : (githubAutomation.workflowOk ? "partial" : "missing"),
-      description: claudeLatestOk ? "Claude Code подключён через GitHub Actions" : (githubAutomation.workflowOk ? "Workflow Claude Code найден, последний запуск требует внимания" : "Workflow Claude Code не подтверждён"),
+      state: claudeLatestOk ? "connected" : ((githubAutomation.workflowOk || /HTTP (403|429)\b/.test(String(githubAutomation.error || ""))) ? "partial" : "missing"),
+      description: claudeLatestOk ? (githubAutomation.stale ? "Claude Code подключён через GitHub Actions (GitHub временно не отвечает, показан последний результат)" : "Claude Code подключён через GitHub Actions") : (githubAutomation.workflowOk ? "Workflow Claude Code найден, последний запуск требует внимания" : (/HTTP (403|429)\b/.test(String(githubAutomation.error || "")) ? "GitHub ограничил запросы к API, проверим позже" : "Workflow Claude Code не подтверждён")),
       detail: githubAutomation.workflowOk
         ? ("Последний run #" + (githubAutomation.latestRunNumber || "—") + " · " + (githubAutomation.latestStatus || "unknown") + (githubAutomation.latestConclusion ? " · " + githubAutomation.latestConclusion : ""))
         : String(githubAutomation.error || "GitHub Actions workflow недоступен"),
       next: claudeLatestOk ? "" : "Проверить Claude Code workflow и ANTHROPIC_API_KEY в GitHub Actions"
     },
+    // The key that publishes posts is the one on this server: judge it by a real request (the editor's checker probe),
+    // not by whether the GitHub Actions workflow happened to run.
     anthropic: {
-      state: claudeLatestOk ? "connected" : (githubAutomation.workflowOk ? "partial" : "missing"),
-      description: claudeLatestOk ? "Anthropic API подтверждён успешным Claude Code workflow" : "Anthropic API не подтверждён последним workflow",
-      detail: claudeLatestOk
-        ? "Anthropic подтверждён успешным Claude Code run · значение ANTHROPIC_API_KEY скрыто"
-        : (githubAutomation.workflowOk ? "Workflow найден; наличие ANTHROPIC_API_KEY подтвердит следующий успешный run" : "Claude Code workflow недоступен"),
-      next: claudeLatestOk ? "" : "Проверить ANTHROPIC_API_KEY и биллинг Anthropic"
+      state: !ANTHROPIC_API_KEY ? "missing" : (anthropicProbe.ok ? "connected" : "partial"),
+      description: !ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY не задан" : (anthropicProbe.ok ? "Anthropic API отвечает: ключ рабочий" : "Anthropic API не ответил на проверку"),
+      detail: anthropicProbe.ok
+        ? "Модель проверки: " + String(anthropicProbe.model || "—") + " · значение ANTHROPIC_API_KEY скрыто"
+        : String(anthropicProbe.error || (ANTHROPIC_API_KEY ? "ошибка проверки" : "ключ не задан")).slice(0, 200),
+      next: anthropicProbe.ok ? "" : "Проверить ANTHROPIC_API_KEY и биллинг Anthropic"
     },
     publicEndpoint: {
       state: publicEndpointOk ? "connected" : "missing",
