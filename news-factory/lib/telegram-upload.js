@@ -49,6 +49,28 @@ export function telegramUploadMeta(rawUrl, fallbackKind) {
   return { ext: ext || (fallbackKind === "video" ? "mp4" : "jpg"), mime: mime };
 }
 
+export const TELEGRAM_VIDEO_MAX_BYTES = 49 * 1024 * 1024;
+
+// Size of a video before we try to send it: local file → stat, remote → HEAD content-length.
+// Unknown size → null (the send path still guards the real size). Never throws.
+export async function telegramVideoSizeBytes(rawUrl) {
+  const sourceUrl = String(rawUrl || "").trim();
+  if (!sourceUrl) return null;
+  try {
+    const localPath = localMediaPathFromUrl(sourceUrl);
+    if (localPath) return fs.statSync(localPath).size;
+    const absolute = sourceUrl.startsWith("/") ? PUBLIC_BASE_URL + sourceUrl : sourceUrl;
+    const response = await safeFetch(absolute, { method: "HEAD", timeoutMs: 8000, maxBytes: 1024, headers: { "user-agent": "Mozilla/5.0 (compatible; NewsFactoryTelegram/1.0)" } });
+    const len = Number(response.headers.get("content-length") || 0);
+    return len > 0 ? len : null;
+  } catch { return null; }
+}
+
+export async function telegramVideoTooLarge(rawUrl) {
+  const size = await telegramVideoSizeBytes(rawUrl);
+  return size != null && size > TELEGRAM_VIDEO_MAX_BYTES;
+}
+
 export async function loadTelegramUpload(rawUrl, kind) {
   const sourceUrl = String(rawUrl || "").trim();
   if (!sourceUrl) throw new Error("Telegram media URL is empty");
@@ -78,7 +100,7 @@ export async function loadTelegramUpload(rawUrl, kind) {
 
   if (!bytes || !bytes.length) throw new Error("Telegram media is empty");
   if (kind === "video") {
-    if (bytes.length > 49 * 1024 * 1024) throw new Error("Видео больше лимита Telegram Bot API");
+    if (bytes.length > TELEGRAM_VIDEO_MAX_BYTES) throw new Error("Видео больше лимита Telegram Bot API");
   } else {
     if (bytes.length > 9 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/i.test(mime)) {
       bytes = await sharp(bytes, { limitInputPixels: SAFE_INPUT_PIXELS })

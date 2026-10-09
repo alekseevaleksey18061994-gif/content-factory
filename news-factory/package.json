@@ -1,6 +1,6 @@
 {
   "name": "news-factory",
-  "version": "0.71.3",
+  "version": "0.71.4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -63,6 +63,7 @@
     "test:collect-guard": "node scripts/collect-guard-test.js",
     "test:cost-range": "node scripts/cost-range-test.js",
     "test:slot-rubric-fallback": "node scripts/slot-rubric-fallback-test.js",
+    "test:telegram-video-size": "node scripts/telegram-video-size-test.js",
     "test:enhance-tiny": "node scripts/enhance-tiny-test.js",
     "test:media-retry-guard": "node scripts/vk-retry-guard-test.js"
   },
