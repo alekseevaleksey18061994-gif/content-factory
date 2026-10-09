@@ -10208,7 +10208,8 @@ async function runEditorialV2(sources, options) {
     time_slot: opts.timeSlot || timeSlotFor(publishAt),
     vk_enabled: VK_PUBLISH_ENABLED && workspaceVkPublishingAllowed(currentWorkspace()),
     signature: editorialSignature(),
-    posts_today: editorialPostsToday(),
+    // The QA control run is not a real publication: the daily limit must not make the editor skip it (v0.71.8).
+    posts_today: opts.qaRun ? 0 : editorialPostsToday(),
     daily_limit: editorialDailyLimit(),
     sources: sources.map(function(s) {
       return {
@@ -10518,18 +10519,25 @@ async function runEditorialQaForWorkspace(ws) {
     let checkerError = "";
     if (candidate) {
       try {
-        const result = await runEditorialV2([{
-          name: String(candidate.sourceName || "Источник"),
-          url: String(candidate.sourceUrl || ""),
-          date: String(candidate.articlePublishedAt || candidate.createdAt || ""),
-          role: sourceRoleLabel(candidate.sourceRole || sourceEditorialRole(candidate)),
-          title: String(candidate.sourceOriginalTitle || candidate.title || ""),
-          text: String(candidate.sourceOriginalText || candidate.text || "").slice(0,7000),
-          photos: [candidate.originalImageUrl, candidate.imageUrl, candidate.generatedImageUrl].filter(Boolean).slice(0,3)
-        }], {
-          hasPhoto: Boolean(candidate.videoUrl || candidate.imageUrl || candidate.generatedImageUrl),
-          newsId: "qa_" + ws.id + "_" + Date.now()
-        });
+        // A "skip" (repeat of a published story, low importance) says nothing about the channel setup: it leaves the
+        // bucket/signals empty and used to turn three checks red. Try up to 3 candidates and keep the first real verdict.
+        let result = null;
+        for (const probe of candidates.slice(0, 3)) {
+          result = await runEditorialV2([{
+            name: String(probe.sourceName || "Источник"),
+            url: String(probe.sourceUrl || ""),
+            date: String(probe.articlePublishedAt || probe.createdAt || ""),
+            role: sourceRoleLabel(probe.sourceRole || sourceEditorialRole(probe)),
+            title: String(probe.sourceOriginalTitle || probe.title || ""),
+            text: String(probe.sourceOriginalText || probe.text || "").slice(0,7000),
+            photos: [probe.originalImageUrl, probe.imageUrl, probe.generatedImageUrl].filter(Boolean).slice(0,3)
+          }], {
+            hasPhoto: Boolean(probe.videoUrl || probe.imageUrl || probe.generatedImageUrl),
+            newsId: "qa_" + ws.id + "_" + Date.now(),
+            qaRun: true
+          });
+          if (!result || !result.meta || result.meta.verdict !== "skip") break;
+        }
 
         const meta = result.meta || {};
         const bucketKeys = Object.keys(strategy.mix || {});
@@ -10539,11 +10547,14 @@ async function runEditorialQaForWorkspace(ws) {
         degraded = Boolean(meta.degradedQc);
         checkerError = degraded ? String((meta.failedProviders || []).join(", ")) : "";
 
+        // The editor skipped every probe (repeat / not important): no draft to judge, so these checks are not counted.
+        const skippedAll = meta.verdict === "skip";
+        const skipNote = "материал пропущен редактором: " + String(meta.skipReason || "нет черновика").slice(0, 120);
         checks.push(
-          { key:"bucket", label:"Тип контента", pass:bucketKeys.includes(String(meta.contentBucket || "")), note:String(meta.contentBucket || "не определён") },
-          { key:"signals", label:"Channel Score", pass:allSignals, note:allSignals ? "7/7 сигналов" : "Не все сигналы заполнены" },
-          { key:"style", label:"Стиль канала", pass:style.pass, note:style.note },
-          { key:"qc", label:"Фактчек", pass:meta.verdict === "pass", note:meta.verdict === "pass" ? (degraded ? "PASS · резервный режим" : "PASS") : String(meta.verdict || "нет результата") }
+          { key:"bucket", label:"Тип контента", pass:skippedAll || bucketKeys.includes(String(meta.contentBucket || "")), required:!skippedAll, note:skippedAll ? skipNote : String(meta.contentBucket || "не определён") },
+          { key:"signals", label:"Channel Score", pass:skippedAll || allSignals, required:!skippedAll, note:skippedAll ? skipNote : (allSignals ? "7/7 сигналов" : "Не все сигналы заполнены") },
+          { key:"style", label:"Стиль канала", pass:skippedAll || style.pass, required:!skippedAll, note:skippedAll ? skipNote : style.note },
+          { key:"qc", label:"Фактчек", pass:skippedAll || meta.verdict === "pass", required:!skippedAll, note:skippedAll ? skipNote : (meta.verdict === "pass" ? (degraded ? "PASS · резервный режим" : "PASS") : String(meta.verdict || "нет результата")) }
         );
 
         sample = {

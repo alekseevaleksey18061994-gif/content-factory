@@ -2496,6 +2496,7 @@ input,select,textarea{border-radius:12px!important}
 .cg-head .cg-count{margin-left:0!important;align-self:center!important}
 .network-account-last .network-account-ok-inline{color:#16865e;font-weight:700;white-space:nowrap}
 .network-account-last{margin-top:8px!important}
+.qa-checks span.na{color:#8a96ab;background:rgba(138,150,171,.12)}
 </style>
 </head>
 <body>
@@ -4532,7 +4533,7 @@ function renderEditorialQa(data){
     return '<div class="qa-channel '+qaStatusClass(x.status)+'">'+
       '<div class="qa-channel-head"><div><b>'+esc(x.name||x.workspaceId)+'</b><small>'+esc(x.channelId||'')+' · '+esc(x.type||'')+'</small></div>'+
       '<span class="qa-percent">'+Number(x.percent||0)+'%</span><span class="qa-state">'+qaStatusLabel(x.status)+'</span></div>'+
-      '<div class="qa-checks">'+checks.map(function(ch){return '<span class="'+(ch.pass?'ok':'bad')+'" title="'+esc(ch.note||'')+'">'+(ch.pass?'✓':'×')+' '+esc(ch.label||ch.key)+'</span>'}).join('')+'</div>'+
+      '<div class="qa-checks">'+checks.map(function(ch){var na=ch.required===false;return '<span class="'+(na?'na':(ch.pass?'ok':'bad'))+'" title="'+esc(ch.note||'')+'">'+(na?'–':(ch.pass?'✓':'×'))+' '+esc(ch.label||ch.key)+'</span>'}).join('')+'</div>'+
       (sample.title?'<div class="qa-sample"><small>Контрольный пост · '+esc(sample.contentBucket||'')+(sample.degradedQc?' · резервный QC':'')+'</small><b>'+esc(sample.title)+'</b><p>'+esc(String(sample.text||'').slice(0,300))+'</p></div>':'')+
     '</div>';
   }).join(''):(qa.status==='running'?'<div class="empty">Первый канал ещё проверяется…</div>':'<div class="empty">Нажмите «Проверить всю редакцию».</div>');
