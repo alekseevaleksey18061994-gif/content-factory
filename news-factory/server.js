@@ -4443,7 +4443,11 @@ async function repairBalancedQueueMedia() {
       repaired += 1;
     }
 
-    if (sourceImage && (!item.imageUrl || !isLocalMediaUrl(item.imageUrl))) {
+    // v0.71.12: a post that deliberately carries a generated cover (AI upgrade / card replacing a weak source photo) keeps it.
+    // Restoring the weak source photo here on every start made the queue repair swap it for a card again and the AI upgrade
+    // paid to redraw the same posts after every deploy.
+    const keepsGeneratedCover = !item.imageUrl && !item.videoUrl && Boolean(item.generatedImageUrl);
+    if (sourceImage && !keepsGeneratedCover && (!item.imageUrl || !isLocalMediaUrl(item.imageUrl))) {
       try {
         const prepared = await prepareReusableSourceImage(sourceImage, item.newsId || item.id);
         item.originalImageUrl = prepared.originalImageUrl || sourceImage;
