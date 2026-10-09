@@ -1614,8 +1614,7 @@ button{line-height:1.2!important}
   stroke-linecap:round;
 }
 .top-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto}
-.bell-wrap{position:relative}.bell-btn{position:relative;width:48px;height:48px;border:1px solid rgba(70,132,188,.20);background:rgba(255,255,255,.88);color:#34507a;border-radius:16px;display:grid;place-items:center;cursor:pointer;box-shadow:0 8px 22px rgba(35,83,126,.08)}.bell-btn:hover{background:#fff;color:#0a1734}.bell-btn svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.bell-badge{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;padding:0 5px;border-radius:10px;background:#ff5a68;color:#fff;font-size:11px;font-weight:800;display:grid;place-items:center;border:2px solid #fff}.bell-badge[hidden]{display:none}
-.bell-menu{display:none;position:absolute;right:0;top:calc(100% + 10px);width:380px;max-width:calc(100vw - 32px);max-height:72vh;overflow:auto;background:rgba(255,255,255,.98);border:1px solid rgba(70,132,188,.17);border-radius:20px;box-shadow:0 22px 60px rgba(35,83,126,.18);z-index:95}.bell-menu.open{display:block}.bell-head{display:flex;justify-content:space-between;align-items:center;padding:13px 14px;border-bottom:1px solid rgba(70,132,188,.14);position:sticky;top:0;background:rgba(255,255,255,.98)}.bell-head b{font-size:14px;color:#0a1734}.bell-head button,.bell-push button{border:1px solid rgba(70,132,188,.25);background:#eef5ff;color:#1f4a86;border-radius:10px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;min-height:0;width:auto;box-shadow:none}.bell-push{padding:11px 14px;border-bottom:1px solid rgba(70,132,188,.14);font-size:12px;color:#5d7090;display:grid;gap:8px;line-height:1.4}.bell-item{display:grid;grid-template-columns:10px 1fr;gap:10px;padding:11px 14px;border-bottom:1px solid rgba(70,132,188,.10)}.bell-item.unread{background:rgba(79,124,255,.07)}.bell-dot{width:8px;height:8px;border-radius:50%;margin-top:6px;background:#4f7cff}.bell-item.critical .bell-dot{background:#ff5a68}.bell-item.warn .bell-dot{background:#f4a62a}.bell-item b{display:block;font-size:13px;line-height:1.3;color:#0a1734}.bell-item p{margin:3px 0 0;color:#5d7090;font-size:12px;line-height:1.35;white-space:pre-line}.bell-item small{color:#8394b0;font-size:11px}.bell-empty{padding:26px 14px;text-align:center;color:#5d7090;font-size:13px}
+.push-card{margin-top:14px}.push-card h3{margin:0 0 4px;font-size:16px;color:#0a1734}.push-card .push-sub{margin:0 0 12px;color:#5d7090;font-size:13px}.push-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.push-note{margin-top:10px;padding:10px 12px;border-radius:12px;background:#eef5ff;color:#34507a;font-size:13px;line-height:1.4}.push-types{display:grid;gap:8px;margin-top:14px}.push-types label{display:flex;align-items:center;gap:10px;font-size:14px;color:#0a1734;cursor:pointer}.push-types input{flex:none;width:17px;height:17px;accent-color:#4f7cff}.push-feed{margin-top:16px;border-top:1px solid rgba(70,132,188,.14)}.push-feed-title{padding:12px 0 6px;color:#627696;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.11em}.push-item{display:grid;grid-template-columns:10px 1fr;gap:10px;padding:9px 0;border-bottom:1px solid rgba(70,132,188,.10)}.push-dot{width:8px;height:8px;border-radius:50%;margin-top:6px;background:#4f7cff}.push-item.critical .push-dot{background:#ff5a68}.push-item.warn .push-dot{background:#f4a62a}.push-item b{display:block;font-size:13px;line-height:1.3;color:#0a1734}.push-item p{margin:3px 0 0;color:#5d7090;font-size:12px;line-height:1.35;white-space:pre-line}.push-item small{color:#8394b0;font-size:11px}.push-empty{padding:14px 0;color:#5d7090;font-size:13px}
 .account-switcher{position:relative}
 .account-button{
   min-height:48px;
@@ -2557,14 +2556,6 @@ input,select,textarea{border-radius:12px!important}
           <div class="brand"><button class="mark network-dashboard-button" id="networkDashboardButton" type="button" title="Общий дашборд" aria-label="Открыть общий дашборд">NF</button><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
         </div>
         <div class="top-actions">
-          <div class="bell-wrap" id="bellWrap">
-            <button class="bell-btn" id="bellBtn" type="button" onclick="toggleBell()" aria-label="Уведомления"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.5-2V10a4.5 4.5 0 0 0-9 0v5Z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg><span class="bell-badge" id="bellBadge" hidden>0</span></button>
-            <div class="bell-menu" id="bellMenu">
-              <div class="bell-head"><b>Уведомления</b><button type="button" onclick="markNotificationsRead()">Прочитано</button></div>
-              <div class="bell-push" id="bellPush"></div>
-              <div id="bellList"></div>
-            </div>
-          </div>
           <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
           <div class="account-switcher" id="accountSwitcher">
             <button class="account-button" id="accountButton" type="button" onclick="toggleAccountMenu()" aria-label="Открыть личный кабинет">
@@ -3047,6 +3038,14 @@ input,select,textarea{border-radius:12px!important}
       <section class="page" id="modePage">
         <div class="page-head"><div><h2>Режим работы</h2><p>Уровень автоматизации системы.</p></div></div>
         <section class="card"><div id="modes" class="modes"></div><div class="notice" style="margin-top:12px">AUTO: за 15 минут до каждого часа система ищет свежую новость и публикует её с 08:00 до 23:00 в те площадки, которые включены в разделе «Соцсети».</div><button style="margin-top:12px" onclick="testPost()">Тест в Telegram</button></section>
+        <section class="card push-card" id="pushCard">
+          <h3>Уведомления на телефон</h3>
+          <p class="push-sub">Сбои публикации, деньги и ключи, пустая очередь и перезапуски. Приходят на устройство, даже когда сайт закрыт.</p>
+          <div id="pushControls" class="push-row"></div>
+          <div id="pushNote"></div>
+          <div class="push-types" id="pushTypes"></div>
+          <div class="push-feed"><div class="push-feed-title">Последние события</div><div id="pushFeed"></div></div>
+        </section>
       </section>
 
       <section class="page" id="socialPage">
@@ -5384,43 +5383,62 @@ async function publishQueue(id){
   }
 }
 async function removeQueue(id){await api('/api/queue/remove',{method:'POST',body:JSON.stringify({id:id})});await load()}
-// ---- Notifications: bell + Web Push ----
+// ---- Notifications: settings card + Web Push (same flow as Video Factory) ----
+var PUSH_TYPES=[['publish_failed','Сбои публикации: пост не вышел, канал не принимает посты'],['billing','Деньги и ключи: закончился баланс, ключ не принят'],['health','Сбои сервисов: Telegram, VK, база, бэкап'],['empty_queue','Пустая очередь у канала'],['deploy','Деплой и перезапуск сервиса']];
+var PUSH_PREFS_KEY='nf-push-prefs';
 var notifState={items:[],unread:0,push:{enabled:false,publicKey:'',devices:0}};
-function toggleBell(open){var m=el('bellMenu');if(!m)return;var on=open===undefined?!m.classList.contains('open'):open;m.classList.toggle('open',on);if(on){loadNotifications();}}
-document.addEventListener('click',function(e){var w=el('bellWrap');if(w&&!w.contains(e.target))toggleBell(false)});
+var pushUi={state:'loading',busy:false,msg:'',prefs:{}};
+function pushLoadPrefs(){var p={};PUSH_TYPES.forEach(function(t){p[t[0]]=true});try{var saved=JSON.parse(localStorage.getItem(PUSH_PREFS_KEY)||'null');if(saved)Object.keys(saved).forEach(function(k){if(k in p)p[k]=saved[k]!==false})}catch(e){}pushUi.prefs=p}
 function notifAgo(iso){var t=Date.parse(iso);if(!t)return '';var m=Math.max(0,Math.round((Date.now()-t)/60000));if(m<1)return 'только что';if(m<60)return m+' мин назад';var h=Math.round(m/60);if(h<24)return h+' ч назад';return new Date(t).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
-function renderNotifications(){
-  var b=el('bellBadge');if(!b)return;
-  b.hidden=!notifState.unread;b.textContent=notifState.unread>99?'99+':String(notifState.unread);
-  var list=el('bellList');
-  list.innerHTML=notifState.items.length?notifState.items.map(function(n){return '<div class="bell-item '+esc(n.severity)+(n.read?'':' unread')+'"><span class="bell-dot"></span><div><b>'+esc(n.title)+'</b>'+(n.body?'<p>'+esc(n.body)+'</p>':'')+'<small>'+esc(notifAgo(n.at))+'</small></div></div>'}).join(''):'<div class="bell-empty">Пока ничего нет</div>';
-  renderPushBox();
-}
 function pushSupported(){return 'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window}
-async function renderPushBox(){
-  var box=el('bellPush');if(!box)return;
-  if(!notifState.push.enabled){box.innerHTML='<span>Пуши на телефон не настроены на сервере.</span>';return}
-  if(!pushSupported()){box.innerHTML='<span>Пуши недоступны в этом браузере. На iPhone: «Поделиться» → «На экран Домой», затем откройте приложение оттуда.</span>';return}
-  var sub=null;try{var reg=await navigator.serviceWorker.getRegistration('/');sub=reg?await reg.pushManager.getSubscription():null}catch(e){}
-  if(Notification.permission==='denied'){box.innerHTML='<span>Уведомления запрещены в настройках браузера для этого сайта.</span>';return}
-  box.innerHTML=sub?'<span>✓ Пуши включены на этом устройстве</span><span><button type="button" onclick="disablePush()">Выключить</button> <button type="button" onclick="testNotification()">Проверить</button></span>':'<span>Получайте сообщения на это устройство, даже когда сайт закрыт.</span><span><button type="button" onclick="enablePush()">Включить пуши</button></span>';
-}
 function b64ToBytes(v){var p='='.repeat((4-v.length%4)%4),s=(v+p).replace(/-/g,'+').replace(/_/g,'/'),r=atob(s),o=new Uint8Array(r.length);for(var i=0;i<r.length;i++)o[i]=r.charCodeAt(i);return o}
-async function enablePush(){
+async function pushRefreshState(){
+  if(!notifState.push.enabled){pushUi.state='server-off';return}
+  var ios=/iPhone|iPad|iPod/.test(navigator.userAgent),standalone=(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone;
+  if(!pushSupported()){pushUi.state=ios&&!standalone?'ios-browser':'unsupported';return}
+  if(Notification.permission==='denied'){pushUi.state='denied';return}
+  try{var reg=await navigator.serviceWorker.register('/sw.js',{scope:'/'});var sub=await reg.pushManager.getSubscription();pushUi.state=sub?'on':'off'}catch(e){pushUi.state='unsupported'}
+}
+function renderPushCard(){
+  var c=el('pushControls');if(!c)return;
+  var st=pushUi.state,b=pushUi.busy?' disabled':'';
+  if(st==='on')c.innerHTML='<span class="status ok">Включены на этом устройстве</span><button type="button" onclick="pushTest()"'+b+'>Проверить</button><button type="button" onclick="pushDisable()"'+b+'>Выключить</button>';
+  else if(st==='off')c.innerHTML='<button class="primary" type="button" onclick="pushEnable()"'+b+'>'+(pushUi.busy?'Включаю…':'Включить уведомления')+'</button>';
+  else c.innerHTML='';
+  var notes={'loading':'','server-off':'Пуши на сервере не настроены.','unsupported':'Этот браузер не поддерживает push-уведомления.','ios-browser':'На iPhone уведомления работают только в приложении с экрана «Домой»: «Поделиться» → «На экран Домой», затем откройте News Factory из иконки и включите здесь.','denied':'Уведомления запрещены в настройках. iPhone: Настройки → Уведомления → News Factory → Разрешить. Затем вернитесь сюда.'};
+  var note=pushUi.msg||notes[st]||'';el('pushNote').innerHTML=note?'<div class="push-note">'+esc(note)+'</div>':'';
+  el('pushTypes').innerHTML=PUSH_TYPES.map(function(t){return '<label><input type="checkbox" '+(pushUi.prefs[t[0]]!==false?'checked ':'')+'onchange="pushToggle('+ja(t[0])+')"> '+esc(t[1])+'</label>'}).join('');
+  el('pushFeed').innerHTML=notifState.items.length?notifState.items.slice(0,15).map(function(n){return '<div class="push-item '+esc(n.severity)+'"><span class="push-dot"></span><div><b>'+esc(n.title)+'</b>'+(n.body?'<p>'+esc(n.body)+'</p>':'')+'<small>'+esc(notifAgo(n.at))+'</small></div></div>'}).join(''):'<div class="push-empty">Пока ничего нет</div>';
+}
+async function pushCurrentSub(){var reg=await navigator.serviceWorker.getRegistration('/');return reg?await reg.pushManager.getSubscription():null}
+async function pushSave(sub,test){await api('/api/push/subscribe',{method:'POST',body:JSON.stringify({subscription:sub.toJSON(),prefs:pushUi.prefs,test:Boolean(test)})})}
+async function pushEnable(){
+  pushUi.busy=true;pushUi.msg='';renderPushCard();
   try{
-    var perm=await Notification.requestPermission();if(perm!=='granted'){toast('Разрешите уведомления в браузере');renderPushBox();return}
+    var perm=await Notification.requestPermission();
+    if(perm!=='granted'){pushUi.state=perm==='denied'?'denied':'off';return}
     var reg=await navigator.serviceWorker.register('/sw.js',{scope:'/'});await navigator.serviceWorker.ready;
     var sub=await reg.pushManager.getSubscription()||await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToBytes(notifState.push.publicKey)});
-    await api('/api/push/subscribe',{method:'POST',body:JSON.stringify({subscription:sub.toJSON()})});
-    toast('Пуши включены');await loadNotifications();
-  }catch(e){toast('Не удалось включить пуши: '+(e&&e.message||e))}
+    await pushSave(sub,true);pushUi.state='on';pushUi.msg='Готово: отправил тестовое уведомление';
+  }catch(e){pushUi.msg='Не получилось: '+(e&&e.message||e)}
+  finally{pushUi.busy=false;renderPushCard();loadNotifications()}
 }
-async function disablePush(){
-  try{var reg=await navigator.serviceWorker.getRegistration('/');var sub=reg?await reg.pushManager.getSubscription():null;if(sub){await api('/api/push/unsubscribe',{method:'POST',body:JSON.stringify({endpoint:sub.endpoint})});await sub.unsubscribe()}toast('Пуши выключены');await loadNotifications()}catch(e){toast(e.message)}
+async function pushDisable(){
+  pushUi.busy=true;renderPushCard();
+  try{var sub=await pushCurrentSub();if(sub){await api('/api/push/unsubscribe',{method:'POST',body:JSON.stringify({endpoint:sub.endpoint})});await sub.unsubscribe()}pushUi.state='off';pushUi.msg=''}catch(e){pushUi.msg=e.message}
+  finally{pushUi.busy=false;renderPushCard()}
 }
-async function testNotification(){try{await api('/api/notifications/test',{method:'POST',body:'{}'});await loadNotifications()}catch(e){toast(e.message)}}
-async function loadNotifications(){try{var j=await api('/api/notifications?limit=60');notifState=j;renderNotifications()}catch(e){}}
-async function markNotificationsRead(){try{await api('/api/notifications/read',{method:'POST',body:'{}'});await loadNotifications()}catch(e){toast(e.message)}}
+async function pushTest(){
+  try{var sub=await pushCurrentSub();if(sub){await api('/api/push/test',{method:'POST',body:JSON.stringify({endpoint:sub.endpoint})});pushUi.msg='Тестовое уведомление отправлено'}}catch(e){pushUi.msg='Не отправилось: '+e.message}
+  renderPushCard()
+}
+async function pushToggle(k){
+  pushUi.prefs[k]=pushUi.prefs[k]===false;try{localStorage.setItem(PUSH_PREFS_KEY,JSON.stringify(pushUi.prefs))}catch(e){}
+  if(pushUi.state==='on'){try{var sub=await pushCurrentSub();if(sub)await api('/api/push/prefs',{method:'POST',body:JSON.stringify({endpoint:sub.endpoint,prefs:pushUi.prefs})})}catch(e){}}
+  renderPushCard()
+}
+async function loadNotifications(){try{var j=await api('/api/notifications?limit=30');notifState=j;await pushRefreshState();renderPushCard()}catch(e){}}
+pushLoadPrefs();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js',{scope:'/'}).catch(function(){});
 setTimeout(loadNotifications,1500);setInterval(loadNotifications,60000);
 async function logout(){await api('/api/logout',{method:'POST',body:'{}'});location.href='/login'}

@@ -3,6 +3,7 @@
 // subscriptions live in push_subscriptions. Everything here is best effort: a failing notification must never
 // break publishing.
 export const MAX_ITEMS = 200;
+export const KIND_EMOJI = { publish_failed: "❌", billing: "💸", empty_queue: "📭", deploy: "🚀", health: "⚠️" };
 export const KINDS = ["publish_failed", "billing", "empty_queue", "deploy", "health"];
 
 export function classifyAlertText(text) {
@@ -51,8 +52,8 @@ export function createNotifier(options) {
       memoryOnly.concat(rows.map(toRow)).forEach(function(r) { items.push(r); });
       items.sort(function(a, b) { return Date.parse(b.at) - Date.parse(a.at); });
       if (items.length > MAX_ITEMS) items.length = MAX_ITEMS;
-      const subs = (await db.query("SELECT endpoint, keys FROM push_subscriptions")).rows;
-      subs.forEach(function(s) { memorySubs.set(s.endpoint, { endpoint: s.endpoint, keys: s.keys }); });
+      const subs = (await db.query("SELECT endpoint, keys, prefs FROM push_subscriptions")).rows;
+      subs.forEach(function(s) { memorySubs.set(s.endpoint, { endpoint: s.endpoint, keys: s.keys, prefs: s.prefs || {} }); });
     } catch (error) { (o.logger || console).warn("NOTIFICATIONS_LOAD_FAILED " + String(error && error.message || error).slice(0, 200)); }
   }
 
@@ -97,8 +98,9 @@ export function createNotifier(options) {
   // Every device in parallel, each bounded: one dead endpoint must not delay the others.
   async function pushAll(item) {
     if (!sendPush || !memorySubs.size) return 0;
-    const payload = JSON.stringify({ title: item.title, body: item.body, tag: item.kind, severity: item.severity, url: "/admin" });
-    const results = await Promise.all(Array.from(memorySubs.values()).map(async function(sub) {
+    const payload = JSON.stringify({ title: (KIND_EMOJI[item.kind] ? KIND_EMOJI[item.kind] + " " : "") + item.title, body: item.body, tag: item.kind, severity: item.severity, url: "/admin" });
+    const targets = Array.from(memorySubs.values()).filter(function(sub) { return !sub.prefs || sub.prefs[item.kind] !== false; });
+    const results = await Promise.all(targets.map(async function(sub) {
       try { await withTimeout(Promise.resolve(sendPush(sub, payload)), SEND_TIMEOUT_MS); return 1; }
       catch (error) {
         const code = Number(error && error.statusCode || 0);
@@ -132,17 +134,40 @@ export function createNotifier(options) {
       sub.keys && typeof sub.keys.p256dh === "string" && typeof sub.keys.auth === "string");
   }
 
-  async function subscribe(sub, userAgent) {
+  function cleanPrefs(prefs) {
+    const out = {};
+    KINDS.forEach(function(k) { if (prefs && typeof prefs === "object" && prefs[k] === false) out[k] = false; });
+    return out;
+  }
+
+  async function subscribe(sub, userAgent, prefs) {
     if (!validSubscription(sub)) return false;
     if (!memorySubs.has(sub.endpoint) && memorySubs.size >= 20) return false;
-    const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
+    const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, prefs: cleanPrefs(prefs || (memorySubs.get(sub.endpoint) || {}).prefs) };
     memorySubs.set(clean.endpoint, clean);
     const db = getDb();
     if (db) {
-      try { await db.query("INSERT INTO push_subscriptions(endpoint, keys, user_agent) VALUES($1,$2::jsonb,$3) ON CONFLICT (endpoint) DO UPDATE SET keys=EXCLUDED.keys, user_agent=EXCLUDED.user_agent", [clean.endpoint, JSON.stringify(clean.keys), String(userAgent || "").slice(0, 200)]); }
+      try { await db.query("INSERT INTO push_subscriptions(endpoint, keys, user_agent, prefs) VALUES($1,$2::jsonb,$3,$4::jsonb) ON CONFLICT (endpoint) DO UPDATE SET keys=EXCLUDED.keys, user_agent=EXCLUDED.user_agent, prefs=EXCLUDED.prefs", [clean.endpoint, JSON.stringify(clean.keys), String(userAgent || "").slice(0, 200), JSON.stringify(clean.prefs)]); }
       catch (error) { (o.logger || console).warn("PUSH_SUBSCRIBE_STORE_FAILED " + String(error && error.message || error).slice(0, 200)); }
     }
     return true;
+  }
+
+  async function setPrefs(endpoint, prefs) {
+    const sub = memorySubs.get(String(endpoint || ""));
+    if (!sub) return false;
+    sub.prefs = cleanPrefs(prefs);
+    const db = getDb();
+    if (db) { try { await db.query("UPDATE push_subscriptions SET prefs=$2::jsonb WHERE endpoint=$1", [sub.endpoint, JSON.stringify(sub.prefs)]); } catch {} }
+    return true;
+  }
+
+  // One device only (the "Проверить" button): ignores the type choice.
+  async function pushTo(endpoint, item) {
+    const sub = memorySubs.get(String(endpoint || ""));
+    if (!sub || !sendPush) return false;
+    try { await withTimeout(Promise.resolve(sendPush(sub, JSON.stringify({ title: (KIND_EMOJI[item.kind] || "") + " " + item.title, body: item.body, tag: "test", url: "/admin" }))), SEND_TIMEOUT_MS); return true; }
+    catch (error) { if (Number(error && error.statusCode) === 410 || Number(error && error.statusCode) === 404) await unsubscribe(sub.endpoint); return false; }
   }
 
   async function unsubscribe(endpoint) {
@@ -151,5 +176,5 @@ export function createNotifier(options) {
     if (db) { try { await db.query("DELETE FROM push_subscriptions WHERE endpoint=$1", [String(endpoint || "")]); } catch {} }
   }
 
-  return { add, list, unread, markRead, subscribe, unsubscribe, load, pushAll, subscriptionCount: function() { return memorySubs.size; } };
+  return { add, list, unread, markRead, subscribe, unsubscribe, setPrefs, pushTo, devicePrefs: function(endpoint) { const s = memorySubs.get(String(endpoint || "")); return s ? Object.assign({}, s.prefs) : null; }, load, pushAll, subscriptionCount: function() { return memorySubs.size; } };
 }
