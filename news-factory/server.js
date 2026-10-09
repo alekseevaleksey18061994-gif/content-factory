@@ -15512,7 +15512,9 @@ async function repairBrokenQueueImages() {
     if (img && !localMediaPathFromUrl(img)) continue;
     if (img) {
       const fp = await localImageFingerprint(img);
-      ok = assessMediaQuality(fp, { url: img, score: 80, reason: "queue_repair" }).pass;
+      const verdict = assessMediaQuality(fp, { url: img, score: 80, reason: "queue_repair" });
+      ok = verdict.pass;
+      if (!ok) console.log("QUEUE_IMAGE_REPAIR_ITEM " + JSON.stringify({ workspace: currentWorkspaceId(), id: item.newsId, img: img.slice(0, 120), reasons: verdict.reasons, score: verdict.score, fp: fp ? { w: fp.width, h: fp.height } : null }));
     }
     if (ok) continue;
     if (!img && item.generatedImageUrl) continue;
