@@ -168,3 +168,14 @@ button{transition:background .18s ease,border-color .18s ease,box-shadow .18s ea
  .network-account-metrics b{font-size:10px!important}
 }
 @media(prefers-reduced-motion:reduce){.side .nav,.network-account,button{transition:none!important}}
+
+/* DOM-order independent portal layout: channel cards before detailed day report. */
+#networkPage.active{display:flex!important;flex-direction:column!important}
+#networkPage>.portal-banner{order:0}
+#networkPage>.network-page-head{order:1}
+#networkPage>.network-kpis{order:2}
+#networkPage>.network-layout{order:3}
+#networkPage>.network-day-card{order:4}
+.portal-recent-row{background:transparent!important;color:#1c3b66!important;border-left:0!important;border-right:0!important;border-top:0!important;border-radius:0!important;box-shadow:none!important;text-align:left!important;min-height:56px}
+.portal-recent-row:hover{background:#f2faff!important}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
