@@ -282,3 +282,16 @@ body{background:radial-gradient(ellipse at 2% 35%,rgba(8,217,241,.12),transparen
  .portal-home-last-inner{grid-template-columns:100px minmax(0,1fr)}
 }
 @media(prefers-reduced-motion:reduce){.side .nav,.network-account,.portal-recent-row{transition:none!important}}
+
+/* The approved channel page has two standalone status tiles beneath its hero. */
+#homePage>.home-hero-stats{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:13px!important;margin-top:14px!important}
+#homePage>.home-hero-stats .home-hero-stat{min-height:94px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;text-align:left!important;align-items:flex-start!important;background:#fff!important;border:1px solid rgba(104,155,211,.17)!important;border-radius:17px!important;box-shadow:0 7px 20px rgba(44,119,197,.055)!important;padding:17px 22px!important}
+#homePage>.home-hero-stats .home-hero-stat span,#homePage>.home-hero-stats .home-hero-stat b{text-align:left!important}
+#homePage>.home-hero-stats .home-hero-stat span{font-size:12px!important;color:#45658f!important}
+#homePage>.home-hero-stats .home-hero-stat b{font-size:16px!important;color:#12865f!important;font-weight:800!important}
+#homePage>.home-hero-stats .home-hero-stat-last{display:none!important}
+@media(max-width:760px){
+ #homePage>.home-hero-stats{gap:8px!important;margin-top:10px!important}
+ #homePage>.home-hero-stats .home-hero-stat{min-height:84px!important;padding:11px 12px!important}
+ #homePage>.home-hero-stats .home-hero-stat b{font-size:12px!important}
+}
