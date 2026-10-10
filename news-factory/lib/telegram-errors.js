@@ -98,8 +98,10 @@ export function telegramTransportRetrySafe(method, error) {
   const transportFailure = /fetch failed|network|timeout|timed out|socket|connection|ECONN|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH/i.test(detail) ||
     /^(TimeoutError|AbortError|TypeError)$/.test(name) || Boolean(causeCode);
   if (!transportFailure) return false;
-  const sending = /^(send|copy|forward)/i.test(String(method || ""));
-  return !sending || !telegramErrorIsAmbiguous(error);
+  const action = String(method || "");
+  const sending = /^(send|copy|forward)/i.test(action);
+  // Only get* Bot API methods are read-only. set/delete/pin/unpin may have side effects.
+  return /^get/i.test(action) || (sending && !telegramErrorIsAmbiguous(error));
 }
 
 // Network failures with no posting risk are retried with bounded backoff.
