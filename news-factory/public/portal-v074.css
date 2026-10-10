@@ -45,7 +45,7 @@ body{background:radial-gradient(ellipse at 2% 35%,rgba(8,217,241,.12),transparen
    channels left / activity and system right. */
 #networkPage.active{display:grid!important;grid-template-columns:minmax(0,1fr) 395px!important;gap:13px!important;align-items:start!important;position:relative}
 #networkPage>.portal-banner{grid-column:1/-1;grid-row:1;order:unset!important;margin:0!important}
-#networkPage>.network-page-head{grid-column:1/-1;grid-row:1;order:unset!important;position:absolute!important;right:16px;bottom:8px;z-index:3;margin:0!important;padding:0!important}
+#networkPage>.network-page-head{grid-column:1/-1;grid-row:1;order:unset!important;position:absolute!important;right:20px;top:118px;bottom:auto;z-index:3;margin:0!important;padding:0!important}
 #networkPage>.network-page-head>div{display:none!important}
 #networkPage>.network-page-head button{color:#ebfaff!important;background:rgba(16,93,174,.46)!important;border:1px solid rgba(154,224,255,.25)!important;backdrop-filter:blur(10px);padding:6px 12px!important;font-size:10px!important}
 #networkPage>.network-kpis{grid-column:1;grid-row:2;order:unset!important}
