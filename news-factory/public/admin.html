@@ -3568,13 +3568,29 @@ async function loadWorkspaces(){
   currentWorkspaceMeta=workspaces.find(function(ws){return ws.id===activeWorkspaceId})||workspaces[0]||{};
   return j;
 }
+// The global newsroom is not one workspace: always show the NF brand there.
+function updateHeaderAvatar(pageId){
+  var isNetwork=pageId? pageId==='networkPage':Boolean(el('networkPage')&&el('networkPage').classList.contains('active'));
+  var avatar=el('accountAvatar');
+  var ws=currentWorkspaceMeta||{};
+  if(avatar){
+    if(isNetwork){
+      avatar.classList.add('has-photo');
+      avatar.innerHTML='<img src="/icon-192.png?v=0741" alt="News Factory">';
+    }else{
+      applyWorkspaceAvatar('accountAvatar',ws);
+    }
+  }
+  if(el('accountButtonName'))el('accountButtonName').textContent=isNetwork?'News Factory':(ws.name||'Кабинет');
+  if(el('accountButtonHandle'))el('accountButtonHandle').textContent=isNetwork?'Все каналы':workspaceHandle(ws);
+  if(el('accountButton'))el('accountButton').setAttribute('aria-label',isNetwork?'Открыть список каналов':'Открыть личный кабинет');
+}
 function renderWorkspaceChrome(){
   var ws=currentWorkspaceMeta||{};
   var initials=String(ws.initials||'NF').slice(0,3);
   var handle=workspaceHandle(ws);
-  ['accountAvatar','accountPageAvatar','accountAvatarPreview','homeHeroAvatar'].forEach(function(id){applyWorkspaceAvatar(id,ws)});
-  if(el('accountButtonName'))el('accountButtonName').textContent=ws.name||'Кабинет';
-  if(el('accountButtonHandle'))el('accountButtonHandle').textContent=handle;
+  ['accountPageAvatar','accountAvatarPreview','homeHeroAvatar'].forEach(function(id){applyWorkspaceAvatar(id,ws)});
+  updateHeaderAvatar();
   if(el('sidebarWorkspaceName'))el('sidebarWorkspaceName').textContent=ws.name||'Кабинет';
   if(el('homeWorkspaceName'))el('homeWorkspaceName').textContent=ws.name||'Кабинет';
   if(el('homeWorkspaceSubtitle'))el('homeWorkspaceSubtitle').textContent=handle+' · отдельный контент-канал';
@@ -4079,6 +4095,7 @@ function goPage(id,options){
   if(!pageRoutes[id])id='networkPage';
   document.querySelectorAll('.page').forEach(function(p){p.classList.toggle('active',p.id===id)});
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
+  updateHeaderAvatar(id);
   setDrawer(false);
   window.scrollTo({top:0,behavior:options.instant?'auto':'smooth'});
   var titles={networkPage:'Общий дашборд',homePage:'News Factory',sourcesPage:'Источники',newsPage:'Лента новостей',queuePage:'Очередь',publishPage:'Публикация',statsPage:'Статистика',promotionPage:'Продвижение',qaPage:'Редакционный QA',costsPage:'Расходы',calendarPage:'Календарь публикаций',historyPage:'История',modePage:'Режим работы',socialPage:'Соцсети',accountPage:'Личный кабинет',connectionsPage:'Система и подключения'};
