@@ -2500,6 +2500,12 @@ input,select,textarea{border-radius:12px!important}
 .network-account-last .network-account-ok-inline{color:#16865e;font-weight:700;white-space:nowrap}
 .network-account-last{margin-top:8px!important}
 .qa-checks span.na{color:#8a96ab;background:rgba(138,150,171,.12)}
+/* v0.74.2: a dedicated global brand avatar; never reuse the selected channel avatar. */
+#accountButton #networkAccountAvatar{display:none!important}
+body.on-network #accountButton #accountAvatar{display:none!important}
+body.on-network #accountButton #networkAccountAvatar{display:grid!important;place-items:center!important}
+#networkAccountAvatar{overflow:hidden!important;background:#0d90ec!important;border:1px solid rgba(255,255,255,.92)!important;box-shadow:0 2px 12px rgba(0,119,222,.15)}
+#networkAccountAvatar img{display:block!important;width:100%!important;height:100%!important;object-fit:cover!important;border-radius:inherit!important}
 </style>
 <link rel="stylesheet" href="/portal-v073.css?v=073">
 <link rel="stylesheet" href="/portal-v074.css?v=074">
@@ -2569,6 +2575,7 @@ input,select,textarea{border-radius:12px!important}
           <div class="account-switcher" id="accountSwitcher">
             <button class="account-button" id="accountButton" type="button" onclick="toggleAccountMenu()" aria-label="Открыть личный кабинет">
               <span class="account-avatar" id="accountAvatar">AI</span>
+              <span class="account-avatar account-avatar-global" id="networkAccountAvatar" aria-hidden="true"><img src="/icon-192.png?v=0742" alt=""></span>
               <span class="account-copy"><b id="accountButtonName">Что там у ИИ?</b><small id="accountButtonHandle">@chtotamai</small></span>
               <span class="account-chevron">⌄</span>
             </button>
