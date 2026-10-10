@@ -12760,6 +12760,42 @@ const server = http.createServer(async function(req, res) {
     if (req.method === "GET" && p === "/api/channels/config") {
       return sendJson(res, 200, Object.assign({ ok: true }, channelConfigReport()));
     }
+    if (req.method === "GET" && p === "/api/network/activity") {
+      // Live, read-only overview across workspaces; no fabricated activity or external API calls.
+      const now = Date.now();
+      const hourMs = 3600000;
+      const startHour = Math.floor(now / hourMs) * hourMs - 23 * hourMs;
+      const hourly = Array.from({ length: 24 }, function(_, index) {
+        const at = startHour + index * hourMs;
+        return { hour: String((new Date(at).getUTCHours() + 3) % 24).padStart(2, "0") + ":00", telegram: 0, vk: 0 };
+      });
+      const posts = [];
+      for (const ws of workspaceStore.workspaces) {
+        const history = Array.isArray(ws.state && ws.state.history) ? ws.state.history : [];
+        for (const item of history) {
+          if (!item || !item.publishedAt || item.publicationOrigin === "test" || item.publicationOrigin === "duplicate-removed") continue;
+          const at = Date.parse(item.publishedAt);
+          if (!Number.isFinite(at)) continue;
+          const telegram = Boolean(item.messageId || item.telegramStatus === "published" || item.telegramUncertain);
+          const vk = Boolean(item.vkPostId || item.vkStatus === "published" || item.vkUncertain);
+          if (!telegram && !vk) continue;
+          const bucket = Math.floor((at - startHour) / hourMs);
+          if (bucket >= 0 && bucket < 24 && at <= now) {
+            if (telegram) hourly[bucket].telegram += 1;
+            if (vk) hourly[bucket].vk += 1;
+          }
+          if (at < now - 7 * 86400000 || at > now) continue;
+          const rawImage = String(item.generatedImageUrl || item.imageUrl || "");
+          const imageUrl = /^(https?:\/\/|\/)/i.test(rawImage) ? rawImage.slice(0, 1000) : "";
+          posts.push({ workspaceId: ws.id, channel: ws.name, title: String(item.title || "Публикация").slice(0, 180),
+            publishedAt: new Date(at).toISOString(), imageUrl: imageUrl, telegram: telegram, vk: vk });
+        }
+      }
+      posts.sort(function(a,b){ return b.publishedAt.localeCompare(a.publishedAt); });
+      return sendJson(res, 200, { ok: true, hourly: hourly, latest: posts.slice(0, 8),
+        totals: { telegram: hourly.reduce(function(n,x){return n+x.telegram},0),
+          vk: hourly.reduce(function(n,x){return n+x.vk},0) } }, { "cache-control": "no-store" });
+    }
     if (req.method === "GET" && p === "/api/network/day") {
       const rawDate = String(url.searchParams.get("date") || "").trim();
       const dateKey = rawDate || moscowDateKey(new Date());
