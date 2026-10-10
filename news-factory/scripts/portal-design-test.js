@@ -18,6 +18,7 @@ assert.ok(css.includes(".side .nav.active"));
 assert.ok(css.includes(".network-account-grid"));
 assert.ok(css.includes("@media(max-width:760px)"));
 assert.ok(css.includes("#networkPage.active"));
+assert.ok(read("server.js").includes('"/portal-v073.css": ["text/css; charset=utf-8", "no-cache"]'));
 assert.ok(fs.statSync(new URL("../public/nf-brand-source.png", import.meta.url)).size > 3000);
 assert.ok(manifest.icons.some(x => x.sizes === "192x192" && x.src.includes("073")));
 assert.ok(manifest.icons.some(x => x.sizes === "512x512" && x.src.includes("073")));
