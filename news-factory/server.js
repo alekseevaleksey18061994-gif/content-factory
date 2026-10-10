@@ -12391,6 +12391,8 @@ const server = http.createServer(async function(req, res) {
     // App shell files for "install as app" + Web Push. Public on purpose: the browser fetches them without the session.
     const APP_ASSETS = { "/sw.js": ["application/javascript; charset=utf-8", "no-cache"], "/manifest.webmanifest": ["application/manifest+json; charset=utf-8", "no-cache"],
       "/portal-v073.css": ["text/css; charset=utf-8", "no-cache"],
+      "/portal-v074.css": ["text/css; charset=utf-8", "no-cache"],
+      "/newsroom-robots.svg": ["image/svg+xml", "public, max-age=86400"],
       "/icon-192.png": ["image/png", "public, max-age=86400"], "/icon-512.png": ["image/png", "public, max-age=86400"], "/apple-touch-icon.png": ["image/png", "public, max-age=86400"] };
     if (req.method === "GET" && Object.prototype.hasOwnProperty.call(APP_ASSETS, p)) {
       try {
