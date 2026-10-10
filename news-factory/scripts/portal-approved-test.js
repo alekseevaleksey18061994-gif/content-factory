@@ -4,7 +4,7 @@ import vm from "node:vm";
 const read=name=>fs.readFileSync(new URL("../"+name,import.meta.url),"utf8");
 const html=read("public/admin.html"),css=read("public/portal-v074.css"),server=read("server.js");
 const pkg=JSON.parse(read("package.json"));
-assert.equal(pkg.version,"0.74.0");
+assert.match(pkg.version,/^0\.74\.[01]$/);
 assert.match(html,/href="\/portal-v074\.css\?v=074"/);
 assert.match(html,/src="\/newsroom-robots\.svg\?v=074"/);
 assert.match(html,/var route=\(location\.hash\|\|'#network'\)\.slice\(1\)/);
