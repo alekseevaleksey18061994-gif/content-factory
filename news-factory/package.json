@@ -1,10 +1,11 @@
 {
   "name": "news-factory",
-  "version": "0.72.3",
+  "version": "0.73.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "prestart": "node scripts/prepare-brand-icons.js",
     "test:proxy-retry": "node scripts/proxy-retry-test.js",
     "test:vk-format": "node scripts/vk-format-test.js",
     "test:vk-media": "node scripts/vk-media-smoke.js",
@@ -69,6 +70,7 @@
     "test:github-probe": "node scripts/github-probe-test.js",
     "test:telegram-video-size": "node scripts/telegram-video-size-test.js",
     "test:telegram-publish-network": "node scripts/telegram-publish-network-test.js",
+    "test:portal-design": "node scripts/portal-design-test.js",
     "test:enhance-tiny": "node scripts/enhance-tiny-test.js",
     "test:media-retry-guard": "node scripts/vk-retry-guard-test.js"
   },
