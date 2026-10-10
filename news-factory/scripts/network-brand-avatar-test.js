@@ -1,0 +1,17 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+const html=fs.readFileSync(new URL("../public/admin.html",import.meta.url),"utf8");
+const pkg=JSON.parse(fs.readFileSync(new URL("../package.json",import.meta.url),"utf8"));
+assert.equal(pkg.version,"0.74.2");
+assert.match(html,/id="accountAvatar">AI<\/span>/,"channel avatar is retained");
+assert.match(html,/id="networkAccountAvatar"[^>]*><img src="\/icon-192\.png\?v=0742"/,"global NF avatar is separate");
+assert.match(html,/#accountButton #networkAccountAvatar\{display:none!important\}/,"global avatar hidden on channel pages");
+assert.match(html,/body\.on-network #accountButton #accountAvatar\{display:none!important\}/,"hide channel avatar on network");
+assert.match(html,/body\.on-network #accountButton #networkAccountAvatar\{display:grid!important/,"show brand avatar on network");
+assert.match(html,/document\.body\.classList\.toggle\('on-network',id==='networkPage'\)/,"route switches global avatar");
+assert.match(html,/updateHeaderAvatar\(id\)/,"route refreshes accessible channel labels");
+const inline=html.match(/<script>([\s\S]*?)<\/script>/);
+assert.ok(inline,"application code found");
+new vm.Script(inline[1],{filename:"admin.inline.js"});
+console.log("network-brand-avatar-test: PASS");
