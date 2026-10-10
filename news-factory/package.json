@@ -71,7 +71,8 @@
     "test:telegram-publish-network": "node scripts/telegram-publish-network-test.js",
     "test:enhance-tiny": "node scripts/enhance-tiny-test.js",
     "test:media-retry-guard": "node scripts/vk-retry-guard-test.js",
-    "prestart": "node scripts/prepare-brand-icons.js"
+    "prestart": "node scripts/prepare-brand-icons.js",
+    "test:branding": "node scripts/prepare-brand-icons.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
