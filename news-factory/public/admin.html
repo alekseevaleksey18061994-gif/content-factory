@@ -2661,7 +2661,8 @@ input,select,textarea{border-radius:12px!important}
         <div class="hero home-hero">
           <div class="home-hero-top">
             <div class="hero-channel hero-channel-no-icon">
-              <div class="hero-channel-copy"><h2 id="homeWorkspaceName">Что там у ИИ?</h2><p id="homeWorkspaceSubtitle">@chtotamai · новости нейросетей и технологий</p></div>
+              <span class="home-hero-avatar account-avatar" id="homeHeroAvatar" aria-hidden="true">NF</span>
+              <div class="hero-channel-copy"><h2 id="homeWorkspaceName">Что там у ИИ?</h2><p id="homeWorkspaceSubtitle">@chtotamai · новости нейросетей и технологий</p><div class="portal-home-tags"><span id="portalHomeModeTag">● Режим</span><span>➤ Telegram</span><span>VK</span><span id="portalHomeOnlineTag">● Подключения</span></div></div>
             </div>
             <button class="primary home-hero-cta" onclick="goPage('publishPage')">+ Новый пост</button>
           </div>
@@ -3571,7 +3572,7 @@ function renderWorkspaceChrome(){
   var ws=currentWorkspaceMeta||{};
   var initials=String(ws.initials||'NF').slice(0,3);
   var handle=workspaceHandle(ws);
-  ['accountAvatar','accountPageAvatar','accountAvatarPreview'].forEach(function(id){applyWorkspaceAvatar(id,ws)});
+  ['accountAvatar','accountPageAvatar','accountAvatarPreview','homeHeroAvatar'].forEach(function(id){applyWorkspaceAvatar(id,ws)});
   if(el('accountButtonName'))el('accountButtonName').textContent=ws.name||'Кабинет';
   if(el('accountButtonHandle'))el('accountButtonHandle').textContent=handle;
   if(el('sidebarWorkspaceName'))el('sidebarWorkspaceName').textContent=ws.name||'Кабинет';
