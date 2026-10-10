@@ -7225,11 +7225,20 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   const publishedAt = new Date().toISOString();
   if (targets.vk && !result.vkPublished) item.vkAttempts = Number(item.vkAttempts || 0) + 1;
 
+  if (targets.telegram) {
+    item.telegramStatus = result.telegramStatus;
+    item.telegramError = result.telegramError || "";
+  }
   if (result.telegramPublished) {
     item.telegramPublished = true;
     item.telegramMessageId = result.message_id;
     item.telegramPublishedAt = publishedAt;
     if (result.telegramUncertain) item.telegramUncertain = true; // sent, no answer: check the channel by hand
+  } else if (targets.telegram && result.telegramStatus === "failed") {
+    item.publishFailures = Number(item.publishFailures || 0) + 1;
+    item.lastPublishError = result.telegramError || "";
+    item.publishRetryAfter = new Date(Date.now() + PUBLISH_RETRY_COOLDOWN_MIN * 60000).toISOString();
+    if (result.telegramPermanent || item.publishFailures >= PUBLISH_FAILURE_MAX) item.status = "publish_failed";
   }
   if (result.vkPublished) {
     item.vkPublished = true;
@@ -7259,6 +7268,8 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
       text: result.publishedText || item.text || "",
       messageId: result.message_id || item.telegramMessageId || null,
       telegramUncertain: Boolean(result.telegramUncertain || item.telegramUncertain),
+      telegramStatus: item.telegramStatus || "",
+      telegramError: item.telegramError || "",
       vkPostId: result.vkPostId || item.vkPostId || null,
       vkStatus: result.vkStatus || item.vkStatus || "",
       vkError: result.vkError || item.vkError || "",
@@ -7312,6 +7323,8 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
     noteSourceEvent(item, "published");
   } else if (historyItem) {
     historyItem.messageId = historyItem.messageId || result.message_id || item.telegramMessageId || null;
+    historyItem.telegramStatus = item.telegramStatus || historyItem.telegramStatus || "";
+    historyItem.telegramError = item.telegramError || "";
     historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
     historyItem.vkStatus = result.vkStatus || item.vkStatus || historyItem.vkStatus || "";
     historyItem.vkError = result.vkError || item.vkError || "";
@@ -7349,7 +7362,7 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
 
   if (db && dbReady && item.newsId) {
     try {
-      const dbStatus = mediaFailed ? "media_failed" : "published";
+      const dbStatus = mediaFailed ? "media_failed" : (pendingAutoTargets(item).telegram ? "partial" : "published");
       await db.query(
         "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb, vk_post_id=COALESCE($6,vk_post_id), vk_status=$7, vk_error_code=$8, vk_error_msg=$9, vk_media_attempts=$10, updated_at=NOW() WHERE id=$1 AND workspace_id=$11",
         [
@@ -7361,6 +7374,8 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
             vkPostId: result.vkPostId || item.vkPostId || null,
             vkStatus: result.vkStatus || item.vkStatus || "",
             vkError: result.vkError || item.vkError || "",
+            telegramStatus: item.telegramStatus || "",
+            telegramError: item.telegramError || "",
             vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
             vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0,
             repairLog: Array.isArray(result.repairLog) ? result.repairLog : [],
@@ -7386,7 +7401,9 @@ async function publishDynamicSlotOnce(kind, opts, explicitTime) {
   return {
     ok: !mediaFailed,
     published: Boolean(result.telegramPublished || result.vkPublished),
-    status: mediaFailed ? "media_failed" : "published",
+    status: mediaFailed ? "media_failed" : (targets.telegram && !result.telegramPublished ? "partial" : "published"),
+    telegramStatus: item.telegramStatus || (item.telegramPublished ? "published" : "not_selected"),
+    telegramError: item.telegramError || "",
     messageId: result.message_id || item.telegramMessageId || null,
     vkPostId: result.vkPostId || item.vkPostId || null,
     vkStatus: result.vkStatus || item.vkStatus || "",
@@ -8730,16 +8747,34 @@ async function repairPostForPublishing(post, platform, error, attempt) {
   return out;
 }
 
+// Pre-send errors (getChat, source download) can be retried; unknown failures from
+// sendPhoto/sendVideo are tagged telegramAmbiguous and must never be replayed.
+function safeToRetryTelegramPublish(error) {
+  if (!error || error.telegramAmbiguous || isTelegramFatalError(error) || error.telegram) return false;
+  return /fetch failed|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|network|socket hang up/i.test(String(error.message || error));
+}
 async function sendTelegramPostWithRepair(post) {
   let candidate = Object.assign({}, post);
   const repairLog = [];
-  for (let attempt = 1; attempt <= PUBLISH_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+  let repairAttempt = 1;
+  let safeNetworkRetries = 0;
+  while (repairAttempt <= PUBLISH_REPAIR_MAX_ATTEMPTS) {
     try {
       const result = await sendTelegramPost(candidate);
       return { result: result, post: candidate, repairLog: repairLog.concat(candidate.repairLog || []) };
     } catch (error) {
-      if (attempt >= PUBLISH_REPAIR_MAX_ATTEMPTS || !publishErrorLooksRepairable(error)) throw error;
-      candidate = await repairPostForPublishing(candidate, "telegram", error, attempt + 1);
+      if (safeNetworkRetries < 2 && safeToRetryTelegramPublish(error)) {
+        safeNetworkRetries += 1;
+        console.warn("TELEGRAM_SAFE_PUBLISH_RETRY " + JSON.stringify({
+          workspace: currentWorkspaceId(), post_id: String(post.postId || post.id || ""),
+          attempt: safeNetworkRetries, error: String(error.message || error).slice(0, 180)
+        }));
+        await new Promise(function(resolve){ setTimeout(resolve, safeNetworkRetries * 750); });
+        continue;
+      }
+      if (repairAttempt >= PUBLISH_REPAIR_MAX_ATTEMPTS || !publishErrorLooksRepairable(error)) throw error;
+      repairAttempt += 1;
+      candidate = await repairPostForPublishing(candidate, "telegram", error, repairAttempt);
       repairLog.push.apply(repairLog, candidate.repairLog || []);
       candidate.repairLog = [];
     }
@@ -13542,6 +13577,10 @@ const server = http.createServer(async function(req, res) {
 
       if (result.safeMedia) Object.assign(item, result.safeMedia);
       const publishedAt = new Date().toISOString();
+      if (effectiveTargets.telegram) {
+        item.telegramStatus = result.telegramStatus;
+        item.telegramError = result.telegramError || "";
+      }
       if (result.telegramPublished) {
         item.telegramPublished = true;
         item.telegramMessageId = result.message_id;
@@ -13579,6 +13618,8 @@ const server = http.createServer(async function(req, res) {
           text: result.publishedText || item.text,
           messageId: result.message_id || item.telegramMessageId || null,
           telegramUncertain: Boolean(result.telegramUncertain || item.telegramUncertain),
+          telegramStatus: item.telegramStatus || "",
+          telegramError: item.telegramError || "",
           vkPostId: result.vkPostId || item.vkPostId || null,
           vkStatus: result.vkStatus || item.vkStatus || "",
           vkError: result.vkError || item.vkError || "",
@@ -13619,6 +13660,8 @@ const server = http.createServer(async function(req, res) {
         state.stats.published += 1;
       } else if (historyItem) {
         historyItem.messageId = historyItem.messageId || result.message_id || item.telegramMessageId || null;
+        historyItem.telegramStatus = item.telegramStatus || historyItem.telegramStatus || "";
+        historyItem.telegramError = item.telegramError || "";
         historyItem.vkPostId = result.vkPostId || historyItem.vkPostId || null;
         historyItem.vkStatus = result.vkStatus || item.vkStatus || historyItem.vkStatus || "";
         historyItem.vkError = result.vkError || item.vkError || "";
@@ -13640,7 +13683,7 @@ const server = http.createServer(async function(req, res) {
 
       if (db && dbReady && item.newsId) {
         try {
-          const status = mediaFailed ? "media_failed" : (doneTelegram && doneVk ? "published" : "queued");
+          const status = mediaFailed ? "media_failed" : (doneTelegram && doneVk ? "published" : "partial");
           await db.query(
             "UPDATE news_items SET status=$2, telegram_message_id=COALESCE($3,telegram_message_id), published_at=COALESCE($4,published_at), metadata=COALESCE(metadata,'{}'::jsonb) || $5::jsonb, vk_post_id=COALESCE($6,vk_post_id), vk_status=$7, vk_error_code=$8, vk_error_msg=$9, vk_media_attempts=$10, updated_at=NOW() WHERE id=$1 AND workspace_id=$11",
             [
@@ -13652,6 +13695,8 @@ const server = http.createServer(async function(req, res) {
                 vkPostId: result.vkPostId || item.vkPostId || null,
                 vkStatus: result.vkStatus || item.vkStatus || "",
                 vkError: result.vkError || item.vkError || "",
+                telegramStatus: item.telegramStatus || "",
+                telegramError: item.telegramError || "",
                 vkErrorCode: result.vkErrorCode == null ? null : result.vkErrorCode,
                 vkMediaAttempts: result.vkMediaAttempts || item.vkMediaAttempts || 0,
                 mediaLicense: item.mediaLicense || "unknown",
@@ -13687,7 +13732,9 @@ const server = http.createServer(async function(req, res) {
       saveState();
       return sendJson(res, mediaFailed ? 207 : 200, {
         ok: !mediaFailed,
-        status: mediaFailed ? "media_failed" : "published",
+        status: mediaFailed ? "media_failed" : (doneTelegram && doneVk ? "published" : "partial"),
+        telegramStatus: item.telegramStatus || (item.telegramPublished ? "published" : "not_selected"),
+        telegramError: item.telegramError || "",
         messageId: result.message_id || item.telegramMessageId || null,
         vkPostId: result.vkPostId || item.vkPostId || null,
         telegramPublished: result.telegramPublished || item.telegramPublished === true,
