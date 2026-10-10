@@ -1,0 +1,27 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+const read = (p) => fs.readFileSync(new URL("../" + p, import.meta.url), "utf8");
+const html = read("public/admin.html");
+const css = read("public/portal-v073.css");
+const manifest = JSON.parse(read("public/manifest.webmanifest"));
+const pkg = JSON.parse(read("package.json"));
+
+assert.equal(pkg.version, "0.73.0");
+assert.ok(pkg.scripts.prestart.includes("prepare-brand-icons"));
+assert.ok(html.includes('href="/portal-v073.css?v=073"'));
+assert.ok(html.includes('data-page="networkPage"'));
+assert.ok(html.includes('class="portal-banner"'));
+assert.ok(html.includes('id="networkRecent"'));
+assert.ok(html.includes("function renderNetworkDashboard()"));
+assert.ok(css.includes(".side .nav.active"));
+assert.ok(css.includes(".network-account-grid"));
+assert.ok(css.includes("@media(max-width:760px)"));
+assert.ok(css.includes("#networkPage.active"));
+assert.ok(fs.statSync(new URL("../public/nf-brand-source.png", import.meta.url)).size > 3000);
+assert.ok(manifest.icons.some(x => x.sizes === "192x192" && x.src.includes("073")));
+assert.ok(manifest.icons.some(x => x.sizes === "512x512" && x.src.includes("073")));
+const script = html.match(/<script>([\s\S]*?)<\/script>/);
+assert.ok(script, "embedded application script");
+new vm.Script(script[1], { filename:"public/admin.inline.js" });
+console.log("portal-design-test: PASS");
