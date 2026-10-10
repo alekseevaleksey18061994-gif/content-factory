@@ -87,7 +87,25 @@ export function telegramPlainPayload(payload) {
   return changed ? out : null;
 }
 
-// One Telegram request with: timeout, error classification, one bounded 429 retry_after wait.
+// Retry only failures that cannot duplicate a post: read-only Bot API methods, or
+// send requests where the connection demonstrably failed before any payload was sent.
+// An ambiguous send MUST NOT be retried: Telegram may already have published it.
+export function telegramTransportRetrySafe(method, error) {
+  if (!error || error.telegramAmbiguous || error.telegramPermanent || error.telegramRateLimited) return false;
+  const name = String(error.name || "");
+  const causeCode = String(error.cause && error.cause.code || error.code || "");
+  const detail = String(error.message || "");
+  const transportFailure = /fetch failed|network|timeout|timed out|socket|connection|ECONN|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH/i.test(detail) ||
+    /^(TimeoutError|AbortError|TypeError)$/.test(name) || Boolean(causeCode);
+  if (!transportFailure) return false;
+  const action = String(method || "");
+  const sending = /^(send|copy|forward)/i.test(action);
+  // Only get* Bot API methods are read-only. set/delete/pin/unpin may have side effects.
+  return /^get/i.test(action) || (sending && !telegramErrorIsAmbiguous(error));
+}
+
+// Network failures with no posting risk are retried with bounded backoff.
+// HTTP 429 retains its separate retry_after handling.
 export async function telegramRequest(method, makeInit, timeoutMs) {
   const endpoint = "https://api.telegram.org/bot" + BOT_TOKEN + "/" + method;
   for (let attempt = 0; ; attempt += 1) {
@@ -97,10 +115,20 @@ export async function telegramRequest(method, makeInit, timeoutMs) {
     try {
       response = await fetch(endpoint, init);
     } catch (networkError) {
-      // Sent but no answer (timeout, connection dropped mid-request): Telegram may well have published it.
-      // Any further attempt (URL -> upload, new cover, repair loop, next post) risks a duplicate post.
-      // Only calls that post something can leave a post behind; getChat & co. never do.
+      // Only retry pre-send connection failures or safe read-only calls such as getChat.
+      // A send that timed out after transmission might already be live: never repeat it.
       networkError.telegramAmbiguous = /^(send|copy|forward)/i.test(method) && telegramErrorIsAmbiguous(networkError);
+      networkError.telegramMethod = method;
+      networkError.telegramTransport = true;
+      if (attempt < 2 && telegramTransportRetrySafe(method, networkError)) {
+        console.warn("TELEGRAM_TRANSPORT_RETRY " + JSON.stringify({
+          method: method, attempt: attempt + 1,
+          code: String(networkError.cause && networkError.cause.code || networkError.code || ""),
+          error: String(networkError.message || "").slice(0, 160)
+        }));
+        await sleepMs(500 * (attempt + 1));
+        continue;
+      }
       throw networkError;
     }
     const data = await response.json().catch(function(){ return null; });
