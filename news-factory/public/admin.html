@@ -3701,7 +3701,7 @@ function renderNetworkDay(){
 window.netDayShift=netDayShift;window.netDaySet=netDaySet;window.netDayToday=netDayToday;window.netDayToggle=netDayToggle;
 async function refreshNetworkDashboard(){
   var btn=el('networkRefreshBtn');if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
-  try{await loadWorkspaces();renderNetworkDashboard();await netDayLoad()}
+  try{await loadWorkspaces();renderNetworkDashboard();await Promise.all([netDayLoad(),loadPortalActivity()])}
   catch(e){toast('Дашборд: '+e.message)}
   finally{if(btn){btn.disabled=false;btn.textContent='Обновить'}}
 }
@@ -3733,10 +3733,23 @@ function renderNetworkDashboard(){
   if(el('networkIssuesNote')){el('networkIssuesNote').textContent=issues?'Список ниже':'Всё работает';el('networkIssuesNote').className=issues?'kpi-warn':'kpi-good'}
   if(el('networkAccountCount'))el('networkAccountCount').textContent=ruChannels(total);
 
-  var sorted=workspaces.slice().sort(function(a,b){return (netProblems(b).length?1:0)-(netProblems(a).length?1:0)});
+  var filtered=workspaces.filter(function(item){
+    var q=portalSearchQuery.trim().toLocaleLowerCase('ru-RU');
+    var searchable=String(item.name||'')+' '+workspaceHandle(item);
+    if(q&&!searchable.toLocaleLowerCase('ru-RU').includes(q))return false;
+    var type=el('portalChannelStatusFilter')&&el('portalChannelStatusFilter').value||'all';
+    if(type==='auto'&&!item.summary?.autoPublish)return false;
+    if(type==='problems'&&!netProblems(item).length)return false;
+    return true;
+  });
+  var sorted=filtered.sort(function(a,b){
+    if((el('portalChannelSort')||{}).value==='name')return String(a.name).localeCompare(String(b.name),'ru');
+    return Number(b.summary?.publishedToday||0)-Number(a.summary?.publishedToday||0)||
+      Date.parse(b.summary?.lastPublishedAt||0)-Date.parse(a.summary?.lastPublishedAt||0);
+  });
   var accounts=el('networkAccounts');
   if(accounts){
-    accounts.innerHTML=total?sorted.map(function(item){
+    accounts.innerHTML=sorted.length?sorted.map(function(item){
       var s=item.summary||{};
       var problems=netProblems(item);
       var paused=String(s.mode||'').toUpperCase()==='PAUSED';
@@ -3755,20 +3768,12 @@ function renderNetworkDashboard(){
         (problems.length?'<span class="network-account-warning">⚠️ '+esc(problems.slice(0,2).join(' · '))+(problems.length>2?'…':'')+'</span>':'')+
         (wsMissing(item).indexOf('avatar')>=0?'<span class="network-account-soft">Нет фото канала в админке</span>':'')+
       '</button>';
-    }).join(''):'<div class="empty">Каналы ещё не созданы</div>';
+    }).join(''):'<div class="empty">По заданному фильтру каналов нет</div>';
   }
 
-  var recent=el('networkRecent');
-  if(recent){
-    var latest=workspaces.filter(function(item){return item.summary&&item.summary.lastPublishedAt;})
-      .sort(function(a,b){return new Date(b.summary.lastPublishedAt)-new Date(a.summary.lastPublishedAt);}).slice(0,6);
-    recent.innerHTML=latest.length?latest.map(function(item){
-      return '<button class="portal-recent-row" type="button" onclick="openWorkspaceFromNetwork('+ja(item.id)+')">'+
-        '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
-        '<span style="min-width:0;text-align:left"><b>'+esc(item.name||'Канал')+'</b><small>Всего публикаций: '+Number(item.summary.published||0)+'</small></span>'+
-        '<time>'+esc(netTime(item.summary.lastPublishedAt))+'</time></button>';
-    }).join(''):'<div class="empty">Публикаций пока нет</div>';
-  }
+  renderPortalRecentActivity();
+  renderPortalSystem();
+  if(el('portalBannerChannels'))el('portalBannerChannels').textContent=ruChannels(total);
   var attention=el('networkAttention');
   if(attention){
     var problemItems=sorted.filter(function(item){return netProblems(item).length});
@@ -3779,6 +3784,111 @@ function renderNetworkDashboard(){
     }).join(''):'<div class="network-all-good"><b>Все каналы работают</b><small>Посты выходят, очереди не пустые, источников хватает.</small></div>';
   }
 }
+
+/* v0.74: interactive editorial portal widgets, using live API/history only. */
+var portalSearchQuery='',portalChannelView='grid',portalActivityData=null;
+function portalFilterChannels(value){
+  portalSearchQuery=String(value||'');
+  if(location.hash!=='#network')goPage('networkPage');
+  else renderNetworkDashboard();
+}
+function portalChannelControlsChanged(){renderNetworkDashboard()}
+function portalSetChannelView(mode){
+  portalChannelView=mode==='list'?'list':'grid';
+  var grid=el('networkAccounts');if(grid)grid.classList.toggle('portal-list-view',portalChannelView==='list');
+  ['portalGridBtn','portalListBtn'].forEach(function(id,i){var btn=el(id);if(btn){btn.classList.toggle('active',portalChannelView===(i?'list':'grid'));btn.setAttribute('aria-pressed',portalChannelView===(i?'list':'grid')?'true':'false')}});
+}
+function portalMediaUrl(input){
+  var url=String(input||'').trim();
+  return /^(https?:\/\/|\/(?!\/))/i.test(url)?url:'';
+}
+function portalPostThumb(post,fallbackWorkspace){
+  var url=portalMediaUrl(post && (post.generatedImageUrl||post.imageUrl));
+  var fallback=String(fallbackWorkspace&&fallbackWorkspace.avatarUrl||'');
+  if(url)return '<img src="'+esc(url)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">';
+  if(fallback)return '<img src="'+esc(fallback)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">';
+  return '<span class="portal-story-placeholder">NF</span>';
+}
+function renderPortalHome(){
+  var history=(state.history||[]).filter(function(h){return h&&h.publishedAt&&h.publicationOrigin!=='test'&&h.publicationOrigin!=='duplicate-removed'})
+    .sort(function(a,b){return Date.parse(b.publishedAt)-Date.parse(a.publishedAt)});
+  var last=history[0]||null;
+  var recent=el('portalHomeLast');
+  if(recent){
+    recent.innerHTML=last?
+      '<div class="portal-home-last-inner"><div class="portal-story-thumb">'+portalPostThumb(last,currentWorkspaceMeta)+'</div>'+
+      '<div class="portal-home-last-copy"><h4>'+esc(last.title||'Последняя публикация')+'</h4>'+
+      '<p>'+esc(String(last.text||'').replace(/<[^>]*>/g,'').slice(0,215))+'</p>'+
+      '<small>'+esc(ageRu(last.publishedAt))+'</small></div></div>':
+      '<div class="empty">В этом канале пока нет опубликованных постов</div>';
+  }
+  var feed=el('portalHomeFeed');
+  if(feed){
+    feed.innerHTML=history.length?history.slice(0,3).map(function(h){
+      return '<div class="portal-home-story"><div class="portal-home-story-image">'+portalPostThumb(h,currentWorkspaceMeta)+'</div>'+
+        '<b>'+esc(h.title||'Публикация')+'</b><small>'+esc(ageRu(h.publishedAt))+'</small></div>';
+    }).join(''):'<div class="empty">Новости появятся после первой публикации</div>';
+  }
+  if(el('portalHomeModeTag'))el('portalHomeModeTag').textContent=state.mode==='AUTO'?'● AUTO':'● '+statusRu(state.mode);
+  if(el('portalHomeOnlineTag'))el('portalHomeOnlineTag').textContent='● '+(currentWorkspaceMeta.telegramChannel?'Канал подключён':'Канал не подключён');
+}
+async function loadPortalActivity(){
+  try{
+    portalActivityData=await api('/api/network/activity');
+    renderPortalRecentActivity();
+    renderPortalActivityGraph();
+  }catch(error){
+    var graph=el('portalActivityGraph');if(graph)graph.innerHTML='<div class="empty">Не удалось получить активность: '+esc(error.message)+'</div>';
+    var recent=el('networkRecent');if(recent)recent.innerHTML='<div class="empty">Публикации недоступны</div>';
+  }
+}
+function renderPortalRecentActivity(){
+  var root=el('networkRecent');if(!root)return;
+  if(!portalActivityData){root.innerHTML='<div class="empty">Загрузка публикаций…</div>';return}
+  var posts=portalActivityData.latest||[];
+  root.innerHTML=posts.length?posts.slice(0,5).map(function(p){
+    var ws=workspaces.find(function(x){return x.id===p.workspaceId})||{};
+    var thumb=portalMediaUrl(p.imageUrl)?'<img src="'+esc(p.imageUrl)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':workspaceAvatarHtml(ws);
+    return '<button class="portal-recent-row" type="button" onclick="openWorkspaceFromNetwork('+ja(p.workspaceId)+')">'+
+      '<span class="portal-post-thumb">'+thumb+'</span>'+
+      '<span class="portal-post-copy"><b>'+esc(p.title)+'</b><small>'+esc(p.channel)+'</small></span>'+
+      '<span class="portal-post-meta"><time>'+esc(netTime(p.publishedAt))+'</time><small>'+(p.telegram?'➤':'')+(p.vk?' VK':'')+'</small></span></button>';
+  }).join(''):'<div class="empty">За последние семь дней публикаций нет</div>';
+}
+function renderPortalActivityGraph(){
+  var root=el('portalActivityGraph');if(!root||!portalActivityData)return;
+  var points=portalActivityData.hourly||[];
+  var max=Math.max(1,...points.map(function(p){return Number(p.telegram||0)+Number(p.vk||0)}));
+  root.innerHTML='<div class="portal-bars">'+points.map(function(p,i){
+    var telegram=Math.round(100*Number(p.telegram||0)/max);
+    var vk=Math.round(100*Number(p.vk||0)/max);
+    return '<div class="portal-bar-col" title="'+esc(p.hour)+' · TG '+Number(p.telegram||0)+' / VK '+Number(p.vk||0)+'">'+
+      '<div class="portal-bar-height"><div class="portal-bar-tg" style="height:'+telegram+'%"></div><div class="portal-bar-vk" style="height:'+vk+'%"></div></div>'+
+      '<small>'+(i%4===0?esc(p.hour):'')+'</small></div>';
+  }).join('')+'</div>';
+  var totals=portalActivityData.totals||{},all=Number(totals.telegram||0)+Number(totals.vk||0);
+  var legend=el('portalActivityLegend');
+  if(legend)legend.innerHTML='<span><i class="portal-tg-dot"></i> Telegram <b>'+Number(totals.telegram||0)+'</b></span>'+
+    '<span><i class="portal-vk-dot"></i> ВКонтакте <b>'+Number(totals.vk||0)+'</b></span>'+
+    (all?'':'<small>За последние 24 часа публикаций нет</small>');
+}
+function renderPortalSystem(){
+  var root=el('portalSystemStatus');if(!root)return;
+  var details=systemStatus&&systemStatus.details||{};
+  var categories=[['Поиск новостей','collector'],['Рерайт и факт-чек','editorialV2'],
+    ['Генерация изображений','mediaEngine'],['Публикация в Telegram','telegramChannel'],['Публикация в ВКонтакте','vk']];
+  root.innerHTML=categories.map(function(row){
+    var item=details[row[1]]||{};
+    var value=item.state||'unknown';
+    var good=value==='connected',partial=value==='partial';
+    return '<div class="portal-system-row"><span class="portal-system-name"><i class="'+(good?'ok':partial?'warn':'off')+'"></i>'+esc(row[0])+'</span>'+
+      '<span class="'+(good?'ok':partial?'warn':'off')+'">'+(good?'Работает':partial?'Частично':value==='unknown'?'Проверка…':'Не подключено')+'</span></div>';
+  }).join('');
+}
+window.portalFilterChannels=portalFilterChannels;
+window.portalChannelControlsChanged=portalChannelControlsChanged;
+window.portalSetChannelView=portalSetChannelView;
+
 window.openWorkspaceFromNetwork=openWorkspaceFromNetwork;
 
 function renderWorkspaceMenu(){
@@ -4790,6 +4900,7 @@ function renderDashboard(){
   (state.queue||[]).slice(0,3).forEach(function(q){feed.push({title:'В очереди · '+(q.title||'Черновик'),meta:(q.text||'').slice(0,120)})});
   (state.history||[]).slice(0,4).forEach(function(h){feed.push({title:'Опубликовано · '+(h.title||'Пост'),meta:new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId})});
   el('dashFeed').innerHTML=feed.length?feed.slice(0,5).map(function(x){return '<div class="feed-row"><b>'+esc(x.title)+'</b><small>'+esc(x.meta)+'</small></div>'}).join(''):'<div class="empty">Пока нет событий</div>';
+  renderPortalHome();
   renderDashboardCalendar();
 }
 function dashboardFromStatus(s){
@@ -4858,7 +4969,7 @@ async function toggleAutoPublish(platform){
 }
 
 async function renderConnections(force){
-  var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;
+  var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;renderPortalSystem();
   var names={
     railway:'Railway',
     github:'GitHub',
