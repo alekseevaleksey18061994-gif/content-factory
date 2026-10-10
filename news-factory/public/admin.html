@@ -2502,6 +2502,7 @@ input,select,textarea{border-radius:12px!important}
 .qa-checks span.na{color:#8a96ab;background:rgba(138,150,171,.12)}
 </style>
 <link rel="stylesheet" href="/portal-v073.css?v=073">
+<link rel="stylesheet" href="/portal-v074.css?v=074">
 </head>
 <body>
 <div class="app">
@@ -2510,11 +2511,11 @@ input,select,textarea{border-radius:12px!important}
     <div class="side-brand"><div class="side-mark" aria-hidden="true"></div><div><b>News Factory</b><small><span id="sidebarWorkspaceName">Что там у ИИ?</span> · <span id="sidebarVersion">v—</span></small></div></div>
 
     <div class="side-group portal-dashboard-nav">
-      <button class="nav" data-page="networkPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9.5h14V10M9 19.5V13h6v6.5"/></svg></span><b>Общий дашборд</b></button>
+      <button class="nav active" data-page="networkPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9.5h14V10M9 19.5V13h6v6.5"/></svg></span><b>Общий дашборд</b></button>
     </div>
     <div class="side-group">
       <div class="side-title">Контент и публикации</div>
-      <button class="nav active" data-page="homePage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.8l8.5 6.7v8.2a1.8 1.8 0 0 1-1.8 1.8H5.3a1.8 1.8 0 0 1-1.8-1.8Z"/><path d="M9.2 20.5v-6.4h5.6v6.4"/></svg></span><b>Главная</b></button>
+      <button class="nav" data-page="homePage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.5 12 3.8l8.5 6.7v8.2a1.8 1.8 0 0 1-1.8 1.8H5.3a1.8 1.8 0 0 1-1.8-1.8Z"/><path d="M9.2 20.5v-6.4h5.6v6.4"/></svg></span><b>Страница канала</b></button>
       <button class="nav" data-page="newsPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.2" width="17" height="15.6" rx="2.2"/><path d="M7.2 8h4.1M7.2 11.5h4.1M7.2 15h4.1M14.1 8h3.1M14.1 11.5h3.1M14.1 15h3.1"/></svg></span><b>Лента новостей</b></button>
       <button class="nav" data-page="queuePage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.2 6.5h10.3M9.2 12h10.3M9.2 17.5h10.3"/><circle cx="5.2" cy="6.5" r="1.1"/><circle cx="5.2" cy="12" r="1.1"/><circle cx="5.2" cy="17.5" r="1.1"/></svg></span><b>Очередь</b></button>
       <button class="nav" data-page="sourcesPage"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 14.5-1.7 1.7a3.4 3.4 0 0 1-4.8-4.8l3-3a3.4 3.4 0 0 1 4.8 0"/><path d="m14.5 9.5 1.7-1.7a3.4 3.4 0 0 1 4.8 4.8l-3 3a3.4 3.4 0 0 1-4.8 0"/><path d="m8.7 15.3 6.6-6.6"/></svg></span><b>Источники</b></button>
@@ -2562,6 +2563,7 @@ input,select,textarea{border-radius:12px!important}
           </button>
           <div class="brand"><button class="mark network-dashboard-button" id="networkDashboardButton" type="button" title="Общий дашборд" aria-label="Открыть общий дашборд"><span class="sr-only">Общий дашборд</span></button><div><h1 id="topTitle">News Factory</h1><div class="sub" id="topSubtitle"><span id="topSubtitleText">Что там у ИИ? · </span><span id="topVersion">v—</span></div></div></div>
         </div>
+        <div class="portal-header-search"><span aria-hidden="true">⌕</span><input id="portalChannelSearch" type="search" placeholder="Поиск по каналам и публикациям…" autocomplete="off" aria-label="Найти канал" oninput="portalFilterChannels(this.value)"></div>
         <div class="top-actions">
           <div class="health"><span class="dot"></span><span id="topStatusText">Сервис работает</span></div>
           <div class="account-switcher" id="accountSwitcher">
@@ -2580,14 +2582,14 @@ input,select,textarea{border-radius:12px!important}
         </div>
       </div>
 
-      <section class="page" id="networkPage">
+      <section class="page active" id="networkPage">
         <div class="portal-banner">
           <div class="portal-banner-copy">
-            <span class="portal-eyebrow">NEWS FACTORY · AI NEWSROOM</span>
+            <span class="portal-eyebrow">NEWS FACTORY · ИИ-РЕДАКЦИЯ</span>
             <h2>News Factory</h2>
-            <p>Все новости и каналы в единой редакции.<br><em>Полностью автоматически.</em></p>
+            <p><span id="portalBannerChannels">Все каналы</span> · Тысячи новостей каждый день<br><em>Полностью автоматически.</em></p>
           </div>
-          <div class="portal-bot-art" role="img" aria-label="Робот NF"></div>
+          <img class="portal-bot-art" src="/newsroom-robots.svg?v=074" alt="Два робота News Factory">
           <div class="portal-banner-tag">Новости сами<br>себя находят ↗</div>
         </div>
         <div class="page-head network-page-head">
@@ -2625,31 +2627,48 @@ input,select,textarea{border-radius:12px!important}
         <div class="network-layout">
           <div class="card network-accounts-card">
             <div class="panel-title">
-              <div><h3>Все аккаунты</h3><p>Нажмите на канал, чтобы перейти в его кабинет.</p></div>
-              <span class="chip" id="networkAccountCount">—</span>
+              <div class="portal-channel-heading"><h3>Мои каналы <span class="chip" id="networkAccountCount">—</span></h3><p>Все редакции и публикации в одном месте</p></div>
+              <div class="portal-channel-toolbar">
+                <select id="portalChannelStatusFilter" aria-label="Фильтр каналов" onchange="portalChannelControlsChanged()"><option value="all">Все каналы</option><option value="auto">Автопубликация</option><option value="problems">Требуют внимания</option></select>
+                <select id="portalChannelSort" aria-label="Порядок каналов" onchange="portalChannelControlsChanged()"><option value="activity">По активности</option><option value="name">По названию</option></select>
+                <button class="portal-view active" id="portalGridBtn" type="button" onclick="portalSetChannelView('grid')" aria-label="Плитки">▦</button>
+                <button class="portal-view" id="portalListBtn" type="button" onclick="portalSetChannelView('list')" aria-label="Список">☰</button>
+              </div>
             </div>
             <div class="network-account-grid" id="networkAccounts"><div class="empty">Загрузка каналов…</div></div>
           </div>
 
-          <div class="card network-attention-card">
-            <div class="panel-title"><div><h3>Последние публикации</h3><p>По всей сети каналов</p></div></div>
-            <div id="networkRecent" class="portal-recent"><div class="empty">Загрузка…</div></div>
-            <div class="panel-title" style="margin-top:14px"><div><h3>Состояние сети</h3><p>Что требует внимания редакции</p></div></div>
-            <div id="networkAttention"><div class="empty">Проверяю состояние…</div></div>
+          <div class="portal-right">
+            <section class="card network-attention-card portal-recent-card">
+              <div class="panel-title"><div><h3>Последние публикации</h3></div><button type="button" onclick="goPage('historyPage')">Все →</button></div>
+              <div id="networkRecent" class="portal-recent"><div class="empty">Загрузка…</div></div>
+            </section>
+            <section class="card portal-activity-card">
+              <div class="panel-title"><div><h3>Активность за 24 часа</h3></div></div>
+              <div id="portalActivityGraph" class="portal-activity-graph"><div class="empty">Загрузка активности…</div></div>
+              <div id="portalActivityLegend" class="portal-activity-legend"></div>
+            </section>
+            <section class="card portal-system-card">
+              <div class="panel-title"><div><h3>Статус системы</h3></div><button type="button" onclick="goPage('connectionsPage')">Все сервисы →</button></div>
+              <div id="portalSystemStatus" class="portal-system-status"></div>
+              <div id="networkAttention"><div class="empty">Проверяю состояние…</div></div>
+            </section>
           </div>
         </div>
       </section>
 
-      <section class="page active" id="homePage">
+      <section class="page" id="homePage">
         <div class="hero home-hero">
           <div class="home-hero-top">
             <div class="hero-channel hero-channel-no-icon">
-              <div class="hero-channel-copy"><h2 id="homeWorkspaceName">Что там у ИИ?</h2><p id="homeWorkspaceSubtitle">@chtotamai · новости нейросетей и технологий</p></div>
+              <span class="home-hero-avatar account-avatar" id="homeHeroAvatar" aria-hidden="true">NF</span>
+              <div class="hero-channel-copy"><h2 id="homeWorkspaceName">Что там у ИИ?</h2><p id="homeWorkspaceSubtitle">@chtotamai · новости нейросетей и технологий</p><div class="portal-home-tags"><span id="portalHomeModeTag">● Режим</span><span>➤ Telegram</span><span>VK</span><span id="portalHomeOnlineTag">● Подключения</span></div></div>
             </div>
             <button class="primary home-hero-cta" onclick="goPage('publishPage')">+ Новый пост</button>
           </div>
+        </div>
 
-          <div class="home-hero-stats">
+        <div class="home-hero-stats">
             <div class="home-hero-stat">
               <span>Режим</span>
               <b id="dashMode">—</b>
@@ -2663,8 +2682,16 @@ input,select,textarea{border-radius:12px!important}
               <b id="dashLastPost">—</b>
             </div>
           </div>
-        </div>
 
+        <section class="card portal-home-last" style="margin-top:14px">
+          <div class="panel-title"><div><h3>▤ Последний пост</h3></div><button type="button" onclick="goPage('historyPage')">Открыть →</button></div>
+          <div id="portalHomeLast"><div class="empty">Загрузка публикаций…</div></div>
+        </section>
+        <section class="card portal-home-feed" style="margin-top:14px">
+          <div class="panel-title"><div><h3>▤ Лента новостей</h3></div><button type="button" onclick="goPage('newsPage')">Все новости →</button></div>
+          <div class="portal-home-feed-grid" id="portalHomeFeed"><div class="empty">Загрузка…</div></div>
+        </section>
+        <div class="portal-home-analytics-label">▥ Аналитика</div>
         <div class="kpis" style="margin-top:14px">
           <div class="kpi"><b id="dashQueue">0</b><span>В очереди</span><small>Требуют решения</small></div>
           <div class="kpi"><b id="dashPublishedToday">0</b><span>Сегодня опубликовано</span><small>По истории публикаций</small></div>
@@ -3545,7 +3572,7 @@ function renderWorkspaceChrome(){
   var ws=currentWorkspaceMeta||{};
   var initials=String(ws.initials||'NF').slice(0,3);
   var handle=workspaceHandle(ws);
-  ['accountAvatar','accountPageAvatar','accountAvatarPreview'].forEach(function(id){applyWorkspaceAvatar(id,ws)});
+  ['accountAvatar','accountPageAvatar','accountAvatarPreview','homeHeroAvatar'].forEach(function(id){applyWorkspaceAvatar(id,ws)});
   if(el('accountButtonName'))el('accountButtonName').textContent=ws.name||'Кабинет';
   if(el('accountButtonHandle'))el('accountButtonHandle').textContent=handle;
   if(el('sidebarWorkspaceName'))el('sidebarWorkspaceName').textContent=ws.name||'Кабинет';
@@ -3674,7 +3701,7 @@ function renderNetworkDay(){
 window.netDayShift=netDayShift;window.netDaySet=netDaySet;window.netDayToday=netDayToday;window.netDayToggle=netDayToggle;
 async function refreshNetworkDashboard(){
   var btn=el('networkRefreshBtn');if(btn){btn.disabled=true;btn.textContent='Обновляю…'}
-  try{await loadWorkspaces();renderNetworkDashboard();await netDayLoad()}
+  try{await loadWorkspaces();renderNetworkDashboard();await Promise.all([netDayLoad(),loadPortalActivity()])}
   catch(e){toast('Дашборд: '+e.message)}
   finally{if(btn){btn.disabled=false;btn.textContent='Обновить'}}
 }
@@ -3706,10 +3733,23 @@ function renderNetworkDashboard(){
   if(el('networkIssuesNote')){el('networkIssuesNote').textContent=issues?'Список ниже':'Всё работает';el('networkIssuesNote').className=issues?'kpi-warn':'kpi-good'}
   if(el('networkAccountCount'))el('networkAccountCount').textContent=ruChannels(total);
 
-  var sorted=workspaces.slice().sort(function(a,b){return (netProblems(b).length?1:0)-(netProblems(a).length?1:0)});
+  var filtered=workspaces.filter(function(item){
+    var q=portalSearchQuery.trim().toLocaleLowerCase('ru-RU');
+    var searchable=String(item.name||'')+' '+workspaceHandle(item);
+    if(q&&!searchable.toLocaleLowerCase('ru-RU').includes(q))return false;
+    var type=el('portalChannelStatusFilter')&&el('portalChannelStatusFilter').value||'all';
+    if(type==='auto'&&!item.summary?.autoPublish)return false;
+    if(type==='problems'&&!netProblems(item).length)return false;
+    return true;
+  });
+  var sorted=filtered.sort(function(a,b){
+    if((el('portalChannelSort')||{}).value==='name')return String(a.name).localeCompare(String(b.name),'ru');
+    return Number(b.summary?.publishedToday||0)-Number(a.summary?.publishedToday||0)||
+      Date.parse(b.summary?.lastPublishedAt||0)-Date.parse(a.summary?.lastPublishedAt||0);
+  });
   var accounts=el('networkAccounts');
   if(accounts){
-    accounts.innerHTML=total?sorted.map(function(item){
+    accounts.innerHTML=sorted.length?sorted.map(function(item){
       var s=item.summary||{};
       var problems=netProblems(item);
       var paused=String(s.mode||'').toUpperCase()==='PAUSED';
@@ -3728,20 +3768,12 @@ function renderNetworkDashboard(){
         (problems.length?'<span class="network-account-warning">⚠️ '+esc(problems.slice(0,2).join(' · '))+(problems.length>2?'…':'')+'</span>':'')+
         (wsMissing(item).indexOf('avatar')>=0?'<span class="network-account-soft">Нет фото канала в админке</span>':'')+
       '</button>';
-    }).join(''):'<div class="empty">Каналы ещё не созданы</div>';
+    }).join(''):'<div class="empty">По заданному фильтру каналов нет</div>';
   }
 
-  var recent=el('networkRecent');
-  if(recent){
-    var latest=workspaces.filter(function(item){return item.summary&&item.summary.lastPublishedAt;})
-      .sort(function(a,b){return new Date(b.summary.lastPublishedAt)-new Date(a.summary.lastPublishedAt);}).slice(0,6);
-    recent.innerHTML=latest.length?latest.map(function(item){
-      return '<button class="portal-recent-row" type="button" onclick="openWorkspaceFromNetwork('+ja(item.id)+')">'+
-        '<span class="account-avatar '+(item.avatarUrl?'has-photo':'')+'">'+workspaceAvatarHtml(item)+'</span>'+
-        '<span style="min-width:0;text-align:left"><b>'+esc(item.name||'Канал')+'</b><small>Всего публикаций: '+Number(item.summary.published||0)+'</small></span>'+
-        '<time>'+esc(netTime(item.summary.lastPublishedAt))+'</time></button>';
-    }).join(''):'<div class="empty">Публикаций пока нет</div>';
-  }
+  renderPortalRecentActivity();
+  renderPortalSystem();
+  if(el('portalBannerChannels'))el('portalBannerChannels').textContent=ruChannels(total);
   var attention=el('networkAttention');
   if(attention){
     var problemItems=sorted.filter(function(item){return netProblems(item).length});
@@ -3752,6 +3784,111 @@ function renderNetworkDashboard(){
     }).join(''):'<div class="network-all-good"><b>Все каналы работают</b><small>Посты выходят, очереди не пустые, источников хватает.</small></div>';
   }
 }
+
+/* v0.74: interactive editorial portal widgets, using live API/history only. */
+var portalSearchQuery='',portalChannelView='grid',portalActivityData=null;
+function portalFilterChannels(value){
+  portalSearchQuery=String(value||'');
+  if(location.hash!=='#network')goPage('networkPage');
+  else renderNetworkDashboard();
+}
+function portalChannelControlsChanged(){renderNetworkDashboard()}
+function portalSetChannelView(mode){
+  portalChannelView=mode==='list'?'list':'grid';
+  var grid=el('networkAccounts');if(grid)grid.classList.toggle('portal-list-view',portalChannelView==='list');
+  ['portalGridBtn','portalListBtn'].forEach(function(id,i){var btn=el(id);if(btn){btn.classList.toggle('active',portalChannelView===(i?'list':'grid'));btn.setAttribute('aria-pressed',portalChannelView===(i?'list':'grid')?'true':'false')}});
+}
+function portalMediaUrl(input){
+  var url=String(input||'').trim();
+  return /^(https?:\/\/|\/(?!\/))/i.test(url)?url:'';
+}
+function portalPostThumb(post,fallbackWorkspace){
+  var url=portalMediaUrl(post && (post.generatedImageUrl||post.imageUrl));
+  var fallback=String(fallbackWorkspace&&fallbackWorkspace.avatarUrl||'');
+  if(url)return '<img src="'+esc(url)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">';
+  if(fallback)return '<img src="'+esc(fallback)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">';
+  return '<span class="portal-story-placeholder">NF</span>';
+}
+function renderPortalHome(){
+  var history=(state.history||[]).filter(function(h){return h&&h.publishedAt&&h.publicationOrigin!=='test'&&h.publicationOrigin!=='duplicate-removed'})
+    .sort(function(a,b){return Date.parse(b.publishedAt)-Date.parse(a.publishedAt)});
+  var last=history[0]||null;
+  var recent=el('portalHomeLast');
+  if(recent){
+    recent.innerHTML=last?
+      '<div class="portal-home-last-inner"><div class="portal-story-thumb">'+portalPostThumb(last,currentWorkspaceMeta)+'</div>'+
+      '<div class="portal-home-last-copy"><h4>'+esc(last.title||'Последняя публикация')+'</h4>'+
+      '<p>'+esc(String(last.text||'').replace(/<[^>]*>/g,'').slice(0,215))+'</p>'+
+      '<small>'+esc(ageRu(last.publishedAt))+'</small></div></div>':
+      '<div class="empty">В этом канале пока нет опубликованных постов</div>';
+  }
+  var feed=el('portalHomeFeed');
+  if(feed){
+    feed.innerHTML=history.length?history.slice(0,3).map(function(h){
+      return '<div class="portal-home-story"><div class="portal-home-story-image">'+portalPostThumb(h,currentWorkspaceMeta)+'</div>'+
+        '<b>'+esc(h.title||'Публикация')+'</b><small>'+esc(ageRu(h.publishedAt))+'</small></div>';
+    }).join(''):'<div class="empty">Новости появятся после первой публикации</div>';
+  }
+  if(el('portalHomeModeTag'))el('portalHomeModeTag').textContent=state.mode==='AUTO'?'● AUTO':'● '+statusRu(state.mode);
+  if(el('portalHomeOnlineTag'))el('portalHomeOnlineTag').textContent='● '+(currentWorkspaceMeta.telegramChannel?'Канал подключён':'Канал не подключён');
+}
+async function loadPortalActivity(){
+  try{
+    portalActivityData=await api('/api/network/activity');
+    renderPortalRecentActivity();
+    renderPortalActivityGraph();
+  }catch(error){
+    var graph=el('portalActivityGraph');if(graph)graph.innerHTML='<div class="empty">Не удалось получить активность: '+esc(error.message)+'</div>';
+    var recent=el('networkRecent');if(recent)recent.innerHTML='<div class="empty">Публикации недоступны</div>';
+  }
+}
+function renderPortalRecentActivity(){
+  var root=el('networkRecent');if(!root)return;
+  if(!portalActivityData){root.innerHTML='<div class="empty">Загрузка публикаций…</div>';return}
+  var posts=portalActivityData.latest||[];
+  root.innerHTML=posts.length?posts.slice(0,5).map(function(p){
+    var ws=workspaces.find(function(x){return x.id===p.workspaceId})||{};
+    var thumb=portalMediaUrl(p.imageUrl)?'<img src="'+esc(p.imageUrl)+'" alt="" loading="lazy" onerror="this.style.display=\'none\'">':workspaceAvatarHtml(ws);
+    return '<button class="portal-recent-row" type="button" onclick="openWorkspaceFromNetwork('+ja(p.workspaceId)+')">'+
+      '<span class="portal-post-thumb">'+thumb+'</span>'+
+      '<span class="portal-post-copy"><b>'+esc(p.title)+'</b><small>'+esc(p.channel)+'</small></span>'+
+      '<span class="portal-post-meta"><time>'+esc(netTime(p.publishedAt))+'</time><small>'+(p.telegram?'➤':'')+(p.vk?' VK':'')+'</small></span></button>';
+  }).join(''):'<div class="empty">За последние семь дней публикаций нет</div>';
+}
+function renderPortalActivityGraph(){
+  var root=el('portalActivityGraph');if(!root||!portalActivityData)return;
+  var points=portalActivityData.hourly||[];
+  var max=Math.max(1,...points.map(function(p){return Number(p.telegram||0)+Number(p.vk||0)}));
+  root.innerHTML='<div class="portal-bars">'+points.map(function(p,i){
+    var telegram=Math.round(100*Number(p.telegram||0)/max);
+    var vk=Math.round(100*Number(p.vk||0)/max);
+    return '<div class="portal-bar-col" title="'+esc(p.hour)+' · TG '+Number(p.telegram||0)+' / VK '+Number(p.vk||0)+'">'+
+      '<div class="portal-bar-height"><div class="portal-bar-tg" style="height:'+telegram+'%"></div><div class="portal-bar-vk" style="height:'+vk+'%"></div></div>'+
+      '<small>'+(i%4===0?esc(p.hour):'')+'</small></div>';
+  }).join('')+'</div>';
+  var totals=portalActivityData.totals||{},all=Number(totals.telegram||0)+Number(totals.vk||0);
+  var legend=el('portalActivityLegend');
+  if(legend)legend.innerHTML='<span><i class="portal-tg-dot"></i> Telegram <b>'+Number(totals.telegram||0)+'</b></span>'+
+    '<span><i class="portal-vk-dot"></i> ВКонтакте <b>'+Number(totals.vk||0)+'</b></span>'+
+    (all?'':'<small>За последние 24 часа публикаций нет</small>');
+}
+function renderPortalSystem(){
+  var root=el('portalSystemStatus');if(!root)return;
+  var details=systemStatus&&systemStatus.details||{};
+  var categories=[['Поиск новостей','collector'],['Рерайт и факт-чек','editorialV2'],
+    ['Генерация изображений','mediaEngine'],['Публикация в Telegram','telegramChannel'],['Публикация в ВКонтакте','vk']];
+  root.innerHTML=categories.map(function(row){
+    var item=details[row[1]]||{};
+    var value=item.state||'unknown';
+    var good=value==='connected',partial=value==='partial';
+    return '<div class="portal-system-row"><span class="portal-system-name"><i class="'+(good?'ok':partial?'warn':'off')+'"></i>'+esc(row[0])+'</span>'+
+      '<span class="'+(good?'ok':partial?'warn':'off')+'">'+(good?'Работает':partial?'Частично':value==='unknown'?'Проверка…':'Не подключено')+'</span></div>';
+  }).join('');
+}
+window.portalFilterChannels=portalFilterChannels;
+window.portalChannelControlsChanged=portalChannelControlsChanged;
+window.portalSetChannelView=portalSetChannelView;
+
 window.openWorkspaceFromNetwork=openWorkspaceFromNetwork;
 
 function renderWorkspaceMenu(){
@@ -3939,7 +4076,7 @@ var pageRoutes={
 var routePages=Object.fromEntries(Object.keys(pageRoutes).map(function(id){return [pageRoutes[id],id]}));
 function goPage(id,options){
   options=options||{};
-  if(!pageRoutes[id])id='homePage';
+  if(!pageRoutes[id])id='networkPage';
   document.querySelectorAll('.page').forEach(function(p){p.classList.toggle('active',p.id===id)});
   document.querySelectorAll('.nav[data-page]').forEach(function(n){n.classList.toggle('active',n.dataset.page===id)});
   setDrawer(false);
@@ -3962,10 +4099,10 @@ function goPage(id,options){
   if(id==='networkPage'){refreshNetworkDashboard();}
 }
 function openRouteFromHash(){
-  var route=(location.hash||'#home').slice(1);
+  var route=(location.hash||'#network').slice(1);
   if(route==='system')route='connections';
   if(route==='ai')route='publish';
-  goPage(routePages[route]||'homePage',{fromHash:true,instant:true});
+  goPage(routePages[route]||'networkPage',{fromHash:true,instant:true});
 }
 window.goPage=goPage;
 var networkDashboardButton=el('networkDashboardButton');
@@ -4763,6 +4900,7 @@ function renderDashboard(){
   (state.queue||[]).slice(0,3).forEach(function(q){feed.push({title:'В очереди · '+(q.title||'Черновик'),meta:(q.text||'').slice(0,120)})});
   (state.history||[]).slice(0,4).forEach(function(h){feed.push({title:'Опубликовано · '+(h.title||'Пост'),meta:new Date(h.publishedAt).toLocaleString('ru-RU')+' · #'+h.messageId})});
   el('dashFeed').innerHTML=feed.length?feed.slice(0,5).map(function(x){return '<div class="feed-row"><b>'+esc(x.title)+'</b><small>'+esc(x.meta)+'</small></div>'}).join(''):'<div class="empty">Пока нет событий</div>';
+  renderPortalHome();
   renderDashboardCalendar();
 }
 function dashboardFromStatus(s){
@@ -4831,7 +4969,7 @@ async function toggleAutoPublish(platform){
 }
 
 async function renderConnections(force){
-  var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;
+  var s=await api('/api/status'+(force?'?refresh=1':''));systemStatus=s;renderPortalSystem();
   var names={
     railway:'Railway',
     github:'GitHub',

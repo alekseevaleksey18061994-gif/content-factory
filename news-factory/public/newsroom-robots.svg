@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 330" role="img" aria-label="Два дружелюбных ИИ-робота News Factory">
+<defs>
+ <linearGradient id="shell" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff"/><stop offset=".35" stop-color="#ebfcff"/><stop offset=".73" stop-color="#6baefa"/><stop offset="1" stop-color="#1a4aab"/></linearGradient>
+ <linearGradient id="shell2" x1="0" y1="0" x2=".8" y2="1"><stop stop-color="#fff"/><stop offset=".55" stop-color="#cceeff"/><stop offset="1" stop-color="#3b78df"/></linearGradient>
+ <linearGradient id="face" x1="0" y1="0" x2=".6" y2="1"><stop stop-color="#09295f"/><stop offset="1" stop-color="#03132e"/></linearGradient>
+ <linearGradient id="suit" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d5f8ff"/><stop offset=".35" stop-color="#3e94e4"/><stop offset="1" stop-color="#092b74"/></linearGradient>
+ <linearGradient id="laptop" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#9cf5ff"/><stop offset=".45" stop-color="#2483d5"/><stop offset="1" stop-color="#103c87"/></linearGradient>
+ <radialGradient id="shine"><stop stop-color="#12efff" stop-opacity=".75"/><stop offset="1" stop-color="#12efff" stop-opacity="0"/></radialGradient>
+ <filter id="glow"><feGaussianBlur stdDeviation="6"/></filter>
+ <filter id="shadow"><feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#001c4c" flood-opacity=".52"/></filter>
+</defs>
+<ellipse cx="295" cy="285" rx="215" ry="34" fill="#12bbff" opacity=".22" filter="url(#glow)"/>
+<circle cx="337" cy="103" r="116" fill="url(#shine)" opacity=".52"/>
+<g filter="url(#shadow)">
+ <!-- Bigger humanoid helper robot -->
+ <path d="M117 294 Q115 228 166 217 L260 216 Q307 226 315 294Z" fill="url(#suit)" stroke="#a7e9ff" stroke-width="4"/>
+ <path d="M180 218 Q206 244 247 217" fill="none" stroke="#a9ecff" stroke-width="13" opacity=".8"/>
+ <rect x="196" y="226" width="45" height="28" rx="10" fill="#0c306e" stroke="#80e9ff" stroke-width="3"/>
+ <text x="218" y="246" text-anchor="middle" fill="#a8fbff" font-family="Arial,sans-serif" font-size="16" font-weight="900">NF</text>
+ <rect x="114" y="79" width="193" height="159" rx="79" fill="url(#shell)" stroke="#ddfaff" stroke-width="5"/>
+ <rect x="132" y="97" width="156" height="125" rx="62" fill="url(#face)" stroke="#52aef8" stroke-width="7"/>
+ <ellipse cx="181" cy="156" rx="12" ry="19" fill="#7bfaff" filter="url(#glow)"/>
+ <ellipse cx="246" cy="156" rx="12" ry="19" fill="#7bfaff" filter="url(#glow)"/>
+ <ellipse cx="181" cy="156" rx="7" ry="13" fill="#e0ffff"/>
+ <ellipse cx="246" cy="156" rx="7" ry="13" fill="#e0ffff"/>
+ <path d="M191 185 Q214 202 237 185" fill="none" stroke="#8dfcff" stroke-width="7" stroke-linecap="round"/>
+ <path d="M128 115 Q116 118 115 139 L115 183 Q115 200 127 200" stroke="#45dffe" stroke-width="13" fill="none" stroke-linecap="round"/>
+ <path d="M293 113 Q306 120 306 145 L306 178 Q306 198 293 200" stroke="#45dffe" stroke-width="13" fill="none" stroke-linecap="round"/>
+ <circle cx="115" cy="161" r="19" fill="url(#shell2)" stroke="#8defff" stroke-width="4"/>
+ <circle cx="306" cy="161" r="19" fill="url(#shell2)" stroke="#8defff" stroke-width="4"/>
+ <path d="M168 88 Q218 52 263 92" stroke="#fff" stroke-width="12" fill="none" opacity=".6" stroke-linecap="round"/>
+ <!-- Floating arm -->
+ <path d="M297 248 Q333 248 342 206" stroke="url(#shell2)" stroke-width="24" fill="none" stroke-linecap="round"/>
+ <circle cx="340" cy="202" r="16" fill="#c2f8ff" stroke="#4eb4ee" stroke-width="5"/>
+</g>
+<g filter="url(#shadow)">
+ <!-- Smaller cat-eared news robot -->
+ <path d="M343 280 Q349 221 392 217 L470 218 Q514 228 514 286Z" fill="url(#suit)" stroke="#8deafa" stroke-width="4"/>
+ <path d="M364 113 L372 51 Q375 41 385 54 L415 77Z" fill="url(#shell2)" stroke="#bffcff" stroke-width="5"/>
+ <path d="M463 79 L496 47 Q508 39 505 59 L501 118Z" fill="url(#shell2)" stroke="#bffcff" stroke-width="5"/>
+ <path d="M371 105 L378 71 L398 90Z" fill="#49d6fc" opacity=".85"/>
+ <path d="M475 90 L495 67 L494 109Z" fill="#49d6fc" opacity=".85"/>
+ <rect x="343" y="83" width="173" height="149" rx="73" fill="url(#shell)" stroke="#d0fbff" stroke-width="5"/>
+ <rect x="360" y="102" width="137" height="109" rx="54" fill="url(#face)" stroke="#46b9f2" stroke-width="6"/>
+ <path d="M380 151 Q395 129 408 152" fill="none" stroke="#8afff9" stroke-width="8" stroke-linecap="round"/>
+ <path d="M450 152 Q462 131 475 150" fill="none" stroke="#8afff9" stroke-width="8" stroke-linecap="round"/>
+ <path d="M420 180 Q430 188 439 180" fill="none" stroke="#5ef3f9" stroke-width="5" stroke-linecap="round"/>
+ <circle cx="343" cy="160" r="16" fill="url(#shell2)" stroke="#8ffcff" stroke-width="4"/>
+ <circle cx="513" cy="160" r="16" fill="url(#shell2)" stroke="#8ffcff" stroke-width="4"/>
+ <rect x="410" y="231" width="42" height="25" rx="8" fill="#0d367c" stroke="#72f4ff" stroke-width="2"/>
+ <text x="431" y="249" text-anchor="middle" fill="#d5ffff" font-family="Arial,sans-serif" font-size="14" font-weight="900">NF</text>
+</g>
+<!-- Laptop at bottom -->
+<g filter="url(#shadow)">
+ <path d="M235 226 Q235 215 250 215 L336 215 Q345 216 345 226 L354 286 L245 286Z" fill="url(#laptop)" stroke="#9efaff" stroke-width="4"/>
+ <path d="M250 285 L362 285 L382 298 Q387 303 374 306 L238 306 Q226 304 237 298Z" fill="#8adcf8" stroke="#d6fcff" stroke-width="3"/>
+ <text x="295" y="270" font-size="30" font-weight="900" text-anchor="middle" fill="#c8ffff" font-family="Arial,sans-serif">NF</text>
+</g>
+<g fill="#b1faff"><circle cx="91" cy="93" r="4"/><circle cx="528" cy="65" r="3"/><circle cx="548" cy="214" r="5"/><circle cx="57" cy="226" r="3"/></g>
+</svg>

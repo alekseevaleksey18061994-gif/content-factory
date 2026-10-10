@@ -7,7 +7,7 @@ const css = read("public/portal-v073.css");
 const manifest = JSON.parse(read("public/manifest.webmanifest"));
 const pkg = JSON.parse(read("package.json"));
 
-assert.equal(pkg.version, "0.73.0");
+assert.ok(/^0\.(73|74)\./.test(pkg.version));
 assert.ok(pkg.scripts.prestart.includes("prepare-brand-icons"));
 assert.ok(html.includes('href="/portal-v073.css?v=073"'));
 assert.ok(html.includes('data-page="networkPage"'));
